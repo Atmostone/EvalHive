@@ -23,6 +23,7 @@ class TaskCreate(BaseModel):
     description: Optional[str] = None
     priority: str = TaskPriority.MEDIUM.value
     parent_id: Optional[str] = None
+    reference_answer: Optional[str] = None
 
 
 class TaskUpdate(BaseModel):
@@ -30,6 +31,7 @@ class TaskUpdate(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
+    reference_answer: Optional[str] = None
 
 
 class TaskOut(BaseModel):
@@ -68,6 +70,7 @@ def task_to_dict(task: Task) -> dict:
         "template_id": str(task.template_id) if task.template_id else None,
         "agent_container_id": task.agent_container_id,
         "result_summary": task.result_summary,
+        "reference_answer": task.reference_answer,
         "result_files": task.result_files,
         "token_usage": task.token_usage,
         "retry_count": task.retry_count,
@@ -120,6 +123,7 @@ async def create_task(
         description=body.description,
         priority=body.priority,
         parent_id=uuid.UUID(body.parent_id) if body.parent_id else None,
+        reference_answer=body.reference_answer,
         workspace_id=workspace.id,
     )
     db.add(task)
@@ -166,6 +170,8 @@ async def update_task(
         task.description = body.description
     if body.priority is not None:
         task.priority = body.priority
+    if body.reference_answer is not None:
+        task.reference_answer = body.reference_answer
     if body.status is not None:
         task.status = body.status
         if body.status == TaskStatus.IN_PROGRESS.value and not task.started_at:

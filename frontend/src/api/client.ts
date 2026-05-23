@@ -66,7 +66,7 @@ export const tasksApi = {
     return request<Task[]>(`/tasks${qs ? `?${qs}` : ''}`)
   },
   get: (id: string) => request<Task & { subtasks: Task[] }>(`/tasks/${id}`),
-  create: (data: { title: string; description?: string; priority?: string }) =>
+  create: (data: { title: string; description?: string; priority?: string; reference_answer?: string }) =>
     request<Task>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: string, data: Partial<Task>) =>
     request<Task>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),

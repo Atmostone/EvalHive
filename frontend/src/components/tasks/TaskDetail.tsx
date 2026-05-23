@@ -97,6 +97,16 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           </div>
         )}
 
+        {/* Reference answer (E-03) */}
+        {t.reference_answer && (
+          <div>
+            <h3 className="text-sm font-medium text-gray-500 mb-1">Reference answer</h3>
+            <p className="text-sm text-gray-700 whitespace-pre-wrap bg-amber-50 p-3 rounded-lg">
+              {t.reference_answer}
+            </p>
+          </div>
+        )}
+
         {/* Result */}
         {t.result_summary && (
           <div>

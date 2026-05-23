@@ -185,12 +185,34 @@ resolve judge model:      workspace.quality_judge_model_id → orchestrator_mode
               quality_judge_evaluate job (interval 600s) — only when quality_eval_enabled=true
 ```
 
-Notes: only the `judge` evaluator is implemented; `objective` (E-04) and `human`
-(E-05) are valid in the schema but deferred. Gating is **soft** — the gate result
-is recorded and surfaced in the UI (radar chart) but does not block the task
-lifecycle. Auto-evaluation is off by default (`quality_eval_enabled=false`) to
-avoid surprise token spend; the on-demand button works regardless. The MinIO blob
-stays immutable; only the Postgres `quality_profile` column is written.
+Notes: the `judge` (E-02) and `reference` (E-03) evaluators are implemented;
+`objective` (E-04) and `human` (E-05) are valid in the schema but deferred. Gating
+is **soft** — the gate result is recorded and surfaced in the UI (radar chart) but
+does not block the task lifecycle. Auto-evaluation is off by default
+(`quality_eval_enabled=false`) to avoid surprise token spend; the on-demand button
+works regardless. The MinIO blob stays immutable; only the Postgres
+`quality_profile` column is written.
+
+### Reference-based Judge (E-03)
+
+For tasks with a known gold answer, a `reference` rubric dimension compares the
+result against the task's `reference_answer` and folds a single 0–10 score into the
+same E-02 profile (so it shares the resolution, gate, weighted-score and triggers
+above). Four modes via the dimension's `reference_mode`:
+
+```
+pointwise  → LLM judge scores result vs reference        (uses quality_judge model, like E-02)
+exact      → 10 iff normalized result == normalized reference, else 0   (pure local)
+fuzzy      → difflib SequenceMatcher ratio × 10                          (pure local)
+semantic   → cosine similarity of embeddings × 10        (configured embedding provider)
+```
+
+`reference` dimensions are scored in the same `asyncio.gather` batch as `judge`
+ones (each isolated — one failure never blocks the rest). A task with no
+`reference_answer` records the dimension as `skipped` (no score, excluded from the
+gate and weighted score). The cosine is computed in-process for the two texts (no
+Qdrant). **Pairwise (A vs B vs reference) is deferred** — it needs a second
+candidate result that a single task does not provide (arrives with E-11/E-21).
 
 ## Backend components
 
@@ -212,7 +234,8 @@ stays immutable; only the Postgres `quality_profile` column is written.
 | `app/scheduler.py` | APScheduler wrapper, jobs reload from DB |
 | `app/quality/data_lake.py` | Quality Data Lake (E-01): `assemble_record` + idempotent `build_quality_record` (Postgres summary + MinIO blob) |
 | `app/quality/rubric.py` | Quality Rubric Engine (E-02): `DEFAULT_RUBRICS` (5 built-ins) + `resolve_rubric_for_task` |
-| `app/quality/judge.py` | E-02 LLM-as-judge: `evaluate_task_quality` → per-dimension scoring → `quality_profile` slot |
+| `app/quality/judge.py` | E-02 LLM-as-judge: `evaluate_task_quality` → per-dimension scoring (judge + reference) → `quality_profile` slot |
+| `app/quality/reference.py` | E-03 Reference-based Judge: `evaluate_reference_dimension` — pointwise/exact/fuzzy/semantic comparison vs `task.reference_answer` |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |

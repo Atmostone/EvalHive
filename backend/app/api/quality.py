@@ -12,7 +12,7 @@ import uuid
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +25,8 @@ from app.models.workspace import Workspace
 
 router = APIRouter(prefix="/api/quality", tags=["quality"])
 
-EvaluatorType = Literal["judge", "objective", "human"]
+EvaluatorType = Literal["judge", "objective", "human", "reference"]
+ReferenceMode = Literal["pointwise", "exact", "fuzzy", "semantic"]
 
 
 class DimensionBody(BaseModel):
@@ -33,9 +34,20 @@ class DimensionBody(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = ""
     evaluator: EvaluatorType = "judge"
+    # Only meaningful when evaluator == "reference" (E-03); cleared otherwise.
+    reference_mode: Optional[ReferenceMode] = None
     weight: float = Field(default=1.0, ge=0)
     threshold: Optional[int] = Field(default=None, ge=0, le=10)
     critical: bool = False
+
+    @model_validator(mode="after")
+    def _reference_mode_consistency(self) -> "DimensionBody":
+        if self.evaluator == "reference":
+            if self.reference_mode is None:
+                self.reference_mode = "pointwise"
+        else:
+            self.reference_mode = None
+        return self
 
 
 class RubricCreate(BaseModel):

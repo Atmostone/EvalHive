@@ -12,9 +12,16 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [priority, setPriority] = useState('medium')
+  const [referenceAnswer, setReferenceAnswer] = useState('')
 
   const createMutation = useMutation({
-    mutationFn: () => tasksApi.create({ title, description, priority }),
+    mutationFn: () =>
+      tasksApi.create({
+        title,
+        description,
+        priority,
+        reference_answer: referenceAnswer.trim() || undefined,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       onClose()
@@ -66,6 +73,18 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
               <option value="high">High</option>
               <option value="urgent">Urgent</option>
             </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Reference answer <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <textarea
+              value={referenceAnswer}
+              onChange={e => setReferenceAnswer(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg text-sm resize-none h-20 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Gold answer to compare against (enables reference-based scoring)..."
+            />
           </div>
 
           <button

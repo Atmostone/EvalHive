@@ -16,9 +16,10 @@ export default function QualityRadarChart({ profile }: { profile: QualityProfile
   const scored = profile.dimensions.filter((d) => d.status === 'scored' && d.score != null)
   const deferred = profile.dimensions.filter((d) => d.status === 'deferred')
   const failed = profile.dimensions.filter((d) => d.status === 'error')
+  const skipped = profile.dimensions.filter((d) => d.status === 'skipped')
 
   const data = scored.map((d) => ({
-    dimension: d.name,
+    dimension: d.evaluator === 'reference' && d.reference_mode ? `${d.name} (${d.reference_mode})` : d.name,
     score: d.score as number,
     threshold: d.threshold ?? 0,
   }))
@@ -61,7 +62,12 @@ export default function QualityRadarChart({ profile }: { profile: QualityProfile
         <div className="space-y-1">
           {scored.map((d) => (
             <div key={d.key} className="flex items-center justify-between text-sm">
-              <span className="text-gray-700">{d.name}</span>
+              <span className="text-gray-700">
+                {d.name}
+                {d.evaluator === 'reference' && d.reference_mode && (
+                  <span className="text-gray-400"> ({d.reference_mode})</span>
+                )}
+              </span>
               <span className="font-medium">{d.score}/10</span>
             </div>
           ))}
@@ -79,6 +85,11 @@ export default function QualityRadarChart({ profile }: { profile: QualityProfile
         <span>Judge: {profile.judge_model}</span>
         <span>${profile.judge_cost_usd.toFixed(4)}</span>
         {deferred.length > 0 && <span className="text-gray-400">{deferred.length} deferred</span>}
+        {skipped.length > 0 && (
+          <span className="text-gray-400" title="reference dimensions skipped — no reference answer set">
+            {skipped.length} skipped
+          </span>
+        )}
         {failed.length > 0 && <span className="text-red-500">{failed.length} failed</span>}
       </div>
     </div>

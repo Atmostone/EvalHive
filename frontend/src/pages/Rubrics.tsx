@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { rubricsApi } from '@/api/client'
-import type { Rubric, RubricDimension, EvaluatorType } from '@/types'
+import type { Rubric, RubricDimension, EvaluatorType, ReferenceMode } from '@/types'
 import { Plus, Edit2, Trash2, X, Gauge, Star } from 'lucide-react'
 
-const EVALUATORS: EvaluatorType[] = ['judge', 'objective', 'human']
+const EVALUATORS: EvaluatorType[] = ['judge', 'reference', 'objective', 'human']
+const READY_EVALUATORS: EvaluatorType[] = ['judge', 'reference']
+const REFERENCE_MODES: ReferenceMode[] = ['pointwise', 'exact', 'fuzzy', 'semantic']
 
 function emptyDimension(): RubricDimension {
   return { key: '', name: '', description: '', evaluator: 'judge', weight: 1, threshold: 5, critical: false }
@@ -96,14 +98,20 @@ function RubricForm({ rubric, onClose }: { rubric?: Rubric; onClose: () => void 
                     onChange={(e) => setDim(idx, { name: e.target.value })}
                     className="px-2 py-1.5 border rounded text-sm bg-white" />
                 </div>
-                <input placeholder="what it measures (judge criteria)" value={d.description}
+                <input placeholder={d.evaluator === 'reference' ? 'what it measures (optional)' : 'what it measures (judge criteria)'} value={d.description}
                   onChange={(e) => setDim(idx, { description: e.target.value })}
                   className="w-full px-2 py-1.5 border rounded text-sm bg-white" />
                 <div className="grid grid-cols-4 gap-2 items-center">
-                  <select value={d.evaluator} onChange={(e) => setDim(idx, { evaluator: e.target.value as EvaluatorType })}
+                  <select value={d.evaluator} onChange={(e) => {
+                    const evaluator = e.target.value as EvaluatorType
+                    setDim(idx, {
+                      evaluator,
+                      reference_mode: evaluator === 'reference' ? (d.reference_mode || 'pointwise') : null,
+                    })
+                  }}
                     className="px-2 py-1.5 border rounded text-sm bg-white">
                     {EVALUATORS.map((ev) => (
-                      <option key={ev} value={ev}>{ev}{ev !== 'judge' ? ' (soon)' : ''}</option>
+                      <option key={ev} value={ev}>{ev}{READY_EVALUATORS.includes(ev) ? '' : ' (soon)'}</option>
                     ))}
                   </select>
                   <input type="number" step="0.05" min={0} placeholder="weight" value={d.weight}
@@ -118,6 +126,17 @@ function RubricForm({ rubric, onClose }: { rubric?: Rubric; onClose: () => void 
                     critical
                   </label>
                 </div>
+                {d.evaluator === 'reference' && (
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-500 whitespace-nowrap">reference mode</label>
+                    <select value={d.reference_mode || 'pointwise'}
+                      onChange={(e) => setDim(idx, { reference_mode: e.target.value as ReferenceMode })}
+                      className="px-2 py-1.5 border rounded text-sm bg-white" title="compares the result against the task's reference answer">
+                      {REFERENCE_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <span className="text-xs text-gray-400">compares result vs the task's reference answer</span>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -156,8 +175,8 @@ export default function Rubrics() {
       </div>
       <p className="text-sm text-gray-500 mb-6">
         A rubric scores a task result on multiple independent dimensions (0–10), producing a quality
-        profile instead of one number. Each dimension is judged by an LLM (objective/human evaluators
-        coming with E-04/E-05).
+        profile instead of one number. Dimensions are scored by an LLM judge or by comparison against
+        a reference answer (objective/human evaluators coming with E-04/E-05).
       </p>
 
       {rubrics.length === 0 ? (

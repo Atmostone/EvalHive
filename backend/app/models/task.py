@@ -60,6 +60,8 @@ class Task(Base):
         String(255), nullable=True
     )
     result_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Optional gold answer for reference-based evaluation (E-03).
+    reference_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     result_files: Mapped[dict] = mapped_column(JSONB, default=list, server_default="[]")
     token_usage: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

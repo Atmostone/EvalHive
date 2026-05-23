@@ -39,6 +39,8 @@ b1c2d3e4f5a6  quality_records — Quality Data Lake (E-01)
      ↓
 c2d3e4f5a6b7  rubrics — Quality Rubric Engine (E-02); templates.rubric_id;
               workspaces.quality_judge_model_id
+     ↓
+d3e4f5a6b7c8  tasks.reference_answer — Reference-based Judge (E-03)
 ```
 
 ## Tables
@@ -56,6 +58,7 @@ c2d3e4f5a6b7  rubrics — Quality Rubric Engine (E-02); templates.rubric_id;
 | template_id | UUID FK→templates.id | NULL | chosen by the orchestrator |
 | agent_container_id | VARCHAR(255) | NULL | active container; cleared on kill |
 | result_summary | TEXT | NULL | from the agent (event=completed) |
+| reference_answer | TEXT | NULL | optional gold answer for reference-based scoring (E-03); compared against `result_summary` by `reference` rubric dimensions |
 | result_files | JSONB | [] | list of MinIO paths |
 | token_usage | JSONB | {} | `{input_tokens, output_tokens}` |
 | retry_count / max_retries | int | 0 / 1 | |
@@ -290,18 +293,24 @@ Five built-ins are seeded into the default workspace (`seed_default_rubrics` in
 | description | TEXT | |
 | applies_to | VARCHAR(50) NULL | task-type tag for auto-selection (matches a template tag) |
 | is_default | bool | default false — workspace's last-resort rubric |
-| dimensions | JSONB | list of `{key, name, description, evaluator, weight, threshold, critical}` |
+| dimensions | JSONB | list of `{key, name, description, evaluator, reference_mode?, weight, threshold, critical}` |
 | created_at / updated_at | TIMESTAMP | |
 
 Index: `workspace_id`. A dimension's `evaluator` is one of `judge` (LLM-as-judge,
-O2 — the only one wired today), `objective` (E-04 probes) or `human` (E-05); the
-latter two are recognized but scored as `deferred` until those features land.
+O2), `reference` (reference-based, E-03), `objective` (E-04 probes) or `human`
+(E-05); `objective`/`human` are recognized but scored as `deferred` until those
+features land. A `reference` dimension carries `reference_mode ∈ {pointwise, exact,
+fuzzy, semantic}` (E-03) and is scored only when the task has a `reference_answer`
+— otherwise it is recorded as `skipped` (no score, does not affect the gate).
 
 **Rubric selection for a task**: `Template.rubric_id` → a workspace rubric whose
 `applies_to` matches a template tag → the workspace's `is_default` rubric → none
 (evaluation skipped). The judge model is the workspace's `quality_judge_model_id`,
 falling back to `orchestrator_model_id`. Profiles are written to
-`quality_records.quality_profile`; the MinIO blob is left immutable.
+`quality_records.quality_profile` (schema_version 2 since E-03); the MinIO blob is
+left immutable. `reference` dimensions reuse the same judge model for the
+`pointwise` mode and the configured embedding provider for `semantic`; `exact`/
+`fuzzy` are pure local comparisons (no model call).
 
 ### scheduled_jobs (P8)
 

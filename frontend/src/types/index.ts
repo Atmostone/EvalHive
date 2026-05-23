@@ -20,6 +20,7 @@ export interface Task {
   template_id?: string | null
   agent_container_id?: string | null
   result_summary?: string | null
+  reference_answer?: string | null
   result_files: string[]
   token_usage: Record<string, number>
   retry_count: number
@@ -99,14 +100,18 @@ export interface SystemModels {
   quality_judge_model_id: string | null
 }
 
-// Quality Rubric Engine (E-02)
-export type EvaluatorType = 'judge' | 'objective' | 'human'
+// Quality Rubric Engine (E-02) + Reference-based Judge (E-03)
+export type EvaluatorType = 'judge' | 'objective' | 'human' | 'reference'
+
+// Reference-based evaluation modes (E-03); pairwise is deferred.
+export type ReferenceMode = 'pointwise' | 'exact' | 'fuzzy' | 'semantic'
 
 export interface RubricDimension {
   key: string
   name: string
   description: string
   evaluator: EvaluatorType
+  reference_mode?: ReferenceMode | null
   weight: number
   threshold: number | null
   critical: boolean
@@ -124,12 +129,13 @@ export interface Rubric {
   updated_at: string
 }
 
-export type DimensionStatus = 'scored' | 'deferred' | 'error'
+export type DimensionStatus = 'scored' | 'deferred' | 'error' | 'skipped'
 
 export interface QualityProfileDimension {
   key: string
   name: string
   evaluator: EvaluatorType
+  reference_mode?: ReferenceMode | null
   max: number
   weight: number | null
   threshold: number | null

@@ -30,7 +30,7 @@ from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
 
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
 _MAX_SCALE = 10
 # Cap the result text handed to the judge to keep prompts bounded.
 _RESULT_CHAR_CAP = 8000
@@ -182,12 +182,22 @@ async def evaluate_task_quality(
     context = _result_context(task)
     dims = list(rubric.dimensions or [])
 
-    # Score judge dimensions concurrently; defer non-judge evaluators.
-    judge_idx = [i for i, d in enumerate(dims) if d.get("evaluator", "judge") == "judge"]
-    results = await asyncio.gather(
-        *(_judge_dimension(dims[i], context, judge_llm) for i in judge_idx)
-    )
-    by_idx = dict(zip(judge_idx, results))
+    from app.quality.reference import evaluate_reference_dimension
+
+    # Score judge + reference dimensions concurrently; each call is isolated so one
+    # failure never blocks the rest. objective/human evaluators stay deferred.
+    coros = []
+    coro_idx = []
+    for i, d in enumerate(dims):
+        evaluator = d.get("evaluator", "judge")
+        if evaluator == "judge":
+            coros.append(_judge_dimension(d, context, judge_llm))
+            coro_idx.append(i)
+        elif evaluator == "reference":
+            coros.append(evaluate_reference_dimension(d, task, judge_llm))
+            coro_idx.append(i)
+    results = await asyncio.gather(*coros)
+    by_idx = dict(zip(coro_idx, results))
 
     out_dims: list[dict] = []
     errors: list[dict] = []
@@ -206,7 +216,10 @@ async def evaluate_task_quality(
             "threshold": d.get("threshold"),
             "critical": bool(d.get("critical")),
         }
-        if evaluator != "judge":
+        if evaluator == "reference":
+            entry["reference_mode"] = d.get("reference_mode") or "pointwise"
+        if evaluator not in ("judge", "reference"):
+            # objective (E-04) / human (E-05) — schema-valid but not scored yet.
             entry.update({"status": "deferred", "score": None})
             out_dims.append(entry)
             continue
@@ -225,6 +238,9 @@ async def evaluate_task_quality(
             entry["passed"] = threshold is None or entry["score"] >= threshold
             if entry["critical"] and not entry["passed"]:
                 failed_critical.append(d.get("key"))
+        elif res.get("status") == "skipped":
+            # reference dimension with no reference_answer — neither scored nor an error.
+            pass
         else:
             entry["error"] = res.get("error")
             errors.append({"key": d.get("key"), "error": res.get("error")})
