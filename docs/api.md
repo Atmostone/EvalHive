@@ -178,7 +178,7 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/quality/rubrics` | List the workspace's rubrics |
-| POST | `/api/quality/rubrics` | **owner/admin** — create. Body: `{name, description?, applies_to?, is_default?, dimensions: [{key, name, description?, evaluator, reference_mode?, weight?, threshold?, critical?}]}` |
+| POST | `/api/quality/rubrics` | **owner/admin** — create. Body: `{name, description?, applies_to?, is_default?, dimensions: [{key, name, description?, evaluator, reference_mode?, probe?, weight?, threshold?, critical?}]}` |
 | GET | `/api/quality/rubrics/{id}` | Get one (404 if not in workspace) |
 | PATCH | `/api/quality/rubrics/{id}` | **owner/admin** — partial update |
 | DELETE | `/api/quality/rubrics/{id}` | **owner/admin** |
@@ -186,10 +186,13 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | POST | `/api/quality/records/{task_id}/evaluate` | **owner/admin** — on-demand evaluate (re-runs/overwrites). Returns `{quality_profile, skipped, detail?}`; `skipped=true` when no rubric matched or no judge/orchestrator model is configured |
 
 `evaluator` ∈ `judge` (LLM-as-judge) \| `reference` (reference-based, E-03) \|
-`objective` (E-04) \| `human` (E-05); `objective`/`human` are deferred. A
-`reference` dimension takes `reference_mode` ∈ `pointwise` \| `exact` \| `fuzzy` \|
-`semantic` (defaults to `pointwise`; ignored/cleared for non-reference evaluators)
-and is scored against the task's `reference_answer` — `skipped` when none is set.
+`objective` (E-04) \| `human` (E-05); `human` is deferred. A `reference` dimension
+takes `reference_mode` ∈ `pointwise` \| `exact` \| `fuzzy` \| `semantic` (defaults
+to `pointwise`; ignored/cleared for non-reference evaluators) and is scored against
+the task's `reference_answer` — `skipped` when none is set. An `objective` dimension
+takes `probe` ∈ `lint` (ruff) \| `types` (mypy) (defaults to `lint`; ignored/cleared
+for non-objective evaluators); it runs the static-analysis tool over the task's
+Python result files and is `skipped` when the task produced none.
 Setting `is_default` clears the default flag on the workspace's other rubrics.
 Auto-evaluation also runs as the `quality_judge_evaluate` scheduler job when the
 `quality_eval_enabled` setting is true (off by default).

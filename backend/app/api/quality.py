@@ -27,6 +27,7 @@ router = APIRouter(prefix="/api/quality", tags=["quality"])
 
 EvaluatorType = Literal["judge", "objective", "human", "reference"]
 ReferenceMode = Literal["pointwise", "exact", "fuzzy", "semantic"]
+ProbeType = Literal["lint", "types"]
 
 
 class DimensionBody(BaseModel):
@@ -36,17 +37,24 @@ class DimensionBody(BaseModel):
     evaluator: EvaluatorType = "judge"
     # Only meaningful when evaluator == "reference" (E-03); cleared otherwise.
     reference_mode: Optional[ReferenceMode] = None
+    # Only meaningful when evaluator == "objective" (E-04); cleared otherwise.
+    probe: Optional[ProbeType] = None
     weight: float = Field(default=1.0, ge=0)
     threshold: Optional[int] = Field(default=None, ge=0, le=10)
     critical: bool = False
 
     @model_validator(mode="after")
-    def _reference_mode_consistency(self) -> "DimensionBody":
+    def _evaluator_fields_consistency(self) -> "DimensionBody":
         if self.evaluator == "reference":
             if self.reference_mode is None:
                 self.reference_mode = "pointwise"
         else:
             self.reference_mode = None
+        if self.evaluator == "objective":
+            if self.probe is None:
+                self.probe = "lint"
+        else:
+            self.probe = None
         return self
 
 

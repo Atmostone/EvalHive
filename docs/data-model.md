@@ -293,15 +293,19 @@ Five built-ins are seeded into the default workspace (`seed_default_rubrics` in
 | description | TEXT | |
 | applies_to | VARCHAR(50) NULL | task-type tag for auto-selection (matches a template tag) |
 | is_default | bool | default false — workspace's last-resort rubric |
-| dimensions | JSONB | list of `{key, name, description, evaluator, reference_mode?, weight, threshold, critical}` |
+| dimensions | JSONB | list of `{key, name, description, evaluator, reference_mode?, probe?, weight, threshold, critical}` |
 | created_at / updated_at | TIMESTAMP | |
 
 Index: `workspace_id`. A dimension's `evaluator` is one of `judge` (LLM-as-judge,
 O2), `reference` (reference-based, E-03), `objective` (E-04 probes) or `human`
-(E-05); `objective`/`human` are recognized but scored as `deferred` until those
-features land. A `reference` dimension carries `reference_mode ∈ {pointwise, exact,
-fuzzy, semantic}` (E-03) and is scored only when the task has a `reference_answer`
-— otherwise it is recorded as `skipped` (no score, does not affect the gate).
+(E-05); `human` is recognized but scored as `deferred` until that feature lands. A
+`reference` dimension carries `reference_mode ∈ {pointwise, exact, fuzzy, semantic}`
+(E-03) and is scored only when the task has a `reference_answer` — otherwise
+`skipped`. An `objective` dimension carries `probe ∈ {lint, types}` (E-04) and runs
+that static-analysis tool over the task's Python result files — `skipped` when the
+task produced none. Both `reference_mode` and `probe` are stored only for their
+owning evaluator and cleared (null) otherwise; neither needs a schema migration
+(they live in the `dimensions` JSONB).
 
 **Rubric selection for a task**: `Template.rubric_id` → a workspace rubric whose
 `applies_to` matches a template tag → the workspace's `is_default` rubric → none

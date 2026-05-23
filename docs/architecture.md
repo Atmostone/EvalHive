@@ -174,9 +174,10 @@ resolve rubric for task:  Template.rubric_id → rubric whose applies_to ∈ tem
                           → workspace is_default rubric → none (skip)
 resolve judge model:      workspace.quality_judge_model_id → orchestrator_model_id → none (skip)
                                               │
-   per judge dimension (asyncio.gather, independent try/except — one failure
-   never blocks the others): LLM-as-judge call → {score 0-10, reasoning}
-   objective/human dimensions → status "deferred" (E-04/E-05)
+   per dimension (asyncio.gather, independent try/except — one failure never
+   blocks the others): judge → LLM-as-judge call; reference → match vs gold (E-03);
+   objective → static-analysis probe (E-04) → {score 0-10, reasoning}
+   human dimensions → status "deferred" (E-05)
                                               ▼
    profile = {dimensions[], weighted_score, gate{passed, failed_dimensions},
               judge_model, judge_tokens, judge_cost_usd}  →  quality_records.quality_profile
@@ -185,8 +186,8 @@ resolve judge model:      workspace.quality_judge_model_id → orchestrator_mode
               quality_judge_evaluate job (interval 600s) — only when quality_eval_enabled=true
 ```
 
-Notes: the `judge` (E-02) and `reference` (E-03) evaluators are implemented;
-`objective` (E-04) and `human` (E-05) are valid in the schema but deferred. Gating
+Notes: the `judge` (E-02), `reference` (E-03) and `objective` (E-04) evaluators are
+implemented; `human` (E-05) is valid in the schema but deferred. Gating
 is **soft** — the gate result is recorded and surfaced in the UI (radar chart) but
 does not block the task lifecycle. Auto-evaluation is off by default
 (`quality_eval_enabled=false`) to avoid surprise token spend; the on-demand button
@@ -214,6 +215,28 @@ gate and weighted score). The cosine is computed in-process for the two texts (n
 Qdrant). **Pairwise (A vs B vs reference) is deferred** — it needs a second
 candidate result that a single task does not provide (arrives with E-11/E-21).
 
+### Behavioral / objective probes (E-04)
+
+An `objective` rubric dimension runs a deterministic static-analysis tool over the
+task's produced code artifacts and folds a single 0–10 measurement into the same
+E-02 profile (sharing resolution, gate, weighted-score and triggers). The dimension
+carries a `probe`; the **POC scope is Python-only, static-only** (the tool *parses*
+the agent's code, never executes it):
+
+```
+lint   → ruff check     fewer findings per 100 LOC ⇒ higher score   (0 findings = 10)
+types  → mypy --ignore-missing-imports   fewer type errors per 100 LOC ⇒ higher score
+```
+
+Score = `10 × (1 − min(findings_per_100_loc, 10) / 10)`. Probes run **in-process**:
+artifacts are fetched from MinIO into a temp dir, the tool is invoked via subprocess
+with a per-probe timeout, output is parsed, and the temp dir is removed. Results are
+memoised by artifact content hash (identical artifacts ⇒ no re-run). Like the other
+evaluators, the call never raises: no Python artifact ⇒ `skipped`; a missing tool /
+timeout / unparseable output ⇒ `error`. **Out of scope (follow-up):** *executing*
+agent code (pytest/jest) needs container isolation, not in-process execution; web
+(Lighthouse/axe), text and data probes; the YAML+image plugin format.
+
 ## Backend components
 
 | Module | Responsibility |
@@ -234,8 +257,9 @@ candidate result that a single task does not provide (arrives with E-11/E-21).
 | `app/scheduler.py` | APScheduler wrapper, jobs reload from DB |
 | `app/quality/data_lake.py` | Quality Data Lake (E-01): `assemble_record` + idempotent `build_quality_record` (Postgres summary + MinIO blob) |
 | `app/quality/rubric.py` | Quality Rubric Engine (E-02): `DEFAULT_RUBRICS` (5 built-ins) + `resolve_rubric_for_task` |
-| `app/quality/judge.py` | E-02 LLM-as-judge: `evaluate_task_quality` → per-dimension scoring (judge + reference) → `quality_profile` slot |
+| `app/quality/judge.py` | E-02 LLM-as-judge: `evaluate_task_quality` → per-dimension scoring (judge + reference + objective) → `quality_profile` slot |
 | `app/quality/reference.py` | E-03 Reference-based Judge: `evaluate_reference_dimension` — pointwise/exact/fuzzy/semantic comparison vs `task.reference_answer` |
+| `app/quality/objective.py` | E-04 Behavioral probes: `evaluate_objective_dimension` — static-analysis (ruff/mypy) over the task's Python artifacts, scored in-process |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |
