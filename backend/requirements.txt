@@ -21,3 +21,5 @@ bcrypt
 pyjwt
 redis
 pyarrow
+ruff
+mypy

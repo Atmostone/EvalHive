@@ -2,8 +2,10 @@
 
 Scores a finished task's result against its rubric, one independent LLM call per
 ``judge`` dimension, into a quality profile written to
-``quality_records.quality_profile``. ``objective`` (E-04) and ``human`` (E-05)
-dimensions are recorded as ``deferred`` until those subsystems exist.
+``quality_records.quality_profile``. ``reference`` (E-03) and ``objective``
+(E-04) dimensions are scored by their own engines and folded into the same
+profile; ``human`` (E-05) dimensions are recorded as ``deferred`` until that
+subsystem exists.
 
 Independence (acceptance criterion): dimensions are scored concurrently and each
 call is wrapped so one evaluator failing never blocks the others — a failed
@@ -183,9 +185,10 @@ async def evaluate_task_quality(
     dims = list(rubric.dimensions or [])
 
     from app.quality.reference import evaluate_reference_dimension
+    from app.quality.objective import evaluate_objective_dimension
 
-    # Score judge + reference dimensions concurrently; each call is isolated so one
-    # failure never blocks the rest. objective/human evaluators stay deferred.
+    # Score judge + reference + objective dimensions concurrently; each call is
+    # isolated so one failure never blocks the rest. human evaluators stay deferred.
     coros = []
     coro_idx = []
     for i, d in enumerate(dims):
@@ -195,6 +198,9 @@ async def evaluate_task_quality(
             coro_idx.append(i)
         elif evaluator == "reference":
             coros.append(evaluate_reference_dimension(d, task, judge_llm))
+            coro_idx.append(i)
+        elif evaluator == "objective":
+            coros.append(evaluate_objective_dimension(d, task))
             coro_idx.append(i)
     results = await asyncio.gather(*coros)
     by_idx = dict(zip(coro_idx, results))
@@ -218,8 +224,10 @@ async def evaluate_task_quality(
         }
         if evaluator == "reference":
             entry["reference_mode"] = d.get("reference_mode") or "pointwise"
-        if evaluator not in ("judge", "reference"):
-            # objective (E-04) / human (E-05) — schema-valid but not scored yet.
+        if evaluator == "objective":
+            entry["probe"] = d.get("probe") or "lint"
+        if evaluator not in ("judge", "reference", "objective"):
+            # human (E-05) — schema-valid but not scored yet.
             entry.update({"status": "deferred", "score": None})
             out_dims.append(entry)
             continue
@@ -239,7 +247,8 @@ async def evaluate_task_quality(
             if entry["critical"] and not entry["passed"]:
                 failed_critical.append(d.get("key"))
         elif res.get("status") == "skipped":
-            # reference dimension with no reference_answer — neither scored nor an error.
+            # reference dim w/o reference_answer, or objective probe w/o matching
+            # artifact — neither scored nor an error; excluded from gate/weighted.
             pass
         else:
             entry["error"] = res.get("error")

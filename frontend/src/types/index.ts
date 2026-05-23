@@ -106,12 +106,16 @@ export type EvaluatorType = 'judge' | 'objective' | 'human' | 'reference'
 // Reference-based evaluation modes (E-03); pairwise is deferred.
 export type ReferenceMode = 'pointwise' | 'exact' | 'fuzzy' | 'semantic'
 
+// Objective/behavioral probes (E-04); POC scope: Python static analysis.
+export type ProbeType = 'lint' | 'types'
+
 export interface RubricDimension {
   key: string
   name: string
   description: string
   evaluator: EvaluatorType
   reference_mode?: ReferenceMode | null
+  probe?: ProbeType | null
   weight: number
   threshold: number | null
   critical: boolean
@@ -136,6 +140,7 @@ export interface QualityProfileDimension {
   name: string
   evaluator: EvaluatorType
   reference_mode?: ReferenceMode | null
+  probe?: ProbeType | null
   max: number
   weight: number | null
   threshold: number | null

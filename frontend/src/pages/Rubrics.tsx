@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { rubricsApi } from '@/api/client'
-import type { Rubric, RubricDimension, EvaluatorType, ReferenceMode } from '@/types'
+import type { Rubric, RubricDimension, EvaluatorType, ReferenceMode, ProbeType } from '@/types'
 import { Plus, Edit2, Trash2, X, Gauge, Star } from 'lucide-react'
 
 const EVALUATORS: EvaluatorType[] = ['judge', 'reference', 'objective', 'human']
-const READY_EVALUATORS: EvaluatorType[] = ['judge', 'reference']
+const READY_EVALUATORS: EvaluatorType[] = ['judge', 'reference', 'objective']
 const REFERENCE_MODES: ReferenceMode[] = ['pointwise', 'exact', 'fuzzy', 'semantic']
+const PROBES: ProbeType[] = ['lint', 'types']
 
 function emptyDimension(): RubricDimension {
   return { key: '', name: '', description: '', evaluator: 'judge', weight: 1, threshold: 5, critical: false }
@@ -98,7 +99,7 @@ function RubricForm({ rubric, onClose }: { rubric?: Rubric; onClose: () => void 
                     onChange={(e) => setDim(idx, { name: e.target.value })}
                     className="px-2 py-1.5 border rounded text-sm bg-white" />
                 </div>
-                <input placeholder={d.evaluator === 'reference' ? 'what it measures (optional)' : 'what it measures (judge criteria)'} value={d.description}
+                <input placeholder={d.evaluator === 'judge' ? 'what it measures (judge criteria)' : 'what it measures (optional)'} value={d.description}
                   onChange={(e) => setDim(idx, { description: e.target.value })}
                   className="w-full px-2 py-1.5 border rounded text-sm bg-white" />
                 <div className="grid grid-cols-4 gap-2 items-center">
@@ -107,6 +108,7 @@ function RubricForm({ rubric, onClose }: { rubric?: Rubric; onClose: () => void 
                     setDim(idx, {
                       evaluator,
                       reference_mode: evaluator === 'reference' ? (d.reference_mode || 'pointwise') : null,
+                      probe: evaluator === 'objective' ? (d.probe || 'lint') : null,
                     })
                   }}
                     className="px-2 py-1.5 border rounded text-sm bg-white">
@@ -135,6 +137,17 @@ function RubricForm({ rubric, onClose }: { rubric?: Rubric; onClose: () => void 
                       {REFERENCE_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
                     <span className="text-xs text-gray-400">compares result vs the task's reference answer</span>
+                  </div>
+                )}
+                {d.evaluator === 'objective' && (
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-500 whitespace-nowrap">probe</label>
+                    <select value={d.probe || 'lint'}
+                      onChange={(e) => setDim(idx, { probe: e.target.value as ProbeType })}
+                      className="px-2 py-1.5 border rounded text-sm bg-white" title="runs a static-analysis tool over the task's Python files">
+                      {PROBES.map((p) => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                    <span className="text-xs text-gray-400">static analysis of the task's Python files (ruff / mypy)</span>
                   </div>
                 )}
               </div>
@@ -175,8 +188,8 @@ export default function Rubrics() {
       </div>
       <p className="text-sm text-gray-500 mb-6">
         A rubric scores a task result on multiple independent dimensions (0–10), producing a quality
-        profile instead of one number. Dimensions are scored by an LLM judge or by comparison against
-        a reference answer (objective/human evaluators coming with E-04/E-05).
+        profile instead of one number. Dimensions are scored by an LLM judge, by comparison against a
+        reference answer, or by an objective static-analysis probe (human feedback coming with E-05).
       </p>
 
       {rubrics.length === 0 ? (

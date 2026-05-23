@@ -117,7 +117,7 @@ async def test_profile_shape_and_slot_written(db_session, default_model, monkeyp
     rubric = _rubric("R", is_default=True, dimensions=[
         _dim("a", weight=0.5, threshold=6, critical=True),
         _dim("b", weight=0.5, threshold=6, critical=False),
-        _dim("c", evaluator="objective", weight=1, threshold=5),  # deferred
+        _dim("c", evaluator="human", weight=1, threshold=5),  # deferred (E-05)
     ])
     await _flush(db_session, rubric)
     task = Task(title="x", status=TaskStatus.DONE.value, workspace_id=WS,
