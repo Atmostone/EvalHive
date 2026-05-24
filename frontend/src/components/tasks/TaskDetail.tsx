@@ -10,6 +10,7 @@ import ReasoningTimeline from './ReasoningTimeline'
 import AgentLogViewer from './AgentLogViewer'
 import QualityRadarChart from '@/components/quality/QualityRadarChart'
 import HumanFeedbackForm from '@/components/quality/HumanFeedbackForm'
+import CleanedTracePanel from '@/components/quality/CleanedTracePanel'
 
 interface TaskDetailProps {
   task: Task
@@ -196,6 +197,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
                 {humanFeedback.verdict ? ` · ${humanFeedback.verdict}` : ''}
               </p>
             )}
+
+            {/* Cleaned trace preview (E-06) — input for the trajectory judge */}
+            <CleanedTracePanel taskId={task.id} />
           </div>
         )}
 

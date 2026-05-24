@@ -265,6 +265,28 @@ comparison → **E-21** (needs a second candidate a single task does not hold);
 configurable bands + feedback→re-run loop → **E-26**; agreement statistics (Cohen's κ,
 correlations) → **E-17**.
 
+### Trace cleaner (E-06)
+
+The deterministic, **LLM-free** pre-processor that turns a raw agent trajectory
+into the compact input the trajectory judge (E-07) will consume. From the durable
+sources (`agent_events` + `agent_log_chunks` + `tasks`) it builds a `CleanedTrace`:
+
+- **Keeps** the original task (title/description), per-step reasoning (from
+  `orchestrator_reasoning` / `agent_progress` / decision events) and tool
+  calls/outputs.
+- **Drops** the `agent_spawned` system snapshot (soul_md, memory, tool/mcp lists)
+  and noise events (health pings, status churn, downstream eval events).
+- **Truncates** long tool outputs to a token cap + marker; `keep_tail_on_error`
+  keeps error steps whole (the bug is often in the ignored tail).
+
+Steps are merged chronologically; token counts use `tiktoken` (char/4 fallback) to
+report savings. Log chunks load from Postgres, or the MinIO archive after
+compaction (where `tool_name` is lost — the cleaner degrades gracefully). It
+produces the judge's *input* only: it scores nothing and never writes
+`trajectory_profile` (E-07). Like the other evaluators it never raises (on failure
+returns a trace with an `error` field). Read-only preview, computed on demand and
+not persisted: `GET /api/quality/records/{task_id}/trace?tool_output_token_cap&keep_tail_on_error`.
+
 ## Backend components
 
 | Module | Responsibility |
@@ -289,6 +311,7 @@ correlations) → **E-17**.
 | `app/quality/reference.py` | E-03 Reference-based Judge: `evaluate_reference_dimension` — pointwise/exact/fuzzy/semantic comparison vs `task.reference_answer` |
 | `app/quality/objective.py` | E-04 Behavioral probes: `evaluate_objective_dimension` — static-analysis (ruff/mypy) over the task's Python artifacts, scored in-process |
 | `app/quality/feedback.py` | E-05 Human feedback: `build_human_feedback`/`save_human_feedback` — per-dimension human ratings (banded, paired with judge scores) stored in the `human_feedback` slot |
+| `app/quality/trace_cleaner.py` | E-06 Trace Cleaner: `clean_trajectory`/`build_cleaned_trace` — deterministic, LLM-free cleaning of a raw trajectory into a compact `CleanedTrace` (input for the trajectory judge E-07); transient, scores nothing |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |

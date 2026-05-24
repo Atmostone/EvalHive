@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -240,6 +240,18 @@ export const qualityApi = {
       `/quality/records/${taskId}/feedback`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),
+  getCleanedTrace: (
+    taskId: string,
+    params?: { tool_output_token_cap?: number; keep_tail_on_error?: boolean },
+  ) => {
+    const q = new URLSearchParams()
+    if (params?.tool_output_token_cap != null) q.set('tool_output_token_cap', String(params.tool_output_token_cap))
+    if (params?.keep_tail_on_error) q.set('keep_tail_on_error', 'true')
+    const qs = q.toString()
+    return request<{ task_id: string; cleaned_trace: CleanedTrace }>(
+      `/quality/records/${taskId}/trace${qs ? `?${qs}` : ''}`,
+    )
+  },
 }
 
 export interface HumanFeedbackInput {

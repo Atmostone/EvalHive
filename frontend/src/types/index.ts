@@ -189,6 +189,39 @@ export interface HumanFeedback {
   submitted_at: string
 }
 
+// Trace Cleaner (E-06): compact, judge-ready trajectory feeding the trajectory judge (E-07).
+export type CleanedTraceStepKind = 'reasoning' | 'tool' | 'agent'
+
+export interface CleanedTraceStep {
+  seq: number
+  kind: CleanedTraceStepKind
+  tool_name?: string | null
+  content: string
+  truncated: boolean
+  original_tokens: number
+  kept_tokens: number
+}
+
+export interface CleanedTraceStats {
+  original_tokens: number
+  cleaned_tokens: number
+  savings_tokens: number
+  savings_pct: number
+  steps_total: number
+  steps_truncated: number
+  events_dropped: number
+}
+
+export interface CleanedTrace {
+  schema_version: number
+  task: { id: string; title?: string | null; description?: string | null }
+  steps: CleanedTraceStep[]
+  stats: CleanedTraceStats
+  config: { tool_output_token_cap: number; keep_tail_on_error: boolean }
+  generated_at: string
+  error?: string
+}
+
 export interface Agent {
   container_id: string
   name: string
