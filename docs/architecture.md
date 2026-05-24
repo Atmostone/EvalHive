@@ -187,7 +187,8 @@ resolve judge model:      workspace.quality_judge_model_id → orchestrator_mode
 ```
 
 Notes: the `judge` (E-02), `reference` (E-03) and `objective` (E-04) evaluators are
-implemented; `human` (E-05) is valid in the schema but deferred. Gating
+implemented; the `human` evaluator dimension stays `deferred` in the auto-profile —
+human ratings are collected separately as a parallel signal (E-05, below). Gating
 is **soft** — the gate result is recorded and surfaced in the UI (radar chart) but
 does not block the task lifecycle. Auto-evaluation is off by default
 (`quality_eval_enabled=false`) to avoid surprise token spend; the on-demand button
@@ -237,6 +238,33 @@ timeout / unparseable output ⇒ `error`. **Out of scope (follow-up):** *executi
 agent code (pytest/jest) needs container isolation, not in-process execution; web
 (Lighthouse/axe), text and data probes; the YAML+image plugin format.
 
+### Human feedback (E-05)
+
+A structured human signal on a finished task — a 0–10 rating per quality dimension
+(mirroring the E-02 axes), a free-text comment per dimension, an overall comment and
+an optional approve/reject verdict — captured by an optional, non-blocking form and
+stored in the `quality_records.human_feedback` slot (built on demand if the record
+does not yet exist). It is a **parallel** signal: it does **not** alter the judge gate
+or weighted score.
+
+```
+PUT /api/quality/records/{task_id}/feedback   (upsert; member)
+   → build_human_feedback: clamp 0-10, band each score, copy judge_score from the
+     profile by key, stamp submitted_by/at  →  human_feedback slot
+GET .../feedback                              (read; member)
+GET /api/quality/calibration                  (owner/admin) → flattened judge↔human
+     pairs (one row per rated dimension) — the raw material for judge calibration (E-17)
+```
+
+Scores are read in **bands** — `bad` (1-3, incorrect/fix) · `improve` (4-7) · `good`
+(8-10, leave as is); the band thresholds are constants for now and become
+rubric-configurable in **E-26**, which also routes the per-dimension comments back to
+the agent for a re-run. The form shows the judge's score next to each slider (one-click
+agree) so disagreements surface directly. **Deferred:** pairwise (A vs B) human
+comparison → **E-21** (needs a second candidate a single task does not hold);
+configurable bands + feedback→re-run loop → **E-26**; agreement statistics (Cohen's κ,
+correlations) → **E-17**.
+
 ## Backend components
 
 | Module | Responsibility |
@@ -260,6 +288,7 @@ agent code (pytest/jest) needs container isolation, not in-process execution; we
 | `app/quality/judge.py` | E-02 LLM-as-judge: `evaluate_task_quality` → per-dimension scoring (judge + reference + objective) → `quality_profile` slot |
 | `app/quality/reference.py` | E-03 Reference-based Judge: `evaluate_reference_dimension` — pointwise/exact/fuzzy/semantic comparison vs `task.reference_answer` |
 | `app/quality/objective.py` | E-04 Behavioral probes: `evaluate_objective_dimension` — static-analysis (ruff/mypy) over the task's Python artifacts, scored in-process |
+| `app/quality/feedback.py` | E-05 Human feedback: `build_human_feedback`/`save_human_feedback` — per-dimension human ratings (banded, paired with judge scores) stored in the `human_feedback` slot |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |

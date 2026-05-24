@@ -167,6 +167,28 @@ export interface QualityProfile {
   errors: { key: string; error: string }[]
 }
 
+// Human Feedback Collection (E-05). Bands: bad 1-3 / improve 4-7 / good 8-10.
+export type FeedbackBand = 'bad' | 'improve' | 'good'
+export type FeedbackVerdict = 'approve' | 'reject'
+
+export interface HumanFeedbackDimension {
+  key: string
+  name: string
+  score: number
+  band: FeedbackBand
+  comment?: string | null
+  judge_score?: number | null
+}
+
+export interface HumanFeedback {
+  schema_version: number
+  verdict: FeedbackVerdict | null
+  overall_comment?: string | null
+  dimensions: HumanFeedbackDimension[]
+  submitted_by: string
+  submitted_at: string
+}
+
 export interface Agent {
   container_id: string
   name: string

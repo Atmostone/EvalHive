@@ -33,6 +33,7 @@ Token: HS256, ttl=24h, payload `{sub: user_id, ws: default_workspace_id, iat, ex
 - `POST/PATCH/DELETE /api/providers`, `POST/PATCH/DELETE /api/providers/{id}/models`, `PATCH/DELETE /api/models/{id}`, `POST /api/models/{id}/test`
 - `PATCH /api/workspaces/me/system-models` (accepts `orchestrator_model_id`, `chat_model_id`, `memory_extractor_model_id`, `quality_judge_model_id`)
 - `POST/PATCH/DELETE /api/quality/rubrics`, `POST /api/quality/records/{id}/evaluate`
+- `GET/PUT /api/quality/records/{id}/feedback` (human feedback, E-05), `GET /api/quality/calibration`
 - `POST /api/agents/{cid}/kill`, `/abort`, `/switch_model`
 - `POST /api/agents/kill-all`
 - `DELETE /api/templates/{id}`, `POST /api/templates/{id}/rollback/{v}`
@@ -184,9 +185,15 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | DELETE | `/api/quality/rubrics/{id}` | **owner/admin** |
 | GET | `/api/quality/records/{task_id}/profile` | `{task_id, quality_profile}` (404 if no record in workspace; `quality_profile` is null until evaluated) |
 | POST | `/api/quality/records/{task_id}/evaluate` | **owner/admin** — on-demand evaluate (re-runs/overwrites). Returns `{quality_profile, skipped, detail?}`; `skipped=true` when no rubric matched or no judge/orchestrator model is configured |
+| GET | `/api/quality/records/{task_id}/feedback` | `{task_id, human_feedback}` — stored human feedback (E-05) or null (404 if no task in workspace) |
+| PUT | `/api/quality/records/{task_id}/feedback` | Upsert human feedback. Body `{verdict?: approve\|reject, overall_comment?, dimensions: [{key, name?, score 0-10, comment?}]}`. Builds the quality record on demand; returns `{task_id, human_feedback}` |
+| GET | `/api/quality/calibration` | **owner/admin** — flattened judge-vs-human pairs (one row per rated dimension across records with human feedback): `{task_id, dimension_key, dimension_name, judge_score, human_score, band, judge_reasoning, human_comment, verdict, submitted_at}`. Calibration input for E-17 |
 
 `evaluator` ∈ `judge` (LLM-as-judge) \| `reference` (reference-based, E-03) \|
-`objective` (E-04) \| `human` (E-05); `human` is deferred. A `reference` dimension
+`objective` (E-04) \| `human` (E-05). The `human` evaluator dimension stays
+`deferred` in the auto-profile; human ratings are collected as a **parallel signal**
+via the feedback endpoints above (stored in `quality_records.human_feedback`) and do
+not change the judge gate. A `reference` dimension
 takes `reference_mode` ∈ `pointwise` \| `exact` \| `fuzzy` \| `semantic` (defaults
 to `pointwise`; ignored/cleared for non-reference evaluators) and is scored against
 the task's `reference_answer` — `skipped` when none is set. An `objective` dimension

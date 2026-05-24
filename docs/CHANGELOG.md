@@ -2,6 +2,16 @@
 
 Формат: `YYYY-MM-DD — что изменилось — ссылка на блок плана / PR`.
 
+## 2026-05-24
+
+- **E-05 — Human Feedback Collection (O4).** Human feedback — золотой стандарт качества, но был бинарным (approve/reject). Для калибровки судьи (E-17) и academic-валидации нужен структурированный сигнал. Новая опциональная форма собирает per-dimension оценки 1–10 (по осям E-02), комментарии и verdict, и кладёт их в слот `quality_records.human_feedback` (Phase 1, `SPAWNHIVE_EVAL_BACKLOG.md` §E-05, Linear SPA-9).
+  - **Движок `app/quality/feedback.py`:** `build_human_feedback` (clamp 0–10, бэнд каждой оценки, копирование judge-скора из профиля по `key`, `submitted_by/at`) и `save_human_feedback` (гарантирует quality_record — строит на лету, как judge — и пишет слот). **Параллельный сигнал:** не меняет gate/weighted_score судьи. Бэнды: `bad` 1-3 / `improve` 4-7 / `good` 8-10 (пороги — константы, конфигурируемость на рубрике → E-26). LLM/AI-модель не используется. **Миграция не нужна** — слот `human_feedback` уже есть с E-01.
+  - **API (`app/api/quality.py`):** `GET /api/quality/records/{task_id}/feedback` (сохранённый сигнал или null), `PUT …/feedback` (upsert, body `{verdict?, overall_comment?, dimensions:[{key,name?,score 0-10,comment?}]}`, без role-gate — действие участника, как approve/reject), `GET /api/quality/calibration` (**owner/admin** — плоские пары judge↔human по измерениям, вход для E-17).
+  - **Frontend:** новый `HumanFeedbackForm.tsx` (per-dimension слайдеры из профиля + кнопка «agree» = judge-скор, цвет/подпись бэнда, комментарии, общий комментарий, submit; сворачиваемый, опциональный), встроен в `TaskDetail` под профилем; `qualityApi.getFeedback/saveFeedback`, типы `HumanFeedback*`. `npm run build` зелёный.
+  - **Тесты:** `tests/unit/test_feedback.py` (границы бэндов, clamp/нормализация verdict/комментариев, пары judge-скора) и `tests/integration/test_human_feedback.py` (PUT→GET round-trip + авто-создание record, пары judge↔human + calibration export, 422 на score вне 0–10, cross-workspace 404). Полный backend-сьют: **244 passed**. Живой E2E-smoke против запущенного стека (изолированный пользователь): PUT/GET/calibration с реальными MinIO+Postgres — ок.
+  - **Сознательные решения (согласовано с пользователем):** **pairwise (A vs B) отложен в E-21** — нужен источник второго кандидата (история результатов / U-03 replay), которого одна задача не даёт; конфигурируемые пороги бэндов и маршрутизация комментариев обратно агенту (rerun) → **E-26**; статистики согласия (κ, корреляции) → **E-17**. `human`-evaluator измерение в авто-профиле остаётся `deferred` (человеческий сигнал — отдельный слот, KISS).
+  - **Docs:** `docs/architecture.md` (подсекция Human feedback + компонент `feedback.py` + правка Notes движка), `docs/api.md` (3 эндпоинта + уточнение про параллельный сигнал), `docs/data-model.md` (форма `human_feedback`, без миграции), `docs/overview.md` (строка E-05).
+
 ## 2026-05-23
 
 - **E-04 — Behavioral Testing Layer (POC).** LLM-as-judge ненадёжна (смещения, разброс); objective execution-based проверки дают детерминированный сигнал. Новый evaluator `objective` в рубрике запускает статический анализатор над кодовыми артефактами задачи и складывает один measurement 0–10 в тот же профиль E-02 (Phase 1, `SPAWNHIVE_EVAL_BACKLOG.md` §E-04, Linear SPA-8).

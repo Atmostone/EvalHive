@@ -261,7 +261,7 @@ placeholders filled by downstream eval features.
 | input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics |
 | quality_profile | JSONB? | **slot E-02** |
 | trajectory_profile | JSONB? | **slot E-07** |
-| human_feedback | JSONB? | **slot E-05** |
+| human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
 | reproducibility | JSONB? | **slot E-20** |
 | record_s3_path | VARCHAR(500) | MinIO path of the full JSON blob |
@@ -277,6 +277,16 @@ setting (0 = keep forever; opted-in records are never auto-deleted).
 
 The `quality_profile` slot is filled by the Quality Rubric Engine (E-02) — see
 `rubrics` below.
+
+The `human_feedback` slot (E-05) is filled by `PUT /api/quality/records/{task_id}/feedback`
+(building the record on demand if absent). It is a **parallel** signal — it does
+not change the judge gate/weighted score. Shape (no migration — reuses the JSONB
+slot): `{schema_version, verdict: approve|reject|null, overall_comment?,
+dimensions: [{key, name, score 0-10, band: bad|improve|good, comment?, judge_score?}],
+submitted_by, submitted_at}`. Bands map score → quality (1-3 bad / 4-7 improve /
+8-10 good) with thresholds fixed for now (rubric-configurable in E-26); each
+dimension mirrors a `quality_profile` axis and copies the judge's score for
+calibration (E-17, exposed via `GET /api/quality/calibration`).
 
 ### rubrics (E-02)
 
