@@ -62,6 +62,10 @@ class Task(Base):
     result_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Optional gold answer for reference-based evaluation (E-03).
     reference_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Optional canonical (gold) trajectory for trajectory matching (E-09). A
+    # sequence of tool names, or a {nodes, edges} DAG. Non-null => the task has
+    # a single valid path and the deterministic matcher applies.
+    canonical_trajectory: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     result_files: Mapped[dict] = mapped_column(JSONB, default=list, server_default="[]")
     token_usage: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

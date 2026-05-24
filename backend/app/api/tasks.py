@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -24,6 +24,7 @@ class TaskCreate(BaseModel):
     priority: str = TaskPriority.MEDIUM.value
     parent_id: Optional[str] = None
     reference_answer: Optional[str] = None
+    canonical_trajectory: Optional[Any] = None
 
 
 class TaskUpdate(BaseModel):
@@ -32,6 +33,7 @@ class TaskUpdate(BaseModel):
     status: Optional[str] = None
     priority: Optional[str] = None
     reference_answer: Optional[str] = None
+    canonical_trajectory: Optional[Any] = None
 
 
 class TaskOut(BaseModel):
@@ -71,6 +73,7 @@ def task_to_dict(task: Task) -> dict:
         "agent_container_id": task.agent_container_id,
         "result_summary": task.result_summary,
         "reference_answer": task.reference_answer,
+        "canonical_trajectory": task.canonical_trajectory,
         "result_files": task.result_files,
         "token_usage": task.token_usage,
         "retry_count": task.retry_count,
@@ -124,6 +127,7 @@ async def create_task(
         priority=body.priority,
         parent_id=uuid.UUID(body.parent_id) if body.parent_id else None,
         reference_answer=body.reference_answer,
+        canonical_trajectory=body.canonical_trajectory,
         workspace_id=workspace.id,
     )
     db.add(task)
@@ -172,6 +176,8 @@ async def update_task(
         task.priority = body.priority
     if body.reference_answer is not None:
         task.reference_answer = body.reference_answer
+    if body.canonical_trajectory is not None:
+        task.canonical_trajectory = body.canonical_trajectory
     if body.status is not None:
         task.status = body.status
         if body.status == TaskStatus.IN_PROGRESS.value and not task.started_at:

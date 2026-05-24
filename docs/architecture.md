@@ -341,6 +341,37 @@ the agent gathered).
 > The comparative benchmark (E-07 vs E-08: which better flags "lucky" cases) is
 > deferred to when the public benchmark set (E-23) lands.
 
+### Trajectory matching (E-09)
+
+A **deterministic, LLM-free** trajectory signal for the narrow class of tasks that
+have a *canonical* trajectory — a single valid tool-call path (typically a benchmark
+task, §3.2 T3). It compares the agent's actual tool sequence (the `kind == "tool"`
+steps of the E-06 cleaned trace) against a reference stored on the task. Most tasks
+have many valid paths and must **not** carry a canonical trajectory — the matcher
+only runs when `tasks.canonical_trajectory` is set; otherwise it is skipped.
+
+- **Reference (three forms, normalized to a node-instance DAG)**: a bare list of tool
+  names (linear chain), `{"sequence": [...], "match_mode": …}`, or a full
+  `{"nodes": [{id, tool}], "edges": [[from, to]]}` DAG. Set from the E-23 dataset
+  later; settable now via the task `canonical_trajectory` field (`POST/PATCH /api/tasks`).
+- **Three metrics, all computed (cheap)**: `exact` (1.0 iff the actual sequence equals
+  the reference linearization), `edit` (`difflib.SequenceMatcher` ratio over the
+  tool-name lists, same stdlib approach as the fuzzy reference judge E-03), and `dag`
+  (1.0 iff the actual run is a valid **topological order** of the canonical DAG —
+  same tool multiset and every precedence edge respected). The headline
+  `score`/`matched` follow the configured `match_mode` (default `edit`; `edit` passes
+  at `match_threshold`, default 0.9; `exact`/`dag` are binary).
+- The `dag` check is a Kahn-style consumption *driven by the actual order* over node
+  instances (not tool names), so a repeated tool stays a distinct node — exact for
+  chains and distinct-tool DAGs, a close approximation only for DAGs that label
+  several parallel nodes with the same tool.
+- Never raises: a bad/unparseable reference becomes `status: "error"`; no canonical →
+  skipped. Written to the `trajectory_match_profile` slot (next to E-07/E-08).
+- On-demand `POST /api/quality/records/{task_id}/evaluate-trajectory-match` + read
+  `GET …/trajectory-match`. **No batch job** — unlike the LLM judges (E-07/E-08) the
+  matcher is instant and free and applies to a rare task class, so auto-scanning every
+  `done` record for the occasional canonical task isn't worth the churn (KISS).
+
 ## Backend components
 
 | Module | Responsibility |
@@ -368,6 +399,7 @@ the agent gathered).
 | `app/quality/trace_cleaner.py` | E-06 Trace Cleaner: `clean_trajectory`/`build_cleaned_trace` — deterministic, LLM-free cleaning of a raw trajectory into a compact `CleanedTrace` (input for the trajectory judge E-07); transient, scores nothing |
 | `app/quality/trajectory.py` | E-07 Trajectory Judge: `evaluate_task_trajectory` — single-call LLM scoring of the cleaned trace on 6 axes (efficiency/tool_selection/parameter_quality/error_recovery/goal_alignment/loop_detection) → `trajectory_profile` slot; cost-capped, reuses the E-02 judge-model resolver |
 | `app/quality/trace_evidence.py` | E-08 Evidence Bank Judge (TRACE): `evaluate_task_trace_evidence`/`evaluate_trajectory_with_evidence` — walks the cleaned trace step by step accumulating an evidence bank threaded into each step's prompt, then an evidence-aware 6-axis profile + `groundedness` → `trajectory_evidence_profile` slot (N+1 calls; reuses E-07's axes/tool/parser) |
+| `app/quality/trajectory_match.py` | E-09 Trajectory Matching: `evaluate_task_trajectory_match`/`match_trajectory` — deterministic, LLM-free comparison of the actual tool sequence (E-06) vs `task.canonical_trajectory` (list / sequence / DAG); exact + edit + dag (topological-order) metrics → `trajectory_match_profile` slot. Skipped unless a canonical trajectory is set |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |

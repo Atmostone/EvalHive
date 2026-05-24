@@ -59,6 +59,7 @@ d3e4f5a6b7c8  tasks.reference_answer — Reference-based Judge (E-03)
 | agent_container_id | VARCHAR(255) | NULL | active container; cleared on kill |
 | result_summary | TEXT | NULL | from the agent (event=completed) |
 | reference_answer | TEXT | NULL | optional gold answer for reference-based scoring (E-03); compared against `result_summary` by `reference` rubric dimensions |
+| canonical_trajectory | JSONB | NULL | optional gold trajectory for matching (E-09; migration `a8b9c0d1e2f3`); a list of tool names or a `{nodes, edges}` DAG. Non-null ⇒ the matcher applies |
 | result_files | JSONB | [] | list of MinIO paths |
 | token_usage | JSONB | {} | `{input_tokens, output_tokens}` |
 | retry_count / max_retries | int | 0 / 1 | |
@@ -262,6 +263,7 @@ placeholders filled by downstream eval features.
 | quality_profile | JSONB? | **slot E-02** |
 | trajectory_profile | JSONB? | **slot E-07** |
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
+| trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
 | human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
 | reproducibility | JSONB? | **slot E-20** |
@@ -318,6 +320,19 @@ errors}`. It coexists with `trajectory_profile` so the holistic (E-07) and
 evidence-aware (E-08) judges can be compared side by side. Cost is bounded by
 `trace_evidence_max_steps` (default 30) and `trace_evidence_max_input_tokens`
 (default 12000).
+
+The `trajectory_match_profile` slot is filled by the **deterministic, LLM-free**
+Trajectory Matcher (E-09) — `POST /api/quality/records/{task_id}/evaluate-trajectory-match`,
+building the record on demand if absent (added by migration `a8b9c0d1e2f3`). It only
+applies to tasks with a canonical trajectory (`tasks.canonical_trajectory`); it
+compares the actual tool sequence (E-06 `kind == "tool"` steps) against the reference
+on three metrics. Shape: `{schema_version, status: scored|skipped|error,
+mode: exact|edit|dag, score, matched, threshold, metrics: {exact, edit, dag},
+actual_sequence [str], reference_sequence [str], reference_form: sequence|dag,
+detail, trace_stats: {steps_total, tool_steps}, evaluated_at, errors}`. `exact` =
+sequence equality, `edit` = `difflib` ratio, `dag` = the actual run is a valid
+topological order of the canonical DAG (node-instance Kahn check). No batch job —
+the matcher is instant and applies to a rare task class.
 
 ### rubrics (E-02)
 
