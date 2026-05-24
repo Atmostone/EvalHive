@@ -288,6 +288,12 @@ submitted_by, submitted_at}`. Bands map score → quality (1-3 bad / 4-7 improve
 dimension mirrors a `quality_profile` axis and copies the judge's score for
 calibration (E-17, exposed via `GET /api/quality/calibration`).
 
+The `trajectory_profile` slot stays an **E-07** placeholder. The Trace Cleaner
+(E-06) does **not** write it: it computes a transient `CleanedTrace` on demand
+(`GET /api/quality/records/{task_id}/trace`) from the same durable sources
+(`agent_events` + `agent_log_chunks`, or the MinIO log archive after compaction)
+and persists nothing.
+
 ### rubrics (E-02)
 
 A multi-dimensional quality rubric: a set of independent dimensions used to score
