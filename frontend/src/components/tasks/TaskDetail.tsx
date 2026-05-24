@@ -13,6 +13,7 @@ import HumanFeedbackForm from '@/components/quality/HumanFeedbackForm'
 import CleanedTracePanel from '@/components/quality/CleanedTracePanel'
 import TrajectoryScorePanel from '@/components/quality/TrajectoryScorePanel'
 import EvidenceBankPanel from '@/components/quality/EvidenceBankPanel'
+import TrajectoryMatchPanel from '@/components/quality/TrajectoryMatchPanel'
 
 interface TaskDetailProps {
   task: Task
@@ -208,6 +209,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Evidence bank score (E-08) — TRACE per-step judge with groundedness */}
             <EvidenceBankPanel taskId={task.id} />
+
+            {/* Trajectory match (E-09) — deterministic match vs a canonical trajectory */}
+            <TrajectoryMatchPanel taskId={task.id} />
           </div>
         )}
 

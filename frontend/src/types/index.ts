@@ -21,6 +21,7 @@ export interface Task {
   agent_container_id?: string | null
   result_summary?: string | null
   reference_answer?: string | null
+  canonical_trajectory?: CanonicalTrajectory | null
   result_files: string[]
   token_usage: Record<string, number>
   retry_count: number
@@ -292,6 +293,39 @@ export interface TrajectoryEvidenceProfile {
   }
   evaluated_at: string
   errors: { seq?: number; error: string }[]
+}
+
+// Trajectory Matching (E-09): deterministic comparison of the actual tool-call
+// sequence against a canonical (gold) trajectory. A bare list is a linear chain;
+// {nodes, edges} is a DAG. Only applies to tasks with a canonical_trajectory.
+export type CanonicalTrajectory =
+  | string[]
+  | {
+      sequence?: string[]
+      nodes?: { id?: string; tool: string }[]
+      edges?: [string, string][]
+      match_mode?: 'exact' | 'edit' | 'dag'
+      match_threshold?: number
+    }
+
+export interface TrajectoryMatchProfile {
+  schema_version: number
+  status: TrajectoryStatus
+  mode: 'exact' | 'edit' | 'dag'
+  score: number | null
+  matched: boolean
+  threshold: number | null
+  metrics: { exact: number; edit: number; dag: number }
+  actual_sequence: string[]
+  reference_sequence: string[]
+  reference_form: 'sequence' | 'dag' | null
+  detail: string
+  trace_stats: {
+    steps_total: number | null
+    tool_steps: number | null
+  }
+  evaluated_at: string
+  errors: { error: string }[]
 }
 
 export interface Agent {

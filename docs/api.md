@@ -60,9 +60,9 @@ Token: HS256, ttl=24h, payload `{sub: user_id, ws: default_workspace_id, iat, ex
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/tasks?status=&parent_id=` | List tasks |
-| POST | `/api/tasks` | Create a task in backlog. Fields: title/description/priority/parent_id/`reference_answer`? (optional gold answer for reference-based scoring, E-03) |
+| POST | `/api/tasks` | Create a task in backlog. Fields: title/description/priority/parent_id/`reference_answer`? (optional gold answer for reference-based scoring, E-03)/`canonical_trajectory`? (optional gold trajectory for matching, E-09 — a list of tool names or a `{nodes, edges}` DAG) |
 | GET | `/api/tasks/{id}` | Single task + subtasks |
-| PATCH | `/api/tasks/{id}` | title/description/status/priority/`reference_answer` |
+| PATCH | `/api/tasks/{id}` | title/description/status/priority/`reference_answer`/`canonical_trajectory` (each applied only when non-null) |
 | PATCH | `/api/tasks/{id}/approve` | From `awaiting_approval` → `done` |
 | PATCH | `/api/tasks/{id}/reject` | Body `{feedback}`; sets `ready`, bumps `retry_count` |
 | DELETE | `/api/tasks/{id}` | Delete the task |
@@ -193,6 +193,8 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | POST | `/api/quality/records/{task_id}/evaluate-trajectory` | **owner/admin** — on-demand trajectory judge (re-runs/overwrites). Returns `{trajectory_profile, skipped, detail?}`; `skipped=true` when the trajectory has no steps or no judge/orchestrator model is configured. Profile carries `axes:[{key,name,score 0-10,reason}]` (6), `overall_score`, `loop_detected`, `summary`, `judge_*`, `input_capped`, `status` |
 | GET | `/api/quality/records/{task_id}/trajectory-evidence` | `{task_id, trajectory_evidence_profile}` — TRACE evidence-bank profile (E-08) or null until judged (404 if no record in workspace) |
 | POST | `/api/quality/records/{task_id}/evaluate-trajectory-evidence` | **owner/admin** — on-demand TRACE evidence-bank judge (re-runs/overwrites; `N+1` LLM calls). Returns `{trajectory_evidence_profile, skipped, detail?}`; `skipped=true` when the trajectory has no steps or no judge/orchestrator model is configured. Profile carries the same 6 `axes` + `overall_score`/`loop_detected`/`summary` as E-07, plus `groundedness` (0-1), `redundant_steps`, `evidence_bank:[{seq,kind,tool_name,redundant,grounded,progress,execution,facts[],note,error?}]`, `judge_calls`, `judge_*`, `input_capped`, `status` |
+| GET | `/api/quality/records/{task_id}/trajectory-match` | `{task_id, trajectory_match_profile}` — deterministic trajectory-match profile (E-09) or null until matched (404 if no record in workspace) |
+| POST | `/api/quality/records/{task_id}/evaluate-trajectory-match` | **owner/admin** — on-demand, **LLM-free** trajectory match (re-runs/overwrites). Returns `{trajectory_match_profile, skipped, detail?}`; `skipped=true` when the task has no `canonical_trajectory`. Profile carries `mode` (exact\|edit\|dag), `score`, `matched`, `threshold`, `metrics:{exact,edit,dag}`, `actual_sequence[]`, `reference_sequence[]`, `reference_form` (sequence\|dag), `detail`, `trace_stats:{steps_total,tool_steps}`, `status`. A bad/unparseable canonical → `status:"error"` (not skipped) |
 
 `evaluator` ∈ `judge` (LLM-as-judge) \| `reference` (reference-based, E-03) \|
 `objective` (E-04) \| `human` (E-05). The `human` evaluator dimension stays

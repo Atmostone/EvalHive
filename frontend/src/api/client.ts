@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -268,6 +268,15 @@ export const qualityApi = {
   evaluateTraceEvidence: (taskId: string) =>
     request<{ task_id: string; trajectory_evidence_profile: TrajectoryEvidenceProfile | null; skipped: boolean; detail?: string }>(
       `/quality/records/${taskId}/evaluate-trajectory-evidence`,
+      { method: 'POST' },
+    ),
+  getTrajectoryMatch: (taskId: string) =>
+    request<{ task_id: string; trajectory_match_profile: TrajectoryMatchProfile | null }>(
+      `/quality/records/${taskId}/trajectory-match`,
+    ),
+  evaluateTrajectoryMatch: (taskId: string) =>
+    request<{ task_id: string; trajectory_match_profile: TrajectoryMatchProfile | null; skipped: boolean; detail?: string }>(
+      `/quality/records/${taskId}/evaluate-trajectory-match`,
       { method: 'POST' },
     ),
 }

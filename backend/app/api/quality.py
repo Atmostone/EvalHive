@@ -350,6 +350,49 @@ async def evaluate_trajectory_evidence_record(
     return {"task_id": task_id, "trajectory_evidence_profile": profile, "skipped": False}
 
 
+@router.get("/records/{task_id}/trajectory-match")
+async def get_trajectory_match(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the deterministic trajectory-match profile (E-09), or null if absent."""
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == uuid.UUID(task_id),
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return {"task_id": task_id, "trajectory_match_profile": rec.trajectory_match_profile}
+
+
+@router.post("/records/{task_id}/evaluate-trajectory-match")
+async def evaluate_trajectory_match_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """On-demand trajectory matching (E-09). Skipped (profile null) when the task
+    has no canonical_trajectory set."""
+    from app.quality.trajectory_match import evaluate_task_trajectory_match
+
+    task = await _get_owned_task(db, task_id, workspace)
+    profile = await evaluate_task_trajectory_match(db, task)
+    if profile is None:
+        return {
+            "task_id": task_id,
+            "trajectory_match_profile": None,
+            "skipped": True,
+            "detail": "task has no canonical_trajectory to match against",
+        }
+    return {"task_id": task_id, "trajectory_match_profile": profile, "skipped": False}
+
+
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,
