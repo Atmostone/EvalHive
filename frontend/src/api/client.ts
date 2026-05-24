@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -231,6 +231,21 @@ export const qualityApi = {
       `/quality/records/${taskId}/evaluate`,
       { method: 'POST' },
     ),
+  getFeedback: (taskId: string) =>
+    request<{ task_id: string; human_feedback: HumanFeedback | null }>(
+      `/quality/records/${taskId}/feedback`,
+    ),
+  saveFeedback: (taskId: string, body: HumanFeedbackInput) =>
+    request<{ task_id: string; human_feedback: HumanFeedback }>(
+      `/quality/records/${taskId}/feedback`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+}
+
+export interface HumanFeedbackInput {
+  verdict?: 'approve' | 'reject' | null
+  overall_comment?: string | null
+  dimensions: { key: string; name?: string; score: number; comment?: string | null }[]
 }
 
 // Knowledge

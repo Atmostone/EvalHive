@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import ReasoningTimeline from './ReasoningTimeline'
 import AgentLogViewer from './AgentLogViewer'
 import QualityRadarChart from '@/components/quality/QualityRadarChart'
+import HumanFeedbackForm from '@/components/quality/HumanFeedbackForm'
 
 interface TaskDetailProps {
   task: Task
@@ -68,6 +69,14 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     mutationFn: () => qualityApi.evaluate(task.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['quality-profile', task.id] }),
   })
+
+  const { data: feedbackData } = useQuery({
+    queryKey: ['human-feedback', task.id],
+    queryFn: () => qualityApi.getFeedback(task.id),
+    enabled: isTerminal,
+    retry: false,
+  })
+  const humanFeedback = feedbackData?.human_feedback ?? null
 
   return (
     <div className="fixed inset-y-0 right-0 w-[480px] bg-white shadow-xl border-l z-50 flex flex-col">
@@ -176,6 +185,15 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             {evaluateMutation.data?.skipped && (
               <p className="text-xs text-orange-600 mt-1">
                 Skipped: {evaluateMutation.data.detail}
+              </p>
+            )}
+
+            {/* Human feedback (E-05) */}
+            <HumanFeedbackForm key={humanFeedback?.submitted_at ?? 'new'} taskId={task.id} profile={profile} existing={humanFeedback} />
+            {humanFeedback && (
+              <p className="text-xs text-gray-400 mt-1">
+                Last feedback by {humanFeedback.submitted_by}
+                {humanFeedback.verdict ? ` · ${humanFeedback.verdict}` : ''}
               </p>
             )}
           </div>

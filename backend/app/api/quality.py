@@ -16,11 +16,12 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_workspace, require_role
+from app.auth.dependencies import get_current_user, get_current_workspace, require_role
 from app.database import get_db
 from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
 from app.models.task import Task
+from app.models.user import User
 from app.models.workspace import Workspace
 
 router = APIRouter(prefix="/api/quality", tags=["quality"])
@@ -72,6 +73,21 @@ class RubricUpdate(BaseModel):
     applies_to: Optional[str] = Field(default=None, max_length=50)
     is_default: Optional[bool] = None
     dimensions: Optional[list[DimensionBody]] = None
+
+
+class FeedbackDimensionBody(BaseModel):
+    """One human rating, mirroring a quality-profile dimension (E-05)."""
+
+    key: str = Field(min_length=1, max_length=100)
+    name: Optional[str] = Field(default=None, max_length=200)
+    score: int = Field(ge=0, le=10)
+    comment: Optional[str] = None
+
+
+class HumanFeedbackBody(BaseModel):
+    verdict: Optional[Literal["approve", "reject"]] = None
+    overall_comment: Optional[str] = None
+    dimensions: list[FeedbackDimensionBody] = Field(default_factory=list)
 
 
 def _rubric_to_dict(r: Rubric) -> dict:
@@ -241,3 +257,76 @@ async def evaluate_record(
             "detail": "no rubric matched, or no quality-judge/orchestrator model configured",
         }
     return {"task_id": task_id, "quality_profile": profile, "skipped": False}
+
+
+@router.get("/records/{task_id}/feedback")
+async def get_feedback(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Human feedback (E-05) for a task, or null if none submitted yet."""
+    from app.quality.feedback import get_human_feedback
+
+    task = await _get_owned_task(db, task_id, workspace)
+    return {"task_id": task_id, "human_feedback": await get_human_feedback(db, task)}
+
+
+@router.put("/records/{task_id}/feedback")
+async def put_feedback(
+    task_id: str,
+    body: HumanFeedbackBody,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Upsert structured human feedback (E-05). Stored alongside the judge profile
+    in the task's quality record; a parallel signal that does not change the gate."""
+    from app.quality.feedback import save_human_feedback
+
+    task = await _get_owned_task(db, task_id, workspace)
+    feedback = await save_human_feedback(db, task, body.model_dump(), user.email)
+    return {"task_id": task_id, "human_feedback": feedback}
+
+
+@router.get("/calibration")
+async def calibration_export(
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Flattened judge-vs-human pairs for calibration (E-17 input). One row per
+    rated dimension across all records that carry human feedback."""
+    rows = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.workspace_id == workspace.id,
+                QualityRecord.human_feedback.isnot(None),
+            )
+        )
+    ).scalars().all()
+
+    out: list[dict] = []
+    for r in rows:
+        hf = r.human_feedback or {}
+        judge = {d.get("key"): d for d in ((r.quality_profile or {}).get("dimensions") or [])}
+        for d in hf.get("dimensions") or []:
+            jd = judge.get(d.get("key")) or {}
+            judge_score = d.get("judge_score")
+            if judge_score is None:
+                judge_score = jd.get("score")
+            out.append(
+                {
+                    "task_id": str(r.task_id),
+                    "dimension_key": d.get("key"),
+                    "dimension_name": d.get("name"),
+                    "judge_score": judge_score,
+                    "human_score": d.get("score"),
+                    "band": d.get("band"),
+                    "judge_reasoning": jd.get("reasoning"),
+                    "human_comment": d.get("comment"),
+                    "verdict": hf.get("verdict"),
+                    "submitted_at": hf.get("submitted_at"),
+                }
+            )
+    return out
