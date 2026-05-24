@@ -192,6 +192,47 @@ async def _job_runner(job_id: str):
                         workspace_id=job.workspace_id,
                     )
 
+        elif action == "trajectory_judge_evaluate":
+            # 6-axis Trajectory Judge (E-07): score terminal `done` records that
+            # have no trajectory_profile yet. Off by default — gated by the
+            # `trajectory_eval_enabled` setting to avoid surprise token spend;
+            # the on-demand API button works regardless.
+            from app.api.settings import get_setting
+            from app.models.task import Task, TaskStatus
+            from app.models.quality_record import QualityRecord
+            from app.quality.trajectory import evaluate_task_trajectory
+
+            if bool(await get_setting(db, "trajectory_eval_enabled", False)):
+                pending = (
+                    await db.execute(
+                        select(QualityRecord)
+                        .where(
+                            QualityRecord.final_status == TaskStatus.DONE.value,
+                            QualityRecord.trajectory_profile.is_(None),
+                        )
+                        .limit(10)
+                    )
+                ).scalars().all()
+                evaluated = 0
+                for rec in pending:
+                    task = await db.get(Task, rec.task_id)
+                    if task is None:
+                        continue
+                    try:
+                        if await evaluate_task_trajectory(db, task, commit=True):
+                            evaluated += 1
+                    except Exception as e:
+                        await db.rollback()
+                        logger.warning(
+                            f"trajectory eval failed for task {rec.task_id}: {e}"
+                        )
+                if evaluated:
+                    await log_event(
+                        db, "trajectory_judge_batch", "system",
+                        {"evaluated": evaluated},
+                        workspace_id=job.workspace_id,
+                    )
+
         else:
             await log_event(
                 db, "scheduled_job_fired", "system",
@@ -275,6 +316,12 @@ async def seed_default_jobs():
             db.add(ScheduledJob(
                 name="quality_judge_evaluate", kind="interval", interval_seconds=600,
                 payload={"action": "quality_judge_evaluate"},
+                workspace_id=DEFAULT_WORKSPACE_ID,
+            ))
+        if "trajectory_judge_evaluate" not in names:
+            db.add(ScheduledJob(
+                name="trajectory_judge_evaluate", kind="interval", interval_seconds=600,
+                payload={"action": "trajectory_judge_evaluate"},
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ))
         await db.commit()

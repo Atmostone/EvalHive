@@ -264,6 +264,49 @@ async def evaluate_record(
     return {"task_id": task_id, "quality_profile": profile, "skipped": False}
 
 
+@router.get("/records/{task_id}/trajectory")
+async def get_trajectory(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the 6-axis trajectory profile (E-07), or null if not yet judged."""
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == uuid.UUID(task_id),
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return {"task_id": task_id, "trajectory_profile": rec.trajectory_profile}
+
+
+@router.post("/records/{task_id}/evaluate-trajectory")
+async def evaluate_trajectory_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """On-demand trajectory evaluation (E-07). Skipped (profile null) when there
+    is no judge model or the cleaned trace has no steps."""
+    from app.quality.trajectory import evaluate_task_trajectory
+
+    task = await _get_owned_task(db, task_id, workspace)
+    profile = await evaluate_task_trajectory(db, task)
+    if profile is None:
+        return {
+            "task_id": task_id,
+            "trajectory_profile": None,
+            "skipped": True,
+            "detail": "empty trajectory, or no quality-judge/orchestrator model configured",
+        }
+    return {"task_id": task_id, "trajectory_profile": profile, "skipped": False}
+
+
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,

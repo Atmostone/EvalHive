@@ -222,6 +222,37 @@ export interface CleanedTrace {
   error?: string
 }
 
+// 6-axis Trajectory Judge (E-07): scores HOW the agent reached its result.
+export type TrajectoryStatus = 'scored' | 'skipped' | 'error'
+
+export interface TrajectoryAxis {
+  key: string
+  name: string
+  score: number
+  reason: string
+}
+
+export interface TrajectoryProfile {
+  schema_version: number
+  status: TrajectoryStatus
+  axes: TrajectoryAxis[]
+  overall_score: number | null
+  loop_detected: boolean
+  summary: string
+  judge_model: string
+  judge_input_tokens: number
+  judge_output_tokens: number
+  judge_cost_usd: number
+  input_capped: boolean
+  trace_stats: {
+    original_tokens: number | null
+    cleaned_tokens: number | null
+    steps_total: number | null
+  }
+  evaluated_at: string
+  errors: { error: string }[]
+}
+
 export interface Agent {
   container_id: string
   name: string

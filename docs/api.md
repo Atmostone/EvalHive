@@ -189,6 +189,8 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | PUT | `/api/quality/records/{task_id}/feedback` | Upsert human feedback. Body `{verdict?: approve\|reject, overall_comment?, dimensions: [{key, name?, score 0-10, comment?}]}`. Builds the quality record on demand; returns `{task_id, human_feedback}` |
 | GET | `/api/quality/calibration` | **owner/admin** — flattened judge-vs-human pairs (one row per rated dimension across records with human feedback): `{task_id, dimension_key, dimension_name, judge_score, human_score, band, judge_reasoning, human_comment, verdict, submitted_at}`. Calibration input for E-17 |
 | GET | `/api/quality/records/{task_id}/trace` | Cleaned, judge-ready trajectory (E-06) — input for the trajectory judge (E-07). Query `tool_output_token_cap` (50–8000, default 600), `keep_tail_on_error` (bool). Returns `{task_id, cleaned_trace}`; computed on demand, not persisted (404 if no task in workspace) |
+| GET | `/api/quality/records/{task_id}/trajectory` | `{task_id, trajectory_profile}` — 6-axis trajectory profile (E-07) or null until judged (404 if no record in workspace) |
+| POST | `/api/quality/records/{task_id}/evaluate-trajectory` | **owner/admin** — on-demand trajectory judge (re-runs/overwrites). Returns `{trajectory_profile, skipped, detail?}`; `skipped=true` when the trajectory has no steps or no judge/orchestrator model is configured. Profile carries `axes:[{key,name,score 0-10,reason}]` (6), `overall_score`, `loop_detected`, `summary`, `judge_*`, `input_capped`, `status` |
 
 `evaluator` ∈ `judge` (LLM-as-judge) \| `reference` (reference-based, E-03) \|
 `objective` (E-04) \| `human` (E-05). The `human` evaluator dimension stays
