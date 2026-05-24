@@ -167,3 +167,26 @@ async def test_judge_missing_axis_scores_zero(monkeypatch):
     out = await _judge_trajectory(_trace(), _llm(), max_input_tokens=10_000)
     by = {a["key"]: a["score"] for a in out["axes"]}
     assert out["status"] == "scored" and by["error_recovery"] == 0
+
+
+async def test_judge_bare_scalar_axis_is_tolerated(monkeypatch):
+    # Some models emit a bare score per axis (``"efficiency": 8``) instead of the
+    # ``{"score", "reason"}`` object; this must score, not crash into an error.
+    args = {k: 8 for k, _, _ in AXES}
+    args["summary"] = "flat axes"
+    monkeypatch.setattr(traj, "get_llm_provider", lambda: _FakeProvider(args))
+    out = await _judge_trajectory(_trace(), _llm(), max_input_tokens=10_000)
+    by = {a["key"]: a["score"] for a in out["axes"]}
+    assert out["status"] == "scored"
+    assert all(v == 8 for v in by.values())
+    assert out["overall_score"] == 8.0
+
+
+async def test_judge_mixed_axis_shapes_are_tolerated(monkeypatch):
+    # A response that mixes object axes with one bare-scalar axis must still parse.
+    args = _args()
+    args["efficiency"] = 10  # bare scalar alongside the object-shaped axes
+    monkeypatch.setattr(traj, "get_llm_provider", lambda: _FakeProvider(args))
+    out = await _judge_trajectory(_trace(), _llm(), max_input_tokens=10_000)
+    by = {a["key"]: a["score"] for a in out["axes"]}
+    assert out["status"] == "scored" and by["efficiency"] == 10

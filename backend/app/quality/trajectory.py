@@ -120,9 +120,16 @@ def _parse_axes_from_args(args: dict) -> tuple[list[dict], float | None, bool]:
     axes: list[dict] = []
     total = 0
     for key, name, _ in AXES:
-        raw = args.get(key) or {}
+        raw = args.get(key)
+        # The judge usually returns {"score", "reason"} per axis, but some models
+        # emit a bare scalar (``"efficiency": 8``); tolerate both so one variant
+        # response can't crash the whole scoring.
+        if isinstance(raw, dict):
+            raw_score, raw_reason = raw.get("score"), raw.get("reason")
+        else:
+            raw_score, raw_reason = raw, ""
         try:
-            score = int(raw.get("score"))
+            score = int(raw_score)
         except (TypeError, ValueError):
             score = 0
         score = max(0, min(_MAX_SCALE, score))
@@ -131,7 +138,7 @@ def _parse_axes_from_args(args: dict) -> tuple[list[dict], float | None, bool]:
                 "key": key,
                 "name": name,
                 "score": score,
-                "reason": str(raw.get("reason") or "")[:_REASON_CAP],
+                "reason": str(raw_reason or "")[:_REASON_CAP],
             }
         )
         total += score
