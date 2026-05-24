@@ -11,6 +11,7 @@ import AgentLogViewer from './AgentLogViewer'
 import QualityRadarChart from '@/components/quality/QualityRadarChart'
 import HumanFeedbackForm from '@/components/quality/HumanFeedbackForm'
 import CleanedTracePanel from '@/components/quality/CleanedTracePanel'
+import TrajectoryScorePanel from '@/components/quality/TrajectoryScorePanel'
 
 interface TaskDetailProps {
   task: Task
@@ -200,6 +201,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Cleaned trace preview (E-06) — input for the trajectory judge */}
             <CleanedTracePanel taskId={task.id} />
+
+            {/* Trajectory score (E-07) — 6-axis judge of how the agent worked */}
+            <TrajectoryScorePanel taskId={task.id} />
           </div>
         )}
 

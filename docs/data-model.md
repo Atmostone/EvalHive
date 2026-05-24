@@ -288,11 +288,19 @@ submitted_by, submitted_at}`. Bands map score → quality (1-3 bad / 4-7 improve
 dimension mirrors a `quality_profile` axis and copies the judge's score for
 calibration (E-17, exposed via `GET /api/quality/calibration`).
 
-The `trajectory_profile` slot stays an **E-07** placeholder. The Trace Cleaner
-(E-06) does **not** write it: it computes a transient `CleanedTrace` on demand
-(`GET /api/quality/records/{task_id}/trace`) from the same durable sources
-(`agent_events` + `agent_log_chunks`, or the MinIO log archive after compaction)
-and persists nothing.
+The `trajectory_profile` slot is filled by the Trajectory Judge (E-07) —
+`POST /api/quality/records/{task_id}/evaluate-trajectory`, building the record on
+demand if absent. It is the **process** counterpart of the outcome `quality_profile`:
+an LLM scores the cleaned trace (E-06) on six axes in one call. Shape (no migration —
+reuses the JSONB slot): `{schema_version, status: scored|skipped|error,
+axes: [{key, name, score 0-10, reason}] (efficiency, tool_selection,
+parameter_quality, error_recovery, goal_alignment, loop_detection),
+overall_score (mean), loop_detected, summary, judge_model, judge_input_tokens,
+judge_output_tokens, judge_cost_usd, input_capped, trace_stats, evaluated_at,
+errors}`. The cleaned trace itself (E-06) stays transient
+(`GET /api/quality/records/{task_id}/trace`) and is not persisted — E-07 rebuilds
+it from the durable sources (`agent_events` + `agent_log_chunks`, or the MinIO log
+archive after compaction) at judge time.
 
 ### rubrics (E-02)
 
@@ -356,6 +364,7 @@ Index: `enabled`.
 - `quality_record_backfill` — interval 300s, action `quality_record_backfill` (E-01: build/reconcile records for terminal tasks; global).
 - `quality_record_retention` — cron `30 0 * * *`, action `quality_record_retention` (E-01: prune old records per `data_lake_retention_days`).
 - `quality_judge_evaluate` — interval 600s, action `quality_judge_evaluate` (E-02: score `done` records lacking a `quality_profile`; only runs when the `quality_eval_enabled` setting is true).
+- `trajectory_judge_evaluate` — interval 600s, action `trajectory_judge_evaluate` (E-07: judge `done` records lacking a `trajectory_profile`; only runs when the `trajectory_eval_enabled` setting is true).
 
 ### users (R1)
 

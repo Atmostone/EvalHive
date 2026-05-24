@@ -287,6 +287,28 @@ produces the judge's *input* only: it scores nothing and never writes
 returns a trace with an `error` field). Read-only preview, computed on demand and
 not persisted: `GET /api/quality/records/{task_id}/trace?tool_output_token_cap&keep_tail_on_error`.
 
+### Trajectory judge (E-07)
+
+The LLM-as-judge for the **trajectory** side: it answers "how did the agent get
+there", complementing E-02's outcome judge. It takes the cleaned trace (E-06) and,
+in a **single** LLM call, scores the whole trajectory on six axes (§5.2):
+**efficiency, tool_selection, parameter_quality, error_recovery, goal_alignment,
+loop_detection** — each 0–10 with a required `reason` — plus a one-line `summary`.
+`overall_score` is their mean; `loop_detected` is derived from the loop_detection
+axis.
+
+- **Model**: reuses E-02's resolver (`quality_judge` → `orchestrator`) — no separate
+  judge slot.
+- **Cost cap**: the cleaned trace is trimmed to the `trajectory_judge_max_input_tokens`
+  setting (default 12000) before the call — middle steps are dropped first (the
+  outcome lives in the tail), `input_capped` flags it.
+- Like the other evaluators it never raises: an LLM/parse failure is persisted as a
+  profile with `status: "error"`. The result is written to the `trajectory_profile`
+  slot next to E-02's `quality_profile`; it never touches the outcome slot.
+- On-demand `POST /api/quality/records/{task_id}/evaluate-trajectory` + read
+  `GET …/trajectory`; optional batch job `trajectory_judge_evaluate` (off by default,
+  gated by `trajectory_eval_enabled`).
+
 ## Backend components
 
 | Module | Responsibility |
@@ -312,6 +334,7 @@ not persisted: `GET /api/quality/records/{task_id}/trace?tool_output_token_cap&k
 | `app/quality/objective.py` | E-04 Behavioral probes: `evaluate_objective_dimension` — static-analysis (ruff/mypy) over the task's Python artifacts, scored in-process |
 | `app/quality/feedback.py` | E-05 Human feedback: `build_human_feedback`/`save_human_feedback` — per-dimension human ratings (banded, paired with judge scores) stored in the `human_feedback` slot |
 | `app/quality/trace_cleaner.py` | E-06 Trace Cleaner: `clean_trajectory`/`build_cleaned_trace` — deterministic, LLM-free cleaning of a raw trajectory into a compact `CleanedTrace` (input for the trajectory judge E-07); transient, scores nothing |
+| `app/quality/trajectory.py` | E-07 Trajectory Judge: `evaluate_task_trajectory` — single-call LLM scoring of the cleaned trace on 6 axes (efficiency/tool_selection/parameter_quality/error_recovery/goal_alignment/loop_detection) → `trajectory_profile` slot; cost-capped, reuses the E-02 judge-model resolver |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |
