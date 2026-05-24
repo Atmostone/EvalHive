@@ -26,8 +26,8 @@ class QualityRecord(Base):
     the full execution blob (decomposition tree, per-agent state snapshot, tool
     calls, events) is written to MinIO at `record_s3_path`. The JSONB slots are
     nullable placeholders filled by downstream features: quality_profile (E-02),
-    trajectory_profile (E-07), human_feedback (E-05), longitudinal (E-22),
-    reproducibility (E-20).
+    trajectory_profile (E-07), trajectory_evidence_profile (E-08),
+    human_feedback (E-05), longitudinal (E-22), reproducibility (E-20).
     """
 
     __tablename__ = "quality_records"
@@ -79,6 +79,7 @@ class QualityRecord(Base):
     # Downstream slots (nullable placeholders).
     quality_profile: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     trajectory_profile: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    trajectory_evidence_profile: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     human_feedback: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     longitudinal: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     reproducibility: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

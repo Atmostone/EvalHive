@@ -12,6 +12,7 @@ import QualityRadarChart from '@/components/quality/QualityRadarChart'
 import HumanFeedbackForm from '@/components/quality/HumanFeedbackForm'
 import CleanedTracePanel from '@/components/quality/CleanedTracePanel'
 import TrajectoryScorePanel from '@/components/quality/TrajectoryScorePanel'
+import EvidenceBankPanel from '@/components/quality/EvidenceBankPanel'
 
 interface TaskDetailProps {
   task: Task
@@ -204,6 +205,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Trajectory score (E-07) — 6-axis judge of how the agent worked */}
             <TrajectoryScorePanel taskId={task.id} />
+
+            {/* Evidence bank score (E-08) — TRACE per-step judge with groundedness */}
+            <EvidenceBankPanel taskId={task.id} />
           </div>
         )}
 

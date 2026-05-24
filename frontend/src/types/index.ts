@@ -253,6 +253,47 @@ export interface TrajectoryProfile {
   errors: { error: string }[]
 }
 
+// TRACE Evidence Bank Judge (E-08): per-step judging with an accumulating
+// evidence bank, then an evidence-aware 6-axis profile + a groundedness signal.
+export interface EvidenceStep {
+  seq: number
+  kind?: string | null
+  tool_name?: string | null
+  redundant: boolean
+  grounded: boolean
+  progress: number
+  execution: number
+  facts: string[]
+  note: string
+  error?: string
+}
+
+export interface TrajectoryEvidenceProfile {
+  schema_version: number
+  status: TrajectoryStatus
+  axes: TrajectoryAxis[]
+  overall_score: number | null
+  loop_detected: boolean
+  summary: string
+  groundedness: number | null
+  redundant_steps: number
+  evidence_bank: EvidenceStep[]
+  judge_model: string
+  judge_calls: number
+  judge_input_tokens: number
+  judge_output_tokens: number
+  judge_cost_usd: number
+  input_capped: boolean
+  trace_stats: {
+    original_tokens: number | null
+    cleaned_tokens: number | null
+    steps_total: number | null
+    steps_assessed: number | null
+  }
+  evaluated_at: string
+  errors: { seq?: number; error: string }[]
+}
+
 export interface Agent {
   container_id: string
   name: string

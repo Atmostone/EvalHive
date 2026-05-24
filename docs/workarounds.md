@@ -104,6 +104,16 @@ The legacy root `WORKAROUNDS.md` was migrated here.
 
 **Exit:** add a follow-up backlog item to expand provider/model CRUD tests (403/422 paths) and re-introduce `--cov-fail-under=60` in CI once we're comfortably above it.
 
+## 16. E-08 on-demand endpoint can exceed the nginx proxy timeout
+
+**What:** `POST /api/quality/records/{task_id}/evaluate-trajectory-evidence` (E-08) makes `N+1` *sequential* LLM calls (one `assess_step` per trajectory step + one final scoring). At ~8–13 s/call on the current judge (MiniMax-M2.7) a real trajectory takes tens of seconds to a few minutes end to end (E2E: 8–21-step traces took 82–171 s). Originally nginx's REST `location /` had no `proxy_read_timeout`, so the default **60 s** applied → long traces returned **504** and the request was cancelled before the profile persisted.
+
+**Mitigated:** `nginx/nginx.conf` now sets `proxy_read_timeout/proxy_send_timeout 300s` on the REST location (the WS location was already 3600 s). 5 min covers typical real trajectories — verified: a 9-call HTTP run completed in 95 s with HTTP 200 (was a 504 before). Still a partial fix, not the right shape: holding an HTTP connection open for minutes is fragile, and a trace long enough to exceed 300 s would still 504.
+
+**Why not fully fixed now:** the **designed async path** is the batch job `trace_evidence_evaluate` (enable via the `trace_evidence_eval_enabled` setting), which runs in the scheduler with no proxy in front and persists the profile; the panel's `GET …/trajectory-evidence` then reads it back. The GET read path is fast and unaffected.
+
+**Exit:** make the on-demand endpoint enqueue a background task (return `202` + poll). Until then: the on-demand button is reliable for trajectories that finish under 300 s; use the batch job for anything longer.
+
 ## 15. `templates.provider_url` / `provider_api_key` columns removed
 
 **What:** the per-template provider override (`templates.model` string, `templates.provider_url`, `templates.provider_api_key`) was replaced with `templates.model_id` (FK to `llm_models`).

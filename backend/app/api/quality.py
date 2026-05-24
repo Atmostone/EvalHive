@@ -307,6 +307,49 @@ async def evaluate_trajectory_record(
     return {"task_id": task_id, "trajectory_profile": profile, "skipped": False}
 
 
+@router.get("/records/{task_id}/trajectory-evidence")
+async def get_trajectory_evidence(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the TRACE evidence-bank profile (E-08), or null if not yet judged."""
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == uuid.UUID(task_id),
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return {"task_id": task_id, "trajectory_evidence_profile": rec.trajectory_evidence_profile}
+
+
+@router.post("/records/{task_id}/evaluate-trajectory-evidence")
+async def evaluate_trajectory_evidence_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """On-demand TRACE evidence-bank evaluation (E-08). Skipped (profile null) when
+    there is no judge model or the cleaned trace has no steps."""
+    from app.quality.trace_evidence import evaluate_task_trace_evidence
+
+    task = await _get_owned_task(db, task_id, workspace)
+    profile = await evaluate_task_trace_evidence(db, task)
+    if profile is None:
+        return {
+            "task_id": task_id,
+            "trajectory_evidence_profile": None,
+            "skipped": True,
+            "detail": "empty trajectory, or no quality-judge/orchestrator model configured",
+        }
+    return {"task_id": task_id, "trajectory_evidence_profile": profile, "skipped": False}
+
+
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,
