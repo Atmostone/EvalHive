@@ -111,6 +111,37 @@ TRAJECTORY_TOOL = [
 ]
 
 
+def _parse_axes_from_args(args: dict) -> tuple[list[dict], float | None, bool]:
+    """Parse the 6 axes out of a ``score_trajectory`` tool-call payload.
+
+    Clamps each score to [0, 10], caps the reason, and derives the overall mean
+    and the ``loop_detected`` flag. Shared by the holistic judge (E-07) and the
+    evidence-aware final scoring (E-08)."""
+    axes: list[dict] = []
+    total = 0
+    for key, name, _ in AXES:
+        raw = args.get(key) or {}
+        try:
+            score = int(raw.get("score"))
+        except (TypeError, ValueError):
+            score = 0
+        score = max(0, min(_MAX_SCALE, score))
+        axes.append(
+            {
+                "key": key,
+                "name": name,
+                "score": score,
+                "reason": str(raw.get("reason") or "")[:_REASON_CAP],
+            }
+        )
+        total += score
+
+    overall = round(total / len(AXES), 2) if AXES else None
+    loop_axis = next((a for a in axes if a["key"] == "loop_detection"), None)
+    loop_detected = bool(loop_axis and loop_axis["score"] < _LOOP_SCORE_THRESHOLD)
+    return axes, overall, loop_detected
+
+
 def _serialize_trace(cleaned_trace: dict) -> str:
     """Render a cleaned trace (E-06 dict) as the judge's text input."""
     task = cleaned_trace.get("task") or {}
@@ -199,28 +230,7 @@ async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens:
         args = json.loads(choice.tool_calls[0].function.arguments)
         in_tok, out_tok = _tokens_from_response(resp)
 
-        axes: list[dict] = []
-        total = 0
-        for key, name, _ in AXES:
-            raw = args.get(key) or {}
-            try:
-                score = int(raw.get("score"))
-            except (TypeError, ValueError):
-                score = 0
-            score = max(0, min(_MAX_SCALE, score))
-            axes.append(
-                {
-                    "key": key,
-                    "name": name,
-                    "score": score,
-                    "reason": str(raw.get("reason") or "")[:_REASON_CAP],
-                }
-            )
-            total += score
-
-        overall = round(total / len(AXES), 2) if AXES else None
-        loop_axis = next((a for a in axes if a["key"] == "loop_detection"), None)
-        loop_detected = bool(loop_axis and loop_axis["score"] < _LOOP_SCORE_THRESHOLD)
+        axes, overall, loop_detected = _parse_axes_from_args(args)
         return {
             "status": "scored",
             "axes": axes,

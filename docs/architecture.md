@@ -309,6 +309,38 @@ axis.
   `GET …/trajectory`; optional batch job `trajectory_judge_evaluate` (off by default,
   gated by `trajectory_eval_enabled`).
 
+### Evidence bank judge (E-08)
+
+The **TRACE** counterpart of E-07. The holistic judge weighs each step without the
+context of what the agent has already established; in the reference-free setting
+that is weak. E-08 walks the cleaned trace (E-06) **step by step**, accumulating an
+**evidence bank** — the facts established by prior steps — and threads that bank into
+the prompt that assesses the *next* step. So each step is judged against the
+accumulated evidence: is it `redundant` (re-derives a known fact), is it `grounded`
+(justified by the task + prior evidence rather than guessed), how much new evidence
+it adds. After the walk a single evidence-aware call produces the same 6-axis profile
+as E-07 (for direct comparison) plus a `groundedness` signal — this is what catches
+the "🤷 lucky" case a context-less judge misses (a correct answer resting on nothing
+the agent gathered).
+
+- **Pipeline**: `N` per-step `assess_step` calls (each sees the bank so far) + 1 final
+  `score_trajectory` call informed by the bank — `N + 1` calls (faithful TRACE, §5.4).
+- **Reuse (DRY)**: the E-02 judge-model resolver, and E-07's `AXES`, the 6-axis
+  `score_trajectory` tool and the axis parser (`_parse_axes_from_args`).
+- **Cost cap**: `trace_evidence_max_steps` (default 30 — head+tail window beyond it)
+  bounds the per-step calls; `trace_evidence_max_input_tokens` (default 12000) bounds
+  the final call. `input_capped` flags either trim.
+- Never raises: a **per-step** failure degrades to a step marked with an `error` and
+  the walk continues; a **final-call** failure becomes `status: "error"`. Written to
+  the `trajectory_evidence_profile` slot — coexists with E-07's `trajectory_profile`
+  so the two can be compared side by side.
+- On-demand `POST /api/quality/records/{task_id}/evaluate-trajectory-evidence` + read
+  `GET …/trajectory-evidence`; optional batch job `trace_evidence_evaluate` (off by
+  default, gated by `trace_evidence_eval_enabled`, smaller batch — N+1 calls/task).
+
+> The comparative benchmark (E-07 vs E-08: which better flags "lucky" cases) is
+> deferred to when the public benchmark set (E-23) lands.
+
 ## Backend components
 
 | Module | Responsibility |
@@ -335,6 +367,7 @@ axis.
 | `app/quality/feedback.py` | E-05 Human feedback: `build_human_feedback`/`save_human_feedback` — per-dimension human ratings (banded, paired with judge scores) stored in the `human_feedback` slot |
 | `app/quality/trace_cleaner.py` | E-06 Trace Cleaner: `clean_trajectory`/`build_cleaned_trace` — deterministic, LLM-free cleaning of a raw trajectory into a compact `CleanedTrace` (input for the trajectory judge E-07); transient, scores nothing |
 | `app/quality/trajectory.py` | E-07 Trajectory Judge: `evaluate_task_trajectory` — single-call LLM scoring of the cleaned trace on 6 axes (efficiency/tool_selection/parameter_quality/error_recovery/goal_alignment/loop_detection) → `trajectory_profile` slot; cost-capped, reuses the E-02 judge-model resolver |
+| `app/quality/trace_evidence.py` | E-08 Evidence Bank Judge (TRACE): `evaluate_task_trace_evidence`/`evaluate_trajectory_with_evidence` — walks the cleaned trace step by step accumulating an evidence bank threaded into each step's prompt, then an evidence-aware 6-axis profile + `groundedness` → `trajectory_evidence_profile` slot (N+1 calls; reuses E-07's axes/tool/parser) |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |

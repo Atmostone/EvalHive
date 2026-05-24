@@ -261,6 +261,7 @@ placeholders filled by downstream eval features.
 | input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics |
 | quality_profile | JSONB? | **slot E-02** |
 | trajectory_profile | JSONB? | **slot E-07** |
+| trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
 | reproducibility | JSONB? | **slot E-20** |
@@ -301,6 +302,22 @@ errors}`. The cleaned trace itself (E-06) stays transient
 (`GET /api/quality/records/{task_id}/trace`) and is not persisted — E-07 rebuilds
 it from the durable sources (`agent_events` + `agent_log_chunks`, or the MinIO log
 archive after compaction) at judge time.
+
+The `trajectory_evidence_profile` slot is filled by the Evidence Bank Judge (E-08,
+TRACE) — `POST /api/quality/records/{task_id}/evaluate-trajectory-evidence`, building
+the record on demand if absent (added by migration `e4f5a6b7c8d9`). Unlike E-07's
+holistic single call, E-08 walks the cleaned trace step by step accumulating an
+**evidence bank** threaded into each step's prompt, then scores the same six axes
+informed by that bank. Shape: `{schema_version, status: scored|skipped|error,
+axes (same 6 as E-07), overall_score, loop_detected, summary, groundedness (0-1,
+share of grounded steps), redundant_steps, evidence_bank: [{seq, kind, tool_name,
+redundant, grounded, progress 0-10, execution 0-10, facts [str], note, error?}],
+judge_model, judge_calls (N+1), judge_input_tokens, judge_output_tokens,
+judge_cost_usd, input_capped, trace_stats (incl. steps_assessed), evaluated_at,
+errors}`. It coexists with `trajectory_profile` so the holistic (E-07) and
+evidence-aware (E-08) judges can be compared side by side. Cost is bounded by
+`trace_evidence_max_steps` (default 30) and `trace_evidence_max_input_tokens`
+(default 12000).
 
 ### rubrics (E-02)
 
@@ -365,6 +382,7 @@ Index: `enabled`.
 - `quality_record_retention` — cron `30 0 * * *`, action `quality_record_retention` (E-01: prune old records per `data_lake_retention_days`).
 - `quality_judge_evaluate` — interval 600s, action `quality_judge_evaluate` (E-02: score `done` records lacking a `quality_profile`; only runs when the `quality_eval_enabled` setting is true).
 - `trajectory_judge_evaluate` — interval 600s, action `trajectory_judge_evaluate` (E-07: judge `done` records lacking a `trajectory_profile`; only runs when the `trajectory_eval_enabled` setting is true).
+- `trace_evidence_evaluate` — interval 600s, action `trace_evidence_evaluate` (E-08: TRACE evidence-bank judge for `done` records lacking a `trajectory_evidence_profile`; batch capped at 5/tick since each task is N+1 LLM calls; only runs when the `trace_evidence_eval_enabled` setting is true).
 
 ### users (R1)
 
