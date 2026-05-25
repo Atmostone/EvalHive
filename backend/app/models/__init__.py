@@ -14,6 +14,7 @@ from app.models.template_version import TemplateVersion
 from app.models.provider import Provider, LLMModel
 from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
+from app.models.variance_run import VarianceRun
 
 __all__ = [
     "User",
@@ -35,4 +36,5 @@ __all__ = [
     "LLMModel",
     "QualityRecord",
     "Rubric",
+    "VarianceRun",
 ]

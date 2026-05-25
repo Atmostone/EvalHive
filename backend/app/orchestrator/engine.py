@@ -51,17 +51,18 @@ def _read_flat_memory(workspace_id) -> dict:
     return out
 
 
-def _spawn_snapshot(task, template, agent_llm, memory_context: str) -> dict:
+def _spawn_snapshot(task, template, agent_llm, memory_context: str, soul_md: str | None = None) -> dict:
     """Full state snapshot captured into the `agent_spawned` event.
 
     Source of truth for the Quality Data Lake (E-01) `execution` section —
     soul_md, tools, MCP, model, resource limits, and the memory/RAG context
     the agent received are not recoverable later, so we record them here.
+    ``soul_md`` defaults to the template's prompt but may be a per-run override.
     """
     return {
         "template_id": str(template.id),
         "template_name": template.name,
-        "soul_md": template.soul_md or "",
+        "soul_md": (soul_md if soul_md is not None else (template.soul_md or "")),
         "tools": list(template.tools or []),
         "mcp_servers": list(template.mcp_servers or []),
         "model_api_name": agent_llm.model.api_name,
@@ -83,6 +84,126 @@ def _spawn_snapshot(task, template, agent_llm, memory_context: str) -> dict:
     }
 
 
+async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Template):
+    """Build the AgentSpec for ``template`` and spawn the agent.
+
+    Shared by the normal selection path and the pinned-template path (re-run /
+    variance / replay children). Honors optional per-run overrides in
+    ``task.run_config`` — ``model_id`` (else the template's model) and
+    ``soul_md`` (else the template's prompt). Sets the task FAILED and logs on
+    any spawn error, mirroring the previous inline behavior.
+    """
+    task.template_id = template.id
+    run_config = task.run_config or {}
+    try:
+        # Build description with feedback if this is a retry after rejection
+        desc_parts = [task.title, "", task.description or ""]
+        if task.user_feedback:
+            desc_parts.append(f"\n\n--- USER FEEDBACK (from rejection) ---\n{task.user_feedback}\nPlease address this feedback. Previous workspace files are available.")
+        if task.orchestrator_feedback:
+            desc_parts.append(f"\n\n--- ORCHESTRATOR FEEDBACK ---\n{task.orchestrator_feedback}")
+
+        if task.depends_on:
+            dep_rows = (
+                await db.execute(select(Task).where(Task.id.in_(task.depends_on)))
+            ).scalars().all()
+            for dep in dep_rows:
+                if dep.status == TaskStatus.DONE.value and (dep.result_summary or dep.result_files):
+                    short_id = str(dep.id)[:8]
+                    files_line = f"Files: {', '.join(dep.result_files or []) or 'none'}"
+                    desc_parts.append(
+                        f"\n\n## Dependency: {dep.title} (#{short_id})\n"
+                        f"{dep.result_summary or '(no summary)'}\n\n{files_line}"
+                    )
+
+        memory_context = ""
+
+        if (await get_setting(db, "memory_mode", "flat")) == "structured":
+            from app.memory.store import build_memory_context
+
+            try:
+                memory_context = await build_memory_context(
+                    db,
+                    query_text=f"{task.title}\n{task.description or ''}",
+                    workspace_id=task.workspace_id,
+                )
+            except Exception as e:
+                logger.warning(f"Memory context build failed for task {task.id}: {e}")
+
+        # Per-run model override (run_config.model_id), else the template's model.
+        model_id = run_config.get("model_id") or template.model_id
+        try:
+            agent_llm = await resolve_model_by_id(db, model_id)
+        except Exception as e:
+            logger.error(f"template {template.id} has no model configured: {e}")
+            task.status = TaskStatus.FAILED.value
+            await db.commit()
+            await log_event(
+                db, "orchestrator_decision", "orchestrator",
+                {"action": "spawn_failed", "error": "template model not configured"},
+                task_id=task.id,
+            )
+            return
+
+        # Per-run prompt override (run_config.soul_md), else the template's prompt.
+        soul = run_config.get("soul_md")
+        if soul is None:
+            soul = template.soul_md or ""
+
+        agent_token = await issue_agent_token(
+            db, task_id=task.id, workspace_id=task.workspace_id
+        )
+        await db.commit()
+        runtime = get_agent_runtime()
+        spec = AgentSpec(
+            task_id=str(task.id),
+            task_description="\n".join(desc_parts),
+            template_name=template.name,
+            template_id=str(template.id),
+            soul_md=soul,
+            tools=list(template.tools or []),
+            mcp_servers=list(template.mcp_servers or []),
+            env={
+                "OPENAI_API_KEY": agent_llm.provider.api_key,
+                "OPENAI_BASE_URL": agent_llm.provider.endpoint,
+                "LLM_MODEL": agent_llm.model.api_name,
+            },
+            resource_limits={
+                "max_ram": template.max_ram,
+                "max_cpu": template.max_cpu,
+            },
+            workspace_id=str(task.workspace_id),
+            agent_token=agent_token,
+            memory_context=memory_context,
+        )
+        container_id = runtime.spawn(spec)
+        task.agent_container_id = container_id
+        task.model_used = agent_llm.model.api_name
+        task.input_price_per_1m_usd = agent_llm.model.input_price_per_1m_usd
+        task.output_price_per_1m_usd = agent_llm.model.output_price_per_1m_usd
+        task.status = TaskStatus.IN_PROGRESS.value
+        task.started_at = datetime.utcnow()
+        await db.commit()
+
+        await log_event(
+            db, "agent_spawned", "orchestrator",
+            {"container_id": container_id,
+             **_spawn_snapshot(task, template, agent_llm, memory_context, soul_md=soul)},
+            task_id=task.id, agent_container_id=container_id,
+        )
+        logger.info(f"Spawned agent {container_id[:12]} for task {task.id}")
+
+    except Exception as e:
+        logger.error(f"Failed to spawn agent: {e}", exc_info=True)
+        task.status = TaskStatus.FAILED.value
+        await db.commit()
+        await log_event(
+            db, "orchestrator_decision", "orchestrator",
+            {"action": "spawn_failed", "error": str(e)},
+            task_id=task.id,
+        )
+
+
 async def process_ready_task(db: AsyncSession, task: Task):
     """Process a single Ready task: decompose or select template + spawn agent."""
     logger.info(f"Processing task {task.id}: {task.title}")
@@ -96,6 +217,20 @@ async def process_ready_task(db: AsyncSession, task: Task):
         {"action": "processing_task", "title": task.title},
         task_id=task.id,
     )
+
+    # Pinned-template fast path: re-run / variance / replay children (and
+    # retries, which already carry a template_id) reproduce the scenario as-is —
+    # skip orchestrator decomposition + selection and spawn the pinned template
+    # directly. Default tasks reach here with template_id=None.
+    if task.template_id:
+        pinned = await db.get(Template, task.template_id)
+        if pinned is not None:
+            await _spawn_agent_for_template(db, task, pinned)
+            return
+        logger.warning(
+            f"pinned template {task.template_id} for task {task.id} not found; "
+            "falling back to orchestrator selection"
+        )
 
     # Resolve orchestrator model from the workspace; surface 400 if not configured.
     try:
@@ -221,105 +356,7 @@ async def process_ready_task(db: AsyncSession, task: Task):
     )
 
     # Step 3: Spawn agent
-    try:
-        # Build description with feedback if this is a retry after rejection
-        desc_parts = [task.title, "", task.description or ""]
-        if task.user_feedback:
-            desc_parts.append(f"\n\n--- USER FEEDBACK (from rejection) ---\n{task.user_feedback}\nPlease address this feedback. Previous workspace files are available.")
-        if task.orchestrator_feedback:
-            desc_parts.append(f"\n\n--- ORCHESTRATOR FEEDBACK ---\n{task.orchestrator_feedback}")
-
-        if task.depends_on:
-            dep_rows = (
-                await db.execute(select(Task).where(Task.id.in_(task.depends_on)))
-            ).scalars().all()
-            for dep in dep_rows:
-                if dep.status == TaskStatus.DONE.value and (dep.result_summary or dep.result_files):
-                    short_id = str(dep.id)[:8]
-                    files_line = f"Files: {', '.join(dep.result_files or []) or 'none'}"
-                    desc_parts.append(
-                        f"\n\n## Dependency: {dep.title} (#{short_id})\n"
-                        f"{dep.result_summary or '(no summary)'}\n\n{files_line}"
-                    )
-
-        memory_context = ""
-
-        if (await get_setting(db, "memory_mode", "flat")) == "structured":
-            from app.memory.store import build_memory_context
-
-            try:
-                memory_context = await build_memory_context(
-                    db,
-                    query_text=f"{task.title}\n{task.description or ''}",
-                    workspace_id=task.workspace_id,
-                )
-            except Exception as e:
-                logger.warning(f"Memory context build failed for task {task.id}: {e}")
-
-        try:
-            agent_llm = await resolve_model_by_id(db, template.model_id)
-        except Exception as e:
-            logger.error(f"template {template.id} has no model configured: {e}")
-            task.status = TaskStatus.FAILED.value
-            await db.commit()
-            await log_event(
-                db, "orchestrator_decision", "orchestrator",
-                {"action": "spawn_failed", "error": "template model not configured"},
-                task_id=task.id,
-            )
-            return
-
-        agent_token = await issue_agent_token(
-            db, task_id=task.id, workspace_id=task.workspace_id
-        )
-        await db.commit()
-        runtime = get_agent_runtime()
-        spec = AgentSpec(
-            task_id=str(task.id),
-            task_description="\n".join(desc_parts),
-            template_name=template.name,
-            template_id=str(template.id),
-            soul_md=template.soul_md or "",
-            tools=list(template.tools or []),
-            mcp_servers=list(template.mcp_servers or []),
-            env={
-                "OPENAI_API_KEY": agent_llm.provider.api_key,
-                "OPENAI_BASE_URL": agent_llm.provider.endpoint,
-                "LLM_MODEL": agent_llm.model.api_name,
-            },
-            resource_limits={
-                "max_ram": template.max_ram,
-                "max_cpu": template.max_cpu,
-            },
-            workspace_id=str(task.workspace_id),
-            agent_token=agent_token,
-            memory_context=memory_context,
-        )
-        container_id = runtime.spawn(spec)
-        task.agent_container_id = container_id
-        task.model_used = agent_llm.model.api_name
-        task.input_price_per_1m_usd = agent_llm.model.input_price_per_1m_usd
-        task.output_price_per_1m_usd = agent_llm.model.output_price_per_1m_usd
-        task.status = TaskStatus.IN_PROGRESS.value
-        task.started_at = datetime.utcnow()
-        await db.commit()
-
-        await log_event(
-            db, "agent_spawned", "orchestrator",
-            {"container_id": container_id, **_spawn_snapshot(task, template, agent_llm, memory_context)},
-            task_id=task.id, agent_container_id=container_id,
-        )
-        logger.info(f"Spawned agent {container_id[:12]} for task {task.id}")
-
-    except Exception as e:
-        logger.error(f"Failed to spawn agent: {e}", exc_info=True)
-        task.status = TaskStatus.FAILED.value
-        await db.commit()
-        await log_event(
-            db, "orchestrator_decision", "orchestrator",
-            {"action": "spawn_failed", "error": str(e)},
-            task_id=task.id,
-        )
+    await _spawn_agent_for_template(db, task, template)
 
 
 async def check_parent_task_completion(db: AsyncSession, task: Task):

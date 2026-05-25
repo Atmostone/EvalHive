@@ -14,6 +14,7 @@ import CleanedTracePanel from '@/components/quality/CleanedTracePanel'
 import TrajectoryScorePanel from '@/components/quality/TrajectoryScorePanel'
 import EvidenceBankPanel from '@/components/quality/EvidenceBankPanel'
 import TrajectoryMatchPanel from '@/components/quality/TrajectoryMatchPanel'
+import VarianceRunPanel from '@/components/quality/VarianceRunPanel'
 
 interface TaskDetailProps {
   task: Task
@@ -212,6 +213,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Trajectory match (E-09) — deterministic match vs a canonical trajectory */}
             <TrajectoryMatchPanel taskId={task.id} />
+
+            {/* Variance / robustness (E-11) — replay this task N times, measure dispersion */}
+            <VarianceRunPanel taskId={task.id} />
           </div>
         )}
 

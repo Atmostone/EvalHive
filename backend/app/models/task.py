@@ -43,6 +43,17 @@ class Task(Base):
     parent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id"), nullable=True
     )
+    # Re-run / replay lineage (E-11 re-run core): the task this one was cloned
+    # from. Distinct from parent_id (decomposition) so variance/replay children
+    # never get rolled into a parent's subtask-completion check.
+    replay_of_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    # Optional per-run overrides honored at spawn time when present:
+    # {template_id?, model_id?, soul_md?, seed?, temperature?}. When set, the
+    # orchestrator skips decomposition + template selection and pins this config
+    # (seam for E-21 / E-24 / U-03; E-11 only ever sets template_id).
+    run_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(

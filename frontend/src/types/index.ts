@@ -462,3 +462,77 @@ export interface MemoryRelation {
 export interface MemoryEntityDetail extends MemoryEntity {
   relations: MemoryRelation[]
 }
+
+// Variance / Robustness Harness (E-11): N re-runs of one scenario, with the
+// dispersion of the result measured rather than a single point estimate.
+export type VarianceStatus = 'pending' | 'running' | 'done' | 'capped' | 'failed'
+
+export interface VarianceDistribution {
+  n: number
+  mean?: number
+  std?: number
+  min?: number
+  p25?: number
+  p50?: number
+  p75?: number
+  p95?: number
+  max?: number
+  values: number[]
+}
+
+export interface VarianceDimension {
+  key: string
+  name: string
+  unit: string
+  available: boolean
+  dist: VarianceDistribution
+}
+
+export interface VarianceToolStability {
+  runs: number
+  distinct_signatures: number
+  modal_share: number | null
+  per_tool: { tool: string; mean: number; std: number; present_in_runs: number }[]
+  signatures: { tools: string[]; count: number }[]
+}
+
+export interface VarianceAggregate {
+  schema_version: number
+  n_requested: number
+  n_executed: number
+  n_success: number
+  n_failed: number
+  success_rate: number
+  accumulated_cost_usd: number
+  capped: boolean
+  dimensions: VarianceDimension[]
+  tool_stability: VarianceToolStability
+  generated_at: string
+  error?: string
+}
+
+export interface VarianceChild {
+  id: string
+  status: string
+  cost_usd: number
+  result_summary: string
+}
+
+export interface VarianceRun {
+  id: string
+  workspace_id: string
+  source_task_id: string | null
+  source_spec: { title: string; description?: string; reference_answer?: string } | null
+  template_id: string | null
+  n: number
+  parallel: boolean
+  cost_cap_usd: number | null
+  status: VarianceStatus
+  child_task_ids: string[]
+  accumulated_cost_usd: number
+  aggregate: VarianceAggregate | null
+  created_at: string | null
+  updated_at: string | null
+  completed_at: string | null
+  children?: VarianceChild[]
+}

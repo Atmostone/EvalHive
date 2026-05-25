@@ -195,6 +195,9 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | POST | `/api/quality/records/{task_id}/evaluate-trajectory-evidence` | **owner/admin** — on-demand TRACE evidence-bank judge (re-runs/overwrites; `N+1` LLM calls). Returns `{trajectory_evidence_profile, skipped, detail?}`; `skipped=true` when the trajectory has no steps or no judge/orchestrator model is configured. Profile carries the same 6 `axes` + `overall_score`/`loop_detected`/`summary` as E-07, plus `groundedness` (0-1), `redundant_steps`, `evidence_bank:[{seq,kind,tool_name,redundant,grounded,progress,execution,facts[],note,error?}]`, `judge_calls`, `judge_*`, `input_capped`, `status` |
 | GET | `/api/quality/records/{task_id}/trajectory-match` | `{task_id, trajectory_match_profile}` — deterministic trajectory-match profile (E-09) or null until matched (404 if no record in workspace) |
 | POST | `/api/quality/records/{task_id}/evaluate-trajectory-match` | **owner/admin** — on-demand, **LLM-free** trajectory match (re-runs/overwrites). Returns `{trajectory_match_profile, skipped, detail?}`; `skipped=true` when the task has no `canonical_trajectory`. Profile carries `mode` (exact\|edit\|dag), `score`, `matched`, `threshold`, `metrics:{exact,edit,dag}`, `actual_sequence[]`, `reference_sequence[]`, `reference_form` (sequence\|dag), `detail`, `trace_stats:{steps_total,tool_steps}`, `status`. A bad/unparseable canonical → `status:"error"` (not skipped) |
+| POST | `/api/quality/variance` | **owner/admin** — start a Variance / Robustness run (E-11). Body `{source_task_id?, spec?:{title,description?,reference_answer?}, n=10 (2..50), parallel=true, cost_cap_usd?, template_id?}` — exactly one of `source_task_id` (replay an existing finished task N times) or `spec` (run a fresh spec N times), else 422. Returns the variance run (`{id, status, n, child_task_ids, accumulated_cost_usd, aggregate, …}`); children are created and drained by the orchestrator loop, advanced by the `variance_run_tick` job |
+| GET | `/api/quality/variance/{run_id}` | The variance run + a `children:[{id,status,cost_usd,result_summary}]` summary (404 if not in workspace). `aggregate` (once finalized) carries `n_executed/n_success/n_failed`, `success_rate`, `dimensions:[{key,name,unit,available,dist:{n,mean,std,min,p25,p50,p75,p95,max,values[]}}]` (outcome_score / trajectory_length / trajectory_score), `tool_stability:{runs,distinct_signatures,modal_share,per_tool[],signatures[]}`, `capped` |
+| GET | `/api/quality/variance?source_task_id=` | List the workspace's variance runs, newest first; optional `source_task_id` filter |
 
 `evaluator` ∈ `judge` (LLM-as-judge) \| `reference` (reference-based, E-03) \|
 `objective` (E-04) \| `human` (E-05). The `human` evaluator dimension stays
@@ -210,6 +213,12 @@ Python result files and is `skipped` when the task produced none.
 Setting `is_default` clears the default flag on the workspace's other rubrics.
 Auto-evaluation also runs as the `quality_judge_evaluate` scheduler job when the
 `quality_eval_enabled` setting is true (off by default).
+
+The Variance / Robustness Harness (E-11) is also exposed as a CLI:
+`docker compose exec api python -m app.cli.variance --task-id <uuid> --n 10 [--no-parallel] [--cost-cap <usd>] [--wait]`
+(or `--title "…" [--description "…"]` for the spec mode). It calls the same
+`run_variance` service; the `variance_run_tick` job (interval 20s, no gate)
+advances every non-terminal run.
 
 ### Scheduled jobs (`/api/scheduled-jobs`)
 

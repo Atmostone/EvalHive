@@ -9,6 +9,7 @@ setting).
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,6 +22,7 @@ from app.database import get_db
 from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
 from app.models.task import Task
+from app.models.variance_run import VarianceRun
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality.trace_cleaner import (
@@ -489,3 +491,129 @@ async def calibration_export(
                 }
             )
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Variance / Robustness Harness (E-11)
+# --------------------------------------------------------------------------- #
+class VarianceSpecBody(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    description: Optional[str] = None
+    reference_answer: Optional[str] = None
+
+
+class VarianceCreate(BaseModel):
+    # Exactly one source: replay an existing task, or run a fresh spec.
+    source_task_id: Optional[str] = None
+    spec: Optional[VarianceSpecBody] = None
+    n: int = Field(default=10, ge=2, le=50)
+    parallel: bool = True
+    cost_cap_usd: Optional[float] = Field(default=None, gt=0)
+    template_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> "VarianceCreate":
+        if (self.source_task_id is None) == (self.spec is None):
+            raise ValueError("provide exactly one of source_task_id or spec")
+        return self
+
+
+def _parse_uuid(value: Optional[str], field: str) -> Optional[uuid.UUID]:
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid {field}")
+
+
+def _variance_run_out(run: VarianceRun, children: Optional[list[Task]] = None) -> dict:
+    out = {
+        "id": str(run.id),
+        "workspace_id": str(run.workspace_id),
+        "source_task_id": str(run.source_task_id) if run.source_task_id else None,
+        "source_spec": run.source_spec,
+        "template_id": str(run.template_id) if run.template_id else None,
+        "n": run.n,
+        "parallel": run.parallel,
+        "cost_cap_usd": float(run.cost_cap_usd) if run.cost_cap_usd is not None else None,
+        "status": run.status,
+        "child_task_ids": run.child_task_ids,
+        "accumulated_cost_usd": float(run.accumulated_cost_usd or 0),
+        "aggregate": run.aggregate,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+    }
+    if children is not None:
+        out["children"] = [
+            {
+                "id": str(c.id),
+                "status": c.status,
+                "cost_usd": float(c.cost_usd or 0),
+                "result_summary": (c.result_summary or "")[:200],
+            }
+            for c in children
+        ]
+    return out
+
+
+@router.post("/variance")
+async def create_variance_run(
+    body: VarianceCreate,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Start a variance run: replay a task (or a fresh spec) N times and measure
+    the dispersion of outcome / trajectory / success / tool selection."""
+    from app.quality.variance import run_variance
+
+    try:
+        run = await run_variance(
+            db,
+            workspace_id=workspace.id,
+            source_task_id=_parse_uuid(body.source_task_id, "source_task_id"),
+            source_spec=body.spec.model_dump() if body.spec else None,
+            n=body.n,
+            parallel=body.parallel,
+            cost_cap_usd=Decimal(str(body.cost_cap_usd)) if body.cost_cap_usd is not None else None,
+            template_id=_parse_uuid(body.template_id, "template_id"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _variance_run_out(run)
+
+
+@router.get("/variance")
+async def list_variance_runs(
+    source_task_id: Optional[str] = Query(None),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(VarianceRun).where(VarianceRun.workspace_id == workspace.id)
+    sid = _parse_uuid(source_task_id, "source_task_id")
+    if sid is not None:
+        q = q.where(VarianceRun.source_task_id == sid)
+    q = q.order_by(VarianceRun.created_at.desc())
+    runs = (await db.execute(q)).scalars().all()
+    return [_variance_run_out(r) for r in runs]
+
+
+@router.get("/variance/{run_id}")
+async def get_variance_run(
+    run_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    rid = _parse_uuid(run_id, "run_id")
+    run = await db.get(VarianceRun, rid)
+    if run is None or run.workspace_id != workspace.id:
+        raise HTTPException(status_code=404, detail="variance run not found")
+    children: list[Task] = []
+    if run.child_task_ids:
+        ids = [uuid.UUID(x) for x in run.child_task_ids]
+        rows = (await db.execute(select(Task).where(Task.id.in_(ids)))).scalars().all()
+        by_id = {str(t.id): t for t in rows}
+        children = [by_id[i] for i in run.child_task_ids if i in by_id]
+    return _variance_run_out(run, children=children)

@@ -275,6 +275,21 @@ async def _job_runner(job_id: str):
                         workspace_id=job.workspace_id,
                     )
 
+        elif action == "variance_run_tick":
+            # Variance / Robustness Harness (E-11): advance every non-terminal
+            # run — create the next children under the cost cap, evaluate
+            # finished ones, and aggregate when complete. No setting gate: cost
+            # is only incurred for runs a user explicitly created.
+            from app.quality.variance import advance_active_runs
+
+            advanced = await advance_active_runs(db)
+            if advanced:
+                await log_event(
+                    db, "variance_run_tick", "system",
+                    {"advanced": advanced},
+                    workspace_id=job.workspace_id,
+                )
+
         else:
             await log_event(
                 db, "scheduled_job_fired", "system",
@@ -370,6 +385,12 @@ async def seed_default_jobs():
             db.add(ScheduledJob(
                 name="trace_evidence_evaluate", kind="interval", interval_seconds=600,
                 payload={"action": "trace_evidence_evaluate"},
+                workspace_id=DEFAULT_WORKSPACE_ID,
+            ))
+        if "variance_run_tick" not in names:
+            db.add(ScheduledJob(
+                name="variance_run_tick", kind="interval", interval_seconds=20,
+                payload={"action": "variance_run_tick"},
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ))
         await db.commit()

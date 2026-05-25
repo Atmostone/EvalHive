@@ -41,6 +41,12 @@ c2d3e4f5a6b7  rubrics — Quality Rubric Engine (E-02); templates.rubric_id;
               workspaces.quality_judge_model_id
      ↓
 d3e4f5a6b7c8  tasks.reference_answer — Reference-based Judge (E-03)
+     ↓
+e4f5a6b7c8d9  quality_records.trajectory_evidence_profile — TRACE Evidence Bank Judge (E-08)
+     ↓
+a8b9c0d1e2f3  tasks.canonical_trajectory + quality_records.trajectory_match_profile — Trajectory Matching (E-09)
+     ↓
+b3c4d5e6f7a8  tasks.replay_of_task_id + tasks.run_config + variance_runs — Variance / Robustness Harness + re-run core (E-11)
 ```
 
 ## Tables
@@ -60,6 +66,8 @@ d3e4f5a6b7c8  tasks.reference_answer — Reference-based Judge (E-03)
 | result_summary | TEXT | NULL | from the agent (event=completed) |
 | reference_answer | TEXT | NULL | optional gold answer for reference-based scoring (E-03); compared against `result_summary` by `reference` rubric dimensions |
 | canonical_trajectory | JSONB | NULL | optional gold trajectory for matching (E-09; migration `a8b9c0d1e2f3`); a list of tool names or a `{nodes, edges}` DAG. Non-null ⇒ the matcher applies |
+| replay_of_task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | re-run/replay lineage (E-11; migration `b3c4d5e6f7a8`) — the task this one was cloned from. Distinct from `parent_id` so variance/replay children are never rolled into a parent's subtask-completion check |
+| run_config | JSONB | NULL | optional per-run overrides honored at spawn time (E-11): `{template_id?, model_id?, soul_md?, seed?, temperature?}`. When set, the orchestrator skips decomposition + selection and pins this config (seam for E-21/E-24/U-03; E-11 only sets `template_id`) |
 | result_files | JSONB | [] | list of MinIO paths |
 | token_usage | JSONB | {} | `{input_tokens, output_tokens}` |
 | retry_count / max_retries | int | 0 / 1 | |
@@ -371,6 +379,33 @@ falling back to `orchestrator_model_id`. Profiles are written to
 left immutable. `reference` dimensions reuse the same judge model for the
 `pointwise` mode and the configured embedding provider for `semantic`; `exact`/
 `fuzzy` are pure local comparisons (no model call).
+
+### variance_runs (E-11)
+
+One row groups N re-runs of a single scenario for the Variance / Robustness
+Harness (migration `b3c4d5e6f7a8`).
+
+| Column | Type | Default | Purpose |
+|--------|------|---------|---------|
+| id | UUID PK | uuid4 | |
+| workspace_id | UUID FK→workspaces.id ON DELETE CASCADE | required | scoping |
+| source_task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | replay an existing finished task N times |
+| source_spec | JSONB | NULL | …or run a fresh spec N times: `{title, description?, reference_answer?}` |
+| template_id | UUID | NULL | pinned template for children (denormalized); NULL ⇒ normal selection each run |
+| n | int | required | number of runs (2..50) |
+| parallel | bool | true | drain up to `max_concurrent_agents` at once vs sequentially |
+| cost_cap_usd | NUMERIC(10,6) | NULL | stop creating children once accumulated cost (agent + judge) crosses this |
+| status | VARCHAR(20) | 'pending' | pending / running / done / capped / failed |
+| child_task_ids | JSONB | [] | the child task ids (each a clone via `clone_task_for_rerun`) |
+| aggregate | JSONB | NULL | computed distribution: per-dimension mean/std/percentiles + values, success rate, tool-selection stability |
+| accumulated_cost_usd | NUMERIC(10,6) | 0 | running total across children (agent runs + inline judge evals) |
+| created_at / updated_at / completed_at | TIMESTAMP | now() / onupdate | |
+
+Children are plain tasks (linked back via `tasks.replay_of_task_id`), spawned by
+the existing orchestrator loop; the `variance_run_tick` scheduler job creates
+the next children under the cost cap, judges finished ones (E-02/E-07 when a
+judge model is configured) and writes `aggregate` once all children are
+terminal. A child is a successful terminal at `done` **or** `awaiting_approval`.
 
 ### scheduled_jobs (P8)
 

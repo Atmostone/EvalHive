@@ -372,6 +372,46 @@ only runs when `tasks.canonical_trajectory` is set; otherwise it is skipped.
   matcher is instant and free and applies to a rare task class, so auto-scanning every
   `done` record for the occasional canonical task isn't worth the churn (KISS).
 
+### Variance / Robustness Harness + re-run core (E-11)
+
+Single-run scores hide a critical agent property: **consistency**. An agent that
+is sometimes brilliant and sometimes fails is worse than a stably-mediocre one
+(§3.4 R1). The harness runs one scenario N times and measures the *dispersion* of
+the result.
+
+- **Re-run core (layer A)** — a small, reusable primitive rather than a bespoke
+  variance mechanism (it is also the seam for E-21/E-24/E-26 and a future U-03
+  replay UX). `app/orchestrator/rerun.py::clone_task_for_rerun` clones a task's
+  input into a fresh task linked by `tasks.replay_of_task_id` (distinct from
+  `parent_id` so children are never folded into a parent's subtask-completion
+  check) and pins the template. The engine grew a **pinned-template fast path**:
+  `_spawn_agent_for_template` is shared by the normal selection path and by any
+  task that already carries a `template_id` — the latter skips decomposition +
+  selection and applies optional `tasks.run_config` overrides (`model_id`,
+  `soul_md`). `run_config` (`{template_id?, model_id?, soul_md?, seed?,
+  temperature?}`) is the durable override seam; E-11 only ever pins `template_id`.
+- **No bespoke concurrency or pool** — children are created READY and drained by
+  the existing orchestrator loop under `max_concurrent_agents`. The harness is a
+  poll-driven state machine (`app/quality/variance.py::advance_variance_run`,
+  driven by the `variance_run_tick` job, interval 20s): it creates the next
+  children while `created < n`, **under the cost cap**, and within an in-flight
+  target (`max_concurrent_agents` when parallel, else 1); judges finished children
+  inline (E-02 outcome + E-07 trajectory, only when a judge model is configured);
+  and aggregates once all children are terminal. A child is a successful terminal
+  at `done` **or** `awaiting_approval`.
+- **Cheap metrics, optional judging** — trajectory length (`steps_total` from the
+  E-06 cleaned trace), tool-selection stability (share of runs sharing the modal
+  tool signature + per-tool usage mean/std) and success rate are derived without
+  any LLM; outcome-score and trajectory-score dispersion are included only when a
+  judge is configured. Distributions report mean / pstdev / min / p25 / p50 / p75 /
+  p95 / max + raw values (pure-Python percentiles, no numpy).
+- **Cost cap** is enforced by the tick: it stops creating new children once the
+  accumulated cost (child agent runs + their judge evals) crosses the cap; the run
+  then finalizes as `capped`.
+- `POST /api/quality/variance` (source = an existing finished task **or** a fresh
+  `{title, description}` spec), `GET …/variance/{run_id}` / `GET …/variance` to
+  read, plus a `python -m app.cli.variance` CLI; box-plots in TaskDetail.
+
 ## Backend components
 
 | Module | Responsibility |
@@ -400,6 +440,8 @@ only runs when `tasks.canonical_trajectory` is set; otherwise it is skipped.
 | `app/quality/trajectory.py` | E-07 Trajectory Judge: `evaluate_task_trajectory` — single-call LLM scoring of the cleaned trace on 6 axes (efficiency/tool_selection/parameter_quality/error_recovery/goal_alignment/loop_detection) → `trajectory_profile` slot; cost-capped, reuses the E-02 judge-model resolver |
 | `app/quality/trace_evidence.py` | E-08 Evidence Bank Judge (TRACE): `evaluate_task_trace_evidence`/`evaluate_trajectory_with_evidence` — walks the cleaned trace step by step accumulating an evidence bank threaded into each step's prompt, then an evidence-aware 6-axis profile + `groundedness` → `trajectory_evidence_profile` slot (N+1 calls; reuses E-07's axes/tool/parser) |
 | `app/quality/trajectory_match.py` | E-09 Trajectory Matching: `evaluate_task_trajectory_match`/`match_trajectory` — deterministic, LLM-free comparison of the actual tool sequence (E-06) vs `task.canonical_trajectory` (list / sequence / DAG); exact + edit + dag (topological-order) metrics → `trajectory_match_profile` slot. Skipped unless a canonical trajectory is set |
+| `app/orchestrator/rerun.py` | E-11 re-run core: `clone_task_for_rerun` — clones a task's input into a fresh READY task (linked via `replay_of_task_id`), pinning the template / `run_config`. Shared seam for variance and future replay (E-21/E-24/U-03) |
+| `app/quality/variance.py` | E-11 Variance / Robustness Harness: `run_variance` + `advance_variance_run` — N re-runs of one scenario, cost-capped, drained by the orchestrator loop, aggregated into a dispersion `aggregate` (outcome/trajectory-length/trajectory-score distributions + success rate + tool stability) on `variance_runs`. Driven by the `variance_run_tick` job |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |
