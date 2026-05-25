@@ -23,6 +23,7 @@ from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
 from app.models.task import Task
 from app.models.variance_run import VarianceRun
+from app.models.perturbation_run import PerturbationRun
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality.trace_cleaner import (
@@ -617,3 +618,128 @@ async def get_variance_run(
         by_id = {str(t.id): t for t in rows}
         children = [by_id[i] for i in run.child_task_ids if i in by_id]
     return _variance_run_out(run, children=children)
+
+
+# --------------------------------------------------------------------------- #
+# Adversarial / Perturbation Judge (E-12)
+# --------------------------------------------------------------------------- #
+class PerturbationCreate(BaseModel):
+    source_task_id: str
+    transforms: Optional[list[str]] = None  # default: all four
+    variants_per_transform: int = Field(default=1, ge=1, le=5)
+    base_n: int = Field(default=2, ge=1, le=10)
+    parallel: bool = True
+    cost_cap_usd: Optional[float] = Field(default=None, gt=0)
+    template_id: Optional[str] = None
+
+
+def _perturbation_run_out(
+    run: PerturbationRun, children_by_id: Optional[dict] = None
+) -> dict:
+    out = {
+        "id": str(run.id),
+        "workspace_id": str(run.workspace_id),
+        "source_task_id": str(run.source_task_id) if run.source_task_id else None,
+        "template_id": str(run.template_id) if run.template_id else None,
+        "transforms": run.transforms,
+        "variants_per_transform": run.variants_per_transform,
+        "base_n": run.base_n,
+        "parallel": run.parallel,
+        "cost_cap_usd": float(run.cost_cap_usd) if run.cost_cap_usd is not None else None,
+        "status": run.status,
+        "base_task_ids": run.base_task_ids,
+        "perturbed_task_ids": run.perturbed_task_ids,
+        "accumulated_cost_usd": float(run.accumulated_cost_usd or 0),
+        "aggregate": run.aggregate,
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "updated_at": run.updated_at.isoformat() if run.updated_at else None,
+        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+    }
+    if children_by_id is not None:
+        from app.quality.perturbation import injection_followed
+
+        def _child(cid: str, *, is_inject: bool) -> dict:
+            c = children_by_id.get(cid)
+            if c is None:
+                return {"id": cid, "status": "missing"}
+            entry = {
+                "id": str(c.id),
+                "status": c.status,
+                "cost_usd": float(c.cost_usd or 0),
+                "title": c.title,
+                "result_summary": (c.result_summary or "")[:200],
+            }
+            if is_inject:
+                entry["injection_followed"] = injection_followed(c, run.injection_canary)
+            return entry
+
+        out["base_children"] = [_child(i, is_inject=False) for i in (run.base_task_ids or [])]
+        out["perturbed_children"] = {
+            tk: [_child(i, is_inject=(tk == "inject")) for i in ids]
+            for tk, ids in (run.perturbed_task_ids or {}).items()
+        }
+    return out
+
+
+@router.post("/perturbation")
+async def create_perturbation_run(
+    body: PerturbationCreate,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Start a perturbation run: replay a finished task under paraphrase / noise /
+    reorder / injection transforms and compare against a clean baseline."""
+    from app.quality.perturbation import run_perturbation
+
+    try:
+        run = await run_perturbation(
+            db,
+            workspace_id=workspace.id,
+            source_task_id=uuid.UUID(body.source_task_id),
+            transforms=body.transforms,
+            variants_per_transform=body.variants_per_transform,
+            base_n=body.base_n,
+            parallel=body.parallel,
+            cost_cap_usd=Decimal(str(body.cost_cap_usd)) if body.cost_cap_usd is not None else None,
+            template_id=_parse_uuid(body.template_id, "template_id"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _perturbation_run_out(run)
+
+
+@router.get("/perturbation")
+async def list_perturbation_runs(
+    source_task_id: Optional[str] = Query(None),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(PerturbationRun).where(PerturbationRun.workspace_id == workspace.id)
+    sid = _parse_uuid(source_task_id, "source_task_id")
+    if sid is not None:
+        q = q.where(PerturbationRun.source_task_id == sid)
+    q = q.order_by(PerturbationRun.created_at.desc())
+    runs = (await db.execute(q)).scalars().all()
+    return [_perturbation_run_out(r) for r in runs]
+
+
+@router.get("/perturbation/{run_id}")
+async def get_perturbation_run(
+    run_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    rid = _parse_uuid(run_id, "run_id")
+    run = await db.get(PerturbationRun, rid)
+    if run is None or run.workspace_id != workspace.id:
+        raise HTTPException(status_code=404, detail="perturbation run not found")
+    from app.quality.perturbation import _all_child_ids
+
+    children_by_id: dict = {}
+    ids = _all_child_ids(run)
+    if ids:
+        uids = [uuid.UUID(x) for x in ids]
+        rows = (await db.execute(select(Task).where(Task.id.in_(uids)))).scalars().all()
+        children_by_id = {str(t.id): t for t in rows}
+    return _perturbation_run_out(run, children_by_id=children_by_id)

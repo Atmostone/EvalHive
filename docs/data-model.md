@@ -47,6 +47,8 @@ e4f5a6b7c8d9  quality_records.trajectory_evidence_profile — TRACE Evidence Ban
 a8b9c0d1e2f3  tasks.canonical_trajectory + quality_records.trajectory_match_profile — Trajectory Matching (E-09)
      ↓
 b3c4d5e6f7a8  tasks.replay_of_task_id + tasks.run_config + variance_runs — Variance / Robustness Harness + re-run core (E-11)
+     ↓
+c4d5e6f7a8b9  perturbation_runs — Adversarial / Perturbation Judge (E-12)
 ```
 
 ## Tables
@@ -67,7 +69,7 @@ b3c4d5e6f7a8  tasks.replay_of_task_id + tasks.run_config + variance_runs — Var
 | reference_answer | TEXT | NULL | optional gold answer for reference-based scoring (E-03); compared against `result_summary` by `reference` rubric dimensions |
 | canonical_trajectory | JSONB | NULL | optional gold trajectory for matching (E-09; migration `a8b9c0d1e2f3`); a list of tool names or a `{nodes, edges}` DAG. Non-null ⇒ the matcher applies |
 | replay_of_task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | re-run/replay lineage (E-11; migration `b3c4d5e6f7a8`) — the task this one was cloned from. Distinct from `parent_id` so variance/replay children are never rolled into a parent's subtask-completion check |
-| run_config | JSONB | NULL | optional per-run overrides honored at spawn time (E-11): `{template_id?, model_id?, soul_md?, seed?, temperature?}`. When set, the orchestrator skips decomposition + selection and pins this config (seam for E-21/E-24/U-03; E-11 only sets `template_id`) |
+| run_config | JSONB | NULL | optional per-run overrides honored at spawn time (E-11): `{template_id?, model_id?, soul_md?, seed?, temperature?, tool_injection?}`. When set, the orchestrator skips decomposition + selection and pins this config (seam for E-21/E-24/U-03; E-11 sets `template_id`, E-12 adds `tool_injection` — a payload appended to the first tool response at runtime) |
 | result_files | JSONB | [] | list of MinIO paths |
 | token_usage | JSONB | {} | `{input_tokens, output_tokens}` |
 | retry_count / max_retries | int | 0 / 1 | |
@@ -406,6 +408,40 @@ the existing orchestrator loop; the `variance_run_tick` scheduler job creates
 the next children under the cost cap, judges finished ones (E-02/E-07 when a
 judge model is configured) and writes `aggregate` once all children are
 terminal. A child is a successful terminal at `done` **or** `awaiting_approval`.
+
+### perturbation_runs (E-12)
+
+One row groups a robustness probe of a single finished scenario for the
+Adversarial / Perturbation Judge (migration `c4d5e6f7a8b9`).
+
+| Column | Type | Default | Purpose |
+|--------|------|---------|---------|
+| id | UUID PK | uuid4 | |
+| workspace_id | UUID FK→workspaces.id ON DELETE CASCADE | required | scoping |
+| source_task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | the finished scenario whose input is perturbed |
+| template_id | UUID | NULL | pinned template for every child (denormalized) |
+| transforms | JSONB | [] | enabled transform keys ⊆ `paraphrase, noise, reorder, inject` |
+| variants_per_transform | int | 1 | perturbed children per transform (1..5) |
+| base_n | int | 2 | clean baseline re-runs of the original input (1..10) |
+| parallel | bool | true | drain up to `max_concurrent_agents` at once vs sequentially |
+| cost_cap_usd | NUMERIC(10,6) | NULL | stop creating children once accumulated cost crosses this |
+| injection_canary | VARCHAR(64) | NULL | unique marker the `inject` payload asks the agent to emit; its presence in a child's output ⇒ the agent followed the injection |
+| status | VARCHAR(20) | 'pending' | pending / running / done / capped / failed |
+| base_task_ids | JSONB | [] | clean baseline child ids |
+| perturbed_task_ids | JSONB | {} | perturbed child ids grouped by transform: `{transform: [task_id,…]}` |
+| aggregate | JSONB | NULL | per-transform + overall robustness, baseline profile, dimension deltas, injection safety flag |
+| accumulated_cost_usd | NUMERIC(10,6) | 0 | running total across children (agent runs + inline judge evals) |
+| created_at / updated_at / completed_at | TIMESTAMP | now() / onupdate | |
+
+Children are plain tasks (linked back via `tasks.replay_of_task_id`): the
+baseline ones reproduce the original input, the perturbed ones carry a
+paraphrased / noised / reordered input (or, for `inject`, the original input plus
+a `run_config.tool_injection` payload). The orchestrator loop spawns them; the
+`perturbation_run_tick` scheduler job creates the next children under the cost
+cap, judges finished ones (E-02/E-07 when configured) and writes `aggregate`
+once all children are terminal. Robustness per transform = how much the perturbed
+outcome score degraded vs the baseline mean (1.0 = no degradation); the `inject`
+group additionally yields a deterministic safety flag via `injection_canary`.
 
 ### scheduled_jobs (P8)
 

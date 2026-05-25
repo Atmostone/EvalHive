@@ -30,7 +30,6 @@ import uuid
 from collections import Counter
 from datetime import datetime
 from decimal import Decimal
-from math import ceil, floor
 from typing import Optional
 
 from sqlalchemy import select
@@ -40,6 +39,14 @@ from app.models.quality_record import QualityRecord
 from app.models.task import Task, TaskStatus
 from app.models.variance_run import VarianceRun
 from app.orchestrator.rerun import clone_task_for_rerun
+from app.quality.runs_common import (
+    SUCCESS_TASK as _SUCCESS_TASK,
+    TERMINAL_TASK as _TERMINAL_TASK,
+    accumulated_cost as _accumulated_cost,
+    distribution as _distribution,
+    ensure_child_evaluated as _ensure_child_evaluated,
+    inflight_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +60,6 @@ STATUS_CAPPED = "capped"
 STATUS_FAILED = "failed"
 _TERMINAL_RUN = {STATUS_DONE, STATUS_CAPPED, STATUS_FAILED}
 
-# A child stops progressing on its own at DONE, FAILED, or AWAITING_APPROVAL —
-# the last is a successful agent run that auto-review approved and that merely
-# awaits a human click, so for variance it counts as a finished, successful run.
-_SUCCESS_TASK = {TaskStatus.DONE.value, TaskStatus.AWAITING_APPROVAL.value}
-_TERMINAL_TASK = _SUCCESS_TASK | {TaskStatus.FAILED.value}
-
 N_MIN = 2
 N_MAX = 50
 
@@ -66,38 +67,6 @@ N_MAX = 50
 # --------------------------------------------------------------------------- #
 # Statistics helpers (pure Python — no numpy dependency)
 # --------------------------------------------------------------------------- #
-def _percentile(sorted_vals: list[float], p: float) -> Optional[float]:
-    """Linear-interpolated percentile (p in 0..100) over a pre-sorted list."""
-    if not sorted_vals:
-        return None
-    if len(sorted_vals) == 1:
-        return float(sorted_vals[0])
-    k = (len(sorted_vals) - 1) * (p / 100.0)
-    lo, hi = floor(k), ceil(k)
-    if lo == hi:
-        return float(sorted_vals[int(k)])
-    return float(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo))
-
-
-def _distribution(values: list[float]) -> dict:
-    """Summary distribution over the run samples (drops Nones)."""
-    vals = sorted(float(v) for v in values if v is not None)
-    if not vals:
-        return {"n": 0, "values": []}
-    return {
-        "n": len(vals),
-        "mean": round(statistics.fmean(vals), 3),
-        "std": round(statistics.pstdev(vals), 3) if len(vals) > 1 else 0.0,
-        "min": round(vals[0], 3),
-        "p25": round(_percentile(vals, 25), 3),
-        "p50": round(_percentile(vals, 50), 3),
-        "p75": round(_percentile(vals, 75), 3),
-        "p95": round(_percentile(vals, 95), 3),
-        "max": round(vals[-1], 3),
-        "values": [round(v, 3) for v in vals],
-    }
-
-
 def _tool_stability(tool_sequences: list[list[str]]) -> dict:
     """How consistent tool usage is across runs.
 
@@ -227,7 +196,7 @@ async def advance_variance_run(db: AsyncSession, run: VarianceRun) -> None:
 
     # 3) Create more children while there's room and budget.
     if created < run.n and not cost_exceeded:
-        target = await _inflight_target(db, run)
+        target = await inflight_target(db, parallel=run.parallel)
         slots = max(0, target - len(in_flight))
         to_create = min(slots, run.n - created)
         for i in range(to_create):
@@ -268,17 +237,6 @@ async def _load_children(db: AsyncSession, run: VarianceRun) -> list[Task]:
     return [by_id[i] for i in run.child_task_ids if i in by_id]
 
 
-async def _inflight_target(db: AsyncSession, run: VarianceRun) -> int:
-    if not run.parallel:
-        return 1
-    from app.api.settings import get_setting
-
-    try:
-        return max(1, int(await get_setting(db, "max_concurrent_agents", 3)))
-    except (TypeError, ValueError):
-        return 3
-
-
 async def _make_child(db: AsyncSession, run: VarianceRun, *, idx: int) -> Task:
     suffix = f" [variance {idx + 1}/{run.n}]"
     run_config = (
@@ -308,64 +266,6 @@ async def _make_child(db: AsyncSession, run: VarianceRun, *, idx: int) -> Task:
     await db.commit()
     await db.refresh(child)
     return child
-
-
-async def _ensure_child_evaluated(db: AsyncSession, child: Task) -> None:
-    """Best-effort outcome + trajectory scoring of a finished child.
-
-    Skips work cheaply when already scored or when no judge is configured;
-    never raises (mirrors the scheduler-job error handling).
-    """
-    from app.quality.data_lake import build_quality_record
-    from app.quality.judge import evaluate_task_quality
-    from app.quality.trajectory import evaluate_task_trajectory
-
-    try:
-        await build_quality_record(db, child, commit=True)
-    except Exception as e:
-        await db.rollback()
-        logger.warning(f"variance: record build failed for {child.id}: {e}")
-        return
-
-    rec = (
-        await db.execute(
-            select(QualityRecord).where(QualityRecord.task_id == child.id)
-        )
-    ).scalar_one_or_none()
-
-    if rec is not None and rec.quality_profile is None:
-        try:
-            await evaluate_task_quality(db, child, commit=True)
-        except Exception as e:
-            await db.rollback()
-            logger.warning(f"variance: outcome eval failed for {child.id}: {e}")
-    if rec is not None and rec.trajectory_profile is None:
-        try:
-            await evaluate_task_trajectory(db, child, commit=True)
-        except Exception as e:
-            await db.rollback()
-            logger.warning(f"variance: trajectory eval failed for {child.id}: {e}")
-
-
-async def _accumulated_cost(db: AsyncSession, children: list[Task]) -> Decimal:
-    """Agent-run cost + judge cost across all children so far."""
-    total = Decimal("0")
-    for c in children:
-        total += Decimal(c.cost_usd or 0)
-    if not children:
-        return total
-    recs = (
-        await db.execute(
-            select(QualityRecord).where(
-                QualityRecord.task_id.in_([c.id for c in children])
-            )
-        )
-    ).scalars().all()
-    for rec in recs:
-        for prof in (rec.quality_profile, rec.trajectory_profile):
-            if prof:
-                total += Decimal(str(prof.get("judge_cost_usd") or 0))
-    return total
 
 
 async def _finalize(

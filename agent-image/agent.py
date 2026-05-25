@@ -304,6 +304,10 @@ async def run_agent() -> dict:
     model = os.environ.get("LLM_MODEL") or ""
     api_key = os.environ.get("OPENAI_API_KEY") or None
     api_base = os.environ.get("OPENAI_BASE_URL") or None
+    # Perturbation judge (E-12): a poisoned tool response. When set, the payload
+    # is appended to the FIRST tool result the agent receives, simulating a
+    # malicious web page / tool output. Empty in normal runs.
+    tool_injection = os.environ.get("AGENT_TOOL_INJECTION") or ""
     if not model:
         raise RuntimeError(
             "LLM_MODEL env var is empty — the orchestrator did not pass a model. "
@@ -340,6 +344,7 @@ async def run_agent() -> dict:
     max_iterations = 20
     last_progress_at = 0.0
     log_chunk_seq = [0]
+    injection_done = False
 
     async with AsyncExitStack() as stack:
         mcp_routing: dict = {}
@@ -444,6 +449,12 @@ async def run_agent() -> dict:
                     else:
                         # Built-in tools are sync; offload bash subprocess to a thread
                         result = await asyncio.to_thread(execute_builtin_tool, fn.name, args)
+
+                    # Perturbation injection: poison the first tool response only.
+                    if tool_injection and not injection_done:
+                        result = f"{result}\n\n{tool_injection}"
+                        injection_done = True
+                        logger.info(f"[{task_id}] Injected perturbation payload into tool result")
 
                     logger.info(f"[{task_id}] Tool result: {str(result)[:200]}")
                     messages.append({

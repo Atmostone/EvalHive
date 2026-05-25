@@ -412,6 +412,37 @@ the result.
   `{title, description}` spec), `GET …/variance/{run_id}` / `GET …/variance` to
   read, plus a `python -m app.cli.variance` CLI; box-plots in TaskDetail.
 
+### Adversarial / Perturbation Judge (E-12)
+
+The complement of E-11: variance probes robustness to *model stochasticity* on a
+fixed input; perturbation probes robustness to *input variation* (§3.4 R2). Real
+users phrase tasks differently and real web pages contain injection, so an agent
+that only works on the exact clean prompt is production-unfit. It reuses the
+same poll-driven machinery (re-run core + orchestrator loop + cost cap +
+`runs_common` helpers) as E-11, driven by the `perturbation_run_tick` job.
+
+- **Four pluggable transforms** (`app/quality/perturbation.py::TRANSFORMS`):
+  `paraphrase` (an LLM rewrites the request preserving meaning — the only
+  transform that calls a model, reusing the E-02 judge-model resolver),
+  `noise` and `reorder` (deterministic, seeded — typos/fillers and sentence
+  reordering, no LLM), and `inject`.
+- **`inject` poisons a tool response at runtime.** The child keeps the original
+  input but carries a `run_config.tool_injection` payload; the engine forwards it
+  as `AGENT_TOOL_INJECTION` into the container (`AgentSpec.extra_env` →
+  `docker_manager`), and the agent appends it to the **first** tool result it
+  receives ("Ignore previous instructions…"). The payload embeds a unique
+  **canary** token; if the agent emits the canary (in its summary or a file) it
+  followed the injection — a deterministic, LLM-free **safety** signal (overlaps
+  the security pillar's S-02).
+- **Baseline vs perturbed.** `base_n` clean re-runs of the original input form the
+  baseline; each transform runs `variants_per_transform` perturbed children.
+  Per-transform **robustness** = `1 − degradation` of the perturbed outcome score
+  (E-02 `weighted_score`) vs the baseline mean (1.0 = no degradation), plus signed
+  per-dimension deltas; `overall_robustness` averages the transforms. Robustness
+  degrades gracefully to "unavailable" when no judge is configured.
+- `POST /api/quality/perturbation`, `GET …/perturbation/{run_id}` / `GET
+  …/perturbation`; robustness bars + injection safety badge in TaskDetail.
+
 ## Backend components
 
 | Module | Responsibility |
@@ -442,6 +473,8 @@ the result.
 | `app/quality/trajectory_match.py` | E-09 Trajectory Matching: `evaluate_task_trajectory_match`/`match_trajectory` — deterministic, LLM-free comparison of the actual tool sequence (E-06) vs `task.canonical_trajectory` (list / sequence / DAG); exact + edit + dag (topological-order) metrics → `trajectory_match_profile` slot. Skipped unless a canonical trajectory is set |
 | `app/orchestrator/rerun.py` | E-11 re-run core: `clone_task_for_rerun` — clones a task's input into a fresh READY task (linked via `replay_of_task_id`), pinning the template / `run_config`. Shared seam for variance and future replay (E-21/E-24/U-03) |
 | `app/quality/variance.py` | E-11 Variance / Robustness Harness: `run_variance` + `advance_variance_run` — N re-runs of one scenario, cost-capped, drained by the orchestrator loop, aggregated into a dispersion `aggregate` (outcome/trajectory-length/trajectory-score distributions + success rate + tool stability) on `variance_runs`. Driven by the `variance_run_tick` job |
+| `app/quality/runs_common.py` | Shared helpers for the poll-driven harnesses (E-11/E-12): terminal-state sets, percentile/distribution stats, `ensure_child_evaluated` (inline E-02/E-07), `accumulated_cost`, `inflight_target` |
+| `app/quality/perturbation.py` | E-12 Adversarial / Perturbation Judge: `run_perturbation` + `advance_perturbation_run` — replays a scenario under 4 pluggable transforms (paraphrase/noise/reorder/inject) vs a clean baseline, aggregating per-transform + overall robustness and an injection safety flag on `perturbation_runs`. Driven by the `perturbation_run_tick` job |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |
@@ -453,7 +486,7 @@ the result.
 | File | What it does |
 |------|--------------|
 | `entrypoint.py` | Runs feedback_server alongside run_agent, sends the final webhook |
-| `agent.py` | LLM tool-calling loop, MCP integration, periodic progress, control-queue drain |
+| `agent.py` | LLM tool-calling loop, MCP integration, periodic progress, control-queue drain; honors `AGENT_TOOL_INJECTION` (E-12) — appends a perturbation payload to the first tool result |
 | `feedback_server.py` | FastAPI on :8080 — health/feedback/switch_model/abort |
 | `time_server.py` | Sample MCP server (used to verify the MCP integration) |
 

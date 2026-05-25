@@ -35,6 +35,7 @@ def spawn_agent(
     workspace_id: str,
     agent_token: str,
     memory_context: str = "",
+    extra_env: dict | None = None,
 ) -> str:
     """Spawn a Docker container for the agent. Returns container ID."""
     from app.config import get_settings
@@ -73,6 +74,7 @@ def spawn_agent(
         "MCP_SERVERS": json.dumps(template.mcp_servers or []),
         "AGENT_MEMORY_CONTEXT": memory_context or "",
         **get_llm_env_vars(llm_settings),
+        **{k: str(v) for k, v in (extra_env or {}).items()},
     }
 
     volumes = {

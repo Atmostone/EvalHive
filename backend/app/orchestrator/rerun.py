@@ -38,6 +38,8 @@ async def clone_task_for_rerun(
     run_config: Optional[dict] = None,
     status: str = TaskStatus.READY.value,
     title_suffix: str = "",
+    title: Optional[str] = None,
+    description: Optional[str] = None,
     max_retries: int = 0,
     commit: bool = True,
 ) -> Task:
@@ -47,6 +49,11 @@ async def clone_task_for_rerun(
     else from the source (so a replay reproduces the template the source
     actually ran). When neither is available (e.g. a decomposed root that never
     ran an agent) the child goes through normal orchestrator selection.
+
+    ``title`` / ``description`` override the source's input when given — the
+    seam the perturbation judge (E-12) uses to replay a paraphrased / noised /
+    reordered prompt while keeping the same template and reference answer. When
+    omitted the source's input is reproduced verbatim.
 
     ``max_retries`` defaults to 0 — a re-run is a single deliberate execution;
     auto-retries would distort variance distributions and replay comparisons.
@@ -60,9 +67,10 @@ async def clone_task_for_rerun(
         pinned_template_id = source.template_id
         rc = {**(rc or {}), "template_id": str(source.template_id)}
 
+    base_title = title if title is not None else source.title
     clone = Task(
-        title=f"{source.title}{title_suffix}"[:500],
-        description=source.description,
+        title=f"{base_title}{title_suffix}"[:500],
+        description=description if description is not None else source.description,
         priority=source.priority,
         reference_answer=source.reference_answer,
         canonical_trajectory=source.canonical_trajectory,
