@@ -154,6 +154,13 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
             db, task_id=task.id, workspace_id=task.workspace_id
         )
         await db.commit()
+
+        # Perturbation judge (E-12): a poisoned tool response injected at runtime.
+        extra_env = {}
+        tool_injection = run_config.get("tool_injection")
+        if tool_injection:
+            extra_env["AGENT_TOOL_INJECTION"] = str(tool_injection)
+
         runtime = get_agent_runtime()
         spec = AgentSpec(
             task_id=str(task.id),
@@ -175,6 +182,7 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
             workspace_id=str(task.workspace_id),
             agent_token=agent_token,
             memory_context=memory_context,
+            extra_env=extra_env,
         )
         container_id = runtime.spawn(spec)
         task.agent_container_id = container_id

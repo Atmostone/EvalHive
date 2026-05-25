@@ -3,7 +3,8 @@
 Pure-Python distribution / percentile / tool-stability helpers — no DB, no LLM.
 """
 
-from app.quality.variance import _distribution, _percentile, _tool_stability
+from app.quality.runs_common import distribution as _distribution, percentile as _percentile
+from app.quality.variance import _tool_stability
 
 
 def test_percentile_interpolates():

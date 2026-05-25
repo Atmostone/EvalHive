@@ -287,7 +287,7 @@ export interface HumanFeedbackInput {
   dimensions: { key: string; name?: string; score: number; comment?: string | null }[]
 }
 
-import type { VarianceRun } from '../types'
+import type { VarianceRun, PerturbationRun, PerturbationTransform } from '../types'
 
 export interface VarianceCreateInput {
   source_task_id?: string
@@ -308,6 +308,28 @@ export const varianceApi = {
   get: (runId: string) => request<VarianceRun>(`/quality/variance/${runId}`),
   listForTask: (taskId: string) =>
     request<VarianceRun[]>(`/quality/variance?source_task_id=${taskId}`),
+}
+
+export interface PerturbationCreateInput {
+  source_task_id: string
+  transforms?: PerturbationTransform[]
+  variants_per_transform?: number
+  base_n?: number
+  parallel?: boolean
+  cost_cap_usd?: number
+  template_id?: string
+}
+
+// Adversarial / Perturbation Judge (E-12)
+export const perturbationApi = {
+  create: (body: PerturbationCreateInput) =>
+    request<PerturbationRun>(`/quality/perturbation`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  get: (runId: string) => request<PerturbationRun>(`/quality/perturbation/${runId}`),
+  listForTask: (taskId: string) =>
+    request<PerturbationRun[]>(`/quality/perturbation?source_task_id=${taskId}`),
 }
 
 // Knowledge

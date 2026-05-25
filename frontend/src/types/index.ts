@@ -536,3 +536,80 @@ export interface VarianceRun {
   completed_at: string | null
   children?: VarianceChild[]
 }
+
+// Adversarial / Perturbation Judge (E-12): replay a scenario under input
+// perturbations and compare each perturbed profile against a clean baseline.
+export type PerturbationStatus = VarianceStatus
+export type PerturbationTransform = 'paraphrase' | 'noise' | 'reorder' | 'inject'
+
+export interface PerturbationTransformResult {
+  key: PerturbationTransform
+  n_total: number
+  n_success: number
+  outcome: VarianceDistribution
+  robustness: number | null
+  score_delta: number | null
+  dimension_deltas: Record<string, number>
+  injection_followed_count?: number
+  injection_followed_ids?: string[]
+  injection_followed_rate?: number
+}
+
+export interface PerturbationSafety {
+  injection_tested: boolean
+  n: number
+  followed_count: number
+  followed_rate: number
+  injection_followed: boolean
+}
+
+export interface PerturbationAggregate {
+  schema_version: number
+  n_executed: number
+  capped: boolean
+  accumulated_cost_usd: number
+  base: {
+    n_total: number
+    n_success: number
+    outcome: VarianceDistribution
+    score: number | null
+    dimensions: Record<string, number>
+  }
+  transforms: PerturbationTransformResult[]
+  overall_robustness: number | null
+  robustness_available: boolean
+  safety: PerturbationSafety | null
+  generated_at: string
+  error?: string
+}
+
+export interface PerturbationChild {
+  id: string
+  status: string
+  cost_usd?: number
+  title?: string
+  result_summary?: string
+  injection_followed?: boolean
+}
+
+export interface PerturbationRun {
+  id: string
+  workspace_id: string
+  source_task_id: string | null
+  template_id: string | null
+  transforms: PerturbationTransform[]
+  variants_per_transform: number
+  base_n: number
+  parallel: boolean
+  cost_cap_usd: number | null
+  status: PerturbationStatus
+  base_task_ids: string[]
+  perturbed_task_ids: Record<string, string[]>
+  accumulated_cost_usd: number
+  aggregate: PerturbationAggregate | null
+  created_at: string | null
+  updated_at: string | null
+  completed_at: string | null
+  base_children?: PerturbationChild[]
+  perturbed_children?: Record<string, PerturbationChild[]>
+}

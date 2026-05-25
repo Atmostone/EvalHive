@@ -15,6 +15,7 @@ from app.models.provider import Provider, LLMModel
 from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
 from app.models.variance_run import VarianceRun
+from app.models.perturbation_run import PerturbationRun
 
 __all__ = [
     "User",
@@ -37,4 +38,5 @@ __all__ = [
     "QualityRecord",
     "Rubric",
     "VarianceRun",
+    "PerturbationRun",
 ]

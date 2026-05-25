@@ -290,6 +290,21 @@ async def _job_runner(job_id: str):
                     workspace_id=job.workspace_id,
                 )
 
+        elif action == "perturbation_run_tick":
+            # Adversarial / Perturbation Judge (E-12): advance every non-terminal
+            # run — create the next baseline/perturbed children under the cost
+            # cap, evaluate finished ones, and aggregate when complete. No
+            # setting gate: cost is only incurred for user-created runs.
+            from app.quality.perturbation import advance_active_runs as advance_perturbation
+
+            advanced = await advance_perturbation(db)
+            if advanced:
+                await log_event(
+                    db, "perturbation_run_tick", "system",
+                    {"advanced": advanced},
+                    workspace_id=job.workspace_id,
+                )
+
         else:
             await log_event(
                 db, "scheduled_job_fired", "system",
@@ -391,6 +406,12 @@ async def seed_default_jobs():
             db.add(ScheduledJob(
                 name="variance_run_tick", kind="interval", interval_seconds=20,
                 payload={"action": "variance_run_tick"},
+                workspace_id=DEFAULT_WORKSPACE_ID,
+            ))
+        if "perturbation_run_tick" not in names:
+            db.add(ScheduledJob(
+                name="perturbation_run_tick", kind="interval", interval_seconds=20,
+                payload={"action": "perturbation_run_tick"},
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ))
         await db.commit()

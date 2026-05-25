@@ -15,6 +15,7 @@ import TrajectoryScorePanel from '@/components/quality/TrajectoryScorePanel'
 import EvidenceBankPanel from '@/components/quality/EvidenceBankPanel'
 import TrajectoryMatchPanel from '@/components/quality/TrajectoryMatchPanel'
 import VarianceRunPanel from '@/components/quality/VarianceRunPanel'
+import PerturbationPanel from '@/components/quality/PerturbationPanel'
 
 interface TaskDetailProps {
   task: Task
@@ -216,6 +217,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Variance / robustness (E-11) — replay this task N times, measure dispersion */}
             <VarianceRunPanel taskId={task.id} />
+
+            {/* Adversarial / perturbation (E-12) — perturb the input, measure robustness */}
+            <PerturbationPanel taskId={task.id} />
           </div>
         )}
 

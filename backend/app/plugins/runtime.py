@@ -23,6 +23,8 @@ class AgentSpec:
     agent_token: str
     memory_context: str = ""
     extra_labels: dict = field(default_factory=dict)
+    # Extra container env (e.g. AGENT_TOOL_INJECTION for the perturbation judge).
+    extra_env: dict = field(default_factory=dict)
 
 
 class AgentRuntime(ABC):
@@ -80,6 +82,7 @@ class DockerRuntime(AgentRuntime):
             workspace_id=spec.workspace_id,
             agent_token=spec.agent_token,
             memory_context=spec.memory_context,
+            extra_env=spec.extra_env or {},
         )
 
     def kill(self, container_id: str, workspace_id: str | None = None) -> bool:
