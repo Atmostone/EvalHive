@@ -77,6 +77,10 @@ class Task(Base):
     # sequence of tool names, or a {nodes, edges} DAG. Non-null => the task has
     # a single valid path and the deterministic matcher applies.
     canonical_trajectory: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Optional capability-isolation spec (E-13): {required_tools, category, match}.
+    # Non-null => the task cannot be solved without the listed tool(s), so the
+    # deterministic Glass-Box harness checks whether the agent actually used them.
+    capability_spec: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     result_files: Mapped[dict] = mapped_column(JSONB, default=list, server_default="[]")
     token_usage: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

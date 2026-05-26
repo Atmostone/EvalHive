@@ -443,6 +443,38 @@ same poll-driven machinery (re-run core + orchestrator loop + cost cap +
 - `POST /api/quality/perturbation`, `GET …/perturbation/{run_id}` / `GET
   …/perturbation`; robustness bars + injection safety badge in TaskDetail.
 
+### Capability-isolation Tests (E-13, part A)
+
+A model can produce the right answer *from its parametric memory* without calling
+the tool the task actually requires — fresh data after the model's cutoff, private
+RAG data, exact arithmetic, local state (§3.4 C1). The outcome looks correct but the
+agent "cheated": it fails the moment the data changes, and pure outcome scoring
+(E-02) cannot see it. A capability-isolation task carries a `capability_spec`
+(`{required_tools[], category?, match?}`) naming the tool(s) it cannot be solved
+without; the harness (`app/quality/capability.py::evaluate_task_capability`) is
+**deterministic** (no LLM of its own) and runs only when the spec is set, else skipped.
+
+- **Glass-Box matching** reuses E-09's `extract_tool_sequence` to read the agent's
+  actual tool calls from the E-06 cleaned trace, then checks the required tools were
+  used — `match` = `all` (default, every required tool) or `any` (≥ 1).
+- **Outcome correctness** reuses the workspace's configured E-02 judge — a scored
+  `reference` dimension (E-03) when present (objective and preferred), else the
+  `weighted_score ≥ capability_outcome_threshold` (setting, default 7.0). The E-02
+  profile is computed once if missing; **no new model** is introduced. Signal is
+  recorded as `reference` / `judge` / `none`.
+- **Four-cell classification** (the heart of C1): `genuine` (correct AND tool used),
+  **`cheated`** (correct BUT tool NOT used — answered from memory, the red flag),
+  `failed_with_tool`, `failed_no_tool`. `capability_passed = (genuine)`. Written to
+  the `capability_profile` slot; never raises (failure → `status: "error"`).
+- **Aggregation** (`aggregate_capability`) computes `capability_score = genuine/total`
+  with `by_category`/`by_model`/`by_template` breakdowns — the model breakdown is the
+  "compare models by capability" signal (acceptance #3). The ≥30-task catalogue
+  (acceptance #1) is part B, deferred (overlaps the E-23 dataset).
+- `POST /api/quality/records/{task_id}/evaluate-capability`, `GET …/capability`, `GET
+  /api/quality/capability/aggregate`; `python -m app.cli.capability evaluate|aggregate`;
+  off-by-default `capability_evaluate` job (gated by `capability_eval_enabled`); a
+  capability panel in TaskDetail.
+
 ## Backend components
 
 | Module | Responsibility |
@@ -471,6 +503,7 @@ same poll-driven machinery (re-run core + orchestrator loop + cost cap +
 | `app/quality/trajectory.py` | E-07 Trajectory Judge: `evaluate_task_trajectory` — single-call LLM scoring of the cleaned trace on 6 axes (efficiency/tool_selection/parameter_quality/error_recovery/goal_alignment/loop_detection) → `trajectory_profile` slot; cost-capped, reuses the E-02 judge-model resolver |
 | `app/quality/trace_evidence.py` | E-08 Evidence Bank Judge (TRACE): `evaluate_task_trace_evidence`/`evaluate_trajectory_with_evidence` — walks the cleaned trace step by step accumulating an evidence bank threaded into each step's prompt, then an evidence-aware 6-axis profile + `groundedness` → `trajectory_evidence_profile` slot (N+1 calls; reuses E-07's axes/tool/parser) |
 | `app/quality/trajectory_match.py` | E-09 Trajectory Matching: `evaluate_task_trajectory_match`/`match_trajectory` — deterministic, LLM-free comparison of the actual tool sequence (E-06) vs `task.canonical_trajectory` (list / sequence / DAG); exact + edit + dag (topological-order) metrics → `trajectory_match_profile` slot. Skipped unless a canonical trajectory is set |
+| `app/quality/capability.py` | E-13 Capability-isolation Tests: `evaluate_task_capability` (deterministic Glass-Box reuse of E-09 `extract_tool_sequence` + outcome correctness via E-02 → `genuine`/`cheated`/`failed_*` classification → `capability_profile` slot; skipped unless `task.capability_spec` is set) + `aggregate_capability` (capability_score by model/category/template) |
 | `app/orchestrator/rerun.py` | E-11 re-run core: `clone_task_for_rerun` — clones a task's input into a fresh READY task (linked via `replay_of_task_id`), pinning the template / `run_config`. Shared seam for variance and future replay (E-21/E-24/U-03) |
 | `app/quality/variance.py` | E-11 Variance / Robustness Harness: `run_variance` + `advance_variance_run` — N re-runs of one scenario, cost-capped, drained by the orchestrator loop, aggregated into a dispersion `aggregate` (outcome/trajectory-length/trajectory-score distributions + success rate + tool stability) on `variance_runs`. Driven by the `variance_run_tick` job |
 | `app/quality/runs_common.py` | Shared helpers for the poll-driven harnesses (E-11/E-12): terminal-state sets, percentile/distribution stats, `ensure_child_evaluated` (inline E-02/E-07), `accumulated_cost`, `inflight_target` |

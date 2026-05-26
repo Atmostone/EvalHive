@@ -275,6 +275,48 @@ async def _job_runner(job_id: str):
                         workspace_id=job.workspace_id,
                     )
 
+        elif action == "capability_evaluate":
+            # Capability-isolation Tests (E-13): run the deterministic Glass-Box
+            # harness on terminal tasks that carry a capability_spec but have no
+            # capability_profile yet. Off by default — gated by the
+            # `capability_eval_enabled` setting (the correctness step may invoke
+            # the E-02 judge); the on-demand API button works regardless.
+            from app.api.settings import get_setting
+            from app.models.task import Task, TaskStatus
+            from app.models.quality_record import QualityRecord
+            from app.quality.capability import evaluate_task_capability
+
+            if bool(await get_setting(db, "capability_eval_enabled", False)):
+                success = (TaskStatus.DONE.value, TaskStatus.AWAITING_APPROVAL.value)
+                pending = (
+                    await db.execute(
+                        select(Task)
+                        .outerjoin(QualityRecord, QualityRecord.task_id == Task.id)
+                        .where(
+                            Task.capability_spec.isnot(None),
+                            Task.status.in_(success),
+                            QualityRecord.capability_profile.is_(None),
+                        )
+                        .limit(10)
+                    )
+                ).scalars().all()
+                evaluated = 0
+                for task in pending:
+                    try:
+                        if await evaluate_task_capability(db, task, commit=True):
+                            evaluated += 1
+                    except Exception as e:
+                        await db.rollback()
+                        logger.warning(
+                            f"capability eval failed for task {task.id}: {e}"
+                        )
+                if evaluated:
+                    await log_event(
+                        db, "capability_batch", "system",
+                        {"evaluated": evaluated},
+                        workspace_id=job.workspace_id,
+                    )
+
         elif action == "variance_run_tick":
             # Variance / Robustness Harness (E-11): advance every non-terminal
             # run — create the next children under the cost cap, evaluate
@@ -400,6 +442,12 @@ async def seed_default_jobs():
             db.add(ScheduledJob(
                 name="trace_evidence_evaluate", kind="interval", interval_seconds=600,
                 payload={"action": "trace_evidence_evaluate"},
+                workspace_id=DEFAULT_WORKSPACE_ID,
+            ))
+        if "capability_evaluate" not in names:
+            db.add(ScheduledJob(
+                name="capability_evaluate", kind="interval", interval_seconds=600,
+                payload={"action": "capability_evaluate"},
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ))
         if "variance_run_tick" not in names:

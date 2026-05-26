@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -279,6 +279,23 @@ export const qualityApi = {
       `/quality/records/${taskId}/evaluate-trajectory-match`,
       { method: 'POST' },
     ),
+  getCapability: (taskId: string) =>
+    request<{ task_id: string; capability_profile: CapabilityProfile | null }>(
+      `/quality/records/${taskId}/capability`,
+    ),
+  evaluateCapability: (taskId: string) =>
+    request<{ task_id: string; capability_profile: CapabilityProfile | null; skipped: boolean; detail?: string }>(
+      `/quality/records/${taskId}/evaluate-capability`,
+      { method: 'POST' },
+    ),
+  getCapabilityAggregate: (params?: { category?: string; model_used?: string; template_id?: string }) => {
+    const q = new URLSearchParams()
+    if (params?.category) q.set('category', params.category)
+    if (params?.model_used) q.set('model_used', params.model_used)
+    if (params?.template_id) q.set('template_id', params.template_id)
+    const qs = q.toString()
+    return request<CapabilityAggregate>(`/quality/capability/aggregate${qs ? `?${qs}` : ''}`)
+  },
 }
 
 export interface HumanFeedbackInput {
