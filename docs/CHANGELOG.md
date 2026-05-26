@@ -2,6 +2,18 @@
 
 Формат: `YYYY-MM-DD — что изменилось — ссылка на блок плана / PR`.
 
+## 2026-05-26
+
+- **E-13 — Capability-isolation Tests (C1), часть А (харнесс).** Модель может выдать верный ответ **из параметрической памяти**, не вызвав нужный инструмент (свежие данные после cutoff'а, приватные данные в RAG, точные вычисления, локальный state — §3.4 C1): outcome верный, но агент «сжульничал» и провалится на новых данных; чистая outcome-оценка (E-02) этого не видит (Phase 3, Linear SPA-17; разблокирован E-02). **Детерминированный** (без своей LLM) харнесс.
+  - **Данные:** `tasks.capability_spec` (JSONB: `{required_tools[], category?, match?:all|any}`) помечает задачу как capability-isolation тест; новый слот `quality_records.capability_profile`. Миграция `d5e6f7a8b9c0` (down_revision `c4d5e6f7a8b9`), 2 столбца.
+  - **Glass-Box matching** (`app/quality/capability.py`): переиспользует `extract_tool_sequence` из E-09 (фактическая tool-последовательность из E-06 cleaned trace) и проверяет, что нужные инструменты реально вызваны — `match=all` (по умолчанию, все) либо `any` (≥1).
+  - **Outcome correctness** переиспользует уже настроенного судью E-02: scored `reference`-измерение (E-03) приоритетно, иначе `weighted_score ≥ capability_outcome_threshold` (setting, default 7.0). Профиль E-02 считается один раз, если отсутствует. **Новой модели нет** (по согласованию с пользователем).
+  - **Классификация (ядро C1):** `genuine` (верно И tool вызван) / **`cheated`** (верно, НО нужный tool НЕ вызван — ответ из памяти, красный флаг) / `failed_with_tool` / `failed_no_tool`; `capability_passed = genuine`. Никогда не бросает (`status:"error"`); нет спека → skipped.
+  - **Агрегация** `aggregate_capability` → `capability_score = genuine/total` с разбивкой `by_model`/`by_category`/`by_template` (by_model — «сравнение моделей по capability», acceptance #3).
+  - **API/CLI/UI:** `GET …/records/{id}/capability`, `POST …/records/{id}/evaluate-capability`, `GET /api/quality/capability/aggregate`; `capability_spec` в `POST/PATCH /api/tasks`; `python -m app.cli.capability evaluate|aggregate`; off-by-default job `capability_evaluate` (gate `capability_eval_enabled`); панель `CapabilityPanel` в TaskDetail.
+  - **Каталог ≥30 задач (acceptance #1) — часть B, отложена** (пересекается с датасетом E-23); сделана только инженерная часть А по договорённости.
+  - Тесты: `tests/unit/test_capability.py` (14) + `tests/integration/test_capability.py` (8, включая cheated-кейс и aggregate by_model); полный прогон бэкенда **363 passed**; фронт `tsc` чист.
+
 ## 2026-05-25
 
 - **E-12 — Adversarial / Perturbation Judge (R2).** Дополнение к E-11: variance меряет устойчивость к стохастике модели на фиксированном входе, а perturbation — устойчивость к **вариативности входа** (§3.4 R2). Реальные пользователи формулируют по-разному, реальные веб-страницы содержат injection — агент, надёжный лишь на «чистом» промпте, production-непригоден (Phase 3, Linear SPA-16; разблокирован E-02). Переиспользует поллинг-машинерию E-11 (re-run core + orchestrator-loop + cost cap), вынесенную в общий модуль.

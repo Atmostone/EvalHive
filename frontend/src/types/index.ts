@@ -22,6 +22,7 @@ export interface Task {
   result_summary?: string | null
   reference_answer?: string | null
   canonical_trajectory?: CanonicalTrajectory | null
+  capability_spec?: CapabilitySpec | null
   result_files: string[]
   token_usage: Record<string, number>
   retry_count: number
@@ -326,6 +327,56 @@ export interface TrajectoryMatchProfile {
   }
   evaluated_at: string
   errors: { error: string }[]
+}
+
+// Capability-isolation Tests (E-13, part A)
+export interface CapabilitySpec {
+  required_tools: string[]
+  category?: string | null
+  match?: 'all' | 'any'
+}
+
+export type CapabilityClassification =
+  | 'genuine'
+  | 'cheated'
+  | 'failed_with_tool'
+  | 'failed_no_tool'
+
+export interface CapabilityProfile {
+  schema_version: number
+  status: 'scored' | 'error'
+  category: string | null
+  required_tools: string[]
+  match: 'all' | 'any'
+  tools_called?: string[]
+  tool_used?: boolean
+  missing_tools?: string[]
+  outcome_correct?: boolean
+  outcome_signal?: 'judge' | 'reference' | 'none'
+  outcome_score?: number | null
+  outcome_threshold?: number
+  classification?: CapabilityClassification
+  capability_passed?: boolean
+  trace_stats?: { steps_total: number | null; tool_steps: number | null }
+  evaluated_at: string
+  errors: { error: string }[]
+}
+
+export interface CapabilityCounts {
+  genuine: number
+  cheated: number
+  failed_with_tool: number
+  failed_no_tool: number
+  total: number
+  capability_score: number | null
+}
+
+export interface CapabilityAggregate extends CapabilityCounts {
+  workspace_id: string
+  filters: { category: string | null; model_used: string | null; template_id: string | null }
+  by_category: Record<string, CapabilityCounts>
+  by_model: Record<string, CapabilityCounts>
+  by_template: Record<string, CapabilityCounts>
 }
 
 export interface Agent {

@@ -14,6 +14,7 @@ import CleanedTracePanel from '@/components/quality/CleanedTracePanel'
 import TrajectoryScorePanel from '@/components/quality/TrajectoryScorePanel'
 import EvidenceBankPanel from '@/components/quality/EvidenceBankPanel'
 import TrajectoryMatchPanel from '@/components/quality/TrajectoryMatchPanel'
+import CapabilityPanel from '@/components/quality/CapabilityPanel'
 import VarianceRunPanel from '@/components/quality/VarianceRunPanel'
 import PerturbationPanel from '@/components/quality/PerturbationPanel'
 
@@ -214,6 +215,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Trajectory match (E-09) — deterministic match vs a canonical trajectory */}
             <TrajectoryMatchPanel taskId={task.id} />
+
+            {/* Capability isolation (E-13) — did the agent really use the required tool? */}
+            <CapabilityPanel taskId={task.id} />
 
             {/* Variance / robustness (E-11) — replay this task N times, measure dispersion */}
             <VarianceRunPanel taskId={task.id} />

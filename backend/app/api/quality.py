@@ -396,6 +396,71 @@ async def evaluate_trajectory_match_record(
     return {"task_id": task_id, "trajectory_match_profile": profile, "skipped": False}
 
 
+@router.get("/records/{task_id}/capability")
+async def get_capability(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the deterministic capability-isolation profile (E-13), or null if absent."""
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == uuid.UUID(task_id),
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return {"task_id": task_id, "capability_profile": rec.capability_profile}
+
+
+@router.post("/records/{task_id}/evaluate-capability")
+async def evaluate_capability_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """On-demand capability-isolation evaluation (E-13). Skipped (profile null) when
+    the task has no capability_spec set."""
+    from app.quality.capability import evaluate_task_capability
+
+    task = await _get_owned_task(db, task_id, workspace)
+    profile = await evaluate_task_capability(db, task)
+    if profile is None:
+        return {
+            "task_id": task_id,
+            "capability_profile": None,
+            "skipped": True,
+            "detail": "task has no capability_spec (required_tools) to check against",
+        }
+    return {"task_id": task_id, "capability_profile": profile, "skipped": False}
+
+
+@router.get("/capability/aggregate")
+async def capability_aggregate(
+    category: Optional[str] = Query(None),
+    model_used: Optional[str] = Query(None),
+    template_id: Optional[str] = Query(None),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate capability profiles (E-13) into capability_score(s) across the
+    workspace, with breakdowns by category / model / template — the model
+    breakdown is the "compare models by capability" view."""
+    from app.quality.capability import aggregate_capability
+
+    return await aggregate_capability(
+        db,
+        workspace_id=workspace.id,
+        category=category,
+        model_used=model_used,
+        template_id=_parse_uuid(template_id, "template_id"),
+    )
+
+
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,

@@ -60,9 +60,9 @@ Token: HS256, ttl=24h, payload `{sub: user_id, ws: default_workspace_id, iat, ex
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/tasks?status=&parent_id=` | List tasks |
-| POST | `/api/tasks` | Create a task in backlog. Fields: title/description/priority/parent_id/`reference_answer`? (optional gold answer for reference-based scoring, E-03)/`canonical_trajectory`? (optional gold trajectory for matching, E-09 — a list of tool names or a `{nodes, edges}` DAG) |
+| POST | `/api/tasks` | Create a task in backlog. Fields: title/description/priority/parent_id/`reference_answer`? (optional gold answer for reference-based scoring, E-03)/`canonical_trajectory`? (optional gold trajectory for matching, E-09 — a list of tool names or a `{nodes, edges}` DAG)/`capability_spec`? (optional capability-isolation spec, E-13 — `{required_tools[], category?, match?}`) |
 | GET | `/api/tasks/{id}` | Single task + subtasks |
-| PATCH | `/api/tasks/{id}` | title/description/status/priority/`reference_answer`/`canonical_trajectory` (each applied only when non-null) |
+| PATCH | `/api/tasks/{id}` | title/description/status/priority/`reference_answer`/`canonical_trajectory`/`capability_spec` (each applied only when non-null) |
 | PATCH | `/api/tasks/{id}/approve` | From `awaiting_approval` → `done` |
 | PATCH | `/api/tasks/{id}/reject` | Body `{feedback}`; sets `ready`, bumps `retry_count` |
 | DELETE | `/api/tasks/{id}` | Delete the task |
@@ -195,6 +195,9 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | POST | `/api/quality/records/{task_id}/evaluate-trajectory-evidence` | **owner/admin** — on-demand TRACE evidence-bank judge (re-runs/overwrites; `N+1` LLM calls). Returns `{trajectory_evidence_profile, skipped, detail?}`; `skipped=true` when the trajectory has no steps or no judge/orchestrator model is configured. Profile carries the same 6 `axes` + `overall_score`/`loop_detected`/`summary` as E-07, plus `groundedness` (0-1), `redundant_steps`, `evidence_bank:[{seq,kind,tool_name,redundant,grounded,progress,execution,facts[],note,error?}]`, `judge_calls`, `judge_*`, `input_capped`, `status` |
 | GET | `/api/quality/records/{task_id}/trajectory-match` | `{task_id, trajectory_match_profile}` — deterministic trajectory-match profile (E-09) or null until matched (404 if no record in workspace) |
 | POST | `/api/quality/records/{task_id}/evaluate-trajectory-match` | **owner/admin** — on-demand, **LLM-free** trajectory match (re-runs/overwrites). Returns `{trajectory_match_profile, skipped, detail?}`; `skipped=true` when the task has no `canonical_trajectory`. Profile carries `mode` (exact\|edit\|dag), `score`, `matched`, `threshold`, `metrics:{exact,edit,dag}`, `actual_sequence[]`, `reference_sequence[]`, `reference_form` (sequence\|dag), `detail`, `trace_stats:{steps_total,tool_steps}`, `status`. A bad/unparseable canonical → `status:"error"` (not skipped) |
+| GET | `/api/quality/records/{task_id}/capability` | `{task_id, capability_profile}` — deterministic capability-isolation profile (E-13) or null until evaluated (404 if no record in workspace) |
+| POST | `/api/quality/records/{task_id}/evaluate-capability` | **owner/admin** — on-demand capability-isolation harness (E-13; Glass-Box matching is LLM-free, but outcome correctness reuses the E-02 judge, running it once if no profile exists). Returns `{capability_profile, skipped, detail?}`; `skipped=true` when the task has no `capability_spec`. Profile carries `category`, `required_tools[]`, `match` (all\|any), `tools_called[]`, `tool_used`, `missing_tools[]`, `outcome_correct`, `outcome_signal` (reference\|judge\|none), `outcome_score`, `outcome_threshold`, `classification` (genuine\|cheated\|failed_with_tool\|failed_no_tool), `capability_passed`, `trace_stats`, `status`. The **cheated** cell = correct outcome but the required tool was not used |
+| GET | `/api/quality/capability/aggregate?category=&model_used=&template_id=` | Aggregate capability profiles across the workspace into `capability_score = genuine/total`, with `by_category`/`by_model`/`by_template` breakdowns (the model breakdown is the "compare models by capability" view). Each bucket carries the four-cell counts + `total` + `capability_score` |
 | POST | `/api/quality/variance` | **owner/admin** — start a Variance / Robustness run (E-11). Body `{source_task_id?, spec?:{title,description?,reference_answer?}, n=10 (2..50), parallel=true, cost_cap_usd?, template_id?}` — exactly one of `source_task_id` (replay an existing finished task N times) or `spec` (run a fresh spec N times), else 422. Returns the variance run (`{id, status, n, child_task_ids, accumulated_cost_usd, aggregate, …}`); children are created and drained by the orchestrator loop, advanced by the `variance_run_tick` job |
 | GET | `/api/quality/variance/{run_id}` | The variance run + a `children:[{id,status,cost_usd,result_summary}]` summary (404 if not in workspace). `aggregate` (once finalized) carries `n_executed/n_success/n_failed`, `success_rate`, `dimensions:[{key,name,unit,available,dist:{n,mean,std,min,p25,p50,p75,p95,max,values[]}}]` (outcome_score / trajectory_length / trajectory_score), `tool_stability:{runs,distinct_signatures,modal_share,per_tool[],signatures[]}`, `capped` |
 | GET | `/api/quality/variance?source_task_id=` | List the workspace's variance runs, newest first; optional `source_task_id` filter |
@@ -222,6 +225,14 @@ The Variance / Robustness Harness (E-11) is also exposed as a CLI:
 (or `--title "…" [--description "…"]` for the spec mode). It calls the same
 `run_variance` service; the `variance_run_tick` job (interval 20s, no gate)
 advances every non-terminal run.
+
+The Capability-isolation harness (E-13) is also exposed as a CLI:
+`docker compose exec api python -m app.cli.capability evaluate --task <uuid>` (run
+the harness for one task) and `… python -m app.cli.capability aggregate [--category
+<c>] [--model <m>] [--template <id>]` (capability_score by model/category/template).
+Auto-evaluation runs as the `capability_evaluate` scheduler job when the
+`capability_eval_enabled` setting is true (off by default); the outcome-correctness
+threshold is the `capability_outcome_threshold` setting (default 7.0).
 
 ### Scheduled jobs (`/api/scheduled-jobs`)
 

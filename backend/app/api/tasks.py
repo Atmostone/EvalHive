@@ -25,6 +25,7 @@ class TaskCreate(BaseModel):
     parent_id: Optional[str] = None
     reference_answer: Optional[str] = None
     canonical_trajectory: Optional[Any] = None
+    capability_spec: Optional[Any] = None
 
 
 class TaskUpdate(BaseModel):
@@ -34,6 +35,7 @@ class TaskUpdate(BaseModel):
     priority: Optional[str] = None
     reference_answer: Optional[str] = None
     canonical_trajectory: Optional[Any] = None
+    capability_spec: Optional[Any] = None
 
 
 class TaskOut(BaseModel):
@@ -74,6 +76,7 @@ def task_to_dict(task: Task) -> dict:
         "result_summary": task.result_summary,
         "reference_answer": task.reference_answer,
         "canonical_trajectory": task.canonical_trajectory,
+        "capability_spec": task.capability_spec,
         "result_files": task.result_files,
         "token_usage": task.token_usage,
         "retry_count": task.retry_count,
@@ -128,6 +131,7 @@ async def create_task(
         parent_id=uuid.UUID(body.parent_id) if body.parent_id else None,
         reference_answer=body.reference_answer,
         canonical_trajectory=body.canonical_trajectory,
+        capability_spec=body.capability_spec,
         workspace_id=workspace.id,
     )
     db.add(task)
@@ -178,6 +182,8 @@ async def update_task(
         task.reference_answer = body.reference_answer
     if body.canonical_trajectory is not None:
         task.canonical_trajectory = body.canonical_trajectory
+    if body.capability_spec is not None:
+        task.capability_spec = body.capability_spec
     if body.status is not None:
         task.status = body.status
         if body.status == TaskStatus.IN_PROGRESS.value and not task.started_at:

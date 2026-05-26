@@ -49,6 +49,8 @@ a8b9c0d1e2f3  tasks.canonical_trajectory + quality_records.trajectory_match_prof
 b3c4d5e6f7a8  tasks.replay_of_task_id + tasks.run_config + variance_runs — Variance / Robustness Harness + re-run core (E-11)
      ↓
 c4d5e6f7a8b9  perturbation_runs — Adversarial / Perturbation Judge (E-12)
+     ↓
+d5e6f7a8b9c0  tasks.capability_spec + quality_records.capability_profile — Capability-isolation Tests (E-13)
 ```
 
 ## Tables
@@ -68,6 +70,7 @@ c4d5e6f7a8b9  perturbation_runs — Adversarial / Perturbation Judge (E-12)
 | result_summary | TEXT | NULL | from the agent (event=completed) |
 | reference_answer | TEXT | NULL | optional gold answer for reference-based scoring (E-03); compared against `result_summary` by `reference` rubric dimensions |
 | canonical_trajectory | JSONB | NULL | optional gold trajectory for matching (E-09; migration `a8b9c0d1e2f3`); a list of tool names or a `{nodes, edges}` DAG. Non-null ⇒ the matcher applies |
+| capability_spec | JSONB | NULL | optional capability-isolation spec (E-13; migration `d5e6f7a8b9c0`): `{required_tools[], category?, match?:all\|any}`. Non-null ⇒ the Glass-Box harness applies |
 | replay_of_task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | re-run/replay lineage (E-11; migration `b3c4d5e6f7a8`) — the task this one was cloned from. Distinct from `parent_id` so variance/replay children are never rolled into a parent's subtask-completion check |
 | run_config | JSONB | NULL | optional per-run overrides honored at spawn time (E-11): `{template_id?, model_id?, soul_md?, seed?, temperature?, tool_injection?}`. When set, the orchestrator skips decomposition + selection and pins this config (seam for E-21/E-24/U-03; E-11 sets `template_id`, E-12 adds `tool_injection` — a payload appended to the first tool response at runtime) |
 | result_files | JSONB | [] | list of MinIO paths |
@@ -274,6 +277,7 @@ placeholders filled by downstream eval features.
 | trajectory_profile | JSONB? | **slot E-07** |
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
+| capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
 | human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
 | reproducibility | JSONB? | **slot E-20** |
@@ -343,6 +347,23 @@ detail, trace_stats: {steps_total, tool_steps}, evaluated_at, errors}`. `exact` 
 sequence equality, `edit` = `difflib` ratio, `dag` = the actual run is a valid
 topological order of the canonical DAG (node-instance Kahn check). No batch job —
 the matcher is instant and applies to a rare task class.
+
+The `capability_profile` slot is filled by the **deterministic** Capability-isolation
+harness (E-13, part A) — `POST /api/quality/records/{task_id}/evaluate-capability`,
+building the record on demand if absent (added by migration `d5e6f7a8b9c0`). It only
+applies to tasks with a `capability_spec` (`{required_tools[], category?, match?}`).
+Glass-Box matching (reusing E-09's `extract_tool_sequence`) checks whether the
+required tools were actually called; outcome correctness reuses the E-02 judge (a
+scored `reference` dimension when present, else `weighted_score ≥
+capability_outcome_threshold`, default 7.0 — no new model). Shape:
+`{schema_version, status: scored|error, category, required_tools [str], match: all|any,
+tools_called [str], tool_used, missing_tools [str], outcome_correct,
+outcome_signal: reference|judge|none, outcome_score, outcome_threshold,
+classification: genuine|cheated|failed_with_tool|failed_no_tool, capability_passed,
+trace_stats: {steps_total, tool_steps}, evaluated_at, errors}`. `cheated` = correct
+outcome with the required tool **not** used (answered from memory). `aggregate_capability`
+rolls these up into `capability_score = genuine/total` by model/category/template. The
+off-by-default `capability_evaluate` job (setting `capability_eval_enabled`) batches it.
 
 ### rubrics (E-02)
 
@@ -469,6 +490,7 @@ Index: `enabled`.
 - `quality_judge_evaluate` — interval 600s, action `quality_judge_evaluate` (E-02: score `done` records lacking a `quality_profile`; only runs when the `quality_eval_enabled` setting is true).
 - `trajectory_judge_evaluate` — interval 600s, action `trajectory_judge_evaluate` (E-07: judge `done` records lacking a `trajectory_profile`; only runs when the `trajectory_eval_enabled` setting is true).
 - `trace_evidence_evaluate` — interval 600s, action `trace_evidence_evaluate` (E-08: TRACE evidence-bank judge for `done` records lacking a `trajectory_evidence_profile`; batch capped at 5/tick since each task is N+1 LLM calls; only runs when the `trace_evidence_eval_enabled` setting is true).
+- `capability_evaluate` — interval 600s, action `capability_evaluate` (E-13: run the Glass-Box capability harness on terminal tasks carrying a `capability_spec` but no `capability_profile`; only runs when the `capability_eval_enabled` setting is true).
 
 ### users (R1)
 
