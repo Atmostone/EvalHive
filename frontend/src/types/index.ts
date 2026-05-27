@@ -262,7 +262,8 @@ export interface EvidenceStep {
   kind?: string | null
   tool_name?: string | null
   redundant: boolean
-  grounded: boolean
+  grounded: boolean | null
+  assessed?: boolean
   progress: number
   execution: number
   facts: string[]

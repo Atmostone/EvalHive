@@ -331,8 +331,11 @@ holistic single call, E-08 walks the cleaned trace step by step accumulating an
 **evidence bank** threaded into each step's prompt, then scores the same six axes
 informed by that bank. Shape: `{schema_version, status: scored|skipped|error,
 axes (same 6 as E-07), overall_score, loop_detected, summary, groundedness (0-1,
-share of grounded steps), redundant_steps, evidence_bank: [{seq, kind, tool_name,
-redundant, grounded, progress 0-10, execution 0-10, facts [str], note, error?}],
+share of grounded steps **among assessed steps**), redundant_steps, evidence_bank:
+[{seq, kind, tool_name, redundant, grounded (bool, or null when not judged), assessed
+(false for empty/label steps — no tool call and no content — which skip the per-step
+LLM call and are excluded from groundedness), progress 0-10, execution 0-10, facts
+[str], note, error?}],
 judge_model, judge_calls (N+1), judge_input_tokens, judge_output_tokens,
 judge_cost_usd, input_capped, trace_stats (incl. steps_assessed), evaluated_at,
 errors}`. It coexists with `trajectory_profile` so the holistic (E-07) and

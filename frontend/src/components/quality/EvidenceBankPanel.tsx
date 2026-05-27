@@ -177,17 +177,23 @@ function ProfileView({ profile }: { profile: TrajectoryEvidenceProfile }) {
                 <span className="font-medium text-gray-700">
                   #{s.seq} {s.tool_name ? `${s.kind}/${s.tool_name}` : s.kind}
                 </span>
-                {s.redundant && (
+                {s.assessed !== false && s.redundant && (
                   <span className="px-1 rounded bg-amber-100 text-amber-700">redundant</span>
                 )}
-                <span
-                  className={cn(
-                    'px-1 rounded',
-                    s.grounded ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700',
-                  )}
-                >
-                  {s.grounded ? 'grounded' : 'ungrounded'}
-                </span>
+                {s.assessed === false ? (
+                  <span className="px-1 rounded bg-gray-100 text-gray-500" title="empty/label step — carries no claim, not judged for groundedness">
+                    not judged
+                  </span>
+                ) : (
+                  <span
+                    className={cn(
+                      'px-1 rounded',
+                      s.grounded ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700',
+                    )}
+                  >
+                    {s.grounded ? 'grounded' : 'ungrounded'}
+                  </span>
+                )}
                 {s.error && <span className="px-1 rounded bg-red-100 text-red-700">error</span>}
               </div>
               {s.facts.length > 0 && (
