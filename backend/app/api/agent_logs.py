@@ -136,21 +136,22 @@ async def list_log_chunks(
 
     if task.log_archive_s3_path:
         try:
-            from app.storage.minio_client import read_log_archive
+            from app.storage.minio_client import decode_log_archive, read_log_archive
 
             blob = read_log_archive(task.log_archive_s3_path).decode("utf-8", errors="replace")
         except Exception as e:
             logger.warning(f"reading log archive {task.log_archive_s3_path} failed: {e}")
             blob = ""
-        # Split by saved chunk delimiter to preserve original boundaries.
-        raw_chunks = blob.split("\n␞\n") if blob else []
-        sliced = raw_chunks[from_seq : from_seq + limit]
+        # Decode per-chunk (JSON-lines preserves tool_name; legacy format → None).
+        decoded = decode_log_archive(blob)
+        sliced = decoded[from_seq : from_seq + limit]
         return {
             "archived": True,
             "archive_path": task.log_archive_s3_path,
             "chunks": [
-                {"id": None, "chunk_seq": from_seq + i, "content": c, "tool_name": None, "created_at": None}
-                for i, c in enumerate(sliced)
+                {"id": None, "chunk_seq": from_seq + i, "content": d["content"],
+                 "tool_name": d.get("tool_name"), "created_at": None}
+                for i, d in enumerate(sliced)
             ],
         }
 

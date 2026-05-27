@@ -362,9 +362,11 @@ building the record on demand if absent (added by migration `d5e6f7a8b9c0`). It 
 applies to tasks with a `capability_spec` (`{required_tools[], category?, match?}`).
 Glass-Box matching (reusing E-09's `extract_tool_sequence`) checks whether the
 required tools were actually called — sourced from the cleaned trace **unioned with
-the durable E-01 blob** (`execution.tool_calls`, captured before log compaction, since
-the MinIO archive drops `tool_name`) and matched prefix-aware (`web_search` ↔
-`web__web_search`); outcome correctness reuses the E-02 judge (a
+the durable E-01 blob** (`execution.tool_calls`) and matched prefix-aware (`web_search`
+↔ `web__web_search`). The log archive now preserves `tool_name` (JSON-lines), so the
+cleaned trace keeps tool steps named post-compaction; the blob union stays as
+defense-in-depth (and for legacy plain-text archives, which lose it). Outcome
+correctness reuses the E-02 judge (a
 scored `reference` dimension when present, else `weighted_score ≥
 capability_outcome_threshold`, default 7.0 — no new model). Shape:
 `{schema_version, status: scored|error, category, required_tools [str], match: all|any,
@@ -580,7 +582,7 @@ Append-only stream of full agent stdout/stderr per tool call. Replaces the 500-c
 | tool_name | VARCHAR(255) NULL | bash / file_read / mcp tool name |
 | created_at | TIMESTAMP | |
 
-Indexes: `(task_id, chunk_seq)`, `workspace_id`. After event=completed/failed/aborted the orchestrator concatenates rows → MinIO blob `s3://spawnhive/logs/<task_id>.log`, sets `tasks.log_archive_s3_path`, and DELETEs all chunks (best-effort, atomic).
+Indexes: `(task_id, chunk_seq)`, `workspace_id`. After event=completed/failed/aborted the orchestrator serializes rows → MinIO blob `s3://spawnhive/logs/<task_id>.log` (**JSON-lines, one `{tool_name, content}` per chunk** — `tool_name` is preserved so the cleaned trace E-06 / matcher E-09 stay tool-aware post-compaction; `encode_log_archive`/`decode_log_archive` in `minio_client`, legacy `\n␞\n` plain-text archives still decode with `tool_name=None`), sets `tasks.log_archive_s3_path`, and DELETEs all chunks (best-effort, atomic).
 
 ### agent_log_deliveries (Foundations Этап 1)
 

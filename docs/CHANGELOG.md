@@ -4,6 +4,8 @@
 
 ## 2026-05-27
 
+- **Лог-архив сохраняет `tool_name` (корневой фикс «слепоты» E-06/E-09 после компакции).** При терминальной компакции (`webhooks._compact_agent_log`) чанки склеивались в MinIO через `\n␞\n` и `tool_name` **терялся** → после архивации cleaned trace (E-06) не видел инструментов, из-за чего слепли trajectory matcher (E-09) и capability (E-13 обходил это durable-blob-фолбэком). Теперь архив — **JSON-lines** (`{tool_name, content}` на чанк) через общие `encode_log_archive`/`decode_log_archive` (`storage/minio_client`); читатели (`trace_cleaner._load_log_chunks`, `api/agent_logs`) парсят формат и **восстанавливают `tool_name`**, со совместимостью со старыми plain-text архивами (там `tool_name=None`). E2E: задача с tool-чанком → реальная компакция → `build_cleaned_trace` из архива отдаёт `tool_name`. Тесты round-trip/legacy в `test_minio_log_archive`.
+
 - **E-08 — не судить groundedness на пустых/лейбловых шагах.** Evidence Bank Judge (E-08) вешал `ungrounded` на шаги без содержания (пустой reasoning-лейбл, status-flag) — шум, искажавший groundedness. Теперь такой шаг (не tool-вызов и пустой `content`) помечается `assessed:false`/`grounded:null`, **пропускает per-step LLM-вызов** и **исключается из groundedness** (делитель — только оценённые шаги); в UI — нейтральный бейдж «not judged» вместо ложного «ungrounded». Выявлено при разборе прогона E-13. Тест `test_trace_evidence` на скип пустого шага; `judge_calls` теперь = оценённые+1.
 
 ## 2026-05-26

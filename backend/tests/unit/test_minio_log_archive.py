@@ -37,6 +37,35 @@ def test_read_log_archive_consumes_stream():
     fake_obj.release_conn.assert_called_once()
 
 
+class _Chunk:
+    def __init__(self, content, tool_name=None):
+        self.content = content
+        self.tool_name = tool_name
+
+
+def test_encode_decode_round_trip_preserves_tool_name():
+    chunks = [
+        _Chunk("thinking about it", tool_name=None),
+        _Chunk("ran the command\nwith a newline", tool_name="bash"),
+        _Chunk("search results", tool_name="web__web_search"),
+    ]
+    blob = minio_client.encode_log_archive(chunks).decode("utf-8")
+    decoded = minio_client.decode_log_archive(blob)
+    assert [d["tool_name"] for d in decoded] == [None, "bash", "web__web_search"]
+    assert decoded[1]["content"] == "ran the command\nwith a newline"  # newline survives
+
+
+def test_decode_legacy_plain_format_yields_no_tool_name():
+    legacy = "step one\n␞\nstep two\n␞\ntool output"
+    decoded = minio_client.decode_log_archive(legacy)
+    assert [d["content"] for d in decoded] == ["step one", "step two", "tool output"]
+    assert all(d["tool_name"] is None for d in decoded)
+
+
+def test_decode_empty_blob():
+    assert minio_client.decode_log_archive("") == []
+
+
 def test_ensure_bucket_creates_when_missing():
     fake = _fake_client()
     fake.bucket_exists.return_value = False

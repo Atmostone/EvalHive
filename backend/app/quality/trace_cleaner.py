@@ -315,20 +315,20 @@ def clean_trajectory(
 
 async def _load_log_chunks(db: AsyncSession, task: Task) -> list:
     """Load a task's log chunks from Postgres, or the MinIO archive after
-    compaction (mirrors api/agent_logs.list_log_chunks). Archive chunks lose
-    `tool_name` and `created_at` — the cleaner degrades gracefully."""
+    compaction (mirrors api/agent_logs.list_log_chunks). The JSON-lines archive
+    preserves `tool_name`; legacy plain-text archives lose it (degrade gracefully).
+    `created_at` is always absent from the archive."""
     if task.log_archive_s3_path:
         try:
-            from app.storage.minio_client import read_log_archive
+            from app.storage.minio_client import decode_log_archive, read_log_archive
 
             blob = read_log_archive(task.log_archive_s3_path).decode("utf-8", errors="replace")
         except Exception as e:
             logger.warning(f"reading log archive {task.log_archive_s3_path} failed: {e}")
             blob = ""
-        raw = blob.split("\n␞\n") if blob else []
         return [
-            AgentLogChunk(task_id=task.id, chunk_seq=i, content=c, tool_name=None)
-            for i, c in enumerate(raw)
+            AgentLogChunk(task_id=task.id, chunk_seq=i, content=d["content"], tool_name=d.get("tool_name"))
+            for i, d in enumerate(decode_log_archive(blob))
         ]
 
     return (
