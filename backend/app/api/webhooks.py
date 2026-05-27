@@ -279,15 +279,15 @@ async def _process_webhook(
 
 
 async def _compact_agent_log(db: AsyncSession, task: Task) -> None:
-    """Concatenate all agent_log_chunks for this task → MinIO blob, then prune from DB.
+    """Serialize all agent_log_chunks for this task → MinIO blob, then prune from DB.
 
-    Uses '\\n\\u241E\\n' (record-separator + newline padding) as a chunk
-    delimiter so the GET-from-archive path can still split per-chunk for the
-    UI. Atomic: upload first, set s3_path, DELETE rows in same transaction —
+    Uses the JSON-lines archive format (`encode_log_archive`) so each chunk keeps its
+    `tool_name` — the cleaned trace (E-06) and trajectory matcher (E-09) stay tool-aware
+    after compaction. Atomic: upload first, set s3_path, DELETE rows in same transaction —
     if upload fails, nothing changes.
     """
     from app.models.agent_log import AgentLogChunk
-    from app.storage.minio_client import upload_log_archive
+    from app.storage.minio_client import encode_log_archive, upload_log_archive
 
     if task.log_archive_s3_path:
         return  # idempotent — already compacted on a prior delivery
@@ -301,7 +301,7 @@ async def _compact_agent_log(db: AsyncSession, task: Task) -> None:
     if not chunks:
         return
 
-    blob = "\n␞\n".join(c.content for c in chunks).encode("utf-8")
+    blob = encode_log_archive(chunks)
     s3_path = upload_log_archive(str(task.id), blob)
 
     task.log_archive_s3_path = s3_path
