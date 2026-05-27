@@ -168,6 +168,31 @@ async def test_bank_accumulates_and_threads_into_prompts(monkeypatch):
     assert out["groundedness"] == round(2 / 3, 2)
 
 
+async def test_non_evidential_step_skipped(monkeypatch):
+    # an empty reasoning label carries no claim — it must not be sent to the judge
+    # nor get a grounded/ungrounded verdict, and must be excluded from groundedness.
+    trace = {
+        "task": {"id": "t", "title": "X", "description": "D"},
+        "steps": [
+            {"seq": 0, "kind": "reasoning", "tool_name": None, "content": "   ", "truncated": False},
+            {"seq": 1, "kind": "tool", "tool_name": "web_search", "content": "out", "truncated": False},
+            {"seq": 2, "kind": "tool", "tool_name": "file_read", "content": "out", "truncated": False},
+        ],
+        "stats": {"steps_total": 3},
+    }
+    prov = _Provider([{"grounded": True}, {"grounded": True}])  # only the 2 real steps
+    monkeypatch.setattr(te, "get_llm_provider", lambda: prov)
+    out = await evaluate_trajectory_with_evidence(trace, _llm(), max_input_tokens=10_000, max_steps=30)
+
+    assess_calls = [c for c in prov.calls if c["tools"][0]["function"]["name"] == "assess_step"]
+    assert len(assess_calls) == 2          # the empty step was not sent to the LLM
+    assert out["judge_calls"] == 3         # 2 assessed + 1 final
+    bank = {r["seq"]: r for r in out["evidence_bank"]}
+    assert bank[0]["assessed"] is False and bank[0]["grounded"] is None
+    assert bank[1]["assessed"] is True and bank[2]["assessed"] is True
+    assert out["groundedness"] == 1.0      # 2/2 assessed, not 2/3
+
+
 async def test_six_axes_and_tokens_summed(monkeypatch):
     prov = _Provider([{"facts": ["f"]}, {"facts": ["g"]}])
     monkeypatch.setattr(te, "get_llm_provider", lambda: prov)

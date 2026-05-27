@@ -131,6 +131,16 @@ def _serialize_step(step: dict) -> str:
     return f"[{step.get('seq')}] {label}{trunc}: {content}"
 
 
+def _is_non_evidential(step: dict) -> bool:
+    """An empty/label step — no tool call and no real content — carries no claim to
+    ground, so it must not get a grounded/ungrounded verdict (that was just noise,
+    e.g. an empty reasoning label or a bare status flag). Such steps are recorded
+    unassessed and skip the per-step LLM call entirely."""
+    if step.get("tool_name"):
+        return False
+    return not (step.get("content") or "").strip()
+
+
 def _format_bank(facts: list[tuple]) -> str:
     """Render the accumulated evidence (list of (source_seq, fact)) for a prompt."""
     if not facts:
@@ -154,6 +164,7 @@ def _parse_step(step: dict, args: dict) -> dict:
         "tool_name": step.get("tool_name"),
         "redundant": bool(args.get("redundant")),
         "grounded": bool(args.get("grounded")),
+        "assessed": True,
         "progress": progress,
         "execution": execution,
         "facts": facts,
@@ -185,6 +196,21 @@ async def _build_evidence_bank(
         "assess_step tool."
     )
     for s in steps:
+        # Empty/label steps carry no claim — record unassessed, skip the LLM call.
+        if _is_non_evidential(s):
+            bank.append({
+                "seq": s.get("seq"),
+                "kind": s.get("kind"),
+                "tool_name": s.get("tool_name"),
+                "redundant": False,
+                "grounded": None,
+                "assessed": False,
+                "progress": 0,
+                "execution": 0,
+                "facts": [],
+                "note": "non-evidential step (no content) — not judged",
+            })
+            continue
         user = (
             f"Task title: {task.get('title') or '(none)'}\n"
             f"Task description: {task.get('description') or '(none)'}\n\n"
@@ -213,6 +239,7 @@ async def _build_evidence_bank(
                 "tool_name": s.get("tool_name"),
                 "redundant": False,
                 "grounded": False,
+                "assessed": True,
                 "progress": 0,
                 "execution": 0,
                 "facts": [],
@@ -232,6 +259,11 @@ def _annotate_step(step: dict, rec: dict | None) -> str:
     if rec is None:
         return line
     tags = []
+    if rec.get("assessed") is False:
+        tags.append("not judged (no content)")
+        if rec.get("note"):
+            tags.append(rec["note"])
+        return f"{line}\n    ↳ {' | '.join(tags)}"
     if rec.get("facts"):
         tags.append("new evidence: " + "; ".join(rec["facts"]))
     tags.append("redundant" if rec.get("redundant") else "non-redundant")
@@ -349,9 +381,12 @@ async def evaluate_trajectory_with_evidence(
         task, steps, bank, judge_llm, max_input_tokens=max_input_tokens
     )
 
-    grounded = sum(1 for r in bank if r.get("grounded"))
-    redundant_steps = sum(1 for r in bank if r.get("redundant"))
-    groundedness = round(grounded / len(bank), 2) if bank else None
+    # Groundedness is computed only over *assessed* steps — empty/label steps that
+    # carry no claim are excluded (they are not "ungrounded", just non-evidential).
+    assessed = [r for r in bank if r.get("assessed")]
+    grounded = sum(1 for r in assessed if r.get("grounded"))
+    redundant_steps = sum(1 for r in assessed if r.get("redundant"))
+    groundedness = round(grounded / len(assessed), 2) if assessed else None
     total_in = in1 + final.get("judge_input_tokens", 0)
     total_out = out1 + final.get("judge_output_tokens", 0)
     stats = cleaned_trace.get("stats") or {}
@@ -370,7 +405,7 @@ async def evaluate_trajectory_with_evidence(
         "redundant_steps": redundant_steps,
         "evidence_bank": bank,
         "judge_model": judge_llm.model.api_name,
-        "judge_calls": len(steps) + 1,
+        "judge_calls": len(assessed) + 1,
         "judge_input_tokens": total_in,
         "judge_output_tokens": total_out,
         "judge_cost_usd": _judge_cost(judge_llm, total_in, total_out),
