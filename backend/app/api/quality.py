@@ -464,6 +464,74 @@ async def capability_aggregate(
     )
 
 
+@router.get("/records/{task_id}/failure-modes")
+async def get_failure_modes(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the failure-mode classification profile (E-14), or null if absent."""
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == uuid.UUID(task_id),
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return {"task_id": task_id, "failure_profile": rec.failure_profile}
+
+
+@router.post("/records/{task_id}/evaluate-failure-modes")
+async def evaluate_failure_modes_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """On-demand failure-mode classification (E-14). Skipped (profile null) when
+    there is no judge model or the task has an empty trace."""
+    from app.quality.failure_modes import evaluate_task_failure_modes
+
+    task = await _get_owned_task(db, task_id, workspace)
+    profile = await evaluate_task_failure_modes(db, task)
+    if profile is None:
+        return {
+            "task_id": task_id,
+            "failure_profile": None,
+            "skipped": True,
+            "detail": "no judge/orchestrator model configured, or the task has no trace",
+        }
+    return {"task_id": task_id, "failure_profile": profile, "skipped": False}
+
+
+@router.get("/failure-modes/aggregate")
+async def failure_modes_aggregate(
+    model_used: Optional[str] = Query(None),
+    template_id: Optional[str] = Query(None),
+    failure_class: Optional[str] = Query(None),
+    suite: Optional[str] = Query(None),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate failure profiles (E-14) into per-class distributions across the
+    workspace, with breakdowns by class / model / template — the distribution of
+    failure types per (model, template). `failure_class` narrows to runs carrying
+    that class; `suite` restricts to one Benchmark Case Store suite."""
+    from app.quality.failure_modes import aggregate_failure_modes
+
+    return await aggregate_failure_modes(
+        db,
+        workspace_id=workspace.id,
+        model_used=model_used,
+        template_id=_parse_uuid(template_id, "template_id"),
+        failure_class=failure_class,
+        suite=suite,
+    )
+
+
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,

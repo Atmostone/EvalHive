@@ -17,6 +17,7 @@ import TrajectoryMatchPanel from '@/components/quality/TrajectoryMatchPanel'
 import CapabilityPanel from '@/components/quality/CapabilityPanel'
 import VarianceRunPanel from '@/components/quality/VarianceRunPanel'
 import PerturbationPanel from '@/components/quality/PerturbationPanel'
+import FailureModePanel from '@/components/quality/FailureModePanel'
 
 interface TaskDetailProps {
   task: Task
@@ -224,6 +225,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Adversarial / perturbation (E-12) — perturb the input, measure robustness */}
             <PerturbationPanel taskId={task.id} />
+
+            {/* Failure modes (E-14) — classify the type(s) of failure in the trajectory */}
+            <FailureModePanel taskId={task.id} />
           </div>
         )}
 

@@ -475,6 +475,37 @@ without; the harness (`app/quality/capability.py::evaluate_task_capability`) is
   off-by-default `capability_evaluate` job (gated by `capability_eval_enabled`); a
   capability panel in TaskDetail.
 
+### Failure Mode Classifier (E-14)
+
+"Pass/fail" is too coarse. For research signal — "model X suffers tool confusion in
+23% of runs" (§3.4 F1) — the *type* of failure must be classified. On top of the
+trajectory judge (E-07), an LLM (`app/quality/failure_modes.py::evaluate_task_failure_modes`)
+labels the trajectory with zero or more failure classes. It runs on **every** terminal
+task (a clean run yields no labels — so it also surfaces "succeeded with a defective
+process"), and reuses the E-02/E-07 judge resolver (`quality_judge` → `orchestrator`),
+the E-06 cleaned trace, and the input-token cap pattern — no new model.
+
+- **Input** = the E-06 cleaned trace plus, as grounding context when already present,
+  the E-02 outcome profile (correct/incorrect + score) and the E-07 trajectory profile
+  (axis scores + `loop_detected`). The existing profiles are read as-is — **never
+  re-run** (cheap); `used_outcome_profile`/`used_trajectory_profile` record what was fed.
+- **Six base classes** (extensible via `FAILURE_CLASSES`): `tool_confusion`,
+  `parameter_blind`, `loop`, `premature_stop`, `hallucinated_tool_result`,
+  `ignored_error`. One LLM call returns a **multi-label** list — each label a
+  `{class, confidence (0..1), reason}` — validated against the taxonomy (unknown
+  classes dropped, de-duplicated keeping the highest confidence). Written to the
+  `failure_profile` slot; never raises (failure → `status: "error"`).
+- **Cost** is bounded by the `failure_judge_max_input_tokens` setting (default 12000),
+  trimming the trace to fit before the call (`input_capped` flag).
+- **Aggregation** (`aggregate_failure_modes`) rolls runs up into per-class counts with
+  `by_class`/`by_model`/`by_template` breakdowns and a per-class `rate` (count / runs) —
+  the "distribution of failure types per (model, template)" deliverable (feeds E-24 and
+  SPA-30 multi-agent failure attribution). `failure_class` narrows to runs carrying a
+  class; `suite` restricts to one Benchmark Case Store suite.
+- `POST /api/quality/records/{task_id}/evaluate-failure-modes`, `GET …/failure-modes`,
+  `GET /api/quality/failure-modes/aggregate`; off-by-default `failure_mode_evaluate` job
+  (gated by `failure_mode_eval_enabled`); a failure-mode panel in TaskDetail.
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),

@@ -53,6 +53,8 @@ c4d5e6f7a8b9  perturbation_runs — Adversarial / Perturbation Judge (E-12)
 d5e6f7a8b9c0  tasks.capability_spec + quality_records.capability_profile — Capability-isolation Tests (E-13)
      ↓
 e6f7a8b9c0d1  tasks.benchmark_case_id/suite + quality_records.benchmark_case_id/suite — Benchmark Case Store (pre-E-23)
+     ↓
+f7a8b9c0d1e2  quality_records.failure_profile — Failure Mode Classifier (E-14)
 ```
 
 ## Tables
@@ -282,6 +284,7 @@ placeholders filled by downstream eval features.
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
 | capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
+| failure_profile | JSONB? | **slot E-14** (multi-label failure-mode classification; added by migration `f7a8b9c0d1e2`) |
 | benchmark_case_id / benchmark_suite | VARCHAR(128)? | Benchmark Case Store linkage, denormalized from the task (migration `e6f7a8b9c0d1`); `benchmark_suite` indexed for suite-scoped aggregation |
 | human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
@@ -377,6 +380,23 @@ trace_stats: {steps_total, tool_steps}, evaluated_at, errors}`. `cheated` = corr
 outcome with the required tool **not** used (answered from memory). `aggregate_capability`
 rolls these up into `capability_score = genuine/total` by model/category/template. The
 off-by-default `capability_evaluate` job (setting `capability_eval_enabled`) batches it.
+
+The `failure_profile` slot is filled by the **Failure Mode Classifier** (E-14) —
+`POST /api/quality/records/{task_id}/evaluate-failure-modes`, building the record on
+demand if absent (added by migration `f7a8b9c0d1e2`). One LLM call (reusing the E-02/E-07
+judge model) labels the E-06 cleaned trace — with the existing E-02 outcome profile and
+E-07 trajectory profile fed as grounding context, **never re-run** — with a multi-label
+set of failure classes. It runs on every terminal task; a clean run yields an empty
+`failures` list. Shape: `{schema_version, status: scored|skipped|error,
+failures: [{class, confidence (0..1), reason}], summary, judge_model, judge_input_tokens,
+judge_output_tokens, judge_cost_usd, input_capped, used_outcome_profile,
+used_trajectory_profile, trace_stats, evaluated_at, errors}`. Classes (extensible):
+`tool_confusion`, `parameter_blind`, `loop`, `premature_stop`,
+`hallucinated_tool_result`, `ignored_error`. `aggregate_failure_modes` rolls runs up
+into per-class counts + `rate` by class/model/template — the distribution of failure
+types per (model, template). Input is bounded by `failure_judge_max_input_tokens`
+(default 12000); the off-by-default `failure_mode_evaluate` job (setting
+`failure_mode_eval_enabled`) batches it.
 
 ### rubrics (E-02)
 
@@ -504,6 +524,7 @@ Index: `enabled`.
 - `trajectory_judge_evaluate` — interval 600s, action `trajectory_judge_evaluate` (E-07: judge `done` records lacking a `trajectory_profile`; only runs when the `trajectory_eval_enabled` setting is true).
 - `trace_evidence_evaluate` — interval 600s, action `trace_evidence_evaluate` (E-08: TRACE evidence-bank judge for `done` records lacking a `trajectory_evidence_profile`; batch capped at 5/tick since each task is N+1 LLM calls; only runs when the `trace_evidence_eval_enabled` setting is true).
 - `capability_evaluate` — interval 600s, action `capability_evaluate` (E-13: run the Glass-Box capability harness on terminal tasks carrying a `capability_spec` but no `capability_profile`; only runs when the `capability_eval_enabled` setting is true).
+- `failure_mode_evaluate` — interval 600s, action `failure_mode_evaluate` (E-14: classify failure modes on `done` records lacking a `failure_profile`; only runs when the `failure_mode_eval_enabled` setting is true).
 
 ### users (R1)
 

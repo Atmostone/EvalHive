@@ -317,6 +317,47 @@ async def _job_runner(job_id: str):
                         workspace_id=job.workspace_id,
                     )
 
+        elif action == "failure_mode_evaluate":
+            # Failure Mode Classifier (E-14): classify failure modes on terminal
+            # `done` records that have no failure_profile yet. Off by default —
+            # gated by the `failure_mode_eval_enabled` setting to avoid surprise
+            # token spend; the on-demand API button works regardless.
+            from app.api.settings import get_setting
+            from app.models.task import Task, TaskStatus
+            from app.models.quality_record import QualityRecord
+            from app.quality.failure_modes import evaluate_task_failure_modes
+
+            if bool(await get_setting(db, "failure_mode_eval_enabled", False)):
+                pending = (
+                    await db.execute(
+                        select(QualityRecord)
+                        .where(
+                            QualityRecord.final_status == TaskStatus.DONE.value,
+                            QualityRecord.failure_profile.is_(None),
+                        )
+                        .limit(10)
+                    )
+                ).scalars().all()
+                evaluated = 0
+                for rec in pending:
+                    task = await db.get(Task, rec.task_id)
+                    if task is None:
+                        continue
+                    try:
+                        if await evaluate_task_failure_modes(db, task, commit=True):
+                            evaluated += 1
+                    except Exception as e:
+                        await db.rollback()
+                        logger.warning(
+                            f"failure-mode eval failed for task {rec.task_id}: {e}"
+                        )
+                if evaluated:
+                    await log_event(
+                        db, "failure_mode_batch", "system",
+                        {"evaluated": evaluated},
+                        workspace_id=job.workspace_id,
+                    )
+
         elif action == "variance_run_tick":
             # Variance / Robustness Harness (E-11): advance every non-terminal
             # run — create the next children under the cost cap, evaluate
@@ -448,6 +489,12 @@ async def seed_default_jobs():
             db.add(ScheduledJob(
                 name="capability_evaluate", kind="interval", interval_seconds=600,
                 payload={"action": "capability_evaluate"},
+                workspace_id=DEFAULT_WORKSPACE_ID,
+            ))
+        if "failure_mode_evaluate" not in names:
+            db.add(ScheduledJob(
+                name="failure_mode_evaluate", kind="interval", interval_seconds=600,
+                payload={"action": "failure_mode_evaluate"},
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ))
         if "variance_run_tick" not in names:

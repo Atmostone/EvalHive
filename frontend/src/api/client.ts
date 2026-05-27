@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -296,6 +296,15 @@ export const qualityApi = {
     const qs = q.toString()
     return request<CapabilityAggregate>(`/quality/capability/aggregate${qs ? `?${qs}` : ''}`)
   },
+  getFailureModes: (taskId: string) =>
+    request<{ task_id: string; failure_profile: FailureProfile | null }>(
+      `/quality/records/${taskId}/failure-modes`,
+    ),
+  evaluateFailureModes: (taskId: string) =>
+    request<{ task_id: string; failure_profile: FailureProfile | null; skipped: boolean; detail?: string }>(
+      `/quality/records/${taskId}/evaluate-failure-modes`,
+      { method: 'POST' },
+    ),
 }
 
 export interface HumanFeedbackInput {
