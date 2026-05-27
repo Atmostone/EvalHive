@@ -1,0 +1,17 @@
+id: cap-compute-005
+suite: capability-isolation
+category: exact_compute
+input:
+  title: Cube of 7919
+  description: Compute 7919**3 exactly. Return only the integer.
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+  reference_answer: '496604932559'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Models reliably err on large/exact computation without a tool.

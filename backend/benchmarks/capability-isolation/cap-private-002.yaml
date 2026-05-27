@@ -1,0 +1,19 @@
+id: cap-private-002
+suite: capability-isolation
+category: private_data
+input:
+  title: Staging Qdrant port
+  description: Per the internal runbook, which TCP port does the staging Qdrant instance
+    listen on?
+gold:
+  capability_spec:
+    required_tools:
+    - search_knowledge_base
+    match: all
+  reference_answer: '6344'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Fact exists only in the provided RAG doc; unreachable from memory.
+  requires_rag_doc: spawnhive-internal-runbook.md

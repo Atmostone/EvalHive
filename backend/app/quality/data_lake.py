@@ -220,6 +220,8 @@ async def build_quality_record(
         output_tokens=out,
         duration_seconds=_duration_seconds(task),
         tool_call_count=len(blob["execution"].get("tool_calls", [])),
+        benchmark_case_id=task.benchmark_case_id,
+        benchmark_suite=task.benchmark_suite,
         record_s3_path=s3_path,
         public_dataset_opt_in=opt_in_default,
     )

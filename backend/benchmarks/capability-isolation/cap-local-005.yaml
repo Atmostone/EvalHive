@@ -1,0 +1,18 @@
+id: cap-local-005
+suite: capability-isolation
+category: local_state
+input:
+  title: Number of CPUs available
+  description: How many CPU cores are available on this machine? Use bash to determine
+    it.
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Answer is environment/time dependent; outcome graded by judge. The capability
+    signal is whether the local tool was actually used.

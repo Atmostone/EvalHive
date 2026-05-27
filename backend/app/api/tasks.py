@@ -77,6 +77,8 @@ def task_to_dict(task: Task) -> dict:
         "reference_answer": task.reference_answer,
         "canonical_trajectory": task.canonical_trajectory,
         "capability_spec": task.capability_spec,
+        "benchmark_case_id": task.benchmark_case_id,
+        "benchmark_suite": task.benchmark_suite,
         "result_files": task.result_files,
         "token_usage": task.token_usage,
         "retry_count": task.retry_count,

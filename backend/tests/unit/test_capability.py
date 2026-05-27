@@ -79,6 +79,12 @@ def test_tool_used_case_insensitive():
     assert used is True and missing == []
 
 
+def test_tool_used_matches_mcp_prefixed_name():
+    # the agent exposes MCP tools as <server>__<tool>; a bare required name matches
+    used, missing = tool_used(["web_search", "now"], ["web__web_search", "time__now"], "all")
+    assert used is True and missing == []
+
+
 # --- classify -------------------------------------------------------------
 
 

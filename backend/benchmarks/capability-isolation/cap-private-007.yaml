@@ -1,0 +1,19 @@
+id: cap-private-007
+suite: capability-isolation
+category: private_data
+input:
+  title: Secret rotation cadence
+  description: Per the internal runbook, every how many days are provider API keys
+    rotated?
+gold:
+  capability_spec:
+    required_tools:
+    - search_knowledge_base
+    match: all
+  reference_answer: '45'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Fact exists only in the provided RAG doc; unreachable from memory.
+  requires_rag_doc: spawnhive-internal-runbook.md

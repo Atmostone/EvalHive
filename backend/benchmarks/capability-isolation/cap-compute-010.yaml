@@ -1,0 +1,18 @@
+id: cap-compute-010
+suite: capability-isolation
+category: exact_compute
+input:
+  title: SHA-256 of a string
+  description: 'Compute the SHA-256 hex digest of the exact ASCII string: SpawnHive
+    benchmark 2026. Return only the 64-character lowercase hex digest.'
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+  reference_answer: 846bc8ce19945f403ffd4787d7490eb2e6931a48b8279ecdc9e2bbae2cdb51f2
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Models reliably err on large/exact computation without a tool.

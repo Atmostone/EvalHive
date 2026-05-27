@@ -1,0 +1,18 @@
+id: cap-private-004
+suite: capability-isolation
+category: private_data
+input:
+  title: Incident retention policy
+  description: Per the internal runbook, how many days are incident postmortems retained?
+gold:
+  capability_spec:
+    required_tools:
+    - search_knowledge_base
+    match: all
+  reference_answer: '540'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Fact exists only in the provided RAG doc; unreachable from memory.
+  requires_rag_doc: spawnhive-internal-runbook.md

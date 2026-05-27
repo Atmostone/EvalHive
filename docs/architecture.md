@@ -475,6 +475,32 @@ without; the harness (`app/quality/capability.py::evaluate_task_capability`) is
   off-by-default `capability_evaluate` job (gated by `capability_eval_enabled`); a
   capability panel in TaskDetail.
 
+### Benchmark Case Store (pre-E-23)
+
+The eval engines need a **store of reusable task definitions** (with gold signals),
+not just the data lake of *results* (E-01). This is the mirror image of the
+`quality_records` result slots: a **case** carries `input` + a pluggable `gold`
+envelope (`reference_answer`, `rubric`, `canonical_trajectory`, `capability_spec`, …),
+and each future eval task plugs in by reading its gold key — no schema migration, same
+pattern as the result slots. Almost every methodology/comparison task (E-13B, E-15,
+E-16, E-17, E-21, E-23, U-02, V-22) consumes it.
+
+- **Layer 1 — format (source of truth):** versioned YAML/JSON files under
+  `backend/benchmarks/<suite>/`. Git is the store and its history; the same files are
+  what E-23 will index in a table and publish (so no rework). See [`benchmarks.md`](benchmarks.md).
+- **Layer 2 — loader + linkage** (`app/quality/benchmark.py`): `load_cases(suite)`
+  parses + validates (pydantic); `materialize` turns a case into one or more runnable
+  READY task instances — gold → the task's `reference_answer`/`canonical_trajectory`/
+  `capability_spec`, an optional pinned template (engine fast path) + `run_config.model_id`
+  override — each tagged with `benchmark_case_id`/`benchmark_suite`. Those are
+  denormalized onto the `quality_record` (`build_quality_record`), so eval aggregation
+  (e.g. `aggregate_capability(suite=…)`) can scope and group by suite × case × model.
+- **Run / compare:** the orchestrator loop drains the READY instances on the pinned
+  template/model; loading the same suite once per model gives the `by_model` comparison.
+  CLI `python -m app.cli.benchmark suites|load|status|evaluate|aggregate`.
+- **Out of scope here (→ E-23):** the registry table, catalogue API/UI, public
+  publication, leaderboards. Layers 1+2 only (KISS).
+
 ## Backend components
 
 | Module | Responsibility |
@@ -503,7 +529,8 @@ without; the harness (`app/quality/capability.py::evaluate_task_capability`) is
 | `app/quality/trajectory.py` | E-07 Trajectory Judge: `evaluate_task_trajectory` — single-call LLM scoring of the cleaned trace on 6 axes (efficiency/tool_selection/parameter_quality/error_recovery/goal_alignment/loop_detection) → `trajectory_profile` slot; cost-capped, reuses the E-02 judge-model resolver |
 | `app/quality/trace_evidence.py` | E-08 Evidence Bank Judge (TRACE): `evaluate_task_trace_evidence`/`evaluate_trajectory_with_evidence` — walks the cleaned trace step by step accumulating an evidence bank threaded into each step's prompt, then an evidence-aware 6-axis profile + `groundedness` → `trajectory_evidence_profile` slot (N+1 calls; reuses E-07's axes/tool/parser) |
 | `app/quality/trajectory_match.py` | E-09 Trajectory Matching: `evaluate_task_trajectory_match`/`match_trajectory` — deterministic, LLM-free comparison of the actual tool sequence (E-06) vs `task.canonical_trajectory` (list / sequence / DAG); exact + edit + dag (topological-order) metrics → `trajectory_match_profile` slot. Skipped unless a canonical trajectory is set |
-| `app/quality/capability.py` | E-13 Capability-isolation Tests: `evaluate_task_capability` (deterministic Glass-Box reuse of E-09 `extract_tool_sequence` + outcome correctness via E-02 → `genuine`/`cheated`/`failed_*` classification → `capability_profile` slot; skipped unless `task.capability_spec` is set) + `aggregate_capability` (capability_score by model/category/template) |
+| `app/quality/capability.py` | E-13 Capability-isolation Tests: `evaluate_task_capability` (deterministic Glass-Box reuse of E-09 `extract_tool_sequence` + outcome correctness via E-02 → `genuine`/`cheated`/`failed_*` classification → `capability_profile` slot; skipped unless `task.capability_spec` is set) + `aggregate_capability` (capability_score by model/category/template/suite) |
+| `app/quality/benchmark.py` | Benchmark Case Store (pre-E-23): `load_cases`/`materialize` — parse versioned case files (`backend/benchmarks/<suite>/`) and turn them into runnable READY task instances tagged with `benchmark_case_id`/`benchmark_suite` (gold → reference_answer/canonical_trajectory/capability_spec; pinned template + model override). Format + loader + linkage only; registry/API/UI/publication are E-23 |
 | `app/orchestrator/rerun.py` | E-11 re-run core: `clone_task_for_rerun` — clones a task's input into a fresh READY task (linked via `replay_of_task_id`), pinning the template / `run_config`. Shared seam for variance and future replay (E-21/E-24/U-03) |
 | `app/quality/variance.py` | E-11 Variance / Robustness Harness: `run_variance` + `advance_variance_run` — N re-runs of one scenario, cost-capped, drained by the orchestrator loop, aggregated into a dispersion `aggregate` (outcome/trajectory-length/trajectory-score distributions + success rate + tool stability) on `variance_runs`. Driven by the `variance_run_tick` job |
 | `app/quality/runs_common.py` | Shared helpers for the poll-driven harnesses (E-11/E-12): terminal-state sets, percentile/distribution stats, `ensure_child_evaluated` (inline E-02/E-07), `accumulated_cost`, `inflight_target` |

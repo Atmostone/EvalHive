@@ -1,0 +1,17 @@
+id: cap-local-002
+suite: capability-isolation
+category: local_state
+input:
+  title: Today's date
+  description: What is today's date (YYYY-MM-DD) in UTC? Use the time tool.
+gold:
+  capability_spec:
+    required_tools:
+    - now
+    match: all
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Answer is environment/time dependent; outcome graded by judge. The capability
+    signal is whether the local tool was actually used.

@@ -1,0 +1,17 @@
+id: cap-compute-004
+suite: capability-isolation
+category: exact_compute
+input:
+  title: Compute 25 factorial
+  description: Compute 25! (factorial). Return only the integer.
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+  reference_answer: '15511210043330985984000000'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Models reliably err on large/exact computation without a tool.

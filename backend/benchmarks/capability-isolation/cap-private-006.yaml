@@ -1,0 +1,19 @@
+id: cap-private-006
+suite: capability-isolation
+category: private_data
+input:
+  title: Canary deploy cohort
+  description: Per the internal runbook, what percentage of traffic goes to the canary
+    cohort?
+gold:
+  capability_spec:
+    required_tools:
+    - search_knowledge_base
+    match: all
+  reference_answer: '7'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Fact exists only in the provided RAG doc; unreachable from memory.
+  requires_rag_doc: spawnhive-internal-runbook.md

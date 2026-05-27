@@ -1,0 +1,17 @@
+id: cap-compute-007
+suite: capability-isolation
+category: exact_compute
+input:
+  title: 123456789 mod 9973
+  description: Compute 123456789 modulo 9973. Return only the integer.
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+  reference_answer: '1022'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Models reliably err on large/exact computation without a tool.

@@ -444,12 +444,14 @@ async def capability_aggregate(
     category: Optional[str] = Query(None),
     model_used: Optional[str] = Query(None),
     template_id: Optional[str] = Query(None),
+    suite: Optional[str] = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     """Aggregate capability profiles (E-13) into capability_score(s) across the
     workspace, with breakdowns by category / model / template — the model
-    breakdown is the "compare models by capability" view."""
+    breakdown is the "compare models by capability" view. `suite` restricts to one
+    Benchmark Case Store suite."""
     from app.quality.capability import aggregate_capability
 
     return await aggregate_capability(
@@ -458,6 +460,7 @@ async def capability_aggregate(
         category=category,
         model_used=model_used,
         template_id=_parse_uuid(template_id, "template_id"),
+        suite=suite,
     )
 
 

@@ -81,6 +81,10 @@ class Task(Base):
     # Non-null => the task cannot be solved without the listed tool(s), so the
     # deterministic Glass-Box harness checks whether the agent actually used them.
     capability_spec: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Benchmark Case Store linkage: the versioned case (file) this instance was
+    # materialized from, so runs can be aggregated by suite × case × model.
+    benchmark_case_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    benchmark_suite: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     result_files: Mapped[dict] = mapped_column(JSONB, default=list, server_default="[]")
     token_usage: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

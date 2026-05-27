@@ -1,0 +1,17 @@
+id: cap-compute-001
+suite: capability-isolation
+category: exact_compute
+input:
+  title: Multiply 48271 by 92837
+  description: Compute the exact product of 48271 and 92837. Return only the integer.
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+  reference_answer: '4481334827'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Models reliably err on large/exact computation without a tool.

@@ -21,6 +21,7 @@ services:
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
       - ./backend/tests:/app/tests
+      - ./backend/benchmarks:/app/benchmarks
       - ./backend/pytest.ini:/app/pytest.ini
       - ./backend/requirements-dev.txt:/app/requirements-dev.txt
     env_file:

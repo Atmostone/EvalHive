@@ -197,7 +197,7 @@ scores a finished task into a profile written to `quality_records.quality_profil
 | POST | `/api/quality/records/{task_id}/evaluate-trajectory-match` | **owner/admin** — on-demand, **LLM-free** trajectory match (re-runs/overwrites). Returns `{trajectory_match_profile, skipped, detail?}`; `skipped=true` when the task has no `canonical_trajectory`. Profile carries `mode` (exact\|edit\|dag), `score`, `matched`, `threshold`, `metrics:{exact,edit,dag}`, `actual_sequence[]`, `reference_sequence[]`, `reference_form` (sequence\|dag), `detail`, `trace_stats:{steps_total,tool_steps}`, `status`. A bad/unparseable canonical → `status:"error"` (not skipped) |
 | GET | `/api/quality/records/{task_id}/capability` | `{task_id, capability_profile}` — deterministic capability-isolation profile (E-13) or null until evaluated (404 if no record in workspace) |
 | POST | `/api/quality/records/{task_id}/evaluate-capability` | **owner/admin** — on-demand capability-isolation harness (E-13; Glass-Box matching is LLM-free, but outcome correctness reuses the E-02 judge, running it once if no profile exists). Returns `{capability_profile, skipped, detail?}`; `skipped=true` when the task has no `capability_spec`. Profile carries `category`, `required_tools[]`, `match` (all\|any), `tools_called[]`, `tool_used`, `missing_tools[]`, `outcome_correct`, `outcome_signal` (reference\|judge\|none), `outcome_score`, `outcome_threshold`, `classification` (genuine\|cheated\|failed_with_tool\|failed_no_tool), `capability_passed`, `trace_stats`, `status`. The **cheated** cell = correct outcome but the required tool was not used |
-| GET | `/api/quality/capability/aggregate?category=&model_used=&template_id=` | Aggregate capability profiles across the workspace into `capability_score = genuine/total`, with `by_category`/`by_model`/`by_template` breakdowns (the model breakdown is the "compare models by capability" view). Each bucket carries the four-cell counts + `total` + `capability_score` |
+| GET | `/api/quality/capability/aggregate?category=&model_used=&template_id=&suite=` | Aggregate capability profiles across the workspace into `capability_score = genuine/total`, with `by_category`/`by_model`/`by_template` breakdowns (the model breakdown is the "compare models by capability" view). Each bucket carries the four-cell counts + `total` + `capability_score`. `suite` restricts to one Benchmark Case Store suite |
 | POST | `/api/quality/variance` | **owner/admin** — start a Variance / Robustness run (E-11). Body `{source_task_id?, spec?:{title,description?,reference_answer?}, n=10 (2..50), parallel=true, cost_cap_usd?, template_id?}` — exactly one of `source_task_id` (replay an existing finished task N times) or `spec` (run a fresh spec N times), else 422. Returns the variance run (`{id, status, n, child_task_ids, accumulated_cost_usd, aggregate, …}`); children are created and drained by the orchestrator loop, advanced by the `variance_run_tick` job |
 | GET | `/api/quality/variance/{run_id}` | The variance run + a `children:[{id,status,cost_usd,result_summary}]` summary (404 if not in workspace). `aggregate` (once finalized) carries `n_executed/n_success/n_failed`, `success_rate`, `dimensions:[{key,name,unit,available,dist:{n,mean,std,min,p25,p50,p75,p95,max,values[]}}]` (outcome_score / trajectory_length / trajectory_score), `tool_stability:{runs,distinct_signatures,modal_share,per_tool[],signatures[]}`, `capped` |
 | GET | `/api/quality/variance?source_task_id=` | List the workspace's variance runs, newest first; optional `source_task_id` filter |
@@ -233,6 +233,14 @@ the harness for one task) and `… python -m app.cli.capability aggregate [--cat
 Auto-evaluation runs as the `capability_evaluate` scheduler job when the
 `capability_eval_enabled` setting is true (off by default); the outcome-correctness
 threshold is the `capability_outcome_threshold` setting (default 7.0).
+
+The **Benchmark Case Store** (pre-E-23) materializes versioned case files into
+runnable tasks: `docker compose exec api python -m app.cli.benchmark suites|load
+--suite <s> --template <id> [--model <id>] [--repeat K]|status|evaluate|aggregate`.
+Cases live in `backend/benchmarks/<suite>/*.yaml`; runs are tagged
+`benchmark_suite`/`benchmark_case_id` and aggregate via the `suite=` filter above.
+Full format + workflow in [`benchmarks.md`](benchmarks.md). The registry table /
+catalogue API / publication are E-23.
 
 ### Scheduled jobs (`/api/scheduled-jobs`)
 

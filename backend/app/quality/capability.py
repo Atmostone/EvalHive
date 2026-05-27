@@ -91,20 +91,56 @@ def normalize_spec(spec) -> dict | None:
     return {"required_tools": tools, "category": category, "match": match}
 
 
+def _expand_called(called: list[str]) -> set[str]:
+    """Normalized set of called tools, plus the bare tool name of MCP-prefixed calls.
+
+    The agent exposes an MCP server's tools as ``<server>__<tool>`` (e.g. a `web`
+    server's ``web_search`` becomes ``web__web_search``). So a case can require the
+    bare ``web_search`` / ``now`` and still match the prefixed name the agent emits.
+    """
+    out: set[str] = set()
+    for c in called:
+        n = _normalize(c)
+        out.add(n)
+        if "__" in n:
+            out.add(n.split("__", 1)[1])
+    return out
+
+
 def tool_used(required: list[str], called: list[str], match: str) -> tuple[bool, list[str]]:
     """Glass-Box check: were the required tools actually called?
 
     ``all`` (default) requires every required tool to appear; ``any`` requires at
-    least one. Returns ``(used, missing)`` where ``missing`` lists the required
-    tools not found in the call set (normalized, case-insensitive).
+    least one. MCP-prefixed names match their bare tool name. Returns
+    ``(used, missing)`` where ``missing`` lists the required tools not found.
     """
-    called_set = {_normalize(c) for c in called}
+    called_set = _expand_called(called)
     missing = [t for t in required if _normalize(t) not in called_set]
     if match == "any":
         used = len(missing) < len(required)
     else:  # all
         used = not missing
     return used, missing
+
+
+async def _durable_tool_names(record) -> list[str]:
+    """Tool names from the E-01 quality blob's pre-compaction tool-call record.
+
+    The blob (``record.record_s3_path``) captures ``execution.tool_calls`` while the
+    log chunks still carry ``tool_name`` — so this survives log compaction, unlike
+    the cleaned trace. Best-effort: returns ``[]`` on any failure."""
+    if record is None or not getattr(record, "record_s3_path", None):
+        return []
+    try:
+        import json
+
+        from app.storage.minio_client import read_quality_record
+
+        blob = json.loads(read_quality_record(record.record_s3_path))
+        calls = (blob.get("execution") or {}).get("tool_calls") or []
+        return [str(c.get("tool_name")) for c in calls if c.get("tool_name")]
+    except Exception:  # noqa: BLE001 — the blob is a best-effort fallback
+        return []
 
 
 def classify(outcome_correct: bool, used: bool) -> str:
@@ -171,8 +207,14 @@ async def evaluate_task_capability(
 
     try:
         cleaned_trace = await build_cleaned_trace(db, task)
-        called = extract_tool_sequence(cleaned_trace)
-        distinct_called = list(dict.fromkeys(called))  # order-preserving distinct
+        # Tool calls from the live cleaned trace, unioned with the durable tool-call
+        # record captured in the E-01 blob *before* log compaction. After a task's
+        # logs are archived the cleaned trace loses tool_name (so it sees no tools);
+        # the blob is the compaction-proof source, keeping the Glass-Box check honest.
+        called = list(dict.fromkeys(
+            extract_tool_sequence(cleaned_trace) + await _durable_tool_names(record)
+        ))
+        distinct_called = called
         used, missing = tool_used(spec["required_tools"], called, spec["match"])
 
         # Outcome correctness reuses the configured judge; run E-02 once if absent.
@@ -263,12 +305,14 @@ async def aggregate_capability(
     category: str | None = None,
     model_used: str | None = None,
     template_id=None,
+    suite: str | None = None,
 ) -> dict:
     """Aggregate capability profiles across a workspace into capability_score(s).
 
     ``capability_score = genuine / total`` over the matching *scored* profiles, with
     breakdowns by category, model and template — the model breakdown is the
-    "compare models by capability_score" view. Filters narrow the population.
+    "compare models by capability_score" view. Filters narrow the population;
+    ``suite`` restricts to one Benchmark Case Store suite.
     """
     q = select(QualityRecord).where(
         QualityRecord.workspace_id == workspace_id,
@@ -278,6 +322,8 @@ async def aggregate_capability(
         q = q.where(QualityRecord.model_used == model_used)
     if template_id is not None:
         q = q.where(QualityRecord.template_id == template_id)
+    if suite:
+        q = q.where(QualityRecord.benchmark_suite == suite)
     rows = (await db.execute(q)).scalars().all()
 
     overall = _blank_counts()
@@ -312,6 +358,7 @@ async def aggregate_capability(
             "category": category,
             "model_used": model_used,
             "template_id": str(template_id) if template_id else None,
+            "suite": suite,
         },
         **_with_score(overall),
         "by_category": {k: _with_score(v) for k, v in sorted(by_category.items())},
