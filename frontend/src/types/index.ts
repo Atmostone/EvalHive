@@ -380,6 +380,43 @@ export interface CapabilityAggregate extends CapabilityCounts {
   by_template: Record<string, CapabilityCounts>
 }
 
+// Failure Mode Classifier (E-14): a multi-label set of failure classes (with
+// confidence + reason) over the trajectory, written to `failure_profile`.
+export type FailureClass =
+  | 'tool_confusion'
+  | 'parameter_blind'
+  | 'loop'
+  | 'premature_stop'
+  | 'hallucinated_tool_result'
+  | 'ignored_error'
+
+export interface FailureLabel {
+  class: FailureClass
+  confidence: number
+  reason: string
+}
+
+export interface FailureProfile {
+  schema_version: number
+  status: TrajectoryStatus
+  failures: FailureLabel[]
+  summary: string
+  judge_model: string
+  judge_input_tokens: number
+  judge_output_tokens: number
+  judge_cost_usd: number
+  input_capped: boolean
+  used_outcome_profile: boolean
+  used_trajectory_profile: boolean
+  trace_stats: {
+    original_tokens: number | null
+    cleaned_tokens: number | null
+    steps_total: number | null
+  }
+  evaluated_at: string
+  errors: { error: string }[]
+}
+
 export interface Agent {
   container_id: string
   name: string
