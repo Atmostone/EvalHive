@@ -1,0 +1,19 @@
+id: cap-fresh-005
+suite: capability-isolation
+category: fresh_data
+input:
+  title: Latest Kubernetes minor release
+  description: What is the latest stable Kubernetes minor release today? Use a web
+    search.
+gold:
+  capability_spec:
+    required_tools:
+    - web_search
+    match: all
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Answer changes over time; outcome graded by judge. The capability signal is
+    whether web_search was actually used (cheated = answered from stale memory).
+  valid_until: '2026-08-01'

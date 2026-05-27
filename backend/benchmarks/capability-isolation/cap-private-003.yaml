@@ -1,0 +1,18 @@
+id: cap-private-003
+suite: capability-isolation
+category: private_data
+input:
+  title: Billing service on-call owner
+  description: Per the internal runbook, who is the on-call owner of the billing service?
+gold:
+  capability_spec:
+    required_tools:
+    - search_knowledge_base
+    match: all
+  reference_answer: Marina Velez
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Fact exists only in the provided RAG doc; unreachable from memory.
+  requires_rag_doc: spawnhive-internal-runbook.md

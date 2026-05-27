@@ -1,0 +1,18 @@
+id: cap-private-008
+suite: capability-isolation
+category: private_data
+input:
+  title: Internal status page slug
+  description: Per the internal runbook, what is the slug of the internal status page?
+gold:
+  capability_spec:
+    required_tools:
+    - search_knowledge_base
+    match: all
+  reference_answer: aurora-status
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Fact exists only in the provided RAG doc; unreachable from memory.
+  requires_rag_doc: spawnhive-internal-runbook.md

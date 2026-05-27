@@ -39,6 +39,7 @@ class QualityRecord(Base):
         Index("idx_quality_records_model", "model_used"),
         Index("idx_quality_records_status", "final_status"),
         Index("idx_quality_records_created", "created_at"),
+        Index("idx_quality_records_benchmark_suite", "benchmark_suite"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -67,6 +68,10 @@ class QualityRecord(Base):
     is_decomposition_root: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )
+    # Benchmark Case Store linkage (denormalized from the task), for suite-scoped
+    # aggregation that survives task deletion.
+    benchmark_case_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    benchmark_suite: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     # Outcome metrics (denormalized from the task).
     cost_usd: Mapped[Decimal] = mapped_column(

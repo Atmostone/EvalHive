@@ -51,6 +51,8 @@ b3c4d5e6f7a8  tasks.replay_of_task_id + tasks.run_config + variance_runs — Var
 c4d5e6f7a8b9  perturbation_runs — Adversarial / Perturbation Judge (E-12)
      ↓
 d5e6f7a8b9c0  tasks.capability_spec + quality_records.capability_profile — Capability-isolation Tests (E-13)
+     ↓
+e6f7a8b9c0d1  tasks.benchmark_case_id/suite + quality_records.benchmark_case_id/suite — Benchmark Case Store (pre-E-23)
 ```
 
 ## Tables
@@ -71,6 +73,8 @@ d5e6f7a8b9c0  tasks.capability_spec + quality_records.capability_profile — Cap
 | reference_answer | TEXT | NULL | optional gold answer for reference-based scoring (E-03); compared against `result_summary` by `reference` rubric dimensions |
 | canonical_trajectory | JSONB | NULL | optional gold trajectory for matching (E-09; migration `a8b9c0d1e2f3`); a list of tool names or a `{nodes, edges}` DAG. Non-null ⇒ the matcher applies |
 | capability_spec | JSONB | NULL | optional capability-isolation spec (E-13; migration `d5e6f7a8b9c0`): `{required_tools[], category?, match?:all\|any}`. Non-null ⇒ the Glass-Box harness applies |
+| benchmark_case_id | VARCHAR(128) | NULL | Benchmark Case Store (migration `e6f7a8b9c0d1`): the versioned case this instance was materialized from |
+| benchmark_suite | VARCHAR(128) | NULL | Benchmark Case Store: the suite the case belongs to |
 | replay_of_task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | re-run/replay lineage (E-11; migration `b3c4d5e6f7a8`) — the task this one was cloned from. Distinct from `parent_id` so variance/replay children are never rolled into a parent's subtask-completion check |
 | run_config | JSONB | NULL | optional per-run overrides honored at spawn time (E-11): `{template_id?, model_id?, soul_md?, seed?, temperature?, tool_injection?}`. When set, the orchestrator skips decomposition + selection and pins this config (seam for E-21/E-24/U-03; E-11 sets `template_id`, E-12 adds `tool_injection` — a payload appended to the first tool response at runtime) |
 | result_files | JSONB | [] | list of MinIO paths |
@@ -278,6 +282,7 @@ placeholders filled by downstream eval features.
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
 | capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
+| benchmark_case_id / benchmark_suite | VARCHAR(128)? | Benchmark Case Store linkage, denormalized from the task (migration `e6f7a8b9c0d1`); `benchmark_suite` indexed for suite-scoped aggregation |
 | human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
 | reproducibility | JSONB? | **slot E-20** |
@@ -353,7 +358,10 @@ harness (E-13, part A) — `POST /api/quality/records/{task_id}/evaluate-capabil
 building the record on demand if absent (added by migration `d5e6f7a8b9c0`). It only
 applies to tasks with a `capability_spec` (`{required_tools[], category?, match?}`).
 Glass-Box matching (reusing E-09's `extract_tool_sequence`) checks whether the
-required tools were actually called; outcome correctness reuses the E-02 judge (a
+required tools were actually called — sourced from the cleaned trace **unioned with
+the durable E-01 blob** (`execution.tool_calls`, captured before log compaction, since
+the MinIO archive drops `tool_name`) and matched prefix-aware (`web_search` ↔
+`web__web_search`); outcome correctness reuses the E-02 judge (a
 scored `reference` dimension when present, else `weighted_score ≥
 capability_outcome_threshold`, default 7.0 — no new model). Shape:
 `{schema_version, status: scored|error, category, required_tools [str], match: all|any,

@@ -1,0 +1,18 @@
+id: cap-compute-006
+suite: capability-isolation
+category: exact_compute
+input:
+  title: Sum of integers 1..100000
+  description: Compute the sum of all integers from 1 to 100000 inclusive. Return
+    only the integer.
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+  reference_answer: '5000050000'
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Models reliably err on large/exact computation without a tool.

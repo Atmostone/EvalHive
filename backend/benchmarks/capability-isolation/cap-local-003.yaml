@@ -1,0 +1,18 @@
+id: cap-local-003
+suite: capability-isolation
+category: local_state
+input:
+  title: Kernel version of this machine
+  description: Report the Linux kernel version of the machine you are running on (uname
+    -r). Use bash.
+gold:
+  capability_spec:
+    required_tools:
+    - bash
+    match: all
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Answer is environment/time dependent; outcome graded by judge. The capability
+    signal is whether the local tool was actually used.

@@ -9,6 +9,7 @@ COPY agent.py .
 COPY entrypoint.py .
 COPY feedback_server.py .
 COPY time_server.py .
+COPY web_server.py .
 
 EXPOSE 8080
 

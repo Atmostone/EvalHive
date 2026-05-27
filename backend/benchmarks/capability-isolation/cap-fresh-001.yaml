@@ -1,0 +1,19 @@
+id: cap-fresh-001
+suite: capability-isolation
+category: fresh_data
+input:
+  title: Latest stable CPython release
+  description: What is the latest stable CPython release version available today?
+    Use a web search.
+gold:
+  capability_spec:
+    required_tools:
+    - web_search
+    match: all
+meta:
+  source: hand-authored
+  license: CC0
+  public: false
+  note: Answer changes over time; outcome graded by judge. The capability signal is
+    whether web_search was actually used (cheated = answered from stale memory).
+  valid_until: '2026-08-01'
