@@ -18,6 +18,7 @@ import CapabilityPanel from '@/components/quality/CapabilityPanel'
 import VarianceRunPanel from '@/components/quality/VarianceRunPanel'
 import PerturbationPanel from '@/components/quality/PerturbationPanel'
 import FailureModePanel from '@/components/quality/FailureModePanel'
+import HallucinationPanel from '@/components/quality/HallucinationPanel'
 
 interface TaskDetailProps {
   task: Task
@@ -228,6 +229,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Failure modes (E-14) — classify the type(s) of failure in the trajectory */}
             <FailureModePanel taskId={task.id} />
+
+            {/* Hallucinations (E-15) — fact-check the deliverable's URLs/APIs/numbers/citations */}
+            <HallucinationPanel taskId={task.id} />
           </div>
         )}
 

@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -303,6 +303,15 @@ export const qualityApi = {
   evaluateFailureModes: (taskId: string) =>
     request<{ task_id: string; failure_profile: FailureProfile | null; skipped: boolean; detail?: string }>(
       `/quality/records/${taskId}/evaluate-failure-modes`,
+      { method: 'POST' },
+    ),
+  getHallucinations: (taskId: string) =>
+    request<{ task_id: string; hallucination_profile: HallucinationProfile | null }>(
+      `/quality/records/${taskId}/hallucinations`,
+    ),
+  evaluateHallucinations: (taskId: string) =>
+    request<{ task_id: string; hallucination_profile: HallucinationProfile | null; skipped: boolean; detail?: string }>(
+      `/quality/records/${taskId}/evaluate-hallucinations`,
       { method: 'POST' },
     ),
 }

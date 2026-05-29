@@ -2,6 +2,16 @@
 
 Формат: `YYYY-MM-DD — что изменилось — ссылка на блок плана / PR`.
 
+## 2026-05-29
+
+- **E-15 — Hallucination Detection (Q-09).** Outcome-оценка (E-02) и траектория (E-07) не ловят выдуманные **URL / API / цифры / утверждения** внутри текста результата: итог может быть «верным», а ссылки/функции/числа — сфабрикованы. E-15 — **fact-checker над завершённым прогоном** по 4 категориям (Phase 3, Linear SPA-19; разблокирован E-02; без блокируемых).
+  - **Данные:** новый слот `quality_records.hallucination_profile` (JSONB). Миграция `a9b0c1d2e3f4` (down_revision `f7a8b9c0d1e2`), 1 столбец. Слот **ортогонален** `quality_profile` (E-02) — `hallucination_rate` живёт рядом, а не как `dimension` в rubric-движке E-02 (то же решение, что у E-13 `capability_profile` / E-14 `failure_profile`).
+  - **Гибридный детектор** (`app/quality/hallucination.py`): вход — `task.result_summary` (deliverable) + E-06 cleaned trace (ground truth), плюс как опорный контекст E-02 outcome-summary и E-08 evidence-факты (если есть; **не пере-прогоняются**). **URL и API — детерминированно**: URL «supported» ⟺ встречается в каком-либо tool-аргументе/результате трейса (substring, in-trace only, без live HTTP — флаг live зарезервирован под v2); API-символ `pkg.func(` извлекается из code-fences и тоже сверяется с трейсом. **Numbers, citations и неподтверждённые API — один LLM-вызов** (резолв модели `quality_judge→orchestrator`, как E-02/E-07/E-14; новой конфигурации нет). Если детерминированный проход не оставил кандидатов — **0 LLM-вызовов**.
+  - **Профиль:** `categories.{urls,apis,numbers,citations}.{checked, hallucinated, items[]}` (каждый item помечен `kind: deterministic|llm`; у LLM-вердиктов есть `confidence`), top-level `hallucination_count` / `items_total` / `hallucination_rate` (= count/items_total). Чистый deliverable → rate 0. Никогда не бросает (`status:"error"`); нет модели/deliverable/трейса → skipped. Cost-cap по `hallucination_judge_max_input_tokens` (default 12000), переиспользует `_fit_trace_to_budget`.
+  - **Агрегация** `aggregate_hallucinations` → per-category `checked`/`hallucinated`/`rate` + `hallucinated_runs` с разбивкой `by_category`/`by_model`/`by_template` — «hallucination rate per (model, template)»; `category=` сужает популяцию до прогонов с ≥1 галлюцинацией в категории.
+  - **API/UI:** `GET …/records/{id}/hallucinations`, `POST …/records/{id}/evaluate-hallucinations`, `GET /api/quality/hallucinations/aggregate`; off-by-default job `hallucination_evaluate` (gate `hallucination_eval_enabled`, interval 600s); панель `HallucinationPanel` в TaskDetail.
+  - Тесты: `tests/unit/test_hallucinations.py` (16: экстракторы URL/API/numbers/claims, in-trace cross-check, verdict-mapping, парсинг/budget/ошибки LLM, агрегация + category-фильтр) + `tests/integration/test_hallucinations.py` (4: scored с supported/hallucinated URL + LLM-flagged number + GET + aggregate, skipped без модели, skipped без deliverable, cross-workspace 404).
+
 ## 2026-05-27
 
 - **E-14 — Failure Mode Classifier (F1).** «Прошёл/не прошёл» слишком грубо: для research-сигнала «модель X страдает tool confusion в 23% прогонов» (§3.4 F1) нужна классификация **типа** провала поверх trajectory-judge (E-07) (Phase 3, Linear SPA-18; разблокирован E-07; разблокирует SPA-30).

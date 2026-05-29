@@ -532,6 +532,75 @@ async def failure_modes_aggregate(
     )
 
 
+@router.get("/records/{task_id}/hallucinations")
+async def get_hallucinations(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the hallucination fact-check profile (E-15), or null if absent."""
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == uuid.UUID(task_id),
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return {"task_id": task_id, "hallucination_profile": rec.hallucination_profile}
+
+
+@router.post("/records/{task_id}/evaluate-hallucinations")
+async def evaluate_hallucinations_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """On-demand hallucination fact-check (E-15). Skipped (profile null) when
+    there is no judge model, no result deliverable, or an empty trace."""
+    from app.quality.hallucination import evaluate_task_hallucinations
+
+    task = await _get_owned_task(db, task_id, workspace)
+    profile = await evaluate_task_hallucinations(db, task)
+    if profile is None:
+        return {
+            "task_id": task_id,
+            "hallucination_profile": None,
+            "skipped": True,
+            "detail": "no judge/orchestrator model, no result deliverable, or no trace",
+        }
+    return {"task_id": task_id, "hallucination_profile": profile, "skipped": False}
+
+
+@router.get("/hallucinations/aggregate")
+async def hallucinations_aggregate(
+    model_used: Optional[str] = Query(None),
+    template_id: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    suite: Optional[str] = Query(None),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate hallucination profiles (E-15) across the workspace, with
+    per-category checked/hallucinated counts and breakdowns by category / model /
+    template — the hallucination rate per (model, template). `category` narrows to
+    runs with ≥1 hallucination in that category; `suite` restricts to one
+    Benchmark Case Store suite."""
+    from app.quality.hallucination import aggregate_hallucinations
+
+    return await aggregate_hallucinations(
+        db,
+        workspace_id=workspace.id,
+        model_used=model_used,
+        template_id=_parse_uuid(template_id, "template_id"),
+        category=category,
+        suite=suite,
+    )
+
+
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,
