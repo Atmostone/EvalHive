@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -314,6 +314,24 @@ export const qualityApi = {
       `/quality/records/${taskId}/evaluate-hallucinations`,
       { method: 'POST' },
     ),
+  getCalibration: (taskId: string) =>
+    request<{ task_id: string; calibration_profile: CalibrationProfile | null }>(
+      `/quality/records/${taskId}/calibration`,
+    ),
+  evaluateCalibration: (taskId: string) =>
+    request<{ task_id: string; calibration_profile: CalibrationProfile | null; skipped: boolean; detail?: string }>(
+      `/quality/records/${taskId}/evaluate-calibration`,
+      { method: 'POST' },
+    ),
+  getCalibrationAggregate: (params?: { model_used?: string; template_id?: string; suite?: string; bins?: number }) => {
+    const q = new URLSearchParams()
+    if (params?.model_used) q.set('model_used', params.model_used)
+    if (params?.template_id) q.set('template_id', params.template_id)
+    if (params?.suite) q.set('suite', params.suite)
+    if (params?.bins) q.set('bins', String(params.bins))
+    const qs = q.toString()
+    return request<CalibrationAggregate>(`/quality/calibration/aggregate${qs ? `?${qs}` : ''}`)
+  },
 }
 
 export interface HumanFeedbackInput {

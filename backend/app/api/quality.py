@@ -601,6 +601,75 @@ async def hallucinations_aggregate(
     )
 
 
+@router.get("/records/{task_id}/calibration")
+async def get_calibration(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the confidence-calibration profile (E-16), or null if absent."""
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == uuid.UUID(task_id),
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return {"task_id": task_id, "calibration_profile": rec.calibration_profile}
+
+
+@router.post("/records/{task_id}/evaluate-calibration")
+async def evaluate_calibration_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """On-demand confidence-calibration probe (E-16). Skipped (profile null) when
+    no model is resolvable, there is no result deliverable, or the E-02 profile
+    has no correctness signal to calibrate against."""
+    from app.quality.calibration import evaluate_task_calibration
+
+    task = await _get_owned_task(db, task_id, workspace)
+    profile = await evaluate_task_calibration(db, task)
+    if profile is None:
+        return {
+            "task_id": task_id,
+            "calibration_profile": None,
+            "skipped": True,
+            "detail": "no model resolvable, no result deliverable, or no correctness signal",
+        }
+    return {"task_id": task_id, "calibration_profile": profile, "skipped": False}
+
+
+@router.get("/calibration/aggregate")
+async def calibration_aggregate(
+    model_used: Optional[str] = Query(None),
+    template_id: Optional[str] = Query(None),
+    suite: Optional[str] = Query(None),
+    bins: int = Query(10, ge=2, le=20),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate calibration profiles (E-16) across the workspace into ECE / Brier
+    / reliability-diagram metrics, overall and broken down by model / template,
+    with a per-model recommendation. `suite` restricts to one Benchmark Case Store
+    suite; `bins` controls the reliability-diagram resolution."""
+    from app.quality.calibration import aggregate_calibration
+
+    return await aggregate_calibration(
+        db,
+        workspace_id=workspace.id,
+        model_used=model_used,
+        template_id=_parse_uuid(template_id, "template_id"),
+        suite=suite,
+        bins=bins,
+    )
+
+
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,
