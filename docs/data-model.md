@@ -55,6 +55,8 @@ d5e6f7a8b9c0  tasks.capability_spec + quality_records.capability_profile — Cap
 e6f7a8b9c0d1  tasks.benchmark_case_id/suite + quality_records.benchmark_case_id/suite — Benchmark Case Store (pre-E-23)
      ↓
 f7a8b9c0d1e2  quality_records.failure_profile — Failure Mode Classifier (E-14)
+     ↓
+a9b0c1d2e3f4  quality_records.hallucination_profile — Hallucination Detection (E-15)
 ```
 
 ## Tables
@@ -285,6 +287,7 @@ placeholders filled by downstream eval features.
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
 | capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
 | failure_profile | JSONB? | **slot E-14** (multi-label failure-mode classification; added by migration `f7a8b9c0d1e2`) |
+| hallucination_profile | JSONB? | **slot E-15** (4-category deliverable fact-check; added by migration `a9b0c1d2e3f4`) |
 | benchmark_case_id / benchmark_suite | VARCHAR(128)? | Benchmark Case Store linkage, denormalized from the task (migration `e6f7a8b9c0d1`); `benchmark_suite` indexed for suite-scoped aggregation |
 | human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
@@ -397,6 +400,30 @@ into per-class counts + `rate` by class/model/template — the distribution of f
 types per (model, template). Input is bounded by `failure_judge_max_input_tokens`
 (default 12000); the off-by-default `failure_mode_evaluate` job (setting
 `failure_mode_eval_enabled`) batches it.
+
+The `hallucination_profile` slot is filled by the **Hallucination Detector** (E-15) —
+`POST /api/quality/records/{task_id}/evaluate-hallucinations`, building the record on
+demand if absent (added by migration `a9b0c1d2e3f4`). It fact-checks the finished run's
+deliverable (`task.result_summary`) against the E-06 cleaned trace across four
+categories — **URLs / APIs / numbers / citations**. URLs and code-fence API symbols are
+checked **deterministically** (a URL/symbol is "supported" iff it appears in some tool
+argument/result of the trace — *in-trace only*, no live HTTP); numbers, claims and
+unconfirmed APIs go to **one LLM call** (reusing the E-02/E-07 judge model, with the
+E-02 outcome summary and E-08 evidence facts fed as grounding, **never re-run**). If
+the deterministic pass leaves nothing to ask, no LLM call is made. Shape:
+`{schema_version, status: scored|error, categories: {urls, apis, numbers, citations}
+each {checked, hallucinated, items: [{value|claim, kind: deterministic|llm, supported,
+reason, confidence?}]}, hallucination_count, items_total, hallucination_rate
+(= count/items_total), summary, judge_model, judge_input_tokens, judge_output_tokens,
+judge_cost_usd, input_capped, used_outcome_profile, used_trajectory_evidence,
+trace_stats, evaluated_at, errors}`. A clean deliverable yields `hallucination_rate` 0.
+The slot is **orthogonal** to `quality_profile` — `hallucination_rate` lives alongside
+the E-02 profile on the same record, **not** as a rubric `dimension` in the E-02 engine
+(same design as E-13 `capability_profile` / E-14 `failure_profile`). `aggregate_hallucinations`
+rolls runs up into per-category `checked`/`hallucinated`/`rate` + `hallucinated_runs`
+by category/model/template. Input is bounded by `hallucination_judge_max_input_tokens`
+(default 12000); the off-by-default `hallucination_evaluate` job (setting
+`hallucination_eval_enabled`) batches it.
 
 ### rubrics (E-02)
 
@@ -525,6 +552,7 @@ Index: `enabled`.
 - `trace_evidence_evaluate` — interval 600s, action `trace_evidence_evaluate` (E-08: TRACE evidence-bank judge for `done` records lacking a `trajectory_evidence_profile`; batch capped at 5/tick since each task is N+1 LLM calls; only runs when the `trace_evidence_eval_enabled` setting is true).
 - `capability_evaluate` — interval 600s, action `capability_evaluate` (E-13: run the Glass-Box capability harness on terminal tasks carrying a `capability_spec` but no `capability_profile`; only runs when the `capability_eval_enabled` setting is true).
 - `failure_mode_evaluate` — interval 600s, action `failure_mode_evaluate` (E-14: classify failure modes on `done` records lacking a `failure_profile`; only runs when the `failure_mode_eval_enabled` setting is true).
+- `hallucination_evaluate` — interval 600s, action `hallucination_evaluate` (E-15: fact-check `done` records lacking a `hallucination_profile`; only runs when the `hallucination_eval_enabled` setting is true).
 
 ### users (R1)
 

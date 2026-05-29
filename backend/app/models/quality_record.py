@@ -28,8 +28,8 @@ class QualityRecord(Base):
     nullable placeholders filled by downstream features: quality_profile (E-02),
     trajectory_profile (E-07), trajectory_evidence_profile (E-08),
     trajectory_match_profile (E-09), capability_profile (E-13),
-    failure_profile (E-14), human_feedback (E-05), longitudinal (E-22),
-    reproducibility (E-20).
+    failure_profile (E-14), hallucination_profile (E-15),
+    human_feedback (E-05), longitudinal (E-22), reproducibility (E-20).
     """
 
     __tablename__ = "quality_records"
@@ -90,6 +90,7 @@ class QualityRecord(Base):
     trajectory_match_profile: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     capability_profile: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     failure_profile: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    hallucination_profile: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     human_feedback: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     longitudinal: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     reproducibility: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

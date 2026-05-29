@@ -417,6 +417,49 @@ export interface FailureProfile {
   errors: { error: string }[]
 }
 
+// Hallucination Detection (E-15): a fact-check of the deliverable across four
+// categories, each with checked/hallucinated counts and the flagged items.
+export type HallucinationCategory = 'urls' | 'apis' | 'numbers' | 'citations'
+
+export interface HallucinationItem {
+  value?: string
+  claim?: string
+  kind: 'deterministic' | 'llm'
+  supported: boolean
+  reason: string
+  confidence?: number
+}
+
+export interface HallucinationCategoryBlock {
+  checked: number
+  hallucinated: number
+  items: HallucinationItem[]
+}
+
+export interface HallucinationProfile {
+  schema_version: number
+  status: 'scored' | 'error'
+  categories: Record<HallucinationCategory, HallucinationCategoryBlock>
+  hallucination_count: number
+  items_total: number
+  hallucination_rate: number
+  summary: string
+  judge_model: string
+  judge_input_tokens: number
+  judge_output_tokens: number
+  judge_cost_usd: number
+  input_capped: boolean
+  used_outcome_profile: boolean
+  used_trajectory_evidence: boolean
+  trace_stats: {
+    original_tokens: number | null
+    cleaned_tokens: number | null
+    steps_total: number | null
+  }
+  evaluated_at: string
+  errors: { error: string }[]
+}
+
 export interface Agent {
   container_id: string
   name: string

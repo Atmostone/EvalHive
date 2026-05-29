@@ -506,6 +506,51 @@ the E-06 cleaned trace, and the input-token cap pattern — no new model.
   `GET /api/quality/failure-modes/aggregate`; off-by-default `failure_mode_evaluate` job
   (gated by `failure_mode_eval_enabled`); a failure-mode panel in TaskDetail.
 
+### Hallucination Detection (E-15)
+
+Outcome correctness (E-02) and trajectory quality (E-07) can both look fine while the
+agent's text fabricates **URLs, non-existent APIs, unsourced numbers, or invented
+claims** (§3.4 Q-09). E-15 (`app/quality/hallucination.py::evaluate_task_hallucinations`)
+is a **fact-checker over the finished run's deliverable** (`task.result_summary`) across
+four categories — **URLs / APIs / numbers / citations** — writing a per-category
+breakdown to the orthogonal `hallucination_profile` slot. It reuses the E-02/E-07 judge
+resolver and input-token cap — no new model.
+
+- **Hybrid approach** (precision where cheap, recall where needed):
+  - **URLs — deterministic, in-trace only.** A URL extracted from the deliverable is
+    "supported" iff it appears as a substring in some tool argument/result of the E-06
+    cleaned trace (case-insensitive, scheme-less and trailing-slash tolerant). There is
+    **no live HTTP check** — that avoids SSRF/rate-limit/external-dependency risk; a
+    `hallucination_check_urls_live` flag is reserved for a future v2.
+  - **APIs — hybrid.** Dotted `pkg.func(` symbols inside code fences are matched against
+    the trace; a confirmed symbol is `kind: deterministic`. Unconfirmed symbols are
+    handed to the LLM for a plausibility verdict (the LLM knows popular public libraries).
+  - **Numbers & citations — one LLM call.** All number candidates (years and bare single
+    digits filtered out) and claim sentences go to a single `classify_hallucinations`
+    tool call alongside the unconfirmed APIs. **At most one LLM call per task**, and
+    **zero** when the deterministic pass leaves nothing to ask.
+- **Grounding, never re-run.** The E-02 outcome summary and, when present, the E-08
+  evidence-bank facts are fed as context so the LLM knows what the trajectory actually
+  established; the existing profiles are read as-is (`used_outcome_profile` /
+  `used_trajectory_evidence` record what was fed).
+- **Profile.** Each category has `{checked, hallucinated, items[]}` with every item
+  tagged `kind: deterministic|llm` (LLM verdicts also carry `confidence`); the top-level
+  `hallucination_rate` = `hallucination_count / items_total`. A clean deliverable yields
+  rate 0. Never raises (failure → `status: "error"`); skipped when there is no judge
+  model, no deliverable, or no trace.
+- **Orthogonal slot, not a rubric dimension.** "Hallucination rate as a measurement in
+  the E-02 profile" is realized as a separate slot on the same `QualityRecord` (like
+  E-13 `capability_profile` / E-14 `failure_profile`), **not** as a `dimension` inside
+  the E-02 rubric engine — the fact-check is independent of the outcome rubric.
+- **Aggregation** (`aggregate_hallucinations`) rolls runs up into per-category
+  `checked`/`hallucinated`/`rate` + `hallucinated_runs` with `by_category`/`by_model`/
+  `by_template` breakdowns — the hallucination rate per (model, template). `category`
+  narrows to runs with ≥1 hallucination in that category; `suite` restricts to one
+  Benchmark Case Store suite.
+- `POST /api/quality/records/{task_id}/evaluate-hallucinations`, `GET …/hallucinations`,
+  `GET /api/quality/hallucinations/aggregate`; off-by-default `hallucination_evaluate`
+  job (gated by `hallucination_eval_enabled`); a hallucination panel in TaskDetail.
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),
@@ -561,6 +606,7 @@ E-16, E-17, E-21, E-23, U-02, V-22) consumes it.
 | `app/quality/trace_evidence.py` | E-08 Evidence Bank Judge (TRACE): `evaluate_task_trace_evidence`/`evaluate_trajectory_with_evidence` — walks the cleaned trace step by step accumulating an evidence bank threaded into each step's prompt, then an evidence-aware 6-axis profile + `groundedness` → `trajectory_evidence_profile` slot (N+1 calls; reuses E-07's axes/tool/parser) |
 | `app/quality/trajectory_match.py` | E-09 Trajectory Matching: `evaluate_task_trajectory_match`/`match_trajectory` — deterministic, LLM-free comparison of the actual tool sequence (E-06) vs `task.canonical_trajectory` (list / sequence / DAG); exact + edit + dag (topological-order) metrics → `trajectory_match_profile` slot. Skipped unless a canonical trajectory is set |
 | `app/quality/capability.py` | E-13 Capability-isolation Tests: `evaluate_task_capability` (deterministic Glass-Box reuse of E-09 `extract_tool_sequence` + outcome correctness via E-02 → `genuine`/`cheated`/`failed_*` classification → `capability_profile` slot; skipped unless `task.capability_spec` is set) + `aggregate_capability` (capability_score by model/category/template/suite) |
+| `app/quality/hallucination.py` | E-15 Hallucination Detection: `evaluate_task_hallucinations` (deterministic in-trace check of URLs + code-fence API symbols, one LLM call for numbers/claims/unconfirmed APIs reusing the E-02/E-07 judge → 4-category `{checked,hallucinated,items[]}` + `hallucination_rate` → `hallucination_profile` slot; skipped without judge/deliverable/trace) + `aggregate_hallucinations` (per-category rate by model/category/template/suite) |
 | `app/quality/benchmark.py` | Benchmark Case Store (pre-E-23): `load_cases`/`materialize` — parse versioned case files (`backend/benchmarks/<suite>/`) and turn them into runnable READY task instances tagged with `benchmark_case_id`/`benchmark_suite` (gold → reference_answer/canonical_trajectory/capability_spec; pinned template + model override). Format + loader + linkage only; registry/API/UI/publication are E-23 |
 | `app/orchestrator/rerun.py` | E-11 re-run core: `clone_task_for_rerun` — clones a task's input into a fresh READY task (linked via `replay_of_task_id`), pinning the template / `run_config`. Shared seam for variance and future replay (E-21/E-24/U-03) |
 | `app/quality/variance.py` | E-11 Variance / Robustness Harness: `run_variance` + `advance_variance_run` — N re-runs of one scenario, cost-capped, drained by the orchestrator loop, aggregated into a dispersion `aggregate` (outcome/trajectory-length/trajectory-score distributions + success rate + tool stability) on `variance_runs`. Driven by the `variance_run_tick` job |
