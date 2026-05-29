@@ -19,6 +19,7 @@ import VarianceRunPanel from '@/components/quality/VarianceRunPanel'
 import PerturbationPanel from '@/components/quality/PerturbationPanel'
 import FailureModePanel from '@/components/quality/FailureModePanel'
 import HallucinationPanel from '@/components/quality/HallucinationPanel'
+import CalibrationPanel from '@/components/quality/CalibrationPanel'
 
 interface TaskDetailProps {
   task: Task
@@ -232,6 +233,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
 
             {/* Hallucinations (E-15) — fact-check the deliverable's URLs/APIs/numbers/citations */}
             <HallucinationPanel taskId={task.id} />
+
+            {/* Calibration (E-16) — self-probe confidence vs actual correctness */}
+            <CalibrationPanel taskId={task.id} />
           </div>
         )}
 

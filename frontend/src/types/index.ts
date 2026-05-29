@@ -460,6 +460,60 @@ export interface HallucinationProfile {
   errors: { error: string }[]
 }
 
+export interface CalibrationProfile {
+  schema_version: number
+  status: 'scored' | 'error'
+  predicted_confidence: number | null
+  actual_correct: boolean
+  outcome_signal: 'reference' | 'judge' | 'none'
+  outcome_score: number | null
+  outcome_threshold: number
+  brier_term: number | null
+  confidence_source: string
+  probe_model: string
+  reasoning: string
+  judge_input_tokens: number
+  judge_output_tokens: number
+  judge_cost_usd: number
+  input_capped: boolean
+  used_outcome_profile: boolean
+  trace_stats: {
+    original_tokens: number | null
+    cleaned_tokens: number | null
+    steps_total: number | null
+  }
+  evaluated_at: string
+  errors: { error: string }[]
+}
+
+export interface ReliabilityBucket {
+  lo: number
+  hi: number
+  count: number
+  avg_confidence: number | null
+  accuracy: number | null
+}
+
+export interface CalibrationMetrics {
+  count: number
+  ece: number | null
+  brier: number | null
+  accuracy: number | null
+  avg_confidence: number | null
+  overconfidence: number | null
+  reliability: ReliabilityBucket[]
+}
+
+export interface CalibrationAggregate {
+  workspace_id: string
+  filters: Record<string, string | null>
+  bins: number
+  overall: CalibrationMetrics
+  by_model: Record<string, CalibrationMetrics>
+  by_template: Record<string, CalibrationMetrics>
+  recommendations: string[]
+}
+
 export interface Agent {
   container_id: string
   name: string

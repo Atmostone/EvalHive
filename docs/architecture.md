@@ -551,6 +551,54 @@ resolver and input-token cap — no new model.
   `GET /api/quality/hallucinations/aggregate`; off-by-default `hallucination_evaluate`
   job (gated by `hallucination_eval_enabled`); a hallucination panel in TaskDetail.
 
+### Confidence Calibration (E-16)
+
+A model can be confident in a wrong answer and unsure of a right one; without
+knowing how well stated confidence tracks actual correctness you cannot delegate
+agent → agent (§3.4 Q-10). E-16 (`app/quality/calibration.py::evaluate_task_calibration`)
+records, per finished task, the pair **(predicted_confidence, actual_correctness)**
+in the orthogonal `calibration_profile` slot, and rolls the population up into
+**ECE / Brier / a reliability diagram** with a per-model recommendation.
+
+- **actual_correctness — reused from E-02.** Read via
+  `app.quality.capability._outcome_from_profile` (a scored `reference` dimension if
+  present, else `weighted_score ≥ calibration_outcome_threshold`, default 7.0). When
+  neither exists the signal is `"none"` and the run is **skipped** — there is no
+  ground truth to calibrate against. The E-02 profile is reused as-is and run once
+  only when missing.
+- **predicted_confidence — post-hoc self-probe.** Confidence exists nowhere in the
+  system, so E-16 elicits it with **one LLM call**: the model re-reads the task + its
+  own answer (`result_summary`) + the E-06 cleaned trace and reports
+  `P(answer is correct) ∈ [0,1]` through a forced `assess_confidence` tool call. The
+  probe **never sees the grader's verdict**, so correctness cannot leak into the
+  confidence. The system prompt asks for calibrated estimates (reserve >0.9 for near-
+  certain answers). Input is bounded by `calibration_judge_max_input_tokens` (default
+  12000) via `_fit_trace_to_budget`. Never raises (failure → `status: "error"`).
+- **Probe runs on the doer model.** `_resolve_doer_model` resolves the task's own model
+  by `model_used` (api_name) within the workspace's providers, falling back to the
+  E-02/E-07 judge resolver (`quality_judge → orchestrator`). Thus the per-model
+  breakdown reflects each model's calibration of *itself*.
+- **Profile.** The slot stores the raw pair plus its `brier_term`
+  (`(confidence - actual)²`): `predicted_confidence`, `actual_correct`, `outcome_signal`
+  (`reference|judge`), `outcome_score`/`outcome_threshold`, `confidence_source`
+  (`self_probe`), `probe_model`, `reasoning`, judge tokens/cost, `input_capped`,
+  `used_outcome_profile`. The headline calibration metrics are inherently population-
+  level and computed at aggregate time, not per task.
+- **Orthogonal slot, not a rubric dimension.** Calibration is a separate slot on the
+  same `QualityRecord` (like E-13/E-14/E-15), **not** a `dimension` in the E-02 rubric
+  engine — it measures confidence-vs-correctness, independent of the outcome rubric.
+- **Aggregation** (`aggregate_calibration`) over scored profiles computes, overall and
+  `by_model`/`by_template`: `ece` (Σ over non-empty buckets of `(count/total)·|avg_conf
+  − accuracy|`), `brier`, `accuracy`, `avg_confidence`, `overconfidence` (avg_conf −
+  accuracy), and a `reliability` diagram of `bins` (default 10) equal-width confidence
+  buckets `{lo, hi, count, avg_confidence, accuracy}`. `_recommendation_for` turns each
+  model's largest-gap bucket into plain language ("model X overestimates itself in the
+  70–80% confidence zone"). `suite` restricts to one Benchmark Case Store suite.
+- `POST /api/quality/records/{task_id}/evaluate-calibration`, `GET …/calibration`,
+  `GET /api/quality/calibration/aggregate`; off-by-default `calibration_evaluate` job
+  (gated by `calibration_eval_enabled`); a calibration panel (confidence bar + Brier +
+  reliability diagram) in TaskDetail.
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),
@@ -607,6 +655,7 @@ E-16, E-17, E-21, E-23, U-02, V-22) consumes it.
 | `app/quality/trajectory_match.py` | E-09 Trajectory Matching: `evaluate_task_trajectory_match`/`match_trajectory` — deterministic, LLM-free comparison of the actual tool sequence (E-06) vs `task.canonical_trajectory` (list / sequence / DAG); exact + edit + dag (topological-order) metrics → `trajectory_match_profile` slot. Skipped unless a canonical trajectory is set |
 | `app/quality/capability.py` | E-13 Capability-isolation Tests: `evaluate_task_capability` (deterministic Glass-Box reuse of E-09 `extract_tool_sequence` + outcome correctness via E-02 → `genuine`/`cheated`/`failed_*` classification → `capability_profile` slot; skipped unless `task.capability_spec` is set) + `aggregate_capability` (capability_score by model/category/template/suite) |
 | `app/quality/hallucination.py` | E-15 Hallucination Detection: `evaluate_task_hallucinations` (deterministic in-trace check of URLs + code-fence API symbols, one LLM call for numbers/claims/unconfirmed APIs reusing the E-02/E-07 judge → 4-category `{checked,hallucinated,items[]}` + `hallucination_rate` → `hallucination_profile` slot; skipped without judge/deliverable/trace) + `aggregate_hallucinations` (per-category rate by model/category/template/suite) |
+| `app/quality/calibration.py` | E-16 Confidence Calibration: `evaluate_task_calibration` (one post-hoc self-probe on the doer model — `_resolve_doer_model` by `model_used`, judge fallback — reads task + answer + E-06 trace WITHOUT the verdict → `P(correct)`; paired with E-02 correctness via `_outcome_from_profile` → `(predicted_confidence, actual_correct, brier_term)` in `calibration_profile` slot; skipped without model/deliverable/correctness signal) + `aggregate_calibration` (ECE/Brier/reliability diagram + per-model recommendation by model/template/suite) |
 | `app/quality/benchmark.py` | Benchmark Case Store (pre-E-23): `load_cases`/`materialize` — parse versioned case files (`backend/benchmarks/<suite>/`) and turn them into runnable READY task instances tagged with `benchmark_case_id`/`benchmark_suite` (gold → reference_answer/canonical_trajectory/capability_spec; pinned template + model override). Format + loader + linkage only; registry/API/UI/publication are E-23 |
 | `app/orchestrator/rerun.py` | E-11 re-run core: `clone_task_for_rerun` — clones a task's input into a fresh READY task (linked via `replay_of_task_id`), pinning the template / `run_config`. Shared seam for variance and future replay (E-21/E-24/U-03) |
 | `app/quality/variance.py` | E-11 Variance / Robustness Harness: `run_variance` + `advance_variance_run` — N re-runs of one scenario, cost-capped, drained by the orchestrator loop, aggregated into a dispersion `aggregate` (outcome/trajectory-length/trajectory-score distributions + success rate + tool stability) on `variance_runs`. Driven by the `variance_run_tick` job |

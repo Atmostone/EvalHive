@@ -57,6 +57,8 @@ e6f7a8b9c0d1  tasks.benchmark_case_id/suite + quality_records.benchmark_case_id/
 f7a8b9c0d1e2  quality_records.failure_profile — Failure Mode Classifier (E-14)
      ↓
 a9b0c1d2e3f4  quality_records.hallucination_profile — Hallucination Detection (E-15)
+     ↓
+b0c1d2e3f4a5  quality_records.calibration_profile — Confidence Calibration (E-16)
 ```
 
 ## Tables
@@ -288,6 +290,7 @@ placeholders filled by downstream eval features.
 | capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
 | failure_profile | JSONB? | **slot E-14** (multi-label failure-mode classification; added by migration `f7a8b9c0d1e2`) |
 | hallucination_profile | JSONB? | **slot E-15** (4-category deliverable fact-check; added by migration `a9b0c1d2e3f4`) |
+| calibration_profile | JSONB? | **slot E-16** (per-task confidence-vs-correctness pair + Brier term; added by migration `b0c1d2e3f4a5`) |
 | benchmark_case_id / benchmark_suite | VARCHAR(128)? | Benchmark Case Store linkage, denormalized from the task (migration `e6f7a8b9c0d1`); `benchmark_suite` indexed for suite-scoped aggregation |
 | human_feedback | JSONB? | **slot E-05** (filled by the feedback API) |
 | longitudinal | JSONB? | **slot E-22** |
@@ -425,6 +428,28 @@ by category/model/template. Input is bounded by `hallucination_judge_max_input_t
 (default 12000); the off-by-default `hallucination_evaluate` job (setting
 `hallucination_eval_enabled`) batches it.
 
+The `calibration_profile` slot is filled by **Confidence Calibration** (E-16) —
+`POST /api/quality/records/{task_id}/evaluate-calibration`, building the record on
+demand if absent (added by migration `b0c1d2e3f4a5`). It records the per-task pair
+**(predicted_confidence, actual_correctness)**. `actual_correctness` is read from the
+E-02 profile via `_outcome_from_profile` (scored `reference` dim, else `weighted_score
+≥ calibration_outcome_threshold`, default 7.0); when neither exists (`signal=="none"`)
+the run is **skipped**. `predicted_confidence` comes from **one post-hoc self-probe**:
+the task's own model (resolved by `model_used`, judge fallback) re-reads the task +
+`result_summary` + E-06 trace **without the grader's verdict** and reports
+`P(correct) ∈ [0,1]` via a forced tool call (input bounded by
+`calibration_judge_max_input_tokens`, default 12000). Shape: `{schema_version,
+status: scored|error, predicted_confidence, actual_correct, outcome_signal:
+reference|judge, outcome_score, outcome_threshold, brier_term (= (conf−actual)²),
+confidence_source: self_probe, probe_model, reasoning, judge_input_tokens,
+judge_output_tokens, judge_cost_usd, input_capped, used_outcome_profile, trace_stats,
+evaluated_at, errors}`. The slot is **orthogonal** to `quality_profile` and is **not** a
+rubric `dimension` (same design as E-13/E-14/E-15). The headline calibration metrics —
+**ECE / Brier / reliability diagram** — are inherently population-level: `aggregate_calibration`
+computes them overall and `by_model`/`by_template` over `bins` (default 10) equal-width
+confidence buckets, plus a per-model recommendation. The off-by-default
+`calibration_evaluate` job (setting `calibration_eval_enabled`) batches it.
+
 ### rubrics (E-02)
 
 A multi-dimensional quality rubric: a set of independent dimensions used to score
@@ -553,6 +578,7 @@ Index: `enabled`.
 - `capability_evaluate` — interval 600s, action `capability_evaluate` (E-13: run the Glass-Box capability harness on terminal tasks carrying a `capability_spec` but no `capability_profile`; only runs when the `capability_eval_enabled` setting is true).
 - `failure_mode_evaluate` — interval 600s, action `failure_mode_evaluate` (E-14: classify failure modes on `done` records lacking a `failure_profile`; only runs when the `failure_mode_eval_enabled` setting is true).
 - `hallucination_evaluate` — interval 600s, action `hallucination_evaluate` (E-15: fact-check `done` records lacking a `hallucination_profile`; only runs when the `hallucination_eval_enabled` setting is true).
+- `calibration_evaluate` — interval 600s, action `calibration_evaluate` (E-16: self-probe confidence on `done` records lacking a `calibration_profile`; only runs when the `calibration_eval_enabled` setting is true).
 
 ### users (R1)
 
