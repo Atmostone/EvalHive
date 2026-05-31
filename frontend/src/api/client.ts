@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -332,6 +332,22 @@ export const qualityApi = {
     const qs = q.toString()
     return request<CalibrationAggregate>(`/quality/calibration/aggregate${qs ? `?${qs}` : ''}`)
   },
+  runJudgeCalibration: (body?: { suite?: string; template_id?: string }) =>
+    request<JudgeCalibration>('/quality/judge-calibration/run', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  getJudgeCalibration: (params?: { judge_config_key?: string; history?: boolean }) => {
+    const q = new URLSearchParams()
+    if (params?.judge_config_key) q.set('judge_config_key', params.judge_config_key)
+    if (params?.history) q.set('history', 'true')
+    const qs = q.toString()
+    return request<
+      JudgeCalibration | null | { latest: JudgeCalibration | null; history: JudgeCalibration[] }
+    >(`/quality/judge-calibration${qs ? `?${qs}` : ''}`)
+  },
+  getJudgeCalibrationBadge: () =>
+    request<JudgeCalibrationBadge>('/quality/judge-calibration/badge'),
 }
 
 export interface HumanFeedbackInput {

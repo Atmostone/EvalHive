@@ -7,9 +7,10 @@ import TemplateMetricsTable from '@/components/analytics/TemplateMetricsTable'
 import TimelineChart from '@/components/analytics/TimelineChart'
 import ModelChart from '@/components/analytics/ModelChart'
 import TemplateCompareView from '@/components/analytics/TemplateCompareView'
+import JudgeCalibrationPanel from '@/components/quality/JudgeCalibrationPanel'
 
 type Period = 'day' | 'week' | 'month' | 'all'
-type Tab = 'overview' | 'compare'
+type Tab = 'overview' | 'compare' | 'judge'
 
 const PERIODS: { value: Period; label: string; days: number }[] = [
   { value: 'day', label: 'Day', days: 1 },
@@ -101,16 +102,29 @@ export default function Analytics() {
           >
             A/B Compare
           </button>
+          <button
+            onClick={() => setTab('judge')}
+            className={cn(
+              'px-1 py-2 -mb-px text-sm font-medium border-b-2 transition-colors',
+              tab === 'judge'
+                ? 'border-gray-900 text-gray-900'
+                : 'border-transparent text-gray-500 hover:text-gray-700',
+            )}
+          >
+            Judge Calibration
+          </button>
         </div>
       </div>
 
-      {isLoading && (
+      {tab === 'judge' && <JudgeCalibrationPanel />}
+
+      {tab !== 'judge' && isLoading && (
         <div className="bg-white rounded-lg border p-8 text-center text-gray-500">
           Loading analytics…
         </div>
       )}
 
-      {!isLoading && allEmpty && (
+      {tab !== 'judge' && !isLoading && allEmpty && (
         <div className="bg-white rounded-lg border p-12 text-center text-gray-500">
           <BarChart3 className="h-12 w-12 mx-auto mb-3 text-gray-300" />
           <p className="text-base">No data yet — complete some tasks first</p>

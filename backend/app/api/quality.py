@@ -732,40 +732,77 @@ async def calibration_export(
     _role=Depends(require_role("owner", "admin")),
 ):
     """Flattened judge-vs-human pairs for calibration (E-17 input). One row per
-    rated dimension across all records that carry human feedback."""
-    rows = (
-        await db.execute(
-            select(QualityRecord).where(
-                QualityRecord.workspace_id == workspace.id,
-                QualityRecord.human_feedback.isnot(None),
-            )
-        )
-    ).scalars().all()
+    rated dimension across all records that carry human feedback. Shares its
+    row-building with the E-17 report via ``collect_judge_human_pairs``."""
+    from app.quality.judge_calibration import collect_judge_human_pairs
 
-    out: list[dict] = []
-    for r in rows:
-        hf = r.human_feedback or {}
-        judge = {d.get("key"): d for d in ((r.quality_profile or {}).get("dimensions") or [])}
-        for d in hf.get("dimensions") or []:
-            jd = judge.get(d.get("key")) or {}
-            judge_score = d.get("judge_score")
-            if judge_score is None:
-                judge_score = jd.get("score")
-            out.append(
-                {
-                    "task_id": str(r.task_id),
-                    "dimension_key": d.get("key"),
-                    "dimension_name": d.get("name"),
-                    "judge_score": judge_score,
-                    "human_score": d.get("score"),
-                    "band": d.get("band"),
-                    "judge_reasoning": jd.get("reasoning"),
-                    "human_comment": d.get("comment"),
-                    "verdict": hf.get("verdict"),
-                    "submitted_at": hf.get("submitted_at"),
-                }
-            )
-    return out
+    return await collect_judge_human_pairs(db, workspace.id)
+
+
+# --------------------------------------------------------------------------- #
+# Judge Calibration Protocol (E-17)
+# --------------------------------------------------------------------------- #
+class JudgeCalibrationRunBody(BaseModel):
+    suite: Optional[str] = None
+    template_id: Optional[str] = None
+
+
+@router.post("/judge-calibration/run")
+async def run_judge_calibration_endpoint(
+    body: JudgeCalibrationRunBody | None = None,
+    workspace: Workspace = Depends(get_current_workspace),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Validate the LLM judge (E-02) against human feedback (E-05) over stored
+    scores and persist the next versioned report (E-17). No LLM call."""
+    from app.quality.judge_calibration import run_judge_calibration
+
+    body = body or JudgeCalibrationRunBody()
+    return await run_judge_calibration(
+        db,
+        workspace_id=workspace.id,
+        suite=body.suite,
+        template_id=_parse_uuid(body.template_id, "template_id"),
+        created_by=getattr(user, "email", None) or "user",
+    )
+
+
+@router.get("/judge-calibration")
+async def get_judge_calibration_endpoint(
+    judge_config_key: Optional[str] = Query(None),
+    history: bool = Query(False),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Latest judge-calibration report; with ``history=true`` also returns the
+    version history (newest first)."""
+    from app.quality.judge_calibration import (
+        get_judge_calibration,
+        list_judge_calibrations,
+    )
+
+    latest = await get_judge_calibration(
+        db, workspace_id=workspace.id, judge_config_key=judge_config_key
+    )
+    if not history:
+        return latest
+    versions = await list_judge_calibrations(
+        db, workspace_id=workspace.id, judge_config_key=judge_config_key
+    )
+    return {"latest": latest, "history": versions}
+
+
+@router.get("/judge-calibration/badge")
+async def judge_calibration_badge(
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compact badge: 'judge calibrated against N humans, kappa=X.X'."""
+    from app.quality.judge_calibration import get_judge_calibration_badge
+
+    return await get_judge_calibration_badge(db, workspace_id=workspace.id)
 
 
 # --------------------------------------------------------------------------- #

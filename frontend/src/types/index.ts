@@ -514,6 +514,62 @@ export interface CalibrationAggregate {
   recommendations: string[]
 }
 
+// Judge Calibration Protocol (E-17): judge-vs-human agreement per dimension.
+export interface JudgeCalibrationDimension {
+  key: string
+  name: string
+  n: number
+  pearson: number | null
+  spearman: number | null
+  cohen_kappa: number | null
+  mean_bias: number | null
+  reliable: boolean
+  status: 'ok' | 'insufficient_data'
+}
+
+export interface JudgeCalibrationMetrics {
+  threshold_kappa: number
+  sample_size: number
+  n_records: number
+  n_humans: number
+  n_dimensions: number
+  dimensions: JudgeCalibrationDimension[]
+  overall: {
+    n: number
+    cohen_kappa: number | null
+    agreement_pct: number | null
+    reliable: boolean
+  }
+  recommendations: string[]
+}
+
+export interface JudgeCalibration {
+  id: string
+  workspace_id: string
+  judge_config_key: string
+  judge_model: string | null
+  version: number
+  sample_size: number
+  n_dimensions: number
+  threshold_kappa: number
+  passed: boolean
+  filters: Record<string, string | null>
+  created_by: string
+  created_at: string | null
+  metrics: JudgeCalibrationMetrics
+}
+
+export interface JudgeCalibrationBadge {
+  calibrated: boolean
+  n_humans?: number
+  sample_size?: number
+  overall_kappa?: number | null
+  judge_config_key?: string
+  version?: number
+  passed?: boolean
+  created_at?: string | null
+}
+
 export interface Agent {
   container_id: string
   name: string
