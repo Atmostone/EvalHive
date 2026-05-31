@@ -59,6 +59,8 @@ f7a8b9c0d1e2  quality_records.failure_profile — Failure Mode Classifier (E-14)
 a9b0c1d2e3f4  quality_records.hallucination_profile — Hallucination Detection (E-15)
      ↓
 b0c1d2e3f4a5  quality_records.calibration_profile — Confidence Calibration (E-16)
+     ↓
+c1d2e3f4a5b6  judge_calibrations — Judge Calibration Protocol (E-17)
 ```
 
 ## Tables
@@ -548,6 +550,37 @@ cap, judges finished ones (E-02/E-07 when configured) and writes `aggregate`
 once all children are terminal. Robustness per transform = how much the perturbed
 outcome score degraded vs the baseline mean (1.0 = no degradation); the `inject`
 group additionally yields a deterministic safety flag via `injection_canary`.
+
+### judge_calibrations (E-17)
+
+One row is a versioned validation of the LLM judge (E-02) against human feedback
+(E-05) — the Judge Calibration Protocol (migration `c1d2e3f4a5b6`). Append-only and
+versioned per `(workspace_id, judge_config_key)`; the full report (per-dimension
+agreement, overall verdict-agreement, recommendations) lives in `metrics`.
+
+| Column | Type | Default | Purpose |
+|--------|------|---------|---------|
+| id | UUID PK | uuid4 | |
+| workspace_id | UUID FK→workspaces.id ON DELETE CASCADE | required | scoping |
+| judge_config_key | VARCHAR(255) | required | the judge identity — the judge model's `api_name` (`unknown` when none resolves) |
+| judge_model | VARCHAR(255) | NULL | same as the key today; kept explicit for display |
+| version | int | 1 | 1-based, increments per (workspace_id, judge_config_key) |
+| sample_size | int | 0 | judge/human dimension pairs used |
+| n_dimensions | int | 0 | distinct dimensions in the report |
+| filters | JSONB | {} | `{suite, template_id}` population scope (records the loose `dataset_id`) |
+| metrics | JSONB | required | `{dimensions[], overall, recommendations, sample_size, n_records, n_humans, threshold_kappa}` |
+| threshold_kappa | float | required | acceptability cut applied to band/verdict κ |
+| passed | bool | false | overall verdict-agreement κ ≥ threshold |
+| created_by | VARCHAR(50) | 'user' | attribution (api user email / `cli`) |
+| created_at | TIMESTAMP | now() | |
+
+Indexes: `idx_judge_calibrations_workspace`, `idx_judge_calibrations_key
+(workspace_id, judge_config_key)`, and `UniqueConstraint(workspace_id,
+judge_config_key, version)`. Per-dimension entries carry `n`, `pearson`,
+`spearman`, `cohen_kappa` (on the bad/improve/good band projection), `mean_bias`,
+`reliable` and `status` (`ok` / `insufficient_data` when n<3). Computed entirely
+from stored E-02/E-05 scores — **no LLM call** — and reused by the
+`GET /api/quality/calibration` export via the shared `collect_judge_human_pairs`.
 
 ### scheduled_jobs (P8)
 

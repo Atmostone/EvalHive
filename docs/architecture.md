@@ -599,6 +599,47 @@ in the orthogonal `calibration_profile` slot, and rolls the population up into
   (gated by `calibration_eval_enabled`); a calibration panel (confidence bar + Brier +
   reliability diagram) in TaskDetail.
 
+### Judge Calibration Protocol (E-17)
+
+An LLM-judge metric is meaningless until it is validated against humans — the central
+source of doubt about eval (RQ1, §7.1). E-17
+(`app/quality/judge_calibration.py::run_judge_calibration`) answers "how far can the
+judge be trusted" by comparing the judge's per-dimension scores (E-02,
+`quality_profile.dimensions[]`) with human ratings on the same axes (E-05,
+`human_feedback.dimensions[]`) over every record that carries both. It makes **no LLM
+call** — pure agreement statistics over already-stored scores.
+
+- **Pure-Python stats** (`app/quality/stats.py`, no scipy/numpy): `pearson`,
+  `spearman` (Pearson on average-tie ranks), `cohen_kappa` (over the fixed band set),
+  `score_to_band` (the human-feedback cuts: bad 0–3 / improve 4–7 / good 8–10),
+  `mean_bias`. Any metric with fewer than `MIN_SAMPLES` (3) pairs returns `None` and the
+  dimension is marked `insufficient_data`.
+- **Shared pair collection.** `collect_judge_human_pairs` flattens one row per rated
+  dimension across records with human feedback — the single source of truth for **both**
+  the `GET /api/quality/calibration` export and the E-17 report (DRY). Each row carries
+  the judge score (from the human dim's `judge_score`, falling back to the matching
+  `quality_profile` dimension), the human score/band, the per-task `verdict`,
+  `judge_gate_passed` (`quality_profile.gate.passed`) and `submitted_by`.
+- **Report** (`_compute_report`). Per dimension: `n`, `pearson`, `spearman`,
+  `cohen_kappa` (on bands), `mean_bias`, and `reliable` = band κ ≥
+  `judge_calibration_min_kappa` (default 0.6, a workspace setting). An **overall
+  verdict-agreement** dedupes to one (judge gate → approve/reject, human verdict) pair
+  per task and reports κ + raw agreement %. `recommendations[]` turn each dimension into
+  plain language ("judge reliable for Correctness (kappa=0.71, r=0.81)" / "judge diverges
+  on Tool Selection …"). `n_humans` = distinct `submitted_by`.
+- **Versioned artifact, not a per-task slot.** A judge calibration is per-(workspace,
+  judge model), so it lives in its own `judge_calibrations` table — append-only,
+  versioned per `judge_config_key` (the judge model's `api_name`; `_resolve_judge_model`,
+  `unknown` when none). Re-running after a judge/rubric change keeps the old curves.
+  `suite`/`template_id` filters scope the population (the loose mapping of the
+  acceptance's `dataset_id`); they are recorded but do not fork the version line.
+- `POST /api/quality/judge-calibration/run` (**owner/admin**), `GET …/judge-calibration`
+  (latest, `?history=true` for the version list), `GET …/judge-calibration/badge`; a CLI
+  (`python -m app.cli.judge_calibration run|show`); a workspace-level panel on the
+  Analytics page (per-dimension reliability table + overall + history) and a
+  "judge calibrated against N humans, κ=X.X" trust badge (also surfaced on the TaskDetail
+  quality panel). No scheduler job — on-demand only.
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),

@@ -20,6 +20,7 @@ import PerturbationPanel from '@/components/quality/PerturbationPanel'
 import FailureModePanel from '@/components/quality/FailureModePanel'
 import HallucinationPanel from '@/components/quality/HallucinationPanel'
 import CalibrationPanel from '@/components/quality/CalibrationPanel'
+import JudgeCalibrationBadge from '@/components/quality/JudgeCalibrationBadge'
 
 interface TaskDetailProps {
   task: Task
@@ -177,6 +178,10 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         {/* Quality profile (E-02) */}
         {isTerminal && (
           <div className="pt-2 border-t">
+            {/* Judge trust badge (E-17): is the LLM judge validated against humans? */}
+            <div className="mb-2">
+              <JudgeCalibrationBadge />
+            </div>
             {profile ? (
               <QualityRadarChart profile={profile} />
             ) : (

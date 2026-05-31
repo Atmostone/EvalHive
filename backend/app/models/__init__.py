@@ -16,6 +16,7 @@ from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
 from app.models.variance_run import VarianceRun
 from app.models.perturbation_run import PerturbationRun
+from app.models.judge_calibration import JudgeCalibration
 
 __all__ = [
     "User",
@@ -39,4 +40,5 @@ __all__ = [
     "Rubric",
     "VarianceRun",
     "PerturbationRun",
+    "JudgeCalibration",
 ]
