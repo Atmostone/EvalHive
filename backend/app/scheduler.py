@@ -470,6 +470,21 @@ async def _job_runner(job_id: str):
                     workspace_id=job.workspace_id,
                 )
 
+        elif action == "pairwise_run_tick":
+            # Pairwise Comparison Framework (E-21): advance every comparison whose
+            # candidate B is still being generated — clone B from a rerun of the
+            # source, wait for it to finish, then auto-judge (llm mode). No setting
+            # gate: cost is only incurred for user-created comparisons.
+            from app.quality.comparison import advance_active_comparisons
+
+            advanced = await advance_active_comparisons(db)
+            if advanced:
+                await log_event(
+                    db, "pairwise_run_tick", "system",
+                    {"advanced": advanced},
+                    workspace_id=job.workspace_id,
+                )
+
         else:
             await log_event(
                 db, "scheduled_job_fired", "system",
@@ -601,6 +616,12 @@ async def seed_default_jobs():
             db.add(ScheduledJob(
                 name="perturbation_run_tick", kind="interval", interval_seconds=20,
                 payload={"action": "perturbation_run_tick"},
+                workspace_id=DEFAULT_WORKSPACE_ID,
+            ))
+        if "pairwise_run_tick" not in names:
+            db.add(ScheduledJob(
+                name="pairwise_run_tick", kind="interval", interval_seconds=20,
+                payload={"action": "pairwise_run_tick"},
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ))
         await db.commit()

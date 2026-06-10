@@ -1292,3 +1292,179 @@ async def replay_reproducibility(
         return await replay_from_snapshot(db, task.id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# --------------------------------------------------------------------------- #
+# Pairwise Comparison (E-21)
+# --------------------------------------------------------------------------- #
+class ComparisonCreate(BaseModel):
+    subject: Literal["model", "template", "prompt"] = "model"
+    task_a_id: str
+    # Direct mode: an existing candidate B.
+    task_b_id: Optional[str] = None
+    # Generated mode: rerun source_task_id (defaults to task_a_id) with overrides.
+    source_task_id: Optional[str] = None
+    b_run_config: Optional[dict] = None  # {model_id?|template_id?|soul_md?|seed?|temperature?}
+    judge_mode: Literal["llm", "human"] = "llm"
+
+    @model_validator(mode="after")
+    def _direct_or_generated(self) -> "ComparisonCreate":
+        if self.task_b_id is None and not self.b_run_config:
+            raise ValueError("provide task_b_id (direct) or b_run_config (generated)")
+        return self
+
+
+class HumanVerdictBody(BaseModel):
+    verdict: Literal["a", "b", "tie"]
+    reasoning: Optional[str] = None
+
+
+class PairwiseLeaderboardBody(BaseModel):
+    subject: Literal["model", "template"] = "model"
+    method: Literal["bt", "elo"] = "elo"
+    source: Literal["judge", "human"] = "judge"
+
+
+@router.post("/comparison")
+async def create_comparison_endpoint(
+    body: ComparisonCreate,
+    workspace: Workspace = Depends(get_current_workspace),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Create a pairwise comparison (E-21). Direct: two existing tasks (an ``llm``
+    comparison is judged immediately). Generated: candidate B is produced by
+    re-running ``source_task_id`` with ``b_run_config`` and judged on the tick."""
+    from app.quality.comparison import _serialize, create_comparison
+
+    try:
+        comp = await create_comparison(
+            db,
+            workspace_id=workspace.id,
+            subject=body.subject,
+            task_a_id=_parse_uuid(body.task_a_id, "task_a_id"),
+            task_b_id=_parse_uuid(body.task_b_id, "task_b_id"),
+            source_task_id=_parse_uuid(body.source_task_id, "source_task_id"),
+            b_run_config=body.b_run_config,
+            judge_mode=body.judge_mode,
+            created_by=getattr(user, "email", None) or "user",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _serialize(comp)
+
+
+@router.get("/comparison")
+async def list_comparisons_endpoint(
+    subject: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """List comparisons (newest first), optionally filtered by ``subject`` /
+    ``status``, plus the judge↔human agreement over the returned set (E-17)."""
+    from app.models.pairwise_comparison import PairwiseComparison
+    from app.quality.comparison import _serialize, judge_agreement
+
+    q = select(PairwiseComparison).where(PairwiseComparison.workspace_id == workspace.id)
+    if subject:
+        q = q.where(PairwiseComparison.subject == subject)
+    if status:
+        q = q.where(PairwiseComparison.status == status)
+    q = q.order_by(PairwiseComparison.created_at.desc()).limit(100)
+    rows = (await db.execute(q)).scalars().all()
+    return {
+        "comparisons": [_serialize(r) for r in rows],
+        "agreement": judge_agreement(rows),
+    }
+
+
+@router.post("/comparison/leaderboard")
+async def pairwise_leaderboard_endpoint(
+    body: PairwiseLeaderboardBody | None = None,
+    workspace: Workspace = Depends(get_current_workspace),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Turn judged comparisons into real matches and rank them via the E-19 engine
+    → an ELO leaderboard (``ranking_report``, ``source="explicit"``) shown in the
+    Leaderboard tab. No LLM call."""
+    from app.quality.comparison import run_pairwise_leaderboard
+
+    body = body or PairwiseLeaderboardBody()
+    return await run_pairwise_leaderboard(
+        db,
+        workspace_id=workspace.id,
+        subject=body.subject,
+        method=body.method,
+        source=body.source,
+        created_by=getattr(user, "email", None) or "user",
+    )
+
+
+@router.get("/comparison/{comparison_id}")
+async def get_comparison_endpoint(
+    comparison_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """A comparison with its side-by-side payload (each side's title / model /
+    answer / score) for the UI."""
+    from app.quality.comparison import get_comparison
+
+    cid = _parse_uuid(comparison_id, "comparison_id")
+    out = await get_comparison(db, cid, workspace_id=workspace.id, with_sides=True)
+    if out is None:
+        raise HTTPException(status_code=404, detail="comparison not found")
+    return out
+
+
+@router.post("/comparison/{comparison_id}/judge")
+async def judge_comparison_endpoint(
+    comparison_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Force / redo the LLM judge (position-bias mitigated) for a ready comparison.
+    Spends two LLM calls."""
+    from app.quality.comparison import _serialize, judge_comparison_by_id
+
+    cid = _parse_uuid(comparison_id, "comparison_id")
+    try:
+        comp = await judge_comparison_by_id(db, cid, workspace_id=workspace.id)
+    except ValueError as e:
+        msg = str(e)
+        raise HTTPException(status_code=404 if "not found" in msg else 400, detail=msg)
+    return _serialize(comp)
+
+
+@router.put("/comparison/{comparison_id}/human-verdict")
+async def human_verdict_endpoint(
+    comparison_id: str,
+    body: HumanVerdictBody,
+    workspace: Workspace = Depends(get_current_workspace),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Record a human winner on the comparison (E-17 linkage). The judge verdict,
+    if any, is preserved alongside for agreement tracking."""
+    from app.quality.comparison import _serialize, record_human_verdict
+
+    cid = _parse_uuid(comparison_id, "comparison_id")
+    try:
+        comp = await record_human_verdict(
+            db,
+            cid,
+            verdict=body.verdict,
+            reasoning=body.reasoning,
+            submitted_by=getattr(user, "email", None) or "user",
+            workspace_id=workspace.id,
+        )
+    except ValueError as e:
+        msg = str(e)
+        raise HTTPException(status_code=404 if "not found" in msg else 400, detail=msg)
+    return _serialize(comp)

@@ -773,6 +773,74 @@ export interface ReplayResult {
   fingerprint: string | null
 }
 
+// Pairwise Comparison Framework (E-21) — head-to-head "A vs B" between two task
+// results on a subject axis, decided by an LLM judge (position-bias mitigated) or
+// a human; judged verdicts feed the E-19 ELO leaderboard.
+export type PairwiseVerdict = 'a' | 'b' | 'tie'
+export type ComparisonSubject = 'model' | 'template' | 'prompt'
+export type ComparisonStatus = 'pending' | 'generating' | 'ready' | 'judged' | 'failed'
+
+export interface PairwiseJudgeDetail {
+  judge_model?: string
+  mitigate_position?: boolean
+  position_bias_detected?: boolean | null
+  orders?: {
+    ab?: { winner: PairwiseVerdict; reasoning: string }
+    ba?: { winner: PairwiseVerdict; winner_mapped: PairwiseVerdict; reasoning: string }
+  }
+  input_tokens?: number
+  output_tokens?: number
+  cost_usd?: number
+  error?: string
+}
+
+export interface PairwiseSide {
+  task_id: string
+  player: string | null
+  title?: string
+  model_used?: string | null
+  status?: string
+  result_summary?: string
+  weighted_score?: number | null
+  missing?: boolean
+}
+
+export interface PairwiseComparison {
+  id: string
+  workspace_id: string
+  subject: ComparisonSubject
+  source_task_id: string | null
+  task_a_id: string | null
+  task_b_id: string | null
+  b_run_config: Record<string, unknown> | null
+  player_a: string | null
+  player_b: string | null
+  status: ComparisonStatus
+  judge_mode: 'llm' | 'human'
+  judge_verdict: PairwiseVerdict | null
+  human_verdict: PairwiseVerdict | null
+  judge_detail: PairwiseJudgeDetail | null
+  human_by: string | null
+  human_reasoning: string | null
+  cost_usd: number
+  created_by: string
+  created_at: string | null
+  updated_at: string | null
+  completed_at: string | null
+  side_by_side?: { a: PairwiseSide | null; b: PairwiseSide | null }
+}
+
+export interface PairwiseAgreement {
+  n: number
+  agreements: number
+  agreement: number | null
+}
+
+export interface PairwiseListResponse {
+  comparisons: PairwiseComparison[]
+  agreement: PairwiseAgreement
+}
+
 export interface Agent {
   container_id: string
   name: string

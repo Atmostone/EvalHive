@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge, ExperimentSnapshot, SnapshotDiff, ReplayResult } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge, ExperimentSnapshot, SnapshotDiff, ReplayResult, PairwiseComparison, PairwiseListResponse, PairwiseVerdict, ComparisonSubject, ComparisonStatus } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -408,6 +408,48 @@ export const qualityApi = {
     ),
   replayReproducibility: (taskId: string) =>
     request<ReplayResult>(`/quality/records/${taskId}/replay`, { method: 'POST' }),
+
+  // Pairwise Comparison Framework (E-21) — A/B side-by-side, LLM/human judge, ELO.
+  createComparison: (body: {
+    subject?: ComparisonSubject
+    task_a_id: string
+    task_b_id?: string
+    source_task_id?: string
+    b_run_config?: Record<string, unknown>
+    judge_mode?: 'llm' | 'human'
+  }) =>
+    request<PairwiseComparison>('/quality/comparison', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  listComparisons: (params?: { subject?: ComparisonSubject; status?: ComparisonStatus }) => {
+    const q = new URLSearchParams()
+    if (params?.subject) q.set('subject', params.subject)
+    if (params?.status) q.set('status', params.status)
+    const qs = q.toString()
+    return request<PairwiseListResponse>(`/quality/comparison${qs ? `?${qs}` : ''}`)
+  },
+  getComparison: (id: string) =>
+    request<PairwiseComparison>(`/quality/comparison/${id}`),
+  judgeComparison: (id: string) =>
+    request<PairwiseComparison>(`/quality/comparison/${id}/judge`, { method: 'POST' }),
+  setComparisonHumanVerdict: (
+    id: string,
+    body: { verdict: PairwiseVerdict; reasoning?: string },
+  ) =>
+    request<PairwiseComparison>(`/quality/comparison/${id}/human-verdict`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  runPairwiseLeaderboard: (body?: {
+    subject?: 'model' | 'template'
+    method?: 'bt' | 'elo'
+    source?: 'judge' | 'human'
+  }) =>
+    request<RankingReport>('/quality/comparison/leaderboard', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
 }
 
 export interface HumanFeedbackInput {
