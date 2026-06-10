@@ -51,6 +51,20 @@ def _spawn_snapshot_from_events(events: list[AgentEvent]) -> dict:
     return {}
 
 
+def _safe_snapshot(task: Task, execution: dict) -> dict | None:
+    """Best-effort reproducibility experiment_snapshot (E-20) for the record.
+
+    Built from the already-assembled ``execution`` section (zero extra queries).
+    Wrapped so a snapshot failure can never block the record build / eval."""
+    try:
+        from app.quality.reproducibility import assemble_snapshot
+
+        return assemble_snapshot(task, execution)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"reproducibility snapshot failed for task {task.id}: {e}")
+        return None
+
+
 async def assemble_record(db: AsyncSession, task: Task) -> dict:
     """Gather the full execution blob for a task. Best-effort, never raises on
     missing optional data."""
@@ -225,6 +239,8 @@ async def build_quality_record(
         record_s3_path=s3_path,
         public_dataset_opt_in=opt_in_default,
     )
+    # E-20: capture the reproducibility snapshot automatically (best-effort).
+    record.reproducibility = _safe_snapshot(task, blob["execution"])
     db.add(record)
     if commit:
         await db.commit()

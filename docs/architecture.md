@@ -702,6 +702,39 @@ confidence interval. E-19 is that engine.
   "Leaderboard" panel on Analytics (rating + 95% CI bar + W/L/T, with model/template and
   BT/Elo selectors). No LLM call, no scheduler job.
 
+### Reproducibility Snapshot (E-20)
+
+Models drift and LLMs are stochastic, so an experiment is only meaningful if the exact state
+that produced it is recorded (§7.4). E-20 (`app/quality/reproducibility.py`) captures an
+**experiment_snapshot** for every quality record, diffs two snapshots, and replays a run from
+its snapshot.
+
+- **Capture is automatic and free** (no LLM call). The snapshot inputs are already gathered at
+  spawn time into the `agent_spawned` event and surfaced as the data lake `blob["execution"]`
+  (soul_md / tools / mcp_servers / model_api_name / memory_context / flat_memory / template_*).
+  `build_quality_record` (terminal-state) materializes them into the **reserved**
+  `quality_records.reproducibility` JSONB slot via a best-effort `_safe_snapshot` hook — so it's
+  **per-record, no new table** (unlike the E-17/18/19 reports). Backfill of older records is free:
+  the `quality_record_backfill` job re-runs the builder.
+- **Honest about gaps.** `assemble_snapshot` (pure) hashes large text into the fingerprinted
+  `determinism` block and keeps it raw-capped under `content`; the `manifest` lists `captured`
+  vs. `missing` with `notes`. The runtime does not expose `temperature` or tool **versions**, and
+  point-in-time RAG vectors aren't captured (the `memory_context` string is); `seed` is present
+  only for benchmark-materialized runs — all of these are marked missing rather than faked, so
+  reproducibility is never overstated.
+- **Fingerprint** (`snapshot_fingerprint`) is a SHA-256 over the canonicalized `determinism` block
+  only (sorted keys, `tools`/`mcp_servers` sorted, volatile `captured_at`/raw `content` excluded),
+  so equal runs ⇒ equal fingerprint. `diff_snapshots` (pure) reports added/removed/changed by
+  dotted path with a human summary.
+- **Replay** reuses the existing re-run primitive (`clone_task_for_rerun`, the U-03 seam):
+  `replay_from_snapshot` derives a `run_config` from the snapshot (pins `template_id`, passes
+  `soul_md`/`seed`/`temperature` where captured) and clones the task, linked via
+  `replay_of_task_id`. Determinism is honestly bounded to "same template + prompt (+ seed/temp
+  where available)". `GET …/records/{id}/reproducibility`, `POST …/records/{id}/capture-reproducibility`
+  (**owner/admin**), `GET …/reproducibility/diff`, `POST …/records/{id}/replay` (**owner/admin**);
+  CLI (`python -m app.cli.reproducibility show|diff|replay`); a "Reproducibility" panel on Analytics
+  (snapshot inspector with captured/missing chips + diff viewer + replay).
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),

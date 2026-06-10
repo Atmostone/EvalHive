@@ -1198,3 +1198,97 @@ async def get_perturbation_run(
         rows = (await db.execute(select(Task).where(Task.id.in_(uids)))).scalars().all()
         children_by_id = {str(t.id): t for t in rows}
     return _perturbation_run_out(run, children_by_id=children_by_id)
+
+
+# --------------------------------------------------------------------------- #
+# Reproducibility Snapshot (E-20)
+# --------------------------------------------------------------------------- #
+async def _record_for_task(
+    db: AsyncSession, task_id: str, workspace: Workspace
+) -> QualityRecord:
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid task id")
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(
+                QualityRecord.task_id == tid,
+                QualityRecord.workspace_id == workspace.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if rec is None:
+        raise HTTPException(status_code=404, detail="quality record not found")
+    return rec
+
+
+@router.get("/records/{task_id}/reproducibility")
+async def get_reproducibility(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read the experiment_snapshot (E-20) for a task, or null if not captured."""
+    rec = await _record_for_task(db, task_id, workspace)
+    return {"task_id": task_id, "reproducibility": rec.reproducibility}
+
+
+@router.post("/records/{task_id}/capture-reproducibility")
+async def capture_reproducibility_record(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """(Re)capture the experiment_snapshot for a task into its quality record (E-20).
+    Skipped (snapshot null) when the run has no captured execution context."""
+    from app.quality.reproducibility import capture_snapshot
+
+    task = await _get_owned_task(db, task_id, workspace)
+    snapshot = await capture_snapshot(db, task)
+    if snapshot is None:
+        return {
+            "task_id": task_id,
+            "reproducibility": None,
+            "skipped": True,
+            "detail": "no execution context to snapshot (no agent_spawned data)",
+        }
+    return {"task_id": task_id, "reproducibility": snapshot, "skipped": False}
+
+
+@router.get("/reproducibility/diff")
+async def diff_reproducibility(
+    task_a: str = Query(..., description="first task id"),
+    task_b: str = Query(..., description="second task id"),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Diff two tasks' experiment_snapshots (E-20): what changed between the runs."""
+    from app.quality.reproducibility import diff_snapshots
+
+    rec_a = await _record_for_task(db, task_a, workspace)
+    rec_b = await _record_for_task(db, task_b, workspace)
+    if not rec_a.reproducibility or not rec_b.reproducibility:
+        raise HTTPException(
+            status_code=404, detail="both tasks must have a reproducibility snapshot"
+        )
+    return diff_snapshots(rec_a.reproducibility, rec_b.reproducibility)
+
+
+@router.post("/records/{task_id}/replay")
+async def replay_reproducibility(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Replay a run from its snapshot (E-20): clone the task with a run_config
+    derived from the captured state, linked via replay_of_task_id."""
+    from app.quality.reproducibility import replay_from_snapshot
+
+    task = await _get_owned_task(db, task_id, workspace)
+    try:
+        return await replay_from_snapshot(db, task.id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
