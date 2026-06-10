@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -348,6 +348,28 @@ export const qualityApi = {
   },
   getJudgeCalibrationBadge: () =>
     request<JudgeCalibrationBadge>('/quality/judge-calibration/badge'),
+  // Bias Mitigation Toolkit (E-18): controlled A/B re-judge (spends LLM calls).
+  runBiasReport: (body?: {
+    suite?: string
+    template_id?: string
+    verbosity?: boolean
+    score_clustering?: boolean
+    self_preference?: boolean
+    position?: boolean
+  }) =>
+    request<BiasReport>('/quality/bias-report/run', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  getBiasReport: (params?: { judge_config_key?: string; history?: boolean }) => {
+    const q = new URLSearchParams()
+    if (params?.judge_config_key) q.set('judge_config_key', params.judge_config_key)
+    if (params?.history) q.set('history', 'true')
+    const qs = q.toString()
+    return request<
+      BiasReport | null | { latest: BiasReport | null; history: BiasReport[] }
+    >(`/quality/bias-report${qs ? `?${qs}` : ''}`)
+  },
 }
 
 export interface HumanFeedbackInput {

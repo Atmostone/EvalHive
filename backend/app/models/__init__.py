@@ -17,6 +17,7 @@ from app.models.rubric import Rubric
 from app.models.variance_run import VarianceRun
 from app.models.perturbation_run import PerturbationRun
 from app.models.judge_calibration import JudgeCalibration
+from app.models.bias_report import BiasReport
 
 __all__ = [
     "User",
@@ -41,4 +42,5 @@ __all__ = [
     "VarianceRun",
     "PerturbationRun",
     "JudgeCalibration",
+    "BiasReport",
 ]

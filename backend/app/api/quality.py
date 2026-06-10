@@ -806,6 +806,75 @@ async def judge_calibration_badge(
 
 
 # --------------------------------------------------------------------------- #
+# Bias Mitigation Toolkit (E-18)
+# --------------------------------------------------------------------------- #
+class BiasReportRunBody(BaseModel):
+    suite: Optional[str] = None
+    template_id: Optional[str] = None
+    # Per-toggle overrides for the "after" pass. When omitted, the saved
+    # bias_mitigation_* settings are used (and a full A/B is run if none are on).
+    verbosity: Optional[bool] = None
+    score_clustering: Optional[bool] = None
+    self_preference: Optional[bool] = None
+    position: Optional[bool] = None
+
+
+@router.post("/bias-report/run")
+async def run_bias_report_endpoint(
+    body: BiasReportRunBody | None = None,
+    workspace: Workspace = Depends(get_current_workspace),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Controlled A/B re-judge of the calibration set with mitigations OFF vs ON
+    (E-18) and persist the next versioned before/after report. Spends LLM calls."""
+    from app.quality.bias_mitigation import run_bias_report
+
+    body = body or BiasReportRunBody()
+    overrides = {
+        k: v
+        for k, v in {
+            "verbosity": body.verbosity,
+            "score_clustering": body.score_clustering,
+            "self_preference": body.self_preference,
+            "position": body.position,
+        }.items()
+        if v is not None
+    }
+    return await run_bias_report(
+        db,
+        workspace_id=workspace.id,
+        suite=body.suite,
+        template_id=_parse_uuid(body.template_id, "template_id"),
+        toggles=overrides or None,
+        created_by=getattr(user, "email", None) or "user",
+    )
+
+
+@router.get("/bias-report")
+async def get_bias_report_endpoint(
+    judge_config_key: Optional[str] = Query(None),
+    history: bool = Query(False),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Latest bias report; with ``history=true`` also returns the version history
+    (newest first)."""
+    from app.quality.bias_mitigation import get_bias_report, list_bias_reports
+
+    latest = await get_bias_report(
+        db, workspace_id=workspace.id, judge_config_key=judge_config_key
+    )
+    if not history:
+        return latest
+    versions = await list_bias_reports(
+        db, workspace_id=workspace.id, judge_config_key=judge_config_key
+    )
+    return {"latest": latest, "history": versions}
+
+
+# --------------------------------------------------------------------------- #
 # Variance / Robustness Harness (E-11)
 # --------------------------------------------------------------------------- #
 class VarianceSpecBody(BaseModel):
