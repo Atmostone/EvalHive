@@ -642,6 +642,38 @@ epsilon}`). Tunables live in the free-form **settings** table:
 `ranking_tie_epsilon` (0.5), `ranking_bootstrap_resamples` (200), `ranking_seed`
 (0) — no migration needed.
 
+### quality_records.reproducibility — Reproducibility Snapshot (E-20)
+
+E-20 is **per-record**, not a versioned workspace report, so it adds **no table and
+no migration** — the `experiment_snapshot` lives in the `quality_records.reproducibility`
+JSONB slot reserved by E-01 (like `quality_profile`). It is captured automatically by
+`build_quality_record` (best-effort) from the data lake `blob["execution"]` and can be
+(re)captured on demand. Shape:
+
+```jsonc
+{
+  "schema_version": 1,
+  "captured_at": "<iso>",            // volatile — excluded from the fingerprint
+  "determinism": {                    // the fingerprinted core (hashes, not raw text)
+    "model_api_name", "temperature", "seed", "template_id", "template_name",
+    "tools": [...], "mcp_servers": [...],          // sorted (set semantics)
+    "soul_md_sha256", "memory_context_sha256", "flat_memory_sha256": {rules_md, memory_md},
+    "rag": {collection, memory_context_present, vector_capture: "out_of_scope"},
+    "tool_versions": {<tool>: null},               // names only; versions unknown
+    "task_input": {title, description_sha256, reference_answer_sha256, canonical_trajectory_sha256}
+  },
+  "content": { "soul_md", "memory_context", "flat_memory", "task_input" },   // raw, capped 20k
+  "manifest": { "captured": [...], "missing": [...], "notes": {...} },        // honest gap list
+  "fingerprint": "<sha256 of determinism, canonicalized>"
+}
+```
+
+The `fingerprint` is a SHA-256 over the canonicalized `determinism` block only (sorted keys;
+`captured_at`/`content`/`manifest` excluded), so identical runs share a fingerprint. The runtime
+doesn't expose `temperature` / tool versions / point-in-time RAG vectors, and `seed` only for
+benchmark runs — those sit in `manifest.missing`. Replay derives a `run_config` from the snapshot
+and clones the task via `clone_task_for_rerun` (linked by `tasks.replay_of_task_id`).
+
 ### scheduled_jobs (P8)
 
 | Column | Type | |

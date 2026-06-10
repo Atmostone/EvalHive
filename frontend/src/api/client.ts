@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge, ExperimentSnapshot, SnapshotDiff, ReplayResult } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -391,6 +391,23 @@ export const qualityApi = {
     >(`/quality/ranking${qs ? `?${qs}` : ''}`)
   },
   getRankingBadge: () => request<RankingBadge>('/quality/ranking/badge'),
+
+  // Reproducibility Snapshot (E-20) — per-task experiment_snapshot, diff, replay.
+  getReproducibility: (taskId: string) =>
+    request<{ task_id: string; reproducibility: ExperimentSnapshot | null }>(
+      `/quality/records/${taskId}/reproducibility`,
+    ),
+  captureReproducibility: (taskId: string) =>
+    request<{ task_id: string; reproducibility: ExperimentSnapshot | null; skipped: boolean; detail?: string }>(
+      `/quality/records/${taskId}/capture-reproducibility`,
+      { method: 'POST' },
+    ),
+  diffReproducibility: (taskA: string, taskB: string) =>
+    request<SnapshotDiff>(
+      `/quality/reproducibility/diff?task_a=${encodeURIComponent(taskA)}&task_b=${encodeURIComponent(taskB)}`,
+    ),
+  replayReproducibility: (taskId: string) =>
+    request<ReplayResult>(`/quality/records/${taskId}/replay`, { method: 'POST' }),
 }
 
 export interface HumanFeedbackInput {

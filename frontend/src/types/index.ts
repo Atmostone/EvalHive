@@ -720,6 +720,59 @@ export interface RankingBadge {
   created_at?: string | null
 }
 
+// Reproducibility Snapshot (E-20) — per-record experiment_snapshot in
+// quality_records.reproducibility. Large text is hashed in `determinism`
+// (the fingerprinted core) and kept raw-capped in `content`.
+export interface ExperimentSnapshot {
+  schema_version: number
+  captured_at: string
+  determinism: {
+    model_api_name: string | null
+    temperature: number | null
+    seed: number | null
+    template_id: string | null
+    template_name: string | null
+    tools: string[]
+    mcp_servers: string[]
+    soul_md_sha256: string | null
+    memory_context_sha256: string | null
+    flat_memory_sha256: Record<string, string | null>
+    rag: { collection: string; memory_context_present: boolean; vector_capture: string }
+    tool_versions: Record<string, string | null>
+    task_input: {
+      title: string | null
+      description_sha256: string | null
+      reference_answer_sha256: string | null
+      canonical_trajectory_sha256: string | null
+    }
+  }
+  content: {
+    soul_md: string
+    memory_context: string
+    flat_memory: Record<string, string>
+    task_input: { description: string | null; reference_answer: string | null; canonical_trajectory: unknown }
+  }
+  manifest: { captured: string[]; missing: string[]; notes: Record<string, string> }
+  fingerprint: string
+}
+
+export interface SnapshotDiff {
+  fingerprint_a: string
+  fingerprint_b: string
+  identical: boolean
+  added: Record<string, unknown>
+  removed: Record<string, unknown>
+  changed: Record<string, { from: unknown; to: unknown }>
+  summary: string
+}
+
+export interface ReplayResult {
+  replay_task_id: string
+  source_task_id: string
+  run_config: Record<string, unknown> | null
+  fingerprint: string | null
+}
+
 export interface Agent {
   container_id: string
   name: string
