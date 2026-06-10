@@ -672,6 +672,36 @@ Where E-17 *measures* judge↔human divergence, E-18 (`app/quality/bias_mitigati
   "Bias Mitigation" panel on Analytics (before/after κ table + diagnostics) and four toggles
   in Settings. No scheduler job.
 
+### Aggregation Engine — Bradley-Terry / Elo (E-19)
+
+Pointwise scoring (E-02) gives one number per task; the more robust way to **rank**
+competitors is pairwise — many "A vs B" matches aggregated into a global rating with a
+confidence interval. E-19 is that engine.
+
+- **Pure core** (`app/quality/aggregation.py`, no DB / no LLM, the literal
+  `rank(pairwise_results, method='bt'|'elo')` acceptance). A **match** is
+  `{player_a, player_b, outcome:"a"|"b"|"tie", weight}`. `bradley_terry` fits the MLE
+  strengths via the classic MM iteration with a small Bayesian **prior** (a virtual win+loss
+  vs a phantom average opponent) so an undefeated player or a disconnected comparison graph
+  still converges; `elo` averages sequential updates over several seeded-shuffled passes to
+  remove order-dependence. Both map onto a shared **Elo scale** (centred on 1500). CIs come
+  from a seeded bootstrap (resample matches, re-fit, take the central percentile band). All
+  randomness is via `random.Random(seed)` → fully deterministic, pinned by tests.
+- **Match source.** E-19's natural feed is the pairwise framework (**E-21**), which doesn't
+  exist yet. Until it lands, `app/quality/ranking.py::derive_matches_from_records` bridges the
+  gap: it turns the stored pointwise `quality_profile.weighted_score` into matches — within one
+  `benchmark_case_id`, the model/template with the higher mean score "beats" the other (gap ≤
+  `ranking_tie_epsilon` → tie). The pure pairing (`build_matches`) is unit-tested separately.
+  Callers can also pass explicit matches to bypass the derivation. When E-21 arrives it simply
+  supplies real matches to the same `run_ranking`.
+- **Subject** is selectable: rank `model` (`quality_record.model_used`) or `template`
+  (`template_name`). Persisted append-only in **`ranking_reports`** (mirrors
+  `judge_calibrations`), versioned per `(workspace, ranking_key)` where `ranking_key =
+  "{subject}:{method}"`. `POST /api/quality/ranking/run` (**owner/admin**), `GET …/ranking`
+  (+`?history`), `GET …/ranking/badge`; CLI (`python -m app.cli.ranking run|show`); a
+  "Leaderboard" panel on Analytics (rating + 95% CI bar + W/L/T, with model/template and
+  BT/Elo selectors). No LLM call, no scheduler job.
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),

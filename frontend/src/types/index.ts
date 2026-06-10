@@ -649,6 +649,77 @@ export interface BiasReport {
   metrics: BiasReportMetrics
 }
 
+// Aggregation Engine (E-19): Bradley-Terry / Elo leaderboard from pairwise matches.
+export interface RankingPlayer {
+  player: string
+  rating: number
+  ci_low: number
+  ci_high: number
+  rank: number
+  wins: number
+  losses: number
+  ties: number
+  n_matches: number
+  win_rate: number | null
+}
+
+export interface RankingMetrics {
+  schema_version: number
+  method: 'bt' | 'elo'
+  status: 'ok' | 'empty' | 'insufficient_data'
+  subject: 'model' | 'template'
+  source: 'derived' | 'explicit'
+  n_matches: number
+  n_players: number
+  players: RankingPlayer[]
+  params: {
+    method: string
+    n_resamples: number
+    seed: number
+    tie_epsilon: number | null
+    k?: number
+    passes?: number
+    prior?: number
+  }
+  derivation?: {
+    subject: string
+    n_cases: number
+    n_records_used: number
+    n_unmatched: number
+    n_players: number
+    epsilon: number
+  }
+}
+
+export interface RankingReport {
+  id: string
+  workspace_id: string
+  ranking_key: string
+  subject: 'model' | 'template'
+  method: 'bt' | 'elo'
+  version: number
+  n_players: number
+  n_matches: number
+  passed: boolean
+  filters: Record<string, string | null>
+  created_by: string
+  created_at: string | null
+  metrics: RankingMetrics
+}
+
+export interface RankingBadge {
+  ranked: boolean
+  ranking_key?: string
+  subject?: string
+  method?: string
+  version?: number
+  n_players?: number
+  n_matches?: number
+  status?: string
+  top_player?: string | null
+  created_at?: string | null
+}
+
 export interface Agent {
   container_id: string
   name: string

@@ -206,7 +206,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, HallucinationProfile, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -370,6 +370,27 @@ export const qualityApi = {
       BiasReport | null | { latest: BiasReport | null; history: BiasReport[] }
     >(`/quality/bias-report${qs ? `?${qs}` : ''}`)
   },
+  // Aggregation Engine (E-19): Bradley-Terry / Elo leaderboard from pairwise matches.
+  runRanking: (body?: {
+    subject?: 'model' | 'template'
+    method?: 'bt' | 'elo'
+    suite?: string
+    matches?: { player_a: string; player_b: string; outcome: 'a' | 'b' | 'tie'; weight?: number }[]
+  }) =>
+    request<RankingReport>('/quality/ranking/run', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  getRanking: (params?: { ranking_key?: string; history?: boolean }) => {
+    const q = new URLSearchParams()
+    if (params?.ranking_key) q.set('ranking_key', params.ranking_key)
+    if (params?.history) q.set('history', 'true')
+    const qs = q.toString()
+    return request<
+      RankingReport | null | { latest: RankingReport | null; history: RankingReport[] }
+    >(`/quality/ranking${qs ? `?${qs}` : ''}`)
+  },
+  getRankingBadge: () => request<RankingBadge>('/quality/ranking/badge'),
 }
 
 export interface HumanFeedbackInput {

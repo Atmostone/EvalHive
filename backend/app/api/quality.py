@@ -875,6 +875,81 @@ async def get_bias_report_endpoint(
 
 
 # --------------------------------------------------------------------------- #
+# Aggregation Engine — Bradley-Terry / Elo leaderboard (E-19)
+# --------------------------------------------------------------------------- #
+class MatchBody(BaseModel):
+    player_a: str = Field(min_length=1)
+    player_b: str = Field(min_length=1)
+    outcome: Literal["a", "b", "tie"]
+    weight: int = Field(default=1, ge=1)
+
+
+class RankingRunBody(BaseModel):
+    # Which axis to rank and how to aggregate.
+    subject: Literal["model", "template"] = "model"
+    method: Literal["bt", "elo"] = "bt"
+    suite: Optional[str] = None
+    # Explicit matches bypass the pointwise-score derivation (the literal
+    # rank(pairwise_results) API); omit to derive matches from stored scores.
+    matches: Optional[list[MatchBody]] = None
+
+
+@router.post("/ranking/run")
+async def run_ranking_endpoint(
+    body: RankingRunBody | None = None,
+    workspace: Workspace = Depends(get_current_workspace),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Rank models/templates from pairwise matches via Bradley-Terry or Elo and
+    persist the next versioned leaderboard (E-19). Matches are derived from stored
+    pointwise scores unless an explicit ``matches`` list is supplied. No LLM call."""
+    from app.quality.ranking import run_ranking
+
+    body = body or RankingRunBody()
+    matches = [m.model_dump() for m in body.matches] if body.matches is not None else None
+    return await run_ranking(
+        db,
+        workspace_id=workspace.id,
+        subject=body.subject,
+        method=body.method,
+        suite=body.suite,
+        matches=matches,
+        created_by=getattr(user, "email", None) or "user",
+    )
+
+
+@router.get("/ranking")
+async def get_ranking_endpoint(
+    ranking_key: Optional[str] = Query(None),
+    history: bool = Query(False),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Latest leaderboard for a ``ranking_key`` (``{subject}:{method}``); with
+    ``history=true`` also returns the version history (newest first)."""
+    from app.quality.ranking import get_ranking, list_rankings
+
+    latest = await get_ranking(db, workspace_id=workspace.id, ranking_key=ranking_key)
+    if not history:
+        return latest
+    versions = await list_rankings(db, workspace_id=workspace.id, ranking_key=ranking_key)
+    return {"latest": latest, "history": versions}
+
+
+@router.get("/ranking/badge")
+async def ranking_badge(
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compact badge: 'leaderboard of N players, top = X'."""
+    from app.quality.ranking import get_ranking_badge
+
+    return await get_ranking_badge(db, workspace_id=workspace.id)
+
+
+# --------------------------------------------------------------------------- #
 # Variance / Robustness Harness (E-11)
 # --------------------------------------------------------------------------- #
 class VarianceSpecBody(BaseModel):

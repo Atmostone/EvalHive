@@ -63,6 +63,8 @@ b0c1d2e3f4a5  quality_records.calibration_profile — Confidence Calibration (E-
 c1d2e3f4a5b6  judge_calibrations — Judge Calibration Protocol (E-17)
      ↓
 d2e3f4a5b6c7  bias_reports — Bias Mitigation Toolkit (E-18)
+     ↓
+e3f4a5b6c7d8  ranking_reports — Aggregation Engine (E-19)
 ```
 
 ## Tables
@@ -611,6 +613,34 @@ The four mitigation toggles live in the free-form **settings** table as
 default off). The two prompt-affecting ones append an instruction to the live judge
 prompt and what was applied is recorded under `quality_profile.bias_mitigation`
 (`{applied, self_preference:{flagged,judge_model,agent_model,warning}, position}`).
+
+### ranking_reports (E-19)
+
+One row is a versioned pairwise-aggregation **leaderboard** — the Aggregation
+Engine (migration `e3f4a5b6c7d8`). Each report ranks models or templates from a set
+of head-to-head matches via Bradley-Terry or Elo with bootstrap confidence
+intervals. Append-only, versioned per `(workspace_id, ranking_key)` where
+`ranking_key` is `"{subject}:{method}"` (e.g. `model:bt`), so each axis × method
+keeps its own history line — mirrors `judge_calibrations` / `bias_reports`. Columns:
+`id`, `workspace_id`, `ranking_key`, `subject` (`model`|`template`), `method`
+(`bt`|`elo`), `version`, `n_players`, `n_matches`, `filters` (`{suite, source}`),
+`metrics`, `passed` (true when a real leaderboard was produced — `status=="ok"`),
+`created_by`, `created_at`. Indexes/constraints: `idx_ranking_reports_workspace`,
+`idx_ranking_reports_key`, `UniqueConstraint(workspace_id, ranking_key, version)`.
+
+`metrics` holds `{status, method, subject, source, n_players, n_matches, players[],
+params, derivation?}`. Each `players[]` entry is `{player, rating, ci_low, ci_high,
+rank, wins, losses, ties, n_matches, win_rate}` (sorted by rating). A **match** is
+`{player_a, player_b, outcome: "a"|"b"|"tie", weight}` (outcome from `player_a`'s
+view). `source` is `"explicit"` (matches supplied by the caller — the literal
+`rank(pairwise_results)` API) or `"derived"`: until the pairwise framework (E-21)
+exists, matches are derived from the pointwise `quality_profile.weighted_score` —
+within one `benchmark_case_id`, the model/template with the higher mean score
+"beats" the other (a gap within `ranking_tie_epsilon` is a tie). `derivation`
+records that bridge (`{subject, n_cases, n_records_used, n_unmatched, n_players,
+epsilon}`). Tunables live in the free-form **settings** table:
+`ranking_tie_epsilon` (0.5), `ranking_bootstrap_resamples` (200), `ranking_seed`
+(0) — no migration needed.
 
 ### scheduled_jobs (P8)
 
