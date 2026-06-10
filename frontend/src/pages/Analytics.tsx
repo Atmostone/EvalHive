@@ -9,9 +9,13 @@ import ModelChart from '@/components/analytics/ModelChart'
 import TemplateCompareView from '@/components/analytics/TemplateCompareView'
 import JudgeCalibrationPanel from '@/components/quality/JudgeCalibrationPanel'
 import BiasReportPanel from '@/components/quality/BiasReportPanel'
+import RankingPanel from '@/components/quality/RankingPanel'
 
 type Period = 'day' | 'week' | 'month' | 'all'
-type Tab = 'overview' | 'compare' | 'judge' | 'bias'
+type Tab = 'overview' | 'compare' | 'judge' | 'bias' | 'ranking'
+
+// Tabs that render a self-contained panel with its own data (no analytics fetch).
+const PANEL_TABS: Tab[] = ['judge', 'bias', 'ranking']
 
 const PERIODS: { value: Period; label: string; days: number }[] = [
   { value: 'day', label: 'Day', days: 1 },
@@ -125,19 +129,31 @@ export default function Analytics() {
           >
             Bias Mitigation
           </button>
+          <button
+            onClick={() => setTab('ranking')}
+            className={cn(
+              'px-1 py-2 -mb-px text-sm font-medium border-b-2 transition-colors',
+              tab === 'ranking'
+                ? 'border-gray-900 text-gray-900'
+                : 'border-transparent text-gray-500 hover:text-gray-700',
+            )}
+          >
+            Leaderboard
+          </button>
         </div>
       </div>
 
       {tab === 'judge' && <JudgeCalibrationPanel />}
       {tab === 'bias' && <BiasReportPanel />}
+      {tab === 'ranking' && <RankingPanel />}
 
-      {tab !== 'judge' && tab !== 'bias' && isLoading && (
+      {!PANEL_TABS.includes(tab) && isLoading && (
         <div className="bg-white rounded-lg border p-8 text-center text-gray-500">
           Loading analytics…
         </div>
       )}
 
-      {tab !== 'judge' && tab !== 'bias' && !isLoading && allEmpty && (
+      {!PANEL_TABS.includes(tab) && !isLoading && allEmpty && (
         <div className="bg-white rounded-lg border p-12 text-center text-gray-500">
           <BarChart3 className="h-12 w-12 mx-auto mb-3 text-gray-300" />
           <p className="text-base">No data yet — complete some tasks first</p>
