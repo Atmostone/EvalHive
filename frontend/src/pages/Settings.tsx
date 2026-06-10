@@ -5,6 +5,7 @@ import { useAuth } from '@/stores/auth'
 import { Save, RefreshCw, Skull, Download, Trash } from 'lucide-react'
 import { ProvidersSection } from '@/components/settings/ProvidersSection'
 import { SystemModelsSection } from '@/components/settings/SystemModelsSection'
+import { RegistrySection } from '@/components/settings/RegistrySection'
 
 const ORCHESTRATOR_FIELDS = [
   { key: 'max_concurrent_agents', label: 'Max Concurrent Agents', type: 'number' },
@@ -106,6 +107,9 @@ export default function Settings() {
 
       {/* System Models */}
       <SystemModelsSection canEdit={isAdminRole} />
+
+      {/* Tool & MCP Registry (SPA-41) */}
+      <RegistrySection canEdit={isAdminRole} />
 
       {/* Orchestrator */}
       <div className="bg-white rounded-lg border p-4 mb-4">

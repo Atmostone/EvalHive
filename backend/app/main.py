@@ -23,6 +23,7 @@ from app.api.agent_logs import router as agent_logs_router, ws_router as agent_l
 from app.api.providers import router as providers_router, models_router
 from app.api.data_lake import router as data_lake_router
 from app.api.quality import router as quality_router
+from app.api.registry import router as registry_router
 from app.api.workspaces import router as workspaces_router
 from app.config import get_settings
 from app.database import async_session
@@ -134,13 +135,30 @@ async def seed_templates():
         workspace = await db.get(Workspace, DEFAULT_WORKSPACE_ID)
         default_model_id = workspace.orchestrator_model_id if workspace else None
 
+        # Seed the builtin Tool & MCP Registry (SPA-41) for the default workspace,
+        # then have the templates reference entries by id rather than inline names.
+        from app.models.registry_entry import RegistryEntry
+
+        tool_id: dict = {}
+        for name in ("bash", "file_read", "file_write"):
+            entry = RegistryEntry(
+                workspace_id=DEFAULT_WORKSPACE_ID, name=name, kind="builtin",
+                config={}, secrets={}, created_by="seed",
+            )
+            db.add(entry)
+            await db.flush()
+            tool_id[name] = str(entry.id)
+
+        def _ids(*names):
+            return [tool_id[n] for n in names]
+
         templates = [
             Template(
                 name="Researcher",
                 description="Searches the internet, analyzes findings, and creates research reports. Use for any information gathering tasks.",
                 soul_md="You are an expert researcher. Search for information thoroughly, analyze it critically, and produce well-structured reports with sources.",
                 model_id=default_model_id,
-                tools=["bash", "file_write", "file_read"],
+                tool_ids=_ids("bash", "file_write", "file_read"),
                 tags=["research", "analysis"],
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ),
@@ -149,7 +167,7 @@ async def seed_templates():
                 description="Writes texts: articles, posts, documentation, emails, creative writing. Use for any text creation tasks.",
                 soul_md="You are a skilled writer. Write clear, engaging, well-structured texts. Adapt your style to the task: formal for docs, engaging for articles, concise for emails.",
                 model_id=default_model_id,
-                tools=["file_write", "file_read"],
+                tool_ids=_ids("file_write", "file_read"),
                 tags=["writing", "content"],
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ),
@@ -158,7 +176,7 @@ async def seed_templates():
                 description="Writes and debugs code, creates scripts and utilities. Use for programming and software development tasks.",
                 soul_md="You are an expert programmer. Write clean, well-tested, production-ready code. Use best practices. Always test your code before submitting.",
                 model_id=default_model_id,
-                tools=["bash", "file_read", "file_write"],
+                tool_ids=_ids("bash", "file_read", "file_write"),
                 tags=["coding", "programming"],
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ),
@@ -167,7 +185,7 @@ async def seed_templates():
                 description="Analyzes data, creates reports with insights and recommendations. Use for data analysis and business intelligence tasks.",
                 soul_md="You are a data analyst. Analyze data thoroughly, find patterns and insights, and present clear recommendations with supporting evidence.",
                 model_id=default_model_id,
-                tools=["bash", "file_read", "file_write"],
+                tool_ids=_ids("bash", "file_read", "file_write"),
                 tags=["analysis", "data"],
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ),
@@ -176,7 +194,7 @@ async def seed_templates():
                 description="Creates HTML pages, UI components, and web designs. Use for frontend design and prototyping tasks.",
                 soul_md="You are a UI/UX designer who codes. Create beautiful, responsive HTML/CSS pages. Focus on clean design, good typography, and modern aesthetics.",
                 model_id=default_model_id,
-                tools=["bash", "file_write", "file_read"],
+                tool_ids=_ids("bash", "file_write", "file_read"),
                 tags=["design", "frontend"],
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ),
@@ -303,3 +321,4 @@ app.include_router(models_router)
 app.include_router(workspaces_router)
 app.include_router(data_lake_router)
 app.include_router(quality_router)
+app.include_router(registry_router)

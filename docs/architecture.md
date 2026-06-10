@@ -772,6 +772,34 @@ pointwise-derived ones, turning E-18's deferred `position` no-op into a working 
   panel on Analytics (side-by-side answers, LLM-judge with position-bias readout, human winner
   picker, "Push to ELO leaderboard").
 
+### Tool & MCP Registry (SPA-41)
+
+Tools and MCP servers used to be configured inline on every template (`Template.tools` /
+`Template.mcp_servers`), which duplicated config, scattered credentials, and made A/B benchmark runs
+error-prone (forget a tool on one configuration → unfair comparison). SPA-41 makes them a
+**workspace-level registry** (`registry_entries` + `app/registry/`) that templates and experiments
+reference by id.
+
+- **Big-bang migration** (`a5b6c7d8e9f0`): a pure `dedupe_for_migration` collapses every template's
+  inline builtins (by name) and MCP servers (by canonical config; name collisions suffixed) into
+  registry rows, rewrites each template to a `tool_ids` reference list, and drops the inline columns.
+- **Resolution at spawn is the only hot-path change.** `resolve_template_tools(template, run_config)`
+  loads the referenced entries (skipping disabled/missing), applies the task-level override
+  `run_config.tools_override = {enable, disable}` (finest-restriction-wins: `disable` beats `enable`),
+  and **materializes** them into the exact shapes the agent already consumes — a builtin tool-name
+  list (`AGENT_TOOLS`) and MCP dicts `{name, command, args, env}` (`MCP_SERVERS`). The wiring is
+  favorable: `engine.py` feeds the resolved set into the `AgentSpec`, the Docker runtime rebuilds its
+  container env from the spec, so `docker_manager.py` needs no change. The resolved set is also written
+  into the `agent_spawned` snapshot, keeping E-20 reproducibility honest.
+- **Credentials**: `secrets` are stored plain (like `Provider.api_key`) and **masked on every API
+  read** — only the resolver reveals them into container env. The `secrets` slot is the seam for a
+  future S-06 Vault/encryption follow-up. **Connection test** is best-effort: builtin → ok, http MCP →
+  a reachability probe, stdio MCP → shape validation (the live handshake runs in the agent sandbox).
+- **Surface**: `/api/registry/tools` CRUD (+`/{id}/test`, writes owner/admin, delete guarded by a 409
+  unless `force`), CLI `python -m app.cli.registry`, a "Tool & MCP Registry" section in Settings, and a
+  registry multiselect in the template editor. New-workspace seeding copies the default workspace's
+  registry and remaps the seeded templates' `tool_ids` so references are never cross-tenant.
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),

@@ -73,13 +73,28 @@ Token: HS256, ttl=24h, payload `{sub: user_id, ws: default_workspace_id, iat, ex
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/templates` | List. Each row includes `model_id` (FK → llm_models), denormalized `model_display_name`/`model_api_name`/`provider_name`. |
-| POST | `/api/templates` | Create. Fields: name/description/soul_md/`model_id`/tools/mcp_servers/limits/tags. `model_id` must reference a model in the same workspace. |
+| POST | `/api/templates` | Create. Fields: name/description/soul_md/`model_id`/`tool_ids`/limits/tags. `model_id` must reference a model in the same workspace; every `tool_ids` entry must reference a registry entry in this workspace (SPA-41), else 400. (Inline `tools`/`mcp_servers` were replaced by `tool_ids` references.) |
 | GET | `/api/templates/{id}` | Single |
 | PUT | `/api/templates/{id}` | Update (creates a version snapshot before applying changes). Accepts `model_id`. |
 | DELETE | `/api/templates/{id}` | |
 | GET | `/api/templates/{id}/versions` | List versions |
 | GET | `/api/templates/{id}/versions/{v}` | Snapshot v |
 | POST | `/api/templates/{id}/rollback/{v}` | Apply snapshot v as the current state (creates two new versions: pre-rollback + post-rollback). Legacy snapshots with a `model` string are best-effort mapped to `model_id` via api_name. |
+
+### Tool & MCP Registry (`/api/registry`) — SPA-41
+
+Workspace-level source of truth for tools and MCP servers; templates reference entries by id (`tool_ids`). Secrets are stored plain (like `Provider.api_key`) and **masked on every read** — only the spawn-time resolver reveals them into the agent container env.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/registry/tools?kind=` | List entries (secrets masked), optional `kind=builtin\|mcp` filter. Each row: `{id, name, kind, config, secrets (masked), secret_keys[], enabled, description, created_by, created_at}` |
+| POST | `/api/registry/tools` | **owner/admin** — register a tool/MCP. Body `{name, kind="builtin"\|"mcp", config, secrets, enabled=true, description?}`. `mcp` requires `config.command` (stdio) or `config.url` (http). 400 on duplicate name / invalid mcp config |
+| GET | `/api/registry/tools/{id}` | One entry (masked) |
+| PUT | `/api/registry/tools/{id}` | **owner/admin** — update `{name?, config?, secrets?, enabled?, description?}` |
+| DELETE | `/api/registry/tools/{id}?force=` | **owner/admin** — delete. **409** (with the referencing template names) if any template references it, unless `force=true` (then the reference is stripped from those templates) |
+| POST | `/api/registry/tools/{id}/test` | **owner/admin** — best-effort check: builtin → ok; mcp http (`config.url`) → reachability probe; mcp stdio → shape validation (live handshake runs in the agent sandbox). Returns `{ok, detail}` |
+
+Resolution at spawn: a template's `tool_ids` (plus any `task.run_config.tools_override = {enable:[ids], disable:[ids]}`, finest-restriction-wins) are materialized into the builtin tool-name list + MCP server dicts the agent consumes.
 
 ### Agents (`/api/agents`)
 

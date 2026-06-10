@@ -79,7 +79,7 @@ async def test_spawn_command_with_existing_template(db_session):
         name="alpha",
         description="d",
         soul_md="# soul",
-        tools=[], mcp_servers=[],
+        tool_ids=[],
         max_ram="1g", max_cpu=100000, timeout_minutes=60, tags=[],
         workspace_id=DEFAULT_WORKSPACE_ID,
     )
@@ -117,7 +117,7 @@ async def test_board_command(db_session):
 async def test_templates_command_lists_workspace_templates(db_session):
     db_session.add(Template(
         name="zeta", description="d", soul_md="# s",
-        tools=[], mcp_servers=[],
+        tool_ids=[],
         max_ram="1g", max_cpu=100000, timeout_minutes=60, tags=["primary"],
         workspace_id=DEFAULT_WORKSPACE_ID,
     ))

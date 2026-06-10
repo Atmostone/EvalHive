@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_workspace, require_role
 from app.database import get_db
 from app.models.provider import LLMModel, Provider
+from app.models.registry_entry import RegistryEntry
 from app.models.rubric import Rubric
 from app.models.template import Template
 from app.models.template_version import TemplateVersion
@@ -23,8 +24,8 @@ class TemplateCreate(BaseModel):
     soul_md: str
     model_id: Optional[str] = None
     rubric_id: Optional[str] = None
-    tools: list = []
-    mcp_servers: list = []
+    # Registry references (SPA-41) — registry entry ids the agent enables.
+    tool_ids: list = []
     max_ram: str = "2g"
     max_cpu: int = 100000
     timeout_minutes: int = 60
@@ -37,8 +38,7 @@ class TemplateUpdate(BaseModel):
     soul_md: Optional[str] = None
     model_id: Optional[str] = None
     rubric_id: Optional[str] = None
-    tools: Optional[list] = None
-    mcp_servers: Optional[list] = None
+    tool_ids: Optional[list] = None
     max_ram: Optional[str] = None
     max_cpu: Optional[int] = None
     timeout_minutes: Optional[int] = None
@@ -76,8 +76,7 @@ def template_to_dict(
         "model_api_name": model.api_name if model else None,
         "provider_name": provider.name if provider else None,
         "rubric_id": str(t.rubric_id) if t.rubric_id else None,
-        "tools": t.tools,
-        "mcp_servers": t.mcp_servers,
+        "tool_ids": t.tool_ids or [],
         "max_ram": t.max_ram,
         "max_cpu": t.max_cpu,
         "timeout_minutes": t.timeout_minutes,
@@ -133,6 +132,26 @@ async def _validate_rubric_id(
     return rid
 
 
+async def _validate_tool_ids(
+    tool_ids: Optional[list], workspace: Workspace, db: AsyncSession
+) -> list:
+    """Validate that every id references a registry entry in this workspace (SPA-41).
+    Returns the normalized list of id strings."""
+    if not tool_ids:
+        return []
+    out: list = []
+    for raw in tool_ids:
+        try:
+            tid = uuid.UUID(str(raw))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"invalid tool id: {raw}")
+        entry = await db.get(RegistryEntry, tid)
+        if entry is None or entry.workspace_id != workspace.id:
+            raise HTTPException(status_code=400, detail=f"tool id not in registry: {raw}")
+        out.append(str(tid))
+    return out
+
+
 @router.get("")
 async def list_templates(
     workspace: Workspace = Depends(get_current_workspace),
@@ -161,14 +180,14 @@ async def create_template(
 ):
     model_uuid = await _validate_model_id(body.model_id, workspace, db)
     rubric_uuid = await _validate_rubric_id(body.rubric_id, workspace, db)
+    tool_ids = await _validate_tool_ids(body.tool_ids, workspace, db)
     template = Template(
         name=body.name,
         description=body.description,
         soul_md=body.soul_md,
         model_id=model_uuid,
         rubric_id=rubric_uuid,
-        tools=body.tools,
-        mcp_servers=body.mcp_servers,
+        tool_ids=tool_ids,
         max_ram=body.max_ram,
         max_cpu=body.max_cpu,
         timeout_minutes=body.timeout_minutes,
@@ -201,8 +220,7 @@ def _full_template_snapshot(t: Template) -> dict:
         "soul_md": t.soul_md,
         "model_id": str(t.model_id) if t.model_id else None,
         "rubric_id": str(t.rubric_id) if t.rubric_id else None,
-        "tools": t.tools,
-        "mcp_servers": t.mcp_servers,
+        "tool_ids": t.tool_ids or [],
         "max_ram": t.max_ram,
         "max_cpu": t.max_cpu,
         "timeout_minutes": t.timeout_minutes,
@@ -235,6 +253,7 @@ async def update_template(
         template_id=template.id,
         version=await _next_version(db, template.id),
         snapshot=_full_template_snapshot(template),
+        tool_ids=template.tool_ids,
         commit_message="auto: pre-update snapshot",
         workspace_id=workspace.id,
     ))
@@ -244,6 +263,8 @@ async def update_template(
         payload["model_id"] = await _validate_model_id(payload["model_id"], workspace, db)
     if "rubric_id" in payload:
         payload["rubric_id"] = await _validate_rubric_id(payload["rubric_id"], workspace, db)
+    if "tool_ids" in payload:
+        payload["tool_ids"] = await _validate_tool_ids(payload["tool_ids"], workspace, db)
     for field, value in payload.items():
         setattr(template, field, value)
 
@@ -310,7 +331,7 @@ async def get_version(
 # `provider_api_key`) are silently dropped to keep old snapshots usable.
 _ROLLBACK_FIELDS = {
     "name", "description", "soul_md", "model_id", "rubric_id",
-    "tools", "mcp_servers", "max_ram", "max_cpu", "timeout_minutes", "tags",
+    "tool_ids", "max_ram", "max_cpu", "timeout_minutes", "tags",
 }
 
 
@@ -361,6 +382,7 @@ async def rollback_template(
         template_id=template.id,
         version=await _next_version(db, template.id),
         snapshot=_full_template_snapshot(template),
+        tool_ids=template.tool_ids,
         commit_message=f"auto: pre-rollback to v{version}",
         workspace_id=workspace.id,
     ))
@@ -386,6 +408,7 @@ async def rollback_template(
         template_id=template.id,
         version=await _next_version(db, template.id),
         snapshot=_full_template_snapshot(template),
+        tool_ids=template.tool_ids,
         commit_message=f"rollback to v{version}",
         workspace_id=workspace.id,
     ))

@@ -173,7 +173,7 @@ async def test_delete_model_sets_template_model_id_null(
     # Create a template referencing this model
     tpl = Template(
         name="tpl", description="d", soul_md="s",
-        model_id=mid, tools=[], mcp_servers=[], tags=[],
+        model_id=mid, tool_ids=[], tags=[],
         workspace_id=DEFAULT_WORKSPACE_ID,
     )
     db_session.add(tpl)

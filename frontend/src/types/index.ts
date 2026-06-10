@@ -47,6 +47,23 @@ export interface MCPServer {
   env?: Record<string, string>
 }
 
+// Tool & MCP Registry (SPA-41) — a workspace-level entry templates reference by id.
+export type RegistryKind = 'builtin' | 'mcp'
+export interface RegistryEntry {
+  id: string
+  workspace_id: string
+  name: string
+  kind: RegistryKind
+  config: Record<string, unknown>
+  secrets: Record<string, string> // masked on read
+  secret_keys: string[]
+  enabled: boolean
+  description: string | null
+  created_by: string
+  created_at: string | null
+  updated_at: string | null
+}
+
 export interface Template {
   id: string
   name: string
@@ -57,8 +74,7 @@ export interface Template {
   model_api_name: string | null
   provider_name: string | null
   rubric_id: string | null
-  tools: string[]
-  mcp_servers: MCPServer[]
+  tool_ids: string[]
   max_ram: string
   max_cpu: number
   timeout_minutes: number

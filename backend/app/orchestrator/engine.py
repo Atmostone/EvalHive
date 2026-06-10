@@ -51,20 +51,31 @@ def _read_flat_memory(workspace_id) -> dict:
     return out
 
 
-def _spawn_snapshot(task, template, agent_llm, memory_context: str, soul_md: str | None = None) -> dict:
+def _spawn_snapshot(
+    task,
+    template,
+    agent_llm,
+    memory_context: str,
+    soul_md: str | None = None,
+    *,
+    tools: list | None = None,
+    mcp_servers: list | None = None,
+) -> dict:
     """Full state snapshot captured into the `agent_spawned` event.
 
     Source of truth for the Quality Data Lake (E-01) `execution` section —
     soul_md, tools, MCP, model, resource limits, and the memory/RAG context
     the agent received are not recoverable later, so we record them here.
     ``soul_md`` defaults to the template's prompt but may be a per-run override.
+    ``tools``/``mcp_servers`` are the resolved registry set (SPA-41) the agent
+    actually received — not the template's references.
     """
     return {
         "template_id": str(template.id),
         "template_name": template.name,
         "soul_md": (soul_md if soul_md is not None else (template.soul_md or "")),
-        "tools": list(template.tools or []),
-        "mcp_servers": list(template.mcp_servers or []),
+        "tools": list(tools or []),
+        "mcp_servers": list(mcp_servers or []),
         "model_api_name": agent_llm.model.api_name,
         "input_price_per_1m_usd": (
             float(agent_llm.model.input_price_per_1m_usd)
@@ -150,6 +161,15 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         if soul is None:
             soul = template.soul_md or ""
 
+        # Resolve tools & MCP from the workspace registry (SPA-41), applying any
+        # task-level run_config.tools_override. Yields the exact shapes the agent
+        # container consumes (builtin tool names + MCP server dicts with secrets).
+        from app.registry.resolver import resolve_template_tools
+
+        resolved_tools, resolved_mcp = await resolve_template_tools(
+            db, template, run_config=run_config
+        )
+
         agent_token = await issue_agent_token(
             db, task_id=task.id, workspace_id=task.workspace_id
         )
@@ -168,8 +188,8 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
             template_name=template.name,
             template_id=str(template.id),
             soul_md=soul,
-            tools=list(template.tools or []),
-            mcp_servers=list(template.mcp_servers or []),
+            tools=resolved_tools,
+            mcp_servers=resolved_mcp,
             env={
                 "OPENAI_API_KEY": agent_llm.provider.api_key,
                 "OPENAI_BASE_URL": agent_llm.provider.endpoint,
@@ -196,7 +216,8 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         await log_event(
             db, "agent_spawned", "orchestrator",
             {"container_id": container_id,
-             **_spawn_snapshot(task, template, agent_llm, memory_context, soul_md=soul)},
+             **_spawn_snapshot(task, template, agent_llm, memory_context, soul_md=soul,
+                               tools=resolved_tools, mcp_servers=resolved_mcp)},
             task_id=task.id, agent_container_id=container_id,
         )
         logger.info(f"Spawned agent {container_id[:12]} for task {task.id}")
