@@ -64,8 +64,7 @@ async def test_process_ready_task_spawns_when_template_picked(db_session, defaul
         description="d",
         soul_md="# soul",
         model_id=default_model.id,
-        tools=[],
-        mcp_servers=[],
+        tool_ids=[],
         max_ram="1g",
         max_cpu=100000,
         timeout_minutes=60,
@@ -124,7 +123,7 @@ async def test_process_ready_task_skips_decomposition_when_disabled(
     def _tpl(name: str) -> Template:
         return Template(
             name=name, description="d", soul_md="# soul", model_id=default_model.id,
-            tools=[], mcp_servers=[],
+            tool_ids=[],
             max_ram="1g", max_cpu=100000, timeout_minutes=60, tags=[],
             workspace_id=DEFAULT_WORKSPACE_ID,
         )

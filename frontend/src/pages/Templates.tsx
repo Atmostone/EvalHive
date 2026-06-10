@@ -1,37 +1,9 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { providersApi, templatesApi, rubricsApi } from '@/api/client'
+import { providersApi, templatesApi, rubricsApi, registryApi } from '@/api/client'
 import type { Template } from '@/types'
 import { Plus, Edit2, Trash2, Copy, X, Boxes, ServerIcon, AlertTriangle } from 'lucide-react'
 import { ModelSelect } from '@/components/settings/SystemModelsSection'
-
-interface MCPServerForm {
-  name: string
-  command: string
-  args: string  // newline/CSV
-  env: string   // KEY=VAL per line
-}
-
-function mcpToForm(s: { name: string; command: string; args: string[]; env?: Record<string, string> }): MCPServerForm {
-  return {
-    name: s.name,
-    command: s.command,
-    args: (s.args || []).join(' '),
-    env: Object.entries(s.env || {}).map(([k, v]) => `${k}=${v}`).join('\n'),
-  }
-}
-
-function formToMcp(f: MCPServerForm) {
-  const args = f.args.trim() ? f.args.trim().split(/\s+/) : []
-  const env: Record<string, string> = {}
-  for (const line of f.env.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    const eq = trimmed.indexOf('=')
-    if (eq > 0) env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim()
-  }
-  return { name: f.name.trim(), command: f.command.trim(), args, env }
-}
 
 function TemplateForm({ template, onClose }: { template?: Template; onClose: () => void }) {
   const queryClient = useQueryClient()
@@ -43,19 +15,14 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
     soul_md: template?.soul_md || '',
     model_id: template?.model_id ?? null as string | null,
     rubric_id: template?.rubric_id ?? null as string | null,
-    tools: template?.tools || [],
+    tool_ids: (template?.tool_ids || []) as string[],
     max_ram: template?.max_ram || '2g',
     max_cpu: template?.max_cpu || 100000,
     timeout_minutes: template?.timeout_minutes || 60,
     tags: template?.tags || [],
-    mcp_servers: template?.mcp_servers || [],
   })
 
-  const [toolsInput, setToolsInput] = useState(form.tools.join(', '))
   const [tagsInput, setTagsInput] = useState(form.tags.join(', '))
-  const [mcpForms, setMcpForms] = useState<MCPServerForm[]>(
-    (template?.mcp_servers || []).map(mcpToForm),
-  )
 
   const { data: providers = [] } = useQuery({
     queryKey: ['providers'],
@@ -65,6 +32,11 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
   const { data: rubrics = [] } = useQuery({
     queryKey: ['rubrics'],
     queryFn: rubricsApi.list,
+  })
+
+  const { data: registry = [] } = useQuery({
+    queryKey: ['registry', 'tools'],
+    queryFn: () => registryApi.list(),
   })
 
   const createMutation = useMutation({
@@ -80,11 +52,7 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
   function handleSubmit() {
     const data = {
       ...form,
-      tools: toolsInput.split(',').map(s => s.trim()).filter(Boolean),
       tags: tagsInput.split(',').map(s => s.trim()).filter(Boolean),
-      mcp_servers: mcpForms
-        .map(formToMcp)
-        .filter(s => s.name && s.command),
     }
     Object.assign(form, data)
     if (isEdit) {
@@ -120,26 +88,19 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
             <textarea value={form.soul_md} onChange={e => set('soul_md', e.target.value)}
               className="w-full px-3 py-2 border rounded-lg text-sm h-32 resize-y font-mono" placeholder="You are an expert..." />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
-              <ModelSelect
-                providers={providers}
-                value={form.model_id}
-                onChange={(v) => set('model_id', v)}
-                placeholder="— Pick a model —"
-              />
-              {!form.model_id && (
-                <p className="text-xs text-orange-600 mt-1">
-                  Without a model, the agent cannot be spawned.
-                </p>
-              )}
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Tools (comma-separated)</label>
-              <input value={toolsInput} onChange={e => setToolsInput(e.target.value)}
-                className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="bash, file_write, file_read" />
-            </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Model</label>
+            <ModelSelect
+              providers={providers}
+              value={form.model_id}
+              onChange={(v) => set('model_id', v)}
+              placeholder="— Pick a model —"
+            />
+            {!form.model_id && (
+              <p className="text-xs text-orange-600 mt-1">
+                Without a model, the agent cannot be spawned.
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -178,43 +139,41 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-gray-700 flex items-center gap-1">
-                <ServerIcon className="h-4 w-4" /> MCP Servers
-              </label>
-              <button type="button"
-                onClick={() => setMcpForms(prev => [...prev, { name: '', command: '', args: '', env: '' }])}
-                className="text-xs px-2 py-1 border rounded hover:bg-gray-50">
-                + Add server
-              </button>
-            </div>
-            {mcpForms.length === 0 && (
-              <p className="text-xs text-gray-400 mb-2">No MCP servers configured. Agent uses only built-in tools.</p>
-            )}
-            {mcpForms.map((m, idx) => (
-              <div key={idx} className="border rounded-lg p-3 mb-2 bg-gray-50 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-gray-500">Server #{idx + 1}</span>
-                  <button type="button"
-                    onClick={() => setMcpForms(prev => prev.filter((_, i) => i !== idx))}
-                    className="text-xs text-red-500 hover:underline">remove</button>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <input placeholder="name (e.g. time)" value={m.name}
-                    onChange={e => setMcpForms(prev => prev.map((s, i) => i === idx ? { ...s, name: e.target.value } : s))}
-                    className="px-2 py-1.5 border rounded text-sm bg-white" />
-                  <input placeholder="command (e.g. python)" value={m.command}
-                    onChange={e => setMcpForms(prev => prev.map((s, i) => i === idx ? { ...s, command: e.target.value } : s))}
-                    className="px-2 py-1.5 border rounded text-sm bg-white" />
-                </div>
-                <input placeholder="args (space-separated, e.g. -m my_server --foo)" value={m.args}
-                  onChange={e => setMcpForms(prev => prev.map((s, i) => i === idx ? { ...s, args: e.target.value } : s))}
-                  className="w-full px-2 py-1.5 border rounded text-sm bg-white" />
-                <textarea placeholder="env (KEY=VAL per line, optional)" value={m.env}
-                  onChange={e => setMcpForms(prev => prev.map((s, i) => i === idx ? { ...s, env: e.target.value } : s))}
-                  className="w-full px-2 py-1.5 border rounded text-sm bg-white font-mono h-16 resize-none" />
+            <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
+              <ServerIcon className="h-4 w-4" /> Tools &amp; MCP
+              <span className="text-xs font-normal text-gray-400">(registry)</span>
+            </label>
+            {registry.length === 0 ? (
+              <p className="text-xs text-gray-400">
+                No registry entries yet — add tools &amp; MCP servers in Settings → Tool &amp; MCP Registry.
+              </p>
+            ) : (
+              <div className="border rounded-lg divide-y max-h-56 overflow-y-auto">
+                {registry.map(e => {
+                  const checked = form.tool_ids.includes(e.id)
+                  return (
+                    <label key={e.id}
+                      className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 cursor-pointer">
+                      <input type="checkbox" checked={checked}
+                        onChange={() => set('tool_ids', checked
+                          ? form.tool_ids.filter(i => i !== e.id)
+                          : [...form.tool_ids, e.id])} />
+                      <span className="font-medium text-gray-800">{e.name}</span>
+                      <span className={`text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border ${
+                        e.kind === 'mcp'
+                          ? 'bg-purple-50 text-purple-700 border-purple-200'
+                          : 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                        {e.kind}
+                      </span>
+                      {!e.enabled && <span className="text-[10px] text-amber-600">disabled</span>}
+                    </label>
+                  )
+                })}
               </div>
-            ))}
+            )}
+            <p className="text-xs text-gray-400 mt-1">
+              Select from the workspace registry — configure entries in Settings.
+            </p>
           </div>
 
           <button onClick={handleSubmit}
@@ -238,6 +197,12 @@ export default function Templates() {
     queryFn: () => templatesApi.list(),
   })
 
+  const { data: registry = [] } = useQuery({
+    queryKey: ['registry', 'tools'],
+    queryFn: () => registryApi.list(),
+  })
+  const registryName = (id: string) => registry.find(e => e.id === id)?.name ?? id.slice(0, 8)
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => templatesApi.delete(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['templates'] }),
@@ -253,8 +218,7 @@ export default function Templates() {
       model_api_name: null,
       provider_name: null,
       rubric_id: t.rubric_id,
-      tools: t.tools,
-      mcp_servers: t.mcp_servers,
+      tool_ids: t.tool_ids,
       max_ram: t.max_ram,
       max_cpu: t.max_cpu,
       timeout_minutes: t.timeout_minutes,
@@ -309,8 +273,8 @@ export default function Templates() {
                     <AlertTriangle className="h-3 w-3" /> Not configured
                   </span>
                 )}
-                {t.tools.map(s => (
-                  <span key={s} className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">{s}</span>
+                {(t.tool_ids || []).map(id => (
+                  <span key={id} className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">{registryName(id)}</span>
                 ))}
               </div>
               <div className="mt-2 text-xs text-gray-400">

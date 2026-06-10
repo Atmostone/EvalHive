@@ -25,6 +25,8 @@ class TemplateVersion(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Registry references at this version (SPA-41); nullable for pre-registry rows.
+    tool_ids: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     commit_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(String(50), default="user", server_default="user")
     workspace_id: Mapped[uuid.UUID] = mapped_column(

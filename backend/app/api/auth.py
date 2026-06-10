@@ -166,6 +166,14 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)) -> Toke
         await db.flush()
         rubric_id_map[r.id] = new_rubric.id
 
+    # Copy the default workspace's Tool & MCP Registry (SPA-41) first, so the seeded
+    # templates can reference this workspace's own entries (never cross-tenant ones).
+    from app.registry.service import copy_registry_to_workspace
+
+    registry_id_map = await copy_registry_to_workspace(
+        db, DEFAULT_WORKSPACE_ID, workspace.id
+    )
+
     # Seed the new workspace with copies of the default workspace's templates.
     defaults = (
         await db.execute(
@@ -179,8 +187,7 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)) -> Toke
             soul_md=t.soul_md,
             model_id=model_id_map.get(t.model_id) if t.model_id else None,
             rubric_id=rubric_id_map.get(t.rubric_id) if t.rubric_id else None,
-            tools=list(t.tools or []),
-            mcp_servers=list(t.mcp_servers or []),
+            tool_ids=[registry_id_map[i] for i in (t.tool_ids or []) if i in registry_id_map],
             max_ram=t.max_ram,
             max_cpu=t.max_cpu,
             timeout_minutes=t.timeout_minutes,

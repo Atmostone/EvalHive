@@ -29,7 +29,7 @@ from app.quality import variance as var
 def _template(model_id) -> Template:
     return Template(
         name="solo", description="d", soul_md="# soul", model_id=model_id,
-        tools=[], mcp_servers=[], max_ram="1g", max_cpu=100000,
+        tool_ids=[], max_ram="1g", max_cpu=100000,
         timeout_minutes=60, tags=[], workspace_id=DEFAULT_WORKSPACE_ID,
     )
 

@@ -67,6 +67,8 @@ d2e3f4a5b6c7  bias_reports — Bias Mitigation Toolkit (E-18)
 e3f4a5b6c7d8  ranking_reports — Aggregation Engine (E-19)
      ↓
 f4a5b6c7d8e9  pairwise_comparisons — Pairwise Comparison Framework (E-21)
+     ↓
+a5b6c7d8e9f0  registry_entries — Tool & MCP Registry (SPA-41); templates.tools/mcp_servers → tool_ids
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -117,14 +119,33 @@ Indexes: `status`, `parent_id`, `workspace_id`.
 | name / description / soul_md | string/text | required | |
 | model_id | UUID FK→llm_models.id ON DELETE SET NULL | NULL | model used to run the agent. NULL → template not spawnable. |
 | rubric_id | UUID FK→rubrics.id ON DELETE SET NULL | NULL | quality rubric for scoring this template's results (E-02); NULL → tag/default rubric |
-| tools | JSONB | [] | list of built-in tools |
-| mcp_servers | JSONB | [] | list of `{name, command, args, env}` |
+| tool_ids | JSONB | [] | registry entry ids the agent enables (SPA-41); replaces the old inline `tools`/`mcp_servers`. The spawn resolver materializes these (+ any task override) into the tool-name list + MCP dicts |
 | max_ram / max_cpu / timeout_minutes | string/int | "2g" / 100000 / 60 | docker limits |
 | tags | TEXT[] | {} | |
 | workspace_id | UUID NOT NULL | | (post-R1) |
 | created_at / updated_at | TIMESTAMP | now() / onupdate | |
 
-Legacy columns `model`/`provider_url`/`provider_api_key` were dropped by migration `f7e8d9c0b1a2`; the existing data was migrated into a Provider+Model pair per workspace.
+Legacy columns `model`/`provider_url`/`provider_api_key` were dropped by migration `f7e8d9c0b1a2`; the existing data was migrated into a Provider+Model pair per workspace. The inline `tools`/`mcp_servers` columns were dropped by `a5b6c7d8e9f0` (SPA-41), which migrated their content into the `registry_entries` table and rewrote each template to reference entries via `tool_ids`.
+
+### registry_entries (SPA-41)
+
+Workspace-level Tool & MCP Registry — a tool or MCP server configured once and
+referenced by templates (`tool_ids`) and task/experiment overrides instead of
+duplicated inline (migration `a5b6c7d8e9f0`). Columns: `id`, `workspace_id` (FK
+CASCADE), `name`, `kind` (`builtin`|`mcp`), `config` (JSONB — non-secret; mcp:
+`{command, args, url?}`), `secrets` (JSONB — credential env map, **plain text,
+masked on read** like `Provider.api_key`), `enabled`, `description`, `created_by`,
+`created_at`, `updated_at`. `UniqueConstraint(workspace_id, name)`, index on
+`workspace_id`.
+
+- **Builtin** entries materialize to their `name` (a tool the agent enables);
+  **mcp** entries materialize to `{name, command, args, env: secrets}` (+`url`).
+- The migration deduped builtins by name and MCP by canonical config (name
+  collisions on differing config suffixed `-2/-3`), then set each template's
+  `tool_ids`. `template_versions.tool_ids` (nullable) snapshots refs per version.
+- New-workspace seeding copies the default workspace's registry and remaps the
+  copied templates' `tool_ids` (so refs are never cross-tenant). Secrets are
+  revealed only by the spawn-time resolver, never by an API read.
 
 ### providers (R7)
 

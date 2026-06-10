@@ -196,6 +196,31 @@ export const modelsApi = {
     request<ModelTestResponse>(`/models/${id}/test`, { method: 'POST' }),
 }
 
+import type { RegistryEntry, RegistryKind } from '../types'
+
+export interface RegistryEntryInput {
+  name: string
+  kind: RegistryKind
+  config?: Record<string, unknown>
+  secrets?: Record<string, string>
+  enabled?: boolean
+  description?: string | null
+}
+
+export const registryApi = {
+  list: (kind?: RegistryKind) =>
+    request<RegistryEntry[]>(`/registry/tools${kind ? `?kind=${kind}` : ''}`),
+  get: (id: string) => request<RegistryEntry>(`/registry/tools/${id}`),
+  create: (data: RegistryEntryInput) =>
+    request<RegistryEntry>('/registry/tools', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<RegistryEntryInput>) =>
+    request<RegistryEntry>(`/registry/tools/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  remove: (id: string, force = false) =>
+    request<void>(`/registry/tools/${id}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
+  test: (id: string) =>
+    request<{ ok: boolean; detail: string }>(`/registry/tools/${id}/test`, { method: 'POST' }),
+}
+
 export const workspaceApi = {
   getSystemModels: () => request<SystemModels>('/workspaces/me/system-models'),
   updateSystemModels: (data: Partial<SystemModels>) =>

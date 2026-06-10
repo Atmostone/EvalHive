@@ -20,6 +20,7 @@ from app.models.judge_calibration import JudgeCalibration
 from app.models.bias_report import BiasReport
 from app.models.ranking_report import RankingReport
 from app.models.pairwise_comparison import PairwiseComparison
+from app.models.registry_entry import RegistryEntry
 
 __all__ = [
     "User",
@@ -47,4 +48,5 @@ __all__ = [
     "BiasReport",
     "RankingReport",
     "PairwiseComparison",
+    "RegistryEntry",
 ]

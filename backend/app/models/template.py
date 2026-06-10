@@ -30,8 +30,11 @@ class Template(Base):
         ForeignKey("rubrics.id", ondelete="SET NULL"),
         nullable=True,
     )
-    tools: Mapped[dict] = mapped_column(JSONB, default=list, server_default="[]")
-    mcp_servers: Mapped[dict] = mapped_column(JSONB, default=list, server_default="[]")
+    # References into the workspace Tool & MCP Registry (SPA-41) — registry entry
+    # ids (uuid strings). Replaces the old inline tools/mcp_servers; the spawn-time
+    # resolver materializes these (plus any task-level override) into the tool name
+    # list + MCP server dicts the agent container consumes.
+    tool_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     max_ram: Mapped[str] = mapped_column(String(20), default="2g", server_default="2g")
     max_cpu: Mapped[int] = mapped_column(Integer, default=100000, server_default="100000")
     timeout_minutes: Mapped[int] = mapped_column(Integer, default=60, server_default="60")
