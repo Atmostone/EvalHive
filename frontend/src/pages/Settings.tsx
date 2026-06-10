@@ -12,6 +12,16 @@ const ORCHESTRATOR_FIELDS = [
   { key: 'max_retries', label: 'Max Retries', type: 'number' },
 ]
 
+// Bias Mitigation Toolkit (E-18). Verbosity & score-clustering append an
+// instruction to the judge prompt; self-preference flags judge==agent; position
+// is reserved for pairwise judging (E-21).
+const BIAS_TOGGLES = [
+  { key: 'bias_mitigation_verbosity', label: 'Verbosity', desc: 'Instruct the judge to ignore answer length and judge substance.' },
+  { key: 'bias_mitigation_score_clustering', label: 'Score clustering', desc: 'Instruct the judge to use the full 0–10 range instead of defaulting to 7–8.' },
+  { key: 'bias_mitigation_self_preference', label: 'Self-preference', desc: 'Flag when the judge model is the same as the agent model (scores may be inflated).' },
+  { key: 'bias_mitigation_position', label: 'Position', desc: 'Pairwise order-swap — no-op until pairwise judging (E-21) exists.' },
+]
+
 const STORAGE_FIELDS = [
   { key: 'minio_endpoint', label: 'MinIO Endpoint', envVar: 'MINIO_ENDPOINT' },
   { key: 'minio_access_key', label: 'MinIO Access Key', envVar: 'MINIO_ROOT_USER' },
@@ -130,6 +140,34 @@ export default function Settings() {
               </div>
             </label>
           </div>
+        </div>
+      </div>
+
+      {/* Bias Mitigation (E-18) */}
+      <div className="bg-white rounded-lg border p-4 mb-4">
+        <h2 className="font-semibold mb-1">
+          Bias Mitigation <span className="text-sm font-normal text-gray-400">(E-18)</span>
+        </h2>
+        <p className="text-xs text-gray-500 mb-3">
+          Counter-measures for known LLM-judge biases. Run the A/B report on the Analytics page
+          to measure their effect against human ratings.
+        </p>
+        <div className="space-y-3">
+          {BIAS_TOGGLES.map(({ key, label, desc }) => (
+            <div key={key} className="flex items-start gap-2">
+              <input
+                id={key}
+                type="checkbox"
+                checked={form[key] === true}
+                onChange={e => set(key, e.target.checked)}
+                className="mt-1"
+              />
+              <label htmlFor={key} className="text-sm text-gray-700">
+                <span className="font-medium">{label}</span>
+                <div className="text-xs text-gray-500">{desc}</div>
+              </label>
+            </div>
+          ))}
         </div>
       </div>
 

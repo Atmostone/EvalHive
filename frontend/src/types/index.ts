@@ -570,6 +570,85 @@ export interface JudgeCalibrationBadge {
   created_at?: string | null
 }
 
+// Bias Mitigation Toolkit (E-18): controlled A/B re-judge, before vs after.
+export interface BiasDimensionDelta {
+  key: string
+  name: string
+  cohen_kappa_before: number | null
+  cohen_kappa_after: number | null
+  pearson_before: number | null
+  pearson_after: number | null
+  mean_bias_before: number | null
+  mean_bias_after: number | null
+  improved: boolean
+}
+
+export interface BiasReportMetrics {
+  schema_version: number
+  status: 'ok' | 'empty' | 'insufficient_data' | 'no_judge_model'
+  threshold_kappa: number
+  n_records: number
+  sample_size: number
+  n_dimensions: number
+  toggles_requested: Record<string, boolean>
+  // before/after reuse the E-17 metrics shape (per-dimension agreement + overall).
+  before: JudgeCalibrationMetrics | null
+  after: JudgeCalibrationMetrics | null
+  dimensions_delta: BiasDimensionDelta[]
+  overall_delta: {
+    cohen_kappa_before: number | null
+    cohen_kappa_after: number | null
+    agreement_pct_before: number | null
+    agreement_pct_after: number | null
+    improved: boolean
+  } | null
+  diagnostics: {
+    verbosity: {
+      judge_corr_off?: number | null
+      judge_corr_on?: number | null
+      human_corr?: number | null
+      improved?: boolean
+      status: string
+    }
+    score_clustering: {
+      spread_off?: number | null
+      spread_on?: number | null
+      pct_in_7_8_off?: number | null
+      pct_in_7_8_on?: number | null
+      clustered_off?: boolean | null
+      improved?: boolean
+      status: string
+    }
+    self_preference: {
+      flagged?: boolean
+      judge_model?: string | null
+      agent_models?: string[]
+      n_self_judged?: number
+      auto_swap?: boolean
+      warning?: string | null
+      status: string
+    }
+    position_bias: { status: string; reason: string }
+  }
+  task_errors?: { task_id: string; error: string }[]
+}
+
+export interface BiasReport {
+  id: string
+  workspace_id: string
+  judge_config_key: string
+  judge_model: string | null
+  version: number
+  sample_size: number
+  n_dimensions: number
+  threshold_kappa: number
+  passed: boolean
+  filters: Record<string, string | null>
+  created_by: string
+  created_at: string | null
+  metrics: BiasReportMetrics
+}
+
 export interface Agent {
   container_id: string
   name: string

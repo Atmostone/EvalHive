@@ -107,6 +107,19 @@ def cohen_kappa(a: list[str], b: list[str], labels: list[str]) -> float | None:
     return round((po - pe) / (1 - pe), 4)
 
 
+def stdev(xs: list[float]) -> float | None:
+    """Population standard deviation, or ``None`` for fewer than two values.
+
+    Used by the Bias Mitigation Toolkit (E-18) as a score-spread metric: a judge
+    with score-clustering bias produces a low spread (everything bunched at 7-8)."""
+    n = len(xs)
+    if n < 2:
+        return None
+    m = sum(xs) / n
+    var = sum((x - m) ** 2 for x in xs) / n
+    return round(math.sqrt(var), 4)
+
+
 def mean_bias(judge: list[float], human: list[float]) -> float | None:
     """Mean signed gap ``judge - human``; positive means the judge scores higher.
 

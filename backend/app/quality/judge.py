@@ -37,6 +37,37 @@ _MAX_SCALE = 10
 # Cap the result text handed to the judge to keep prompts bounded.
 _RESULT_CHAR_CAP = 8000
 
+# Base judge instruction. The Bias Mitigation Toolkit (E-18) may append sentences
+# to it; with no mitigations the prompt must stay byte-identical to this constant
+# (pinned by a test) so E-02 goldens never drift.
+_JUDGE_SYSTEM_PROMPT = (
+    "You are a strict, fair quality judge. Score the task result on ONE "
+    "dimension only, ignoring all other aspects. Use the score_dimension tool. "
+    "Be calibrated: 10 is excellent, 5 is mediocre, 0 is absent/broken."
+)
+# E-18 prompt-level mitigations (appended in this fixed order when enabled).
+_MITIGATION_VERBOSITY = (
+    " Ignore length and verbosity; judge substance and correctness, not how long "
+    "the answer is."
+)
+_MITIGATION_SCORE_CLUSTERING = (
+    " Use the full 0-10 range; do not default to 7-8. Justify why the score is not "
+    "higher or lower."
+)
+
+
+def _judge_system_prompt(mitigations: dict | None) -> str:
+    """The judge system message, with E-18 mitigation instructions appended when
+    enabled. ``None``/all-false yields exactly :data:`_JUDGE_SYSTEM_PROMPT`."""
+    prompt = _JUDGE_SYSTEM_PROMPT
+    if mitigations:
+        if mitigations.get("verbosity"):
+            prompt += _MITIGATION_VERBOSITY
+        if mitigations.get("score_clustering"):
+            prompt += _MITIGATION_SCORE_CLUSTERING
+    return prompt
+
+
 JUDGE_TOOL = [
     {
         "type": "function",
@@ -106,17 +137,18 @@ def _tokens_from_response(resp) -> tuple[int, int]:
     )
 
 
-async def _judge_dimension(dim: dict, context: str, judge_llm) -> dict:
-    """Score one ``judge`` dimension. Never raises — errors become a result dict."""
+async def _judge_dimension(
+    dim: dict, context: str, judge_llm, *, mitigations: dict | None = None
+) -> dict:
+    """Score one ``judge`` dimension. Never raises — errors become a result dict.
+
+    ``mitigations`` (E-18) optionally appends prompt-level bias instructions to the
+    system message; ``None`` keeps the prompt identical to the unmitigated judge."""
     name = dim.get("name") or dim.get("key")
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are a strict, fair quality judge. Score the task result on ONE "
-                "dimension only, ignoring all other aspects. Use the score_dimension tool. "
-                "Be calibrated: 10 is excellent, 5 is mediocre, 0 is absent/broken."
-            ),
+            "content": _judge_system_prompt(mitigations),
         },
         {
             "role": "user",
@@ -161,6 +193,47 @@ def _judge_cost(llm, input_tokens: int, output_tokens: int) -> float:
     return float(cost.quantize(Decimal("0.000001")))
 
 
+_BIAS_MITIGATION_KEYS = ("verbosity", "score_clustering", "self_preference", "position")
+
+
+async def _load_bias_mitigation_flags(db: AsyncSession) -> dict:
+    """The four E-18 mitigation toggles from settings (all default off → the judge
+    behaves exactly as before E-18)."""
+    from app.api.settings import get_setting
+
+    flags = {}
+    for key in _BIAS_MITIGATION_KEYS:
+        flags[key] = bool(await get_setting(db, f"bias_mitigation_{key}", False))
+    return flags
+
+
+def _bias_mitigation_block(flags: dict, judge_model: str, agent_model: str | None) -> dict:
+    """Record which mitigations were applied to this evaluation, plus the
+    self-preference detection (E-18). ``position`` is a flagged no-op until pairwise
+    judging (E-21) exists."""
+    from app.quality.model_identity import same_model_or_family
+
+    flagged, kind = (False, None)
+    warning = None
+    if flags.get("self_preference"):
+        flagged, kind = same_model_or_family(judge_model, agent_model)
+        if flagged:
+            warning = (
+                f"judge model {judge_model} is the {kind} as the agent model "
+                f"{agent_model} — scores may be inflated; consider a different judge model"
+            )
+    return {
+        "applied": dict(flags),
+        "self_preference": {
+            "flagged": bool(flagged),
+            "judge_model": judge_model,
+            "agent_model": agent_model,
+            "warning": warning,
+        },
+        "position": {"status": "n/a", "reason": "requires pairwise judging (E-21)"},
+    }
+
+
 async def evaluate_task_quality(
     db: AsyncSession, task: Task, *, commit: bool = True
 ) -> dict | None:
@@ -181,6 +254,12 @@ async def evaluate_task_quality(
         )
         return None
 
+    mit_flags = await _load_bias_mitigation_flags(db)
+    prompt_mit = {
+        "verbosity": mit_flags["verbosity"],
+        "score_clustering": mit_flags["score_clustering"],
+    }
+
     context = _result_context(task)
     dims = list(rubric.dimensions or [])
 
@@ -194,7 +273,7 @@ async def evaluate_task_quality(
     for i, d in enumerate(dims):
         evaluator = d.get("evaluator", "judge")
         if evaluator == "judge":
-            coros.append(_judge_dimension(d, context, judge_llm))
+            coros.append(_judge_dimension(d, context, judge_llm, mitigations=prompt_mit))
             coro_idx.append(i)
         elif evaluator == "reference":
             coros.append(evaluate_reference_dimension(d, task, judge_llm))
@@ -271,6 +350,9 @@ async def evaluate_task_quality(
         "evaluated_at": datetime.utcnow().isoformat(),
         "errors": errors,
     }
+    profile["bias_mitigation"] = _bias_mitigation_block(
+        mit_flags, judge_llm.model.api_name, task.model_used
+    )
 
     # Ensure the quality record exists (E-01), then write the profile slot.
     record = (

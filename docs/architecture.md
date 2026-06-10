@@ -640,6 +640,38 @@ call** — pure agreement statistics over already-stored scores.
   "judge calibrated against N humans, κ=X.X" trust badge (also surfaced on the TaskDetail
   quality panel). No scheduler job — on-demand only.
 
+### Bias Mitigation Toolkit (E-18)
+
+Where E-17 *measures* judge↔human divergence, E-18 (`app/quality/bias_mitigation.py`)
+*counteracts* the four known LLM-judge biases (§7.2). Two layers:
+
+- **Live judge config.** Four `bias_mitigation_*` settings (free-form settings table,
+  default off) are read by `evaluate_task_quality`. `verbosity` and `score_clustering`
+  append a sentence to the judge **system** message (the no-mitigation path is
+  byte-identical to before E-18, pinned by a test so E-02 goldens never drift);
+  `self_preference` flags when the judge model is the same model/family as the agent
+  model (`task.model_used`) via the name-prefix heuristic in
+  `app/quality/model_identity.py` (no `family` column exists), recording the verdict
+  under `quality_profile.bias_mitigation`; `position` is a reserved no-op until pairwise
+  judging (E-21).
+- **Bias report = controlled A/B re-judge.** `run_bias_report` takes the calibration
+  population (`collect_judge_human_pairs`, shared with E-17), and for each task re-scores
+  every human-rated judge dimension TWICE — mitigations OFF then ON — against an identical
+  `_result_context`. The two passes are emitted as `collect_judge_human_pairs`-shaped rows
+  and run through the **same** `_compute_report`, so before/after agreement-with-human is
+  computed identically to E-17. On top it derives diagnostics with no extra LLM call:
+  `verbosity` (length↔score Pearson off/on vs the human baseline), `score_clustering`
+  (score spread + 7-8 share off/on), `self_preference` (judge==agent count + warning),
+  `position_bias` (`status:"n/a"`). The gate is recomputed per pass over the rated judge
+  dims so the overall verdict-agreement differs before/after. This is the **only**
+  LLM-spending part of E-18 (`2 × judge-dims-with-feedback` calls): owner/admin, on-demand,
+  dims-within-task concurrent / tasks sequential for rate-limit safety.
+- Persisted append-only in **`bias_reports`** (mirrors `judge_calibrations`), versioned per
+  `(workspace, judge model)`. `POST /api/quality/bias-report/run` (**owner/admin**),
+  `GET …/bias-report` (+`?history`); CLI (`python -m app.cli.bias_report run|show`); a
+  "Bias Mitigation" panel on Analytics (before/after κ table + diagnostics) and four toggles
+  in Settings. No scheduler job.
+
 ### Benchmark Case Store (pre-E-23)
 
 The eval engines need a **store of reusable task definitions** (with gold signals),

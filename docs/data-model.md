@@ -61,6 +61,8 @@ a9b0c1d2e3f4  quality_records.hallucination_profile — Hallucination Detection 
 b0c1d2e3f4a5  quality_records.calibration_profile — Confidence Calibration (E-16)
      ↓
 c1d2e3f4a5b6  judge_calibrations — Judge Calibration Protocol (E-17)
+     ↓
+d2e3f4a5b6c7  bias_reports — Bias Mitigation Toolkit (E-18)
 ```
 
 ## Tables
@@ -581,6 +583,34 @@ judge_config_key, version)`. Per-dimension entries carry `n`, `pearson`,
 `reliable` and `status` (`ok` / `insufficient_data` when n<3). Computed entirely
 from stored E-02/E-05 scores — **no LLM call** — and reused by the
 `GET /api/quality/calibration` export via the shared `collect_judge_human_pairs`.
+
+### bias_reports (E-18)
+
+One row is a versioned before/after bias report from the **controlled A/B re-judge**
+of the calibration set — the Bias Mitigation Toolkit (migration `d2e3f4a5b6c7`).
+Mirrors `judge_calibrations` field-for-field: append-only, versioned per
+`(workspace_id, judge_config_key)`, full report in `metrics`. Unlike E-17 this
+**does** make LLM calls (re-judging each calibration task with mitigations OFF and
+ON). Columns are identical to `judge_calibrations` (`id`, `workspace_id`,
+`judge_config_key`, `judge_model`, `version`, `sample_size`, `n_dimensions`,
+`filters`, `metrics`, `threshold_kappa`, `passed`, `created_by`, `created_at`),
+with `passed` meaning "mitigation improved overall agreement-with-human".
+
+`metrics` holds `{status, before, after, dimensions_delta[], overall_delta,
+diagnostics, toggles_requested, n_records, sample_size}`. `before`/`after` are full
+E-17 metric blocks (one per A/B pass, via the shared `_compute_report`);
+`diagnostics` carries `verbosity` (length↔score correlation off/on vs the human
+baseline), `score_clustering` (score spread + 7-8 share off/on), `self_preference`
+(whether the judge model is the same model/family as the agent model, with a
+warning) and `position_bias` (`status:"n/a"` — reserved for pairwise judging /
+E-21). Indexes/constraints: `idx_bias_reports_workspace`, `idx_bias_reports_key`,
+`UniqueConstraint(workspace_id, judge_config_key, version)`.
+
+The four mitigation toggles live in the free-form **settings** table as
+`bias_mitigation_{verbosity,score_clustering,self_preference,position}` (booleans,
+default off). The two prompt-affecting ones append an instruction to the live judge
+prompt and what was applied is recorded under `quality_profile.bias_mitigation`
+(`{applied, self_preference:{flagged,judge_model,agent_model,warning}, position}`).
 
 ### scheduled_jobs (P8)
 
