@@ -19,6 +19,7 @@ from app.models.perturbation_run import PerturbationRun
 from app.models.judge_calibration import JudgeCalibration
 from app.models.bias_report import BiasReport
 from app.models.ranking_report import RankingReport
+from app.models.pairwise_comparison import PairwiseComparison
 
 __all__ = [
     "User",
@@ -45,4 +46,5 @@ __all__ = [
     "JudgeCalibration",
     "BiasReport",
     "RankingReport",
+    "PairwiseComparison",
 ]

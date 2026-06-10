@@ -65,7 +65,12 @@ c1d2e3f4a5b6  judge_calibrations — Judge Calibration Protocol (E-17)
 d2e3f4a5b6c7  bias_reports — Bias Mitigation Toolkit (E-18)
      ↓
 e3f4a5b6c7d8  ranking_reports — Aggregation Engine (E-19)
+     ↓
+f4a5b6c7d8e9  pairwise_comparisons — Pairwise Comparison Framework (E-21)
 ```
+
+(E-20 Reproducibility Snapshot added no migration — it reuses the
+`quality_records.reproducibility` slot.)
 
 ## Tables
 
@@ -633,10 +638,11 @@ params, derivation?}`. Each `players[]` entry is `{player, rating, ci_low, ci_hi
 rank, wins, losses, ties, n_matches, win_rate}` (sorted by rating). A **match** is
 `{player_a, player_b, outcome: "a"|"b"|"tie", weight}` (outcome from `player_a`'s
 view). `source` is `"explicit"` (matches supplied by the caller — the literal
-`rank(pairwise_results)` API) or `"derived"`: until the pairwise framework (E-21)
-exists, matches are derived from the pointwise `quality_profile.weighted_score` —
-within one `benchmark_case_id`, the model/template with the higher mean score
-"beats" the other (a gap within `ranking_tie_epsilon` is a tie). `derivation`
+`rank(pairwise_results)` API, now fed by the **pairwise framework E-21** below) or
+`"derived"`: when no pairwise data exists, matches are derived from the pointwise
+`quality_profile.weighted_score` — within one `benchmark_case_id`, the
+model/template with the higher mean score "beats" the other (a gap within
+`ranking_tie_epsilon` is a tie). `derivation`
 records that bridge (`{subject, n_cases, n_records_used, n_unmatched, n_players,
 epsilon}`). Tunables live in the free-form **settings** table:
 `ranking_tie_epsilon` (0.5), `ranking_bootstrap_resamples` (200), `ranking_seed`
@@ -673,6 +679,36 @@ The `fingerprint` is a SHA-256 over the canonicalized `determinism` block only (
 doesn't expose `temperature` / tool versions / point-in-time RAG vectors, and `seed` only for
 benchmark runs — those sit in `manifest.missing`. Replay derives a `run_config` from the snapshot
 and clones the task via `clone_task_for_rerun` (linked by `tasks.replay_of_task_id`).
+
+### pairwise_comparisons (E-21)
+
+One row is a head-to-head **"A vs B"** between two task results on a `subject` axis
+(migration `f4a5b6c7d8e9`). Pairwise judging is more reliable than pointwise
+scoring, which clusters into 7-8 (§7.2). Both judge and human verdicts live on the
+**same row**, so judge↔human agreement (E-17) is row-local. Columns: `id`,
+`workspace_id` (FK CASCADE), `subject` (`model`|`template`|`prompt`),
+`source_task_id` (FK tasks SET NULL — generated mode), `task_a_id` / `task_b_id`
+(FK tasks SET NULL; B null until generated), `b_run_config` (JSONB — the rerun
+override for generated B), `player_a` / `player_b` (the leaderboard identity on the
+`subject` axis), `status` (`pending`|`generating`|`ready`|`judged`|`failed`),
+`judge_mode` (`llm`|`human`), `judge_verdict` / `human_verdict` (`a`|`b`|`tie`),
+`judge_detail` (JSONB — per-order verdicts, `position_bias_detected`, judge model,
+tokens, cost), `human_by`, `human_reasoning`, `cost_usd`, `created_by`,
+`created_at`, `updated_at`, `completed_at`. Indexes:
+`idx_pairwise_comparisons_workspace`, `idx_pairwise_comparisons_status`.
+
+- **Direct** vs **generated**: a direct comparison names two existing tasks
+  (`status="ready"`, an `llm` one judged immediately). A generated comparison names
+  a `source_task_id` + `b_run_config`; candidate B is a rerun (`clone_task_for_rerun`,
+  linked via `tasks.replay_of_task_id`) created and judged by the
+  `pairwise_run_tick` scheduler job.
+- **Position-bias mitigation**: the LLM judge scores the pair in both orders and
+  reconciles — agree → winner, disagree → `tie` + `position_bias_detected` (the
+  per-order verdicts are kept in `judge_detail`). This implements the `position`
+  mitigation that E-18's pointwise report marks `n/a`.
+- **Leaderboard hand-off**: judged verdicts become explicit E-19 matches
+  (`comparisons_to_matches`) ranked into a `ranking_report` (`source="explicit"`,
+  same `ranking_key` as E-19's derived path — distinguished by `metrics.source`).
 
 ### scheduled_jobs (P8)
 

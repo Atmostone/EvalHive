@@ -20,8 +20,9 @@ on-demand (no scheduler hook); dimensions within a task are re-judged
 concurrently, tasks sequentially, to bound provider rate-limit pressure. Reports
 are append-only and versioned per ``(workspace, judge model)`` exactly like E-17.
 
-- position bias is a flagged no-op: it needs pairwise judging, which does not exist
-  yet (deferred to E-21); the report marks it ``status: "n/a"``.
+- position bias does not apply to this *pointwise* report (no A/B order to swap), so
+  it stays ``status: "n/a"`` here; the real position-bias mitigation lives in the
+  pairwise judge (E-21, ``app.quality.comparison.judge_pair_llm``).
 - self-preference cannot auto-swap models, so it is surfaced as a warning.
 """
 
@@ -217,7 +218,8 @@ def _empty_report(threshold: float, toggles: dict, status: str) -> dict:
             "self_preference": {"status": "insufficient_data"},
             "position_bias": {
                 "status": "n/a",
-                "reason": "requires pairwise judging (E-21)",
+                "reason": "not applicable to pointwise judging; implemented for "
+                "pairwise comparisons in E-21 (app.quality.comparison)",
             },
         },
         "task_errors": [],
@@ -409,7 +411,8 @@ async def run_bias_report(
             "self_preference": _self_preference_diagnostic(judge_model, agent_models),
             "position_bias": {
                 "status": "n/a",
-                "reason": "requires pairwise judging (E-21)",
+                "reason": "not applicable to pointwise judging; implemented for "
+                "pairwise comparisons in E-21 (app.quality.comparison)",
             },
         },
         "task_errors": task_errors,

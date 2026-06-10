@@ -687,13 +687,13 @@ confidence interval. E-19 is that engine.
   remove order-dependence. Both map onto a shared **Elo scale** (centred on 1500). CIs come
   from a seeded bootstrap (resample matches, re-fit, take the central percentile band). All
   randomness is via `random.Random(seed)` → fully deterministic, pinned by tests.
-- **Match source.** E-19's natural feed is the pairwise framework (**E-21**), which doesn't
-  exist yet. Until it lands, `app/quality/ranking.py::derive_matches_from_records` bridges the
-  gap: it turns the stored pointwise `quality_profile.weighted_score` into matches — within one
-  `benchmark_case_id`, the model/template with the higher mean score "beats" the other (gap ≤
-  `ranking_tie_epsilon` → tie). The pure pairing (`build_matches`) is unit-tested separately.
-  Callers can also pass explicit matches to bypass the derivation. When E-21 arrives it simply
-  supplies real matches to the same `run_ranking`.
+- **Match source.** E-19's natural feed is the pairwise framework (**E-21**, now built — see
+  below), which supplies **explicit** matches from real A/B verdicts. Independently,
+  `app/quality/ranking.py::derive_matches_from_records` still bridges from pointwise scores when no
+  pairwise data exists: within one `benchmark_case_id`, the model/template with the higher mean
+  `quality_profile.weighted_score` "beats" the other (gap ≤ `ranking_tie_epsilon` → tie). The pure
+  pairing (`build_matches`) is unit-tested separately. Both paths call the same `run_ranking`;
+  `metrics.source` (`explicit` vs `derived`) records which fed a given leaderboard.
 - **Subject** is selectable: rank `model` (`quality_record.model_used`) or `template`
   (`template_name`). Persisted append-only in **`ranking_reports`** (mirrors
   `judge_calibrations`), versioned per `(workspace, ranking_key)` where `ranking_key =
@@ -734,6 +734,43 @@ its snapshot.
   (**owner/admin**), `GET …/reproducibility/diff`, `POST …/records/{id}/replay` (**owner/admin**);
   CLI (`python -m app.cli.reproducibility show|diff|replay`); a "Reproducibility" panel on Analytics
   (snapshot inspector with captured/missing chips + diff viewer + replay).
+
+### Pairwise Comparison Framework (E-21)
+
+Pointwise judging (E-02) clusters everything into 7-8 (§7.2); the more reliable, human-natural
+signal is **pairwise** — "which is better, A or B?". E-21 (`app/quality/comparison.py` + table
+`pairwise_comparisons`) builds the A/B pipeline and finally feeds E-19 *real* matches instead of
+pointwise-derived ones, turning E-18's deferred `position` no-op into a working mitigation.
+
+- **Two candidate sources.** **Direct**: compare two finished tasks by id (`status="ready"`).
+  **Generated**: candidate B is produced on the fly by re-running `source_task_id` with a
+  `b_run_config` override (`model_id`/`template_id`/`soul_md`) via `clone_task_for_rerun` — the
+  same U-03 seam variance/perturbation use — then advanced by the `pairwise_run_tick` scheduler
+  job (`generating → ready → judged`, terminalizing to `failed` if B fails; no setting gate, cost
+  only for user-created comparisons).
+- **Position-bias mitigation (the E-18 deliverable).** `judge_pair_llm` judges the same pair in
+  **both orders** — `(A,B)` and `(B,A)` — with a forced `choose_winner` tool-call (judge model via
+  `_resolve_judge_model`, as E-02) and reconciles: agree → that winner; disagree → `tie` and
+  `position_bias_detected=true`. Both per-order verdicts are stored in `judge_detail`. Two LLM
+  calls per judged pair; `mitigate_position=False` (one call) is exposed to *measure* raw bias. A
+  failed judge stores the error and leaves the comparison `ready` (retryable) — it never 500s.
+- **Human mode + E-17 linkage.** `judge_mode="human"` skips the auto-judge; `record_human_verdict`
+  records an `a`/`b`/`tie` winner on the **same row** as the judge verdict, so judge↔human
+  `judge_agreement` is row-local (the calibration signal E-17 consumes).
+- **ELO via E-19 — the designed hand-off.** `comparisons_to_matches` turns judged verdicts into
+  real `{player_a, player_b, outcome, weight}` matches (self/incomplete/unverdicted dropped) and
+  `run_pairwise_leaderboard` feeds them to `run_ranking(matches=…, method="elo")` → a versioned
+  `ranking_report` (`source="explicit"`) shown in the **existing** Leaderboard tab. It writes the
+  same `ranking_key="{subject}:{method}"` as E-19's derived path — intentional; `metrics.source`
+  (`explicit` vs `derived`) distinguishes them, no new key. Players resolve on the `subject` axis
+  (`model`→`model_used`, `template`→template name, `prompt`→a `soul_md` label); prompt comparisons
+  still produce verdicts but aren't an E-19 axis, so they don't get an ELO board.
+- **Surface.** `POST /api/quality/comparison` (direct/generated, **owner/admin**), `GET …/comparison`
+  (+agreement), `GET …/comparison/{id}` (+`side_by_side`), `POST …/comparison/{id}/judge`,
+  `PUT …/comparison/{id}/human-verdict`, `POST …/comparison/leaderboard` (all writes owner/admin);
+  CLI (`python -m app.cli.comparison create|generate|show|list|judge|leaderboard`); a "Pairwise"
+  panel on Analytics (side-by-side answers, LLM-judge with position-bias readout, human winner
+  picker, "Push to ELO leaderboard").
 
 ### Benchmark Case Store (pre-E-23)
 

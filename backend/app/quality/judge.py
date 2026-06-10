@@ -209,8 +209,9 @@ async def _load_bias_mitigation_flags(db: AsyncSession) -> dict:
 
 def _bias_mitigation_block(flags: dict, judge_model: str, agent_model: str | None) -> dict:
     """Record which mitigations were applied to this evaluation, plus the
-    self-preference detection (E-18). ``position`` is a flagged no-op until pairwise
-    judging (E-21) exists."""
+    self-preference detection (E-18). ``position`` stays ``n/a`` here — position
+    bias is inherent to *pairwise* judging, whose mitigation now lives in E-21
+    (``app.quality.comparison.judge_pair_llm``); pointwise scoring has no order."""
     from app.quality.model_identity import same_model_or_family
 
     flagged, kind = (False, None)
@@ -230,7 +231,11 @@ def _bias_mitigation_block(flags: dict, judge_model: str, agent_model: str | Non
             "agent_model": agent_model,
             "warning": warning,
         },
-        "position": {"status": "n/a", "reason": "requires pairwise judging (E-21)"},
+        "position": {
+            "status": "n/a",
+            "reason": "not applicable to pointwise judging; pairwise position-bias "
+            "mitigation is implemented in E-21 (app.quality.comparison)",
+        },
     }
 
 
