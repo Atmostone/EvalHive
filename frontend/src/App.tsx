@@ -17,12 +17,19 @@ import Settings from './pages/Settings'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import { useAuth } from './stores/auth'
+import { useUiMode } from './stores/uiMode'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const token = useAuth((s) => s.token)
   const location = useLocation()
   if (!token) return <Navigate to="/login" state={{ from: location }} replace />
   return <>{children}</>
+}
+
+function RootRedirect() {
+  const mode = useUiMode((s) => s.mode)
+  if (mode === 'experiments') return <Navigate to="/experiments" replace />
+  return <Dashboard />
 }
 
 export default function App() {
@@ -40,7 +47,7 @@ export default function App() {
                 <WorkspaceSwitcher />
                 <div className="flex-1 overflow-auto">
                   <Routes>
-                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/" element={<RootRedirect />} />
                     <Route path="/tasks" element={<TaskBoard />} />
                     <Route path="/chat" element={<Chat />} />
                     <Route path="/activity" element={<ActivityLog />} />
