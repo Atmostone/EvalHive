@@ -335,8 +335,8 @@ Workspace-scoped CRUD for LLM providers and their models. The `api_key` field is
 | Method | Path | Body / Returns |
 |--------|------|-----|
 | GET | `/api/providers` | List providers in current workspace |
-| POST | `/api/providers` | `{name, api_key, endpoint}` → 201 with `api_key_masked` |
-| PATCH | `/api/providers/{id}` | Partial. Omit `api_key` to keep current. 409 on name collision. |
+| POST | `/api/providers` | `{name, api_key, endpoint, max_concurrency?}` → 201 with `api_key_masked`. `max_concurrency` caps simultaneous backend LLM calls to the provider (subscription plans often limit concurrent requests, not tokens) |
+| PATCH | `/api/providers/{id}` | Partial. Omit `api_key` to keep current. `max_concurrency: 0` clears the limit (unbounded). 409 on name collision. |
 | DELETE | `/api/providers/{id}` | Cascades to models. Templates/workspaces referencing those models get `model_id=NULL`. |
 | GET | `/api/providers/{id}/models` | List models for one provider |
 | POST | `/api/providers/{id}/models` | `{display_name, api_name, input_price_per_1m_usd?, output_price_per_1m_usd?}` — defaults to 0. 409 on (provider_id, api_name) collision. |

@@ -170,9 +170,14 @@ the engine scores a finished task into a **profile** (vector of 0–10), not one
 number.
 
 ```
-resolve rubric for task:  Template.rubric_id → rubric whose applies_to ∈ template.tags
+resolve rubric for task:  rubric_override (inline, e.g. experiment per-case rubric)
+                          → Template.rubric_id → rubric whose applies_to ∈ template.tags
                           → workspace is_default rubric → none (skip)
 resolve judge model:      workspace.quality_judge_model_id → orchestrator_model_id → none (skip)
+judge context:            title + description + result_summary (capped 8k) +
+                          deliverable file excerpts from MinIO (capped 4k/file,
+                          12k total — agents save the real deliverable to a file;
+                          without it the judge scores the description, not the work)
                                               │
    per dimension (asyncio.gather, independent try/except — one failure never
    blocks the others): judge → LLM-as-judge call; reference → match vs gold (E-03);
@@ -898,7 +903,7 @@ help" as one operation.
 | `app/orchestrator/docker_manager.py` | Docker SDK wrapper: spawn/kill/list/health/feedback/abort/switch (low-level — go through `app.plugins.runtime`) |
 | `app/plugins/runtime.py` | `AgentRuntime` ABC + `DockerRuntime` impl. Every call-site (engine, api/agents, api/chat, api/events, scheduler) goes through this. |
 | `app/plugins/embeddings.py` | `EmbeddingProvider` ABC + `FastembedProvider`/`OpenAIEmbeddingProvider`/`SettingsDispatchProvider`. `fastembed`/`httpx` are imported ONLY inside the plugin |
-| `app/plugins/llm.py` | `LLMProvider` ABC + `LiteLLMProvider`. Every `acompletion(...)` call goes through it |
+| `app/plugins/llm.py` | `LLMProvider` ABC + `LiteLLMProvider`. Every `acompletion(...)` call goes through it. Adds transient 429/5xx retry (exp backoff, `LLM_TRANSIENT_RETRIES`/`LLM_RETRY_BASE_SECONDS`) and a per-provider `asyncio.Semaphore` registry fed by `providers.max_concurrency` (SPA-47) |
 | `app/plugins/secrets.py` | `SecretsProvider` ABC + `DBSecretsProvider`/`EnvSecretsProvider`. `llm_api_key` is read through it |
 | `app/plugins/notifier.py` | `Notifier` ABC + `NoopNotifier` (default). `log_event` invokes `notify(...)` after broadcast |
 | `app/memory/store.py` | Memory entities CRUD with embedding-based dedup |
