@@ -126,6 +126,54 @@ def _result_context(task: Task) -> str:
     return "\n".join(parts)
 
 
+# Caps for deliverable excerpts appended to the judge context (SPA-47): agents
+# often save the actual deliverable to a file and only describe it in
+# result_summary — without the file contents the judge scores the description,
+# not the work.
+_FILE_CHAR_CAP = 4000
+_FILES_TOTAL_CHAR_CAP = 12000
+_FILES_MAX = 5
+
+
+async def _deliverable_context(task: Task) -> str:
+    """Excerpts of the task's result files for the judge context.
+
+    Best-effort: storage errors and binary files degrade to a note and never
+    break the evaluation. Blocking MinIO reads run in a thread."""
+    files = [str(f) for f in (task.result_files or [])]
+    if not files:
+        return ""
+    from app.storage.minio_client import read_result_file_text
+
+    parts: list[str] = []
+    total = 0
+    skipped = 0
+    for path in files[:_FILES_MAX]:
+        if total >= _FILES_TOTAL_CHAR_CAP:
+            skipped += 1
+            continue
+        try:
+            text = await asyncio.to_thread(read_result_file_text, path)
+        except Exception as e:  # noqa: BLE001 — judge must run without storage
+            logger.warning(f"judge: could not read result file {path}: {e}")
+            skipped += 1
+            continue
+        name = path.split("/", 2)[-1]  # strip the results/<task_id>/ prefix
+        if text is None:
+            parts.append(f"--- {name} ---\n(binary file, content not shown)")
+            continue
+        excerpt = text[: min(_FILE_CHAR_CAP, _FILES_TOTAL_CHAR_CAP - total)]
+        total += len(excerpt)
+        suffix = "\n…[truncated]" if len(text) > len(excerpt) else ""
+        parts.append(f"--- {name} ---\n{excerpt}{suffix}")
+    skipped += max(0, len(files) - _FILES_MAX)
+    if skipped:
+        parts.append(f"({skipped} more file(s) not shown)")
+    if not parts:
+        return ""
+    return "\n\nDeliverable file contents:\n" + "\n\n".join(parts)
+
+
 def _tokens_from_response(resp) -> tuple[int, int]:
     usage = getattr(resp, "usage", None)
     if usage is None:
@@ -287,7 +335,7 @@ async def evaluate_task_quality(
         "score_clustering": mit_flags["score_clustering"],
     }
 
-    context = _result_context(task)
+    context = _result_context(task) + await _deliverable_context(task)
     dims = list(rubric.dimensions or [])
 
     from app.quality.reference import evaluate_reference_dimension

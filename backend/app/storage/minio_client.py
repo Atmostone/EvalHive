@@ -57,6 +57,24 @@ def get_file_stream(s3_path: str):
     return client.get_object(BUCKET, s3_path)
 
 
+def read_result_file_text(s3_path: str, max_bytes: int = 16_384) -> str | None:
+    """Read up to ``max_bytes`` of a result file as text.
+
+    Returns ``None`` for binary content (NUL byte in the sample) — used by the
+    quality judge to put deliverable excerpts into the evaluation context.
+    """
+    client = get_minio_client()
+    obj = client.get_object(BUCKET, s3_path, offset=0, length=max_bytes)
+    try:
+        data = obj.read()
+    finally:
+        obj.close()
+        obj.release_conn()
+    if b"\x00" in data:
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
 def upload_log_archive(task_id: str, content: bytes) -> str:
     """Upload compacted agent log to MinIO. Returns the s3 path."""
     client = get_minio_client()
