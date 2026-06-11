@@ -53,6 +53,9 @@ def _payload(template_id, **overrides):
             {"template_id": str(template_id), "temperature": 0.7, "label": "hot"},
         ],
         "n_runs_per_cell": 2,
+        # Pin parallelism: the settings table survives between tests, so the
+        # ambient max_concurrent_agents value is not deterministic here.
+        "max_parallel": 3,
     }
     payload.update(overrides)
     return payload
@@ -126,7 +129,7 @@ async def test_full_lifecycle_to_completed(auth_client, db_session):
     assert len(rows) == 8  # 2 configs × 2 cases × 2 runs
     assert all(r.status == ExperimentRunStatus.PENDING.value for r in rows)
 
-    # First tick claims up to max_concurrent_agents (default 3).
+    # First tick claims up to max_parallel (pinned to 3).
     await advance_experiment(db_session, exp)
     rows = await _runs(db_session, exp)
     claimed = [r for r in rows if r.status == ExperimentRunStatus.RUNNING.value]

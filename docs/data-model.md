@@ -69,6 +69,8 @@ e3f4a5b6c7d8  ranking_reports — Aggregation Engine (E-19)
 f4a5b6c7d8e9  pairwise_comparisons — Pairwise Comparison Framework (E-21)
      ↓
 a5b6c7d8e9f0  registry_entries — Tool & MCP Registry (SPA-41); templates.tools/mcp_servers → tool_ids
+     ↓
+b6c7d8e9f0a1  experiments + experiment_runs — Experiment Runner (SPA-40); tasks.origin
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -95,7 +97,8 @@ a5b6c7d8e9f0  registry_entries — Tool & MCP Registry (SPA-41); templates.tools
 | benchmark_case_id | VARCHAR(128) | NULL | Benchmark Case Store (migration `e6f7a8b9c0d1`): the versioned case this instance was materialized from |
 | benchmark_suite | VARCHAR(128) | NULL | Benchmark Case Store: the suite the case belongs to |
 | replay_of_task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | re-run/replay lineage (E-11; migration `b3c4d5e6f7a8`) — the task this one was cloned from. Distinct from `parent_id` so variance/replay children are never rolled into a parent's subtask-completion check |
-| run_config | JSONB | NULL | optional per-run overrides honored at spawn time (E-11): `{template_id?, model_id?, soul_md?, seed?, temperature?, tool_injection?}`. When set, the orchestrator skips decomposition + selection and pins this config (seam for E-21/E-24/U-03; E-11 sets `template_id`, E-12 adds `tool_injection` — a payload appended to the first tool response at runtime) |
+| origin | VARCHAR(20) | 'user' | who created the task (migration `b6c7d8e9f0a1`): `user` (board/chat/API) or `experiment` (SPA-40 benchmark children, hidden from `GET /api/tasks` unless `include_experiments=true`). Decomposition subtasks inherit the parent's origin. Index `(workspace_id, origin)` |
+| run_config | JSONB | NULL | optional per-run overrides honored at spawn time (E-11): `{template_id?, model_id?, soul_md?, seed?, temperature?, tool_injection?, tools_override?, memory_mode?, benchmark_mode?, experiment?}`. When set, the orchestrator skips decomposition + selection and pins this config (E-11 sets `template_id`, E-12 adds `tool_injection`, SPA-41 adds `tools_override`, SPA-40 adds `benchmark_mode` — webhook bypasses inline eval/approval/retries — plus `memory_mode`, `temperature`/`seed` passthrough to the agent env, and the `experiment` cell coordinates) |
 | result_files | JSONB | [] | list of MinIO paths |
 | token_usage | JSONB | {} | `{input_tokens, output_tokens}` |
 | retry_count / max_retries | int | 0 / 1 | |
@@ -146,6 +149,53 @@ masked on read** like `Provider.api_key`), `enabled`, `description`, `created_by
 - New-workspace seeding copies the default workspace's registry and remaps the
   copied templates' `tool_ids` (so refs are never cross-tenant). Secrets are
   revealed only by the spawn-time resolver, never by an API read.
+
+### experiments (SPA-40)
+
+First-class A/B matrix experiment (migration `b6c7d8e9f0a1`): a frozen dataset ×
+an expanded configuration matrix × `n_runs_per_cell`, driven by the
+`experiment_run_tick` scheduler job over the benchmark execution path.
+
+| Column | Type | Default | Purpose |
+|--------|------|---------|---------|
+| id | UUID PK | uuid4 | |
+| workspace_id | UUID FK→workspaces.id ON DELETE CASCADE | | UNIQUE `(workspace_id, name)` |
+| name / description | VARCHAR(255) / TEXT | required / NULL | |
+| status | VARCHAR(20) | 'draft' | `draft → running ⇄ paused → completed \| capped \| failed \| cancelled` (`capped` = budget hit, partial results kept) |
+| dataset | JSONB | required | the raw dataset spec `{source: benchmark_suite\|tasks\|upload, …}` (upload cases are NOT stored here — only in `dataset_cases`) |
+| dataset_cases | JSONB | required | frozen cases `[{case_key, title, description?, reference_answer?, canonical_trajectory?, capability_spec?, rubric?}]` — immune to later suite/task edits |
+| matrix_spec | JSONB | required | the raw `{configurations, axes}` request (clone fidelity) |
+| configurations | JSONB | required | expanded, validated, deduped configs `[{config_key, label, fingerprint, orchestrator, template_id?, model_id?, temperature?, seed?, soul_md?, tools_override?, memory_mode?}]` |
+| n_runs_per_cell | INT | 1 | 1–20; configs × cases × n ≤ 1000 |
+| budget_limit_usd | NUMERIC(10,6) | NULL | hard cap; reached → remaining cells `skipped`, status `capped` |
+| max_parallel | INT | NULL | caps the tick's claim target (also bounded by `max_concurrent_agents`) |
+| eval_config | JSONB | {} | `{trajectory: bool=true, failure_modes: bool=false}`; E-02 always runs |
+| accumulated_cost_usd | NUMERIC(10,6) | 0 | agent + judge spend, updated by the tick |
+| report | JSONB | NULL | cached assembled report (see `experiment_report.py`), written once terminal |
+| error | TEXT | NULL | |
+| created_by / created_at / updated_at / started_at / completed_at | | | |
+
+### experiment_runs (SPA-40)
+
+One row per matrix cell run `(config_key × case_key × run_index)`, all
+pre-created as `pending` at start (idempotent tick claiming, exact progress
+totals). Scores/cost are denormalized at settle time so results survive task
+deletion (`quality_records` cascade away with tasks; these rows and the cached
+report do not).
+
+| Column | Type | Default | Purpose |
+|--------|------|---------|---------|
+| id | UUID PK | uuid4 | |
+| experiment_id | UUID FK→experiments.id ON DELETE CASCADE | | UNIQUE `(experiment_id, config_key, case_key, run_index)` |
+| config_key / case_key / run_index | VARCHAR(64) / VARCHAR(128) / INT | | cell coordinates |
+| task_id | UUID FK→tasks.id ON DELETE SET NULL | NULL | the child task executing this cell |
+| status | VARCHAR(20) | 'pending' | `pending → running → success \| failed`; `skipped` on budget cap / cancel |
+| cost_usd | NUMERIC(10,6) | 0 | task + judge cost (denormalized) |
+| weighted_score / trajectory_score | FLOAT | NULL | from `quality_profile.weighted_score` / `trajectory_profile.overall_score` |
+| duration_seconds | INT | NULL | |
+| created_at / completed_at | TIMESTAMP | now() / NULL | |
+
+Indexes: `(experiment_id, status)`, `task_id`.
 
 ### providers (R7)
 

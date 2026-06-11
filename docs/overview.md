@@ -17,6 +17,7 @@ A self-hosted platform for orchestrating specialised AI agents. It takes a task 
 - **Bidirectional control**: the orchestrator can send feedback / abort / switch_model into a live agent container.
 - **MCP-first**: custom MCP servers plug in per template without code changes.
 - **Local-first**: everything runs in Docker Compose; nothing leaves the host.
+- **Agent optimization, not just execution**: the Experiment Runner (SPA-40) A/B-tests models, prompts, toolsets and orchestration itself over a benchmark dataset — with heatmaps, Pareto frontier, leaderboards and statistical significance.
 
 ## Tech stack
 
