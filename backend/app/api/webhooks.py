@@ -31,6 +31,18 @@ router = APIRouter(tags=["webhooks"])
 _ADAPTER = TypeAdapter(AgentWebhookEvent)
 
 
+def _is_benchmark(task: Task) -> bool:
+    """Benchmark execution path marker (SPA-40).
+
+    Runs created by the Experiment Runner carry ``run_config.benchmark_mode``
+    and bypass the human loop entirely: no inline LLM review, no approval
+    status, no rejection retries. The run is judged by the quality pipeline
+    (E-02/E-07) instead, so a retry here would distort N-run semantics and
+    burn the experiment budget.
+    """
+    return bool((task.run_config or {}).get("benchmark_mode"))
+
+
 async def _process_webhook(
     task_id: str,
     body: dict,
@@ -137,56 +149,65 @@ async def _process_webhook(
                 agent_cid=task.agent_container_id,
             )
 
-            # Run LLM evaluation inside the same transaction. The user briefly
-            # sees REVIEW status only if processing takes long enough; otherwise
-            # the task moves straight to AWAITING_APPROVAL/READY/FAILED.
-            task.status = TaskStatus.REVIEW.value
-            try:
-                orchestrator_llm = await resolve_workspace_model(
-                    db, task.workspace_id, "orchestrator"
-                )
-                evaluation = await evaluate_agent_result(
-                    task.title,
-                    task.description or "",
-                    task.result_summary or "",
-                    task.result_files or [],
-                    orchestrator_llm,
-                    db=db,
-                    task_id=task.id,
-                    commit=False,
-                )
-            except Exception as e:
-                logger.warning(f"evaluation skipped — model not configured: {e}")
-                evaluation = {"approved": True, "feedback": ""}
-
-            if evaluation.get("approved", True):
-                task.status = TaskStatus.AWAITING_APPROVAL.value
+            if _is_benchmark(task):
+                # Benchmark execution path (SPA-40): terminal immediately.
+                task.status = TaskStatus.DONE.value
+                task.completed_at = datetime.utcnow()
                 await _logev(
-                    "orchestrator_decision", "orchestrator",
-                    {"action": "auto_review_passed"},
+                    "benchmark_auto_done", "system",
+                    {"reason": "benchmark_mode"},
                 )
             else:
-                feedback = evaluation.get("feedback", "Result did not meet requirements")
-                task.orchestrator_feedback = feedback
-
-                if task.retry_count < task.max_retries:
-                    task.retry_count += 1
-                    task.status = TaskStatus.READY.value
-                    await _logev(
-                        "orchestrator_feedback", "orchestrator",
-                        {"feedback": feedback, "retry": task.retry_count},
+                # Run LLM evaluation inside the same transaction. The user briefly
+                # sees REVIEW status only if processing takes long enough; otherwise
+                # the task moves straight to AWAITING_APPROVAL/READY/FAILED.
+                task.status = TaskStatus.REVIEW.value
+                try:
+                    orchestrator_llm = await resolve_workspace_model(
+                        db, task.workspace_id, "orchestrator"
                     )
-                else:
-                    task.status = TaskStatus.FAILED.value
-                    task.completed_at = datetime.utcnow()
+                    evaluation = await evaluate_agent_result(
+                        task.title,
+                        task.description or "",
+                        task.result_summary or "",
+                        task.result_files or [],
+                        orchestrator_llm,
+                        db=db,
+                        task_id=task.id,
+                        commit=False,
+                    )
+                except Exception as e:
+                    logger.warning(f"evaluation skipped — model not configured: {e}")
+                    evaluation = {"approved": True, "feedback": ""}
+
+                if evaluation.get("approved", True):
+                    task.status = TaskStatus.AWAITING_APPROVAL.value
                     await _logev(
                         "orchestrator_decision", "orchestrator",
-                        {
-                            "action": "auto_review_failed",
-                            "feedback": feedback,
-                            "retries_exhausted": True,
-                        },
+                        {"action": "auto_review_passed"},
                     )
+                else:
+                    feedback = evaluation.get("feedback", "Result did not meet requirements")
+                    task.orchestrator_feedback = feedback
+
+                    if task.retry_count < task.max_retries:
+                        task.retry_count += 1
+                        task.status = TaskStatus.READY.value
+                        await _logev(
+                            "orchestrator_feedback", "orchestrator",
+                            {"feedback": feedback, "retry": task.retry_count},
+                        )
+                    else:
+                        task.status = TaskStatus.FAILED.value
+                        task.completed_at = datetime.utcnow()
+                        await _logev(
+                            "orchestrator_decision", "orchestrator",
+                            {
+                                "action": "auto_review_failed",
+                                "feedback": feedback,
+                                "retries_exhausted": True,
+                            },
+                        )
 
         elif event == "failed":
             from app.utils.cost import calculate_cost
@@ -195,7 +216,7 @@ async def _process_webhook(
             task.token_usage = data.get("token_usage", {})
             task.cost_usd = calculate_cost(task, task.token_usage)
 
-            if task.retry_count < task.max_retries:
+            if not _is_benchmark(task) and task.retry_count < task.max_retries:
                 task.retry_count += 1
                 task.status = TaskStatus.READY.value
                 await _logev(
@@ -254,6 +275,8 @@ async def _process_webhook(
     if event in ("completed", "failed", "aborted") and task.status in (
         TaskStatus.AWAITING_APPROVAL.value,
         TaskStatus.FAILED.value,
+        # Benchmark runs (SPA-40) land on DONE directly.
+        TaskStatus.DONE.value,
     ):
         try:
             from app.quality.data_lake import build_quality_record

@@ -129,7 +129,13 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
 
         memory_context = ""
 
-        if (await get_setting(db, "memory_mode", "flat")) == "structured":
+        # Per-run memory override (run_config.memory_mode: off|flat|structured),
+        # else the workspace setting. 'off' and 'flat' both skip the structured
+        # context block; flat memory files are mounted regardless.
+        memory_mode = run_config.get("memory_mode") or await get_setting(
+            db, "memory_mode", "flat"
+        )
+        if memory_mode == "structured":
             from app.memory.store import build_memory_context
 
             try:
@@ -180,6 +186,12 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         tool_injection = run_config.get("tool_injection")
         if tool_injection:
             extra_env["AGENT_TOOL_INJECTION"] = str(tool_injection)
+        # Per-run sampling overrides (SPA-40 experiment axes); the agent applies
+        # them to its completion calls when present.
+        if run_config.get("temperature") is not None:
+            extra_env["LLM_TEMPERATURE"] = str(run_config["temperature"])
+        if run_config.get("seed") is not None:
+            extra_env["LLM_SEED"] = str(run_config["seed"])
 
         runtime = get_agent_runtime()
         spec = AgentSpec(
@@ -231,6 +243,25 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
             {"action": "spawn_failed", "error": str(e)},
             task_id=task.id,
         )
+
+
+def _subtask_run_config(run_config: dict | None) -> dict | None:
+    """Run-level overrides a decomposition child inherits from its parent.
+
+    Keeps the keys that apply to any leaf (benchmark_mode, model, sampling,
+    memory) and drops the template-relative ones (template_id pin,
+    tools_override) — the orchestrator selects each child's template, so the
+    parent's tool override would not map onto it.
+    """
+    if not run_config:
+        return None
+    inherited = {
+        k: v
+        for k, v in run_config.items()
+        if k in ("benchmark_mode", "model_id", "temperature", "seed", "memory_mode")
+        and v is not None
+    }
+    return inherited or None
 
 
 async def process_ready_task(db: AsyncSession, task: Task):
@@ -317,6 +348,12 @@ async def process_ready_task(db: AsyncSession, task: Task):
                         await db.commit()
                         return
 
+            # Benchmark roots (SPA-40, orchestrator:on cells) must keep every
+            # leaf on the benchmark path: children inherit the run-level
+            # overrides and never retry, or the cell would stall in the
+            # approval flow / distort the run count.
+            sub_run_config = _subtask_run_config(task.run_config)
+            benchmark = bool((task.run_config or {}).get("benchmark_mode"))
             created_subs: list[Task] = []
             for st in subtasks:
                 sub = Task(
@@ -326,7 +363,11 @@ async def process_ready_task(db: AsyncSession, task: Task):
                     priority=task.priority,
                     status=TaskStatus.READY.value,
                     workspace_id=task.workspace_id,
+                    origin=task.origin,
+                    run_config=sub_run_config,
                 )
+                if benchmark:
+                    sub.max_retries = 0
                 db.add(sub)
                 created_subs.append(sub)
 
@@ -412,6 +453,15 @@ async def check_parent_task_completion(db: AsyncSession, task: Task):
         parent.status = TaskStatus.FAILED.value
     else:
         parent.status = TaskStatus.DONE.value
+    # Benchmark roots (SPA-40, orchestrator:on cells) are judged end-to-end by
+    # the quality pipeline, but decomposed parents have no result of their own
+    # — synthesize a rollup from the children so E-02 has something to score.
+    if (parent.run_config or {}).get("benchmark_mode") and not parent.result_summary:
+        parts = []
+        for s in subtasks:
+            summary = (s.result_summary or "").strip() or "(no summary)"
+            parts.append(f"## {s.title} [{s.status}]\n{summary}")
+        parent.result_summary = "\n\n".join(parts)[:20000]
     parent.completed_at = datetime.utcnow()
     await db.commit()
 
