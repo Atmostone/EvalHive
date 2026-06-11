@@ -88,7 +88,7 @@ def _build_manifest(
     missing.append("rag_vectors")
 
     all_notes = {
-        "temperature": "not stored/passed by the runtime (E-20 gap)",
+        "temperature": "set only when run_config carries a per-run override (SPA-40)",
         "tool_versions": "only tool names are tracked; versions unknown",
         "seed": "present only for benchmark-materialized runs",
         "rag_vectors": "point-in-time Qdrant capture out of scope; memory_context captured instead",

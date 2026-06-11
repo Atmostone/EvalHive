@@ -35,6 +35,7 @@ class Task(Base):
     __table_args__ = (
         Index("idx_tasks_status", "status"),
         Index("idx_tasks_parent", "parent_id"),
+        Index("idx_tasks_workspace_origin", "workspace_id", "origin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -54,6 +55,12 @@ class Task(Base):
     # orchestrator skips decomposition + template selection and pins this config
     # (seam for E-21 / E-24 / U-03; E-11 only ever sets template_id).
     run_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Who created this task: 'user' (board/chat/API) or 'experiment' (SPA-40
+    # benchmark execution path). Experiment children are hidden from the board
+    # by default; decomposition subtasks inherit the parent's origin.
+    origin: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(

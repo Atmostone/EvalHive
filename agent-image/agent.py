@@ -308,6 +308,15 @@ async def run_agent() -> dict:
     # is appended to the FIRST tool result the agent receives, simulating a
     # malicious web page / tool output. Empty in normal runs.
     tool_injection = os.environ.get("AGENT_TOOL_INJECTION") or ""
+    # Per-run sampling overrides (SPA-40 experiment axes). Unset in normal runs.
+    try:
+        temperature = float(os.environ["LLM_TEMPERATURE"])
+    except (KeyError, ValueError):
+        temperature = None
+    try:
+        seed = int(os.environ["LLM_SEED"])
+    except (KeyError, ValueError):
+        seed = None
     if not model:
         raise RuntimeError(
             "LLM_MODEL env var is empty — the orchestrator did not pass a model. "
@@ -402,6 +411,11 @@ async def run_agent() -> dict:
 
             logger.info(f"[{task_id}] LLM call iteration {iteration + 1}")
             try:
+                completion_kwargs = {}
+                if temperature is not None:
+                    completion_kwargs["temperature"] = temperature
+                if seed is not None:
+                    completion_kwargs["seed"] = seed
                 response = await litellm.acompletion(
                     model=f"openai/{model}",
                     messages=messages,
@@ -409,6 +423,7 @@ async def run_agent() -> dict:
                     tool_choice="auto" if tools else None,
                     api_key=api_key,
                     api_base=api_base,
+                    **completion_kwargs,
                 )
             except Exception as e:
                 logger.error(f"[{task_id}] LLM call failed: {e}")

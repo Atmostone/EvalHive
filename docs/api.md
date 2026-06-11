@@ -59,7 +59,7 @@ Token: HS256, ttl=24h, payload `{sub: user_id, ws: default_workspace_id, iat, ex
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/tasks?status=&parent_id=` | List tasks |
+| GET | `/api/tasks?status=&parent_id=&include_experiments=` | List tasks. Benchmark children (`origin='experiment'`, SPA-40) are hidden unless `include_experiments=true` |
 | POST | `/api/tasks` | Create a task in backlog. Fields: title/description/priority/parent_id/`reference_answer`? (optional gold answer for reference-based scoring, E-03)/`canonical_trajectory`? (optional gold trajectory for matching, E-09 — a list of tool names or a `{nodes, edges}` DAG)/`capability_spec`? (optional capability-isolation spec, E-13 — `{required_tools[], category?, match?}`) |
 | GET | `/api/tasks/{id}` | Single task + subtasks |
 | PATCH | `/api/tasks/{id}` | title/description/status/priority/`reference_answer`/`canonical_trajectory`/`capability_spec` (each applied only when non-null) |
@@ -95,6 +95,27 @@ Workspace-level source of truth for tools and MCP servers; templates reference e
 | POST | `/api/registry/tools/{id}/test` | **owner/admin** — best-effort check: builtin → ok; mcp http (`config.url`) → reachability probe; mcp stdio → shape validation (live handshake runs in the agent sandbox). Returns `{ok, detail}` |
 
 Resolution at spawn: a template's `tool_ids` (plus any `task.run_config.tools_override = {enable:[ids], disable:[ids]}`, finest-restriction-wins) are materialized into the builtin tool-name list + MCP server dicts the agent consumes.
+
+### Experiments (`/api/experiments`) — SPA-40
+
+A/B Matrix Harness: dataset × configuration matrix × N runs per cell, executed over the
+benchmark path (`run_config.benchmark_mode` — no inline eval/approval/retries; `orchestrator:
+off` cells pin the template for the engine fast path) with evaluation always on. Writes are
+**owner/admin**-only.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/experiments?status=` | List (workspace-scoped) |
+| POST | `/api/experiments` | Create a **draft**. Body `{name, description?, dataset, configurations[]?, axes?, n_runs_per_cell=1 (≤20), budget_limit_usd?, max_parallel?, eval_config?}`. `dataset`: `{source: "benchmark_suite", suite, case_ids?}` \| `{source: "tasks", task_ids[]}` \| `{source: "upload", cases[]}` (validated `{task_input:{title, description?}, case_id?, reference_answer?, rubric?, canonical_trajectory?, capability_spec?}`, ≤300 cases). Configurations: explicit list AND/OR cartesian `axes` over `{orchestrator, template_id, model_id, temperature, seed, soul_md, tools_override, memory_mode}` — expanded, validated (orchestrator:off requires `template_id`; on forbids it and `tools_override`), deduped by fingerprint, ≤24 configs, configs × cases × n ≤ 1000. Template/model/registry refs must exist in the workspace. Returns the draft + `preview`. 400 with a clear message on any invalid part; 409 on duplicate name |
+| POST | `/api/experiments/preview` | Stateless estimate `{n_configs, n_cases, total_runs, est_cost_usd, est_duration_minutes, warnings[]}` (historical averages per template, workspace fallback) |
+| GET | `/api/experiments/{id}` | Detail + live progress matrix: `matrix: [{config_key, case_key, counts{pending,running,success,failed,skipped}}]` + `run_totals` |
+| DELETE | `/api/experiments/{id}` | **owner/admin** — delete (409 while running; cancel first) |
+| POST | `/api/experiments/{id}/run` | draft → running: materializes all cells as `pending` rows and claims the first batch; the `experiment_run_tick` scheduler job (20s) drives the rest. 409 on invalid transition |
+| POST | `/api/experiments/{id}/pause` / `/resume` / `/cancel` | Lifecycle. Pause stops claiming (in-flight runs finish); cancel skips unsettled cells, kills in-flight containers best-effort, keeps partial results. 409 on invalid transitions |
+| GET | `/api/experiments/{id}/report?method=bt\|elo&refresh=` | Assembled report: per-config `summary`, `heatmap` (configs × rubric dimensions), `pareto` (quality↑ × cost↓ × time↓ frontier), `scatter` (outcome × trajectory per run), `leaderboard` (E-19 Bradley-Terry/Elo with bootstrap CI, derived from pointwise scores case-paired), `significance` (per config-pair × metric: Welch t-test primary + Mann-Whitney approx, ★ p<0.05), `failure_modes`, `orchestrator` on/off comparison. Cached on the experiment once terminal; running → fresh `partial` report |
+| GET | `/api/experiments/{id}/results?config=&case=&run_index=` | Per-cell run rows + task state + quality/trajectory profiles + E-20 fingerprint |
+| POST | `/api/experiments/{id}/clone` | **owner/admin** — new draft from this experiment; body `{name?, changes?}` (partial create payload; the frozen dataset is copied verbatim unless `changes.dataset` is given). Re-run = clone + run |
+| GET | `/api/experiments/{id}/export?format=json\|csv` | Flat per-run rows (pandas-friendly): config axes, scores incl. `dim_<key>` columns, cost, duration, task id, repro fingerprint |
 
 ### Agents (`/api/agents`)
 

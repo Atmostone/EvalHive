@@ -826,6 +826,67 @@ E-16, E-17, E-21, E-23, U-02, V-22) consumes it.
 - **Out of scope here (→ E-23):** the registry table, catalogue API/UI, public
   publication, leaderboards. Layers 1+2 only (KISS).
 
+### Experiment Runner / Benchmark execution path (SPA-40)
+
+The eval bricks (E-01…E-21) become one user-facing instrument: a first-class
+**Experiment** = frozen dataset × configuration matrix × `n_runs_per_cell`,
+with evaluation always on and a statistical report at the end. Answers "model A
+vs model B", "does the v2 prompt help", "which toolset / does orchestration
+help" as one operation.
+
+- **Benchmark execution path.** Experiment children are plain tasks carrying
+  `run_config.benchmark_mode` + `origin='experiment'` + `max_retries=0`. The
+  webhook takes `completed` straight to DONE (no inline LLM review, no
+  approval status, no rejection retries — those would distort N-run semantics)
+  and `failed` straight to FAILED; the quality record is still built on DONE.
+  The board hides `origin='experiment'` tasks by default. No human in the loop.
+- **`orchestrator: on|off` is a matrix axis.** `off` → the child pins
+  `template_id`, so the engine fast path spawns it directly (no decomposition,
+  no template selection — the orchestration layer adds a measurable variable,
+  which is noise when benchmarking a configuration). `on` → no pin: full
+  orchestration runs, decomposition children inherit the benchmark run_config
+  (minus template-relative keys) + origin + `max_retries=0`, and the
+  decomposed root gets a result-summary rollup so E-02 can judge it
+  end-to-end. The report's orchestrator view compares the two sides.
+- **Axes per configuration**: `template_id`, `model_id`, `temperature`/`seed`
+  (passed to the agent as `LLM_TEMPERATURE`/`LLM_SEED`), `soul_md` (inline
+  override), `tools_override` (SPA-41 registry refs — one toolset for all
+  cells unless explicitly overridden = fair A/B), `memory_mode`
+  (`off|flat|structured`). Matrix composition: explicit `configurations` list
+  AND/OR cartesian `axes` product; deduped by canonical fingerprint; keyed
+  `cfg-01…`.
+- **Dataset freezing** (`app/quality/experiments.py`): all three sources
+  (benchmark suite / existing tasks / uploaded JSONL cases) are normalized at
+  create time into `experiments.dataset_cases` — reproducible even if suite
+  files or source tasks change later. Children are tagged
+  `benchmark_case_id=case_key`, `benchmark_suite="exp:<id>"`, so the whole
+  E-01 plumbing (denormalization, suite filters) works unchanged.
+- **Per-case rubric.** A frozen case may carry an inline `rubric`
+  (`{name?, dimensions: [...]}`, validated on upload); at settle time it
+  overrides the template/workspace rubric for E-02 scoring of that case's
+  runs — mixed datasets (math + writing in one experiment) are judged with
+  the right dimensions per case instead of one template-wide rubric.
+- **Poll-driven runner** (same pattern as E-11/E-12): all cells are
+  pre-created as `pending` `experiment_runs` rows at start; the
+  `experiment_run_tick` scheduler job (20 s) settles finished runs (record +
+  E-02 + optional E-07/E-14; E-20 auto-captured), denormalizes
+  scores/cost/duration onto the run row, claims the next pending cells up to
+  `min(max_parallel, max_concurrent_agents)`, enforces `budget_limit_usd`
+  (hit → remaining cells `skipped`, status `capped`, partial results kept) and
+  finalizes. Pause/resume/cancel are status flips the tick respects.
+- **Report** (`app/quality/experiment_report.py`, cached on the experiment
+  once terminal): per-config summary, heatmap (configs × rubric dimensions),
+  Pareto frontier (quality ↑ × cost ↓ × time ↓), outcome × trajectory scatter,
+  pairwise leaderboard (pointwise scores case-paired via E-19 `build_matches`
+  + `rank`, Bradley-Terry/Elo + bootstrap CI), statistical significance per
+  config pair × metric (Welch t-test with an exact pure-python t-CDF as the
+  primary marker, Mann-Whitney U normal-approximation as the non-parametric
+  check; ★ p<0.05), failure-mode breakdown, orchestrator on/off comparison.
+- **Repro**: clone-with-changes (frozen dataset copied verbatim), re-run =
+  clone + run; every run's E-20 snapshot lands in the quality record; CSV/JSON
+  export is flat per-run rows. CLI:
+  `python -m app.cli.experiment list|create|run|status|report`.
+
 ## Backend components
 
 | Module | Responsibility |

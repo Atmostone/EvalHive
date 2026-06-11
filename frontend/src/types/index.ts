@@ -1142,3 +1142,202 @@ export interface PerturbationRun {
   base_children?: PerturbationChild[]
   perturbed_children?: Record<string, PerturbationChild[]>
 }
+
+// --- Experiments (SPA-40) ---
+
+export type ExperimentStatus =
+  | 'draft'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'capped'
+  | 'failed'
+  | 'cancelled'
+
+export interface ExperimentConfig {
+  config_key: string
+  label: string
+  fingerprint: string
+  orchestrator: boolean
+  template_id?: string | null
+  model_id?: string | null
+  temperature?: number | null
+  seed?: number | null
+  soul_md?: string | null
+  tools_override?: { enable?: string[]; disable?: string[] } | null
+  memory_mode?: 'off' | 'flat' | 'structured' | null
+}
+
+export interface Experiment {
+  id: string
+  name: string
+  description?: string | null
+  status: ExperimentStatus
+  dataset: Record<string, unknown>
+  n_cases: number
+  n_configs: number
+  n_runs_per_cell: number
+  total_runs: number
+  budget_limit_usd?: number | null
+  max_parallel?: number | null
+  eval_config: Record<string, unknown>
+  accumulated_cost_usd: number
+  has_report: boolean
+  error?: string | null
+  created_by: string
+  created_at: string
+  started_at?: string | null
+  completed_at?: string | null
+  configurations?: ExperimentConfig[]
+  dataset_cases?: { case_key: string; title: string }[]
+  matrix_spec?: Record<string, unknown>
+}
+
+export interface ExperimentMatrixCell {
+  config_key: string
+  case_key: string
+  counts: Record<string, number>
+}
+
+export interface ExperimentDetail extends Experiment {
+  configurations: ExperimentConfig[]
+  dataset_cases: { case_key: string; title: string }[]
+  matrix: ExperimentMatrixCell[]
+  run_totals: Record<string, number>
+}
+
+export interface ExperimentPreview {
+  n_configs: number
+  n_cases: number
+  n_runs_per_cell: number
+  total_runs: number
+  est_cost_usd: number
+  est_duration_minutes: number
+  warnings: string[]
+}
+
+export interface ExperimentRunResult {
+  config_key: string
+  case_key: string
+  run_index: number
+  status: string
+  task_id?: string | null
+  task_status?: string | null
+  result_summary?: string | null
+  weighted_score?: number | null
+  trajectory_score?: number | null
+  cost_usd: number
+  duration_seconds?: number | null
+  quality_profile?: QualityProfile | null
+  trajectory_profile?: TrajectoryProfile | null
+  repro_fingerprint?: string | null
+  completed_at?: string | null
+}
+
+export interface ExperimentConfigSummary {
+  config_key: string
+  label: string
+  n_runs: number
+  success_rate?: number | null
+  quality_mean?: number | null
+  trajectory_mean?: number | null
+  cost_mean?: number | null
+  duration_mean?: number | null
+}
+
+export interface OrchestratorSide {
+  configs: string[]
+  n_runs: number
+  success_rate?: number | null
+  quality_mean?: number | null
+  trajectory_mean?: number | null
+  cost_mean?: number | null
+  duration_mean?: number | null
+}
+
+export interface ExperimentReport {
+  schema_version: number
+  generated_at: string
+  partial: boolean
+  n_terminal_runs: number
+  summary: {
+    total_runs: number
+    success: number
+    failed: number
+    skipped: number
+    accumulated_cost_usd: number
+    budget_limit_usd?: number | null
+    per_config: ExperimentConfigSummary[]
+  }
+  heatmap: {
+    dimensions: string[]
+    rows: {
+      config_key: string
+      label: string
+      cells: Record<string, { mean?: number | null; std?: number | null; n: number }>
+      weighted_score: { mean?: number | null; n: number }
+    }[]
+  }
+  pareto: {
+    points: {
+      config_key: string
+      label: string
+      quality?: number | null
+      cost?: number | null
+      time?: number | null
+      on_frontier: boolean
+    }[]
+    frontier: string[]
+  }
+  scatter: {
+    config_key: string
+    label: string
+    case_key: string
+    run_index: number
+    outcome?: number | null
+    trajectory?: number | null
+    cost: number
+    duration?: number | null
+    task_id?: string | null
+  }[]
+  leaderboard: {
+    source: string
+    method: string
+    status: string
+    players: {
+      player: string
+      label?: string
+      rating: number
+      ci_low?: number
+      ci_high?: number
+      rank: number
+      wins?: number
+      losses?: number
+      ties?: number
+      win_rate?: number
+    }[]
+    derivation?: Record<string, unknown>
+  }
+  significance: {
+    a: string
+    b: string
+    metric: string
+    p: number
+    significant: boolean
+    welch?: { t: number; df: number; p: number; mean_a: number; mean_b: number } | null
+    mann_whitney?: { u: number; z: number; p: number; approx: boolean } | null
+  }[]
+  failure_modes: {
+    per_config: {
+      config_key: string
+      label: string
+      statuses: Record<string, number>
+      classes: Record<string, number>
+    }[]
+  }
+  orchestrator: {
+    on?: OrchestratorSide | null
+    off?: OrchestratorSide | null
+    delta?: Record<string, number | null> | null
+  }
+}

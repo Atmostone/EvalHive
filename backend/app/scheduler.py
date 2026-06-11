@@ -470,6 +470,22 @@ async def _job_runner(job_id: str):
                     workspace_id=job.workspace_id,
                 )
 
+        elif action == "experiment_run_tick":
+            # Experiment Runner (SPA-40): advance every running experiment —
+            # settle finished matrix-cell runs (evaluate + denormalize), claim
+            # the next pending cells under the parallelism/budget limits, and
+            # finalize when everything settled. No setting gate: cost is only
+            # incurred for user-created experiments.
+            from app.quality.experiments import advance_active_experiments
+
+            advanced = await advance_active_experiments(db)
+            if advanced:
+                await log_event(
+                    db, "experiment_run_tick", "system",
+                    {"advanced": advanced},
+                    workspace_id=job.workspace_id,
+                )
+
         elif action == "pairwise_run_tick":
             # Pairwise Comparison Framework (E-21): advance every comparison whose
             # candidate B is still being generated — clone B from a rerun of the
@@ -616,6 +632,12 @@ async def seed_default_jobs():
             db.add(ScheduledJob(
                 name="perturbation_run_tick", kind="interval", interval_seconds=20,
                 payload={"action": "perturbation_run_tick"},
+                workspace_id=DEFAULT_WORKSPACE_ID,
+            ))
+        if "experiment_run_tick" not in names:
+            db.add(ScheduledJob(
+                name="experiment_run_tick", kind="interval", interval_seconds=20,
+                payload={"action": "experiment_run_tick"},
                 workspace_id=DEFAULT_WORKSPACE_ID,
             ))
         if "pairwise_run_tick" not in names:

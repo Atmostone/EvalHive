@@ -24,6 +24,7 @@ from app.api.providers import router as providers_router, models_router
 from app.api.data_lake import router as data_lake_router
 from app.api.quality import router as quality_router
 from app.api.registry import router as registry_router
+from app.api.experiments import router as experiments_router
 from app.api.workspaces import router as workspaces_router
 from app.config import get_settings
 from app.database import async_session
@@ -322,3 +323,4 @@ app.include_router(workspaces_router)
 app.include_router(data_lake_router)
 app.include_router(quality_router)
 app.include_router(registry_router)
+app.include_router(experiments_router)

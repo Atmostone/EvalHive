@@ -71,6 +71,7 @@ def task_to_dict(task: Task) -> dict:
         "description": task.description,
         "status": task.status,
         "priority": task.priority,
+        "origin": task.origin,
         "template_id": str(task.template_id) if task.template_id else None,
         "agent_container_id": task.agent_container_id,
         "result_summary": task.result_summary,
@@ -106,10 +107,15 @@ async def _get_scoped_task(task_id: str, workspace: Workspace, db: AsyncSession)
 async def list_tasks(
     status: Optional[str] = None,
     parent_id: Optional[str] = None,
+    include_experiments: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Task).where(Task.workspace_id == workspace.id)
+    # Benchmark children (SPA-40) are programmatic runs, not board work —
+    # hidden unless explicitly requested.
+    if not include_experiments:
+        query = query.where(Task.origin != "experiment")
     if status:
         query = query.where(Task.status == status)
     if parent_id:

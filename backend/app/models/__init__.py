@@ -21,6 +21,7 @@ from app.models.bias_report import BiasReport
 from app.models.ranking_report import RankingReport
 from app.models.pairwise_comparison import PairwiseComparison
 from app.models.registry_entry import RegistryEntry
+from app.models.experiment import Experiment, ExperimentRun
 
 __all__ = [
     "User",
@@ -49,4 +50,6 @@ __all__ = [
     "RankingReport",
     "PairwiseComparison",
     "RegistryEntry",
+    "Experiment",
+    "ExperimentRun",
 ]

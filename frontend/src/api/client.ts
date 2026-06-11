@@ -10,6 +10,26 @@ class ApiError extends Error {
   }
 }
 
+// FastAPI errors arrive as {"detail": "..."} or {"detail": [{loc, msg}, ...]};
+// surface the human-readable part instead of the raw JSON body.
+function extractErrorMessage(body: string, status: number): string {
+  const fallback = body || `HTTP ${status}`
+  try {
+    const detail = (JSON.parse(body) as { detail?: unknown }).detail
+    if (typeof detail === 'string') return detail
+    if (Array.isArray(detail)) {
+      const lines = detail.map((d: { loc?: unknown[]; msg?: string }) => {
+        const loc = Array.isArray(d.loc) ? d.loc.filter((p) => p !== 'body').join('.') : ''
+        return loc ? `${loc}: ${d.msg ?? ''}` : (d.msg ?? JSON.stringify(d))
+      })
+      if (lines.length) return lines.join('\n')
+    }
+  } catch {
+    // not JSON — fall through to the raw body
+  }
+  return fallback
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const isFormData = options?.body instanceof FormData
   const headers: Record<string, string> = { ...(authHeaders() as Record<string, string>) }
@@ -28,7 +48,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       }
     }
     const text = await res.text()
-    throw new ApiError(res.status, text)
+    throw new ApiError(res.status, extractErrorMessage(text, res.status))
   }
   if (res.status === 204) return undefined as T
   return res.json()
@@ -669,6 +689,73 @@ export const analyticsApi = {
     request<TimelinePoint[]>(`/analytics/timeline${analyticsQs(params)}`),
   models: (params: { period?: string } = {}) =>
     request<ModelAnalytics[]>(`/analytics/models${analyticsQs(params)}`),
+}
+
+// Experiments (SPA-40)
+import type {
+  Experiment,
+  ExperimentDetail,
+  ExperimentPreview,
+  ExperimentReport,
+  ExperimentRunResult,
+} from '../types'
+
+export interface ExperimentCreateBody {
+  name: string
+  description?: string | null
+  dataset: Record<string, unknown>
+  configurations: Record<string, unknown>[]
+  axes?: Record<string, unknown> | null
+  n_runs_per_cell: number
+  budget_limit_usd?: number | null
+  max_parallel?: number | null
+  eval_config?: Record<string, unknown>
+}
+
+export const experimentsApi = {
+  list: (status?: string) =>
+    request<Experiment[]>(`/experiments${status ? `?status=${status}` : ''}`),
+  get: (id: string) => request<ExperimentDetail>(`/experiments/${id}`),
+  create: (data: ExperimentCreateBody) =>
+    request<Experiment & { preview: ExperimentPreview }>('/experiments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  preview: (data: ExperimentCreateBody) =>
+    request<ExperimentPreview>('/experiments/preview', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  remove: (id: string) => request<void>(`/experiments/${id}`, { method: 'DELETE' }),
+  run: (id: string) => request<Experiment>(`/experiments/${id}/run`, { method: 'POST' }),
+  pause: (id: string) => request<Experiment>(`/experiments/${id}/pause`, { method: 'POST' }),
+  resume: (id: string) => request<Experiment>(`/experiments/${id}/resume`, { method: 'POST' }),
+  cancel: (id: string) => request<Experiment>(`/experiments/${id}/cancel`, { method: 'POST' }),
+  report: (id: string, params?: { method?: 'bt' | 'elo'; refresh?: boolean }) => {
+    const qs = new URLSearchParams()
+    if (params?.method) qs.set('method', params.method)
+    if (params?.refresh) qs.set('refresh', 'true')
+    const s = qs.toString()
+    return request<ExperimentReport>(`/experiments/${id}/report${s ? `?${s}` : ''}`)
+  },
+  results: (id: string, params?: { config?: string; case?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.config) qs.set('config', params.config)
+    if (params?.case) qs.set('case', params.case)
+    const s = qs.toString()
+    return request<ExperimentRunResult[]>(`/experiments/${id}/results${s ? `?${s}` : ''}`)
+  },
+  clone: (id: string, data: { name?: string; changes?: Record<string, unknown> }) =>
+    request<Experiment>(`/experiments/${id}/clone`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  export: async (id: string, format: 'csv' | 'json'): Promise<Blob> => {
+    const headers = { ...(authHeaders() as Record<string, string>) }
+    const res = await fetch(`${BASE}/experiments/${id}/export?format=${format}`, { headers })
+    if (!res.ok) throw new ApiError(res.status, await res.text())
+    return res.blob()
+  },
 }
 
 // Health
