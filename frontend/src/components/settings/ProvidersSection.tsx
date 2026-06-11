@@ -8,6 +8,13 @@ interface ProviderFormState {
   name: string
   endpoint: string
   api_key: string
+  max_concurrency: string
+}
+
+// '' → undefined (no limit set), digits → number; used on create/update bodies.
+function parseConcurrency(raw: string): number | undefined {
+  const n = parseInt(raw, 10)
+  return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
 interface ModelFormState {
@@ -17,7 +24,7 @@ interface ModelFormState {
   output_price_per_1m_usd: string
 }
 
-const EMPTY_PROVIDER: ProviderFormState = { name: '', endpoint: '', api_key: '' }
+const EMPTY_PROVIDER: ProviderFormState = { name: '', endpoint: '', api_key: '', max_concurrency: '' }
 const EMPTY_MODEL: ModelFormState = {
   display_name: '',
   api_name: '',
@@ -37,7 +44,13 @@ export function ProvidersSection({ canEdit }: { canEdit: boolean }) {
   })
 
   const createProvider = useMutation({
-    mutationFn: () => providersApi.create(providerDraft),
+    mutationFn: () =>
+      providersApi.create({
+        name: providerDraft.name,
+        endpoint: providerDraft.endpoint,
+        api_key: providerDraft.api_key,
+        max_concurrency: parseConcurrency(providerDraft.max_concurrency),
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['providers'] })
       setProviderDraft(EMPTY_PROVIDER)
@@ -87,6 +100,19 @@ export function ProvidersSection({ canEdit }: { canEdit: boolean }) {
             onChange={(e) => setProviderDraft({ ...providerDraft, api_key: e.target.value })}
             className="w-full px-2 py-1 border rounded text-sm"
           />
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              placeholder="Max concurrency"
+              value={providerDraft.max_concurrency}
+              onChange={(e) => setProviderDraft({ ...providerDraft, max_concurrency: e.target.value })}
+              className="w-40 px-2 py-1 border rounded text-sm"
+            />
+            <span className="text-xs text-gray-500">
+              Max simultaneous LLM calls to this provider (empty = unlimited; subscription plans often cap concurrent requests)
+            </span>
+          </div>
           <div className="flex gap-2">
             <button
               onClick={() => createProvider.mutate()}
@@ -151,16 +177,21 @@ function ProviderCard({
     name: provider.name,
     endpoint: provider.endpoint,
     api_key: '',
+    max_concurrency: provider.max_concurrency != null ? String(provider.max_concurrency) : '',
   })
 
   const update = useMutation({
     mutationFn: () => {
-      const patch: Partial<ProviderFormState> = {
+      const concurrencyTouched =
+        draft.max_concurrency !== (provider.max_concurrency != null ? String(provider.max_concurrency) : '')
+      const patch = {
         name: draft.name !== provider.name ? draft.name : undefined,
         endpoint: draft.endpoint !== provider.endpoint ? draft.endpoint : undefined,
         api_key: draft.api_key ? draft.api_key : undefined,
+        // 0 tells the backend to clear the limit (empty input → unlimited)
+        max_concurrency: concurrencyTouched ? (parseConcurrency(draft.max_concurrency) ?? 0) : undefined,
       }
-      return providersApi.update(provider.id, patch as { name?: string; api_key?: string; endpoint?: string })
+      return providersApi.update(provider.id, patch)
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['providers'] })
@@ -182,6 +213,11 @@ function ProviderCard({
           <span className="font-medium">{provider.name}</span>
           <span className="text-xs text-gray-500 ml-2 truncate max-w-[260px]">{provider.endpoint}</span>
           <span className="text-xs text-gray-400 ml-2 font-mono">{provider.api_key_masked}</span>
+          {provider.max_concurrency != null && (
+            <span className="text-xs text-amber-600 ml-2" title="Max simultaneous LLM calls">
+              ≤{provider.max_concurrency} parallel
+            </span>
+          )}
         </button>
         {canEdit && (
           <div className="flex gap-1">
@@ -225,6 +261,17 @@ function ProviderCard({
             onChange={(e) => setDraft({ ...draft, api_key: e.target.value })}
             className="w-full px-2 py-1 border rounded text-sm"
           />
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              placeholder="Max concurrency"
+              value={draft.max_concurrency}
+              onChange={(e) => setDraft({ ...draft, max_concurrency: e.target.value })}
+              className="w-40 px-2 py-1 border rounded text-sm"
+            />
+            <span className="text-xs text-gray-500">empty = unlimited</span>
+          </div>
           <button
             onClick={() => update.mutate()}
             disabled={update.isPending}

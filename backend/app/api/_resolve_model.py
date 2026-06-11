@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.provider import LLMModel, Provider
 from app.models.workspace import Workspace
+from app.plugins.llm import set_provider_concurrency
 
 
 SystemModelKind = Literal["orchestrator", "chat", "memory_extractor", "quality_judge"]
@@ -47,6 +48,9 @@ async def _load_pair(db: AsyncSession, model_id: uuid.UUID) -> ResolvedModel:
             status.HTTP_400_BAD_REQUEST,
             f"Provider for model {model_id} not found",
         )
+    # Every LLM use resolves through here — keep the per-provider concurrency
+    # registry (SPA-47) in sync without a DB hit on the completion hot path.
+    set_provider_concurrency(provider.endpoint, provider.api_key, provider.max_concurrency)
     return ResolvedModel(provider=provider, model=model)
 
 

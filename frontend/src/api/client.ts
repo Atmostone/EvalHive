@@ -176,9 +176,9 @@ import type { Provider, LLMModel, ModelTestResponse, SystemModels } from '../typ
 
 export const providersApi = {
   list: () => request<Provider[]>('/providers'),
-  create: (data: { name: string; api_key: string; endpoint: string }) =>
+  create: (data: { name: string; api_key: string; endpoint: string; max_concurrency?: number }) =>
     request<Provider>('/providers', { method: 'POST', body: JSON.stringify(data) }),
-  update: (id: string, data: { name?: string; api_key?: string; endpoint?: string }) =>
+  update: (id: string, data: { name?: string; api_key?: string; endpoint?: string; max_concurrency?: number }) =>
     request<Provider>(`/providers/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   remove: (id: string) =>
     request<void>(`/providers/${id}`, { method: 'DELETE' }),

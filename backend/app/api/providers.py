@@ -18,6 +18,7 @@ from app.auth.dependencies import get_current_workspace, require_role
 from app.database import get_db
 from app.models.provider import LLMModel, Provider
 from app.models.workspace import Workspace
+from app.plugins.llm import set_provider_concurrency
 from app.plugins.llm import get_llm_provider
 
 
@@ -32,12 +33,15 @@ class ProviderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     api_key: str = Field(min_length=1, max_length=500)
     endpoint: str = Field(min_length=1, max_length=500)
+    max_concurrency: Optional[int] = Field(default=None, ge=1, le=1000)
 
 
 class ProviderUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     api_key: Optional[str] = Field(default=None, min_length=1, max_length=500)
     endpoint: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    # 0 clears the limit (NULL → unbounded); omitted leaves it unchanged.
+    max_concurrency: Optional[int] = Field(default=None, ge=0, le=1000)
 
 
 class ModelCreate(BaseModel):
@@ -62,6 +66,7 @@ def provider_to_dict(p: Provider) -> dict:
         "id": str(p.id),
         "name": p.name,
         "endpoint": p.endpoint,
+        "max_concurrency": p.max_concurrency,
         "api_key_masked": mask_api_key(p.api_key),
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
@@ -138,6 +143,7 @@ async def create_provider(
         name=body.name,
         api_key=body.api_key,
         endpoint=body.endpoint,
+        max_concurrency=body.max_concurrency,
     )
     db.add(p)
     try:
@@ -148,6 +154,7 @@ async def create_provider(
             status.HTTP_409_CONFLICT, f"provider named '{body.name}' already exists"
         )
     await db.refresh(p)
+    set_provider_concurrency(p.endpoint, p.api_key, p.max_concurrency)
     return provider_to_dict(p)
 
 
@@ -166,12 +173,15 @@ async def update_provider(
         p.endpoint = body.endpoint
     if body.api_key is not None:
         p.api_key = body.api_key
+    if body.max_concurrency is not None:
+        p.max_concurrency = body.max_concurrency or None  # 0 → unbounded
     try:
         await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "provider name conflicts with existing")
     await db.refresh(p)
+    set_provider_concurrency(p.endpoint, p.api_key, p.max_concurrency)
     return provider_to_dict(p)
 
 

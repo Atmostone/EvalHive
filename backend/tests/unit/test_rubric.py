@@ -205,6 +205,59 @@ async def test_rubric_override_without_dimensions_falls_back(db_session, default
     assert profile["rubric_name"] == "Stored"
 
 
+async def test_deliverable_file_contents_reach_judge(db_session, default_model, monkeypatch):
+    # Agents often save the deliverable to a file and only describe it in
+    # result_summary — the judge must see the file contents (SPA-47).
+    await _flush(db_session, _rubric("R", is_default=True, dimensions=[_dim("a")]))
+    task = Task(
+        title="write email", status=TaskStatus.DONE.value, workspace_id=WS,
+        result_summary="The email has been written and saved.",
+        result_files=["results/tid/email.md", "results/tid/logo.png"],
+    )
+    await _flush(db_session, task)
+
+    def fake_read(path, max_bytes=16_384):
+        if path.endswith("email.md"):
+            return "Dear team, the Q3 launch moves to Friday."
+        return None  # binary
+
+    import app.storage.minio_client as minio_mod
+    monkeypatch.setattr(minio_mod, "read_result_file_text", fake_read)
+
+    seen = {}
+
+    class _Capture(_FakeProvider):
+        async def acompletion(self, **kwargs):
+            seen["context"] = kwargs["messages"][1]["content"]
+            return await super().acompletion(**kwargs)
+
+    monkeypatch.setattr(judge_mod, "get_llm_provider", lambda: _Capture(score=8))
+    profile = await judge_mod.evaluate_task_quality(db_session, task, commit=False)
+    assert profile is not None
+    assert "Dear team, the Q3 launch moves to Friday." in seen["context"]
+    assert "email.md" in seen["context"]
+    assert "(binary file, content not shown)" in seen["context"]
+
+
+async def test_storage_failure_does_not_break_eval(db_session, default_model, monkeypatch):
+    await _flush(db_session, _rubric("R", is_default=True, dimensions=[_dim("a")]))
+    task = Task(
+        title="x", status=TaskStatus.DONE.value, workspace_id=WS,
+        result_summary="done", result_files=["results/tid/gone.txt"],
+    )
+    await _flush(db_session, task)
+
+    import app.storage.minio_client as minio_mod
+
+    def boom(path, max_bytes=16_384):
+        raise RuntimeError("minio down")
+
+    monkeypatch.setattr(minio_mod, "read_result_file_text", boom)
+    monkeypatch.setattr(judge_mod, "get_llm_provider", lambda: _FakeProvider(score=7))
+    profile = await judge_mod.evaluate_task_quality(db_session, task, commit=False)
+    assert profile is not None and profile["weighted_score"] == 7.0
+
+
 async def test_eval_skipped_without_judge_model(db_session, monkeypatch):
     # No system model configured on the workspace → evaluation is skipped.
     await _flush(db_session, _rubric("R", is_default=True, dimensions=[_dim("a")]))

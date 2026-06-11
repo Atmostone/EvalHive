@@ -176,6 +176,49 @@ def build_system_prompt(soul: str) -> str:
 MCP_SEPARATOR = "__"
 PROGRESS_MIN_INTERVAL = 5.0  # seconds
 
+# Transient LLM errors (rate limit / server-side / connection) are retried with
+# exponential backoff before the run is declared failed (SPA-47). Distinct from
+# task-level retries: this heals one HTTP call, invisible to N-run semantics.
+_TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
+_TRANSIENT_EXC_NAMES = {
+    "RateLimitError",
+    "Timeout",
+    "APIConnectionError",
+    "ServiceUnavailableError",
+    "InternalServerError",
+}
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    if getattr(exc, "status_code", None) in _TRANSIENT_STATUS:
+        return True
+    return type(exc).__name__ in _TRANSIENT_EXC_NAMES
+
+
+async def _acompletion_with_retry(task_id: str, **kwargs):
+    import random
+
+    try:
+        retries = max(0, int(os.environ.get("LLM_TRANSIENT_RETRIES", "3")))
+    except ValueError:
+        retries = 3
+    try:
+        base = max(0.0, float(os.environ.get("LLM_RETRY_BASE_SECONDS", "2")))
+    except ValueError:
+        base = 2.0
+    for attempt in range(retries + 1):
+        try:
+            return await litellm.acompletion(**kwargs)
+        except Exception as e:
+            if attempt >= retries or not _is_transient_llm_error(e):
+                raise
+            delay = base * (2**attempt) * (1 + random.random() * 0.25)
+            logger.warning(
+                f"[{task_id}] transient LLM error "
+                f"(attempt {attempt + 1}/{retries + 1}): {e} — retrying in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+
 
 async def _send_progress(payload: dict) -> None:
     webhook_url = os.environ.get("WEBHOOK_URL")
@@ -416,7 +459,8 @@ async def run_agent() -> dict:
                     completion_kwargs["temperature"] = temperature
                 if seed is not None:
                     completion_kwargs["seed"] = seed
-                response = await litellm.acompletion(
+                response = await _acompletion_with_retry(
+                    task_id,
                     model=f"openai/{model}",
                     messages=messages,
                     tools=tools if tools else None,

@@ -87,6 +87,7 @@ export interface Provider {
   id: string
   name: string
   endpoint: string
+  max_concurrency: number | null
   api_key_masked: string
   created_at: string
   updated_at: string

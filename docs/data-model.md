@@ -208,6 +208,7 @@ LLM provider records (one or many per workspace). Created/updated through `/api/
 | name | VARCHAR(200) | required | UNIQUE per workspace |
 | api_key | VARCHAR(500) | required | full key (masked in API responses) |
 | endpoint | VARCHAR(500) | required | base URL (e.g. `https://api.openai.com/v1`) |
+| max_concurrency | INTEGER NULL | NULL | max simultaneous backend LLM calls to this provider (NULL → unbounded); enforced by an `asyncio.Semaphore` registry in `app/plugins/llm.py` (SPA-47, migration `c7d8e9f0a1b2`) |
 | created_at / updated_at | TIMESTAMP | now() / onupdate | |
 
 Index: `workspace_id`. UNIQUE constraint: `(workspace_id, name)`.
