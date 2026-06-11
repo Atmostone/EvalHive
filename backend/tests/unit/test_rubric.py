@@ -169,6 +169,42 @@ async def test_dimension_error_does_not_block_others(db_session, default_model, 
     assert len(profile["errors"]) == 1
 
 
+async def test_rubric_override_takes_precedence(db_session, default_model, monkeypatch):
+    # A stored default rubric exists, but the inline per-case rubric must win.
+    await _flush(db_session, _rubric("Stored", is_default=True, dimensions=[_dim("stored")]))
+    task = Task(title="x", status=TaskStatus.DONE.value, workspace_id=WS, result_summary="r")
+    await _flush(db_session, task)
+
+    fake = _FakeProvider(score=7)
+    monkeypatch.setattr(judge_mod, "get_llm_provider", lambda: fake)
+    profile = await judge_mod.evaluate_task_quality(
+        db_session, task, commit=False,
+        rubric_override={
+            "name": "Case rubric",
+            "dimensions": [
+                {"key": "exact", "name": "Exact", "description": "", "evaluator": "judge",
+                 "weight": 1.0, "threshold": 5, "critical": False},
+            ],
+        },
+    )
+    assert profile["rubric_name"] == "Case rubric"
+    assert profile["rubric_id"] is None  # inline, not a stored rubric row
+    assert [d["key"] for d in profile["dimensions"]] == ["exact"]
+    assert profile["weighted_score"] == 7.0
+
+
+async def test_rubric_override_without_dimensions_falls_back(db_session, default_model, monkeypatch):
+    await _flush(db_session, _rubric("Stored", is_default=True, dimensions=[_dim("stored")]))
+    task = Task(title="x", status=TaskStatus.DONE.value, workspace_id=WS, result_summary="r")
+    await _flush(db_session, task)
+
+    monkeypatch.setattr(judge_mod, "get_llm_provider", lambda: _FakeProvider(score=6))
+    profile = await judge_mod.evaluate_task_quality(
+        db_session, task, commit=False, rubric_override={"name": "broken"}
+    )
+    assert profile["rubric_name"] == "Stored"
+
+
 async def test_eval_skipped_without_judge_model(db_session, monkeypatch):
     # No system model configured on the workspace → evaluation is skipped.
     await _flush(db_session, _rubric("R", is_default=True, dimensions=[_dim("a")]))

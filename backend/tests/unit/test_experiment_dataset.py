@@ -39,6 +39,43 @@ class TestUpload:
         with pytest.raises(ValueError, match=r"case 1: task_input\.title"):
             cases_from_upload([{"task_input": {"description": "no title"}}])
 
+    def test_inline_rubric_validated_and_frozen(self):
+        frozen = cases_from_upload(
+            [
+                {
+                    "task_input": {"title": "math"},
+                    "rubric": {
+                        "name": "Math",
+                        "dimensions": [
+                            {"key": "correct", "weight": 0.7, "threshold": 6, "critical": True},
+                            {"key": "clarity", "weight": 0.3},
+                        ],
+                    },
+                }
+            ]
+        )
+        rubric = frozen[0]["rubric"]
+        assert rubric["name"] == "Math"
+        assert [d["key"] for d in rubric["dimensions"]] == ["correct", "clarity"]
+        assert rubric["dimensions"][0]["critical"] is True
+        # evaluator defaults to "judge" so the frozen case is self-contained
+        assert rubric["dimensions"][0]["evaluator"] == "judge"
+
+    def test_inline_rubric_bad_shape_yields_clear_error(self):
+        with pytest.raises(ValueError, match=r"case 1: rubric\.dimensions"):
+            cases_from_upload(
+                [{"task_input": {"title": "x"}, "rubric": {"dimensions": []}}]
+            )
+        with pytest.raises(ValueError, match=r"case 1: rubric\.dimensions\.0\.weight"):
+            cases_from_upload(
+                [
+                    {
+                        "task_input": {"title": "x"},
+                        "rubric": {"dimensions": [{"key": "a", "weight": 0}]},
+                    }
+                ]
+            )
+
     def test_unknown_field_yields_clear_error(self):
         with pytest.raises(ValueError, match=r"case 1: referense_answer"):
             cases_from_upload(

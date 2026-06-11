@@ -239,15 +239,37 @@ def _bias_mitigation_block(flags: dict, judge_model: str, agent_model: str | Non
     }
 
 
+class _InlineRubric:
+    """Ephemeral rubric built from an inline dict (e.g. a frozen experiment
+    case's per-case rubric) instead of a DB row. ``id`` stays ``None`` so the
+    profile records that no stored rubric was used."""
+
+    id = None
+
+    def __init__(self, name: str, dimensions: list[dict]):
+        self.name = name
+        self.dimensions = dimensions
+
+
 async def evaluate_task_quality(
-    db: AsyncSession, task: Task, *, commit: bool = True
+    db: AsyncSession, task: Task, *, commit: bool = True,
+    rubric_override: dict | None = None,
 ) -> dict | None:
     """Score ``task`` against its rubric and write the profile to its quality record.
 
     Returns the profile dict, or ``None`` when skipped (no rubric or no judge model).
     Re-running overwrites any existing profile (intentional, for on-demand re-judge).
+    ``rubric_override`` (an inline ``{name?, dimensions: [...]}`` dict) takes
+    precedence over the task's resolved rubric — used by experiment runs whose
+    dataset case carries its own rubric.
     """
-    rubric = await resolve_rubric_for_task(db, task)
+    if rubric_override and isinstance(rubric_override.get("dimensions"), list):
+        rubric = _InlineRubric(
+            str(rubric_override.get("name") or "case rubric"),
+            list(rubric_override["dimensions"]),
+        )
+    else:
+        rubric = await resolve_rubric_for_task(db, task)
     if rubric is None:
         logger.info(f"quality eval skipped — no rubric for task {task.id}")
         return None
@@ -343,7 +365,7 @@ async def evaluate_task_quality(
 
     profile = {
         "schema_version": PROFILE_SCHEMA_VERSION,
-        "rubric_id": str(rubric.id),
+        "rubric_id": str(rubric.id) if rubric.id is not None else None,
         "rubric_name": rubric.name,
         "dimensions": out_dims,
         "weighted_score": weighted_score,

@@ -196,6 +196,30 @@ class UploadCaseInput(BaseModel):
     description: Optional[str] = None
 
 
+class UploadRubricDimension(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=100)
+    name: Optional[str] = Field(default=None, max_length=255)
+    description: Optional[str] = None
+    evaluator: str = Field(default="judge", pattern="^(judge|reference|objective|human)$")
+    weight: float = Field(gt=0)
+    threshold: Optional[int] = Field(default=None, ge=0, le=10)
+    critical: bool = False
+    reference_mode: Optional[str] = None
+    probe: Optional[str] = None
+
+
+class UploadRubric(BaseModel):
+    """Inline per-case rubric: overrides the template/workspace rubric when the
+    case is judged (mixed datasets get the right dimensions per case)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = Field(default=None, max_length=255)
+    dimensions: list[UploadRubricDimension] = Field(min_length=1, max_length=20)
+
+
 class UploadCase(BaseModel):
     """One custom-uploaded case (a parsed JSONL line)."""
 
@@ -204,7 +228,7 @@ class UploadCase(BaseModel):
     task_input: UploadCaseInput
     case_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     reference_answer: Optional[str] = None
-    rubric: Optional[Any] = None
+    rubric: Optional[UploadRubric] = None
     canonical_trajectory: Optional[Any] = None
     capability_spec: Optional[dict] = None
 
@@ -248,7 +272,7 @@ def cases_from_upload(raw_cases: list[dict]) -> list[dict]:
                 reference_answer=case.reference_answer,
                 canonical_trajectory=case.canonical_trajectory,
                 capability_spec=case.capability_spec,
-                rubric=case.rubric,
+                rubric=case.rubric.model_dump(exclude_none=True) if case.rubric else None,
             )
         )
     return frozen
@@ -621,12 +645,29 @@ async def _make_child(
     return child
 
 
-async def _evaluate_child(db: AsyncSession, task: Task, eval_config: dict) -> None:
+def _case_rubric(case: dict | None) -> dict | None:
+    """The case's inline rubric, when it is usable (a dict with a non-empty
+    ``dimensions`` list). Benchmark-suite gold rubrics are unvalidated ``Any``,
+    so malformed ones are silently ignored and the template rubric applies."""
+    if not case:
+        return None
+    rubric = case.get("rubric")
+    if isinstance(rubric, dict):
+        dims = rubric.get("dimensions")
+        if isinstance(dims, list) and dims and all(isinstance(d, dict) for d in dims):
+            return rubric
+    return None
+
+
+async def _evaluate_child(
+    db: AsyncSession, task: Task, eval_config: dict, *, case: dict | None = None
+) -> None:
     """Best-effort record + evals for a terminal child, honoring eval_config.
 
     E-02 outcome scoring always runs (eval is the point of a benchmark run);
     E-07 trajectory defaults on, E-14 failure modes defaults off. E-20 is
-    captured inside build_quality_record. Never raises.
+    captured inside build_quality_record. A case-level rubric (``case.rubric``)
+    overrides the template/workspace rubric for outcome scoring. Never raises.
     """
     from app.quality.data_lake import build_quality_record
     from app.quality.judge import evaluate_task_quality
@@ -645,7 +686,9 @@ async def _evaluate_child(db: AsyncSession, task: Task, eval_config: dict) -> No
         return
     if task.status in _SUCCESS_TASK and rec.quality_profile is None:
         try:
-            await evaluate_task_quality(db, task, commit=True)
+            await evaluate_task_quality(
+                db, task, commit=True, rubric_override=_case_rubric(case)
+            )
         except Exception as e:
             await db.rollback()
             logger.warning(f"experiment: outcome eval failed for {task.id}: {e}")
@@ -725,7 +768,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
             continue
         if task.status not in _TERMINAL_TASK:
             continue
-        await _evaluate_child(db, task, exp.eval_config or {})
+        await _evaluate_child(db, task, exp.eval_config or {}, case=cases.get(r.case_key))
         rec = (
             await db.execute(
                 select(QualityRecord).where(QualityRecord.task_id == task.id)

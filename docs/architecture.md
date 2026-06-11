@@ -861,6 +861,11 @@ help" as one operation.
   files or source tasks change later. Children are tagged
   `benchmark_case_id=case_key`, `benchmark_suite="exp:<id>"`, so the whole
   E-01 plumbing (denormalization, suite filters) works unchanged.
+- **Per-case rubric.** A frozen case may carry an inline `rubric`
+  (`{name?, dimensions: [...]}`, validated on upload); at settle time it
+  overrides the template/workspace rubric for E-02 scoring of that case's
+  runs — mixed datasets (math + writing in one experiment) are judged with
+  the right dimensions per case instead of one template-wide rubric.
 - **Poll-driven runner** (same pattern as E-11/E-12): all cells are
   pre-created as `pending` `experiment_runs` rows at start; the
   `experiment_run_tick` scheduler job (20 s) settles finished runs (record +
