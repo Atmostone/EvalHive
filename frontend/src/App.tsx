@@ -6,6 +6,8 @@ import TaskBoard from './pages/TaskBoard'
 import Chat from './pages/Chat'
 import ActivityLog from './pages/ActivityLog'
 import Analytics from './pages/Analytics'
+import Experiments from './pages/Experiments'
+import ExperimentDetail from './pages/ExperimentDetail'
 import Graph from './pages/Graph'
 import Templates from './pages/Templates'
 import Rubrics from './pages/Rubrics'
@@ -43,6 +45,8 @@ export default function App() {
                     <Route path="/chat" element={<Chat />} />
                     <Route path="/activity" element={<ActivityLog />} />
                     <Route path="/analytics" element={<Analytics />} />
+                    <Route path="/experiments" element={<Experiments />} />
+                    <Route path="/experiments/:id" element={<ExperimentDetail />} />
                     <Route path="/graph" element={<Graph />} />
                     <Route path="/templates" element={<Templates />} />
                     <Route path="/rubrics" element={<Rubrics />} />
