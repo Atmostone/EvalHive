@@ -10,6 +10,26 @@ class ApiError extends Error {
   }
 }
 
+// FastAPI errors arrive as {"detail": "..."} or {"detail": [{loc, msg}, ...]};
+// surface the human-readable part instead of the raw JSON body.
+function extractErrorMessage(body: string, status: number): string {
+  const fallback = body || `HTTP ${status}`
+  try {
+    const detail = (JSON.parse(body) as { detail?: unknown }).detail
+    if (typeof detail === 'string') return detail
+    if (Array.isArray(detail)) {
+      const lines = detail.map((d: { loc?: unknown[]; msg?: string }) => {
+        const loc = Array.isArray(d.loc) ? d.loc.filter((p) => p !== 'body').join('.') : ''
+        return loc ? `${loc}: ${d.msg ?? ''}` : (d.msg ?? JSON.stringify(d))
+      })
+      if (lines.length) return lines.join('\n')
+    }
+  } catch {
+    // not JSON — fall through to the raw body
+  }
+  return fallback
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const isFormData = options?.body instanceof FormData
   const headers: Record<string, string> = { ...(authHeaders() as Record<string, string>) }
@@ -28,7 +48,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       }
     }
     const text = await res.text()
-    throw new ApiError(res.status, text)
+    throw new ApiError(res.status, extractErrorMessage(text, res.status))
   }
   if (res.status === 204) return undefined as T
   return res.json()
