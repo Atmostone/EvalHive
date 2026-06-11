@@ -23,6 +23,7 @@ This folder is the single source of truth for the project. Any code change that 
 | [`development.md`](development.md) | How to run locally, migrations, tests. (TODO) |
 | [`production-readiness-tz.md`](production-readiness-tz.md) | **Current priority**: spec for work to do before the main backlog. |
 | [`workarounds.md`](workarounds.md) | Known shortcuts and the reasons behind them. (replaces the root WORKAROUNDS.md) |
+| [`research-toolathlon-gym.md`](research-toolathlon-gym.md) | SPA-37 spike: Toolathlon-GYM as an external benchmark source for E-23 (verdict, license, integration plan). |
 
 ## Where to start
 
