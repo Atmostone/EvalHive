@@ -97,7 +97,13 @@ def extract_final_number(text: str | None) -> float | None:
             value = _to_number(nums[0])
             if value is not None:
                 return value
-    nums = _NUMBER_RE.findall(text)
+    # Fallback: the last number in the text — but file paths and filenames
+    # (e.g. "gsm8k_318_solution.txt") poison this, so strip path-like tokens
+    # first. Found the hard way: the single judge-vs-GT "disagreement" in the
+    # first 50-case run was exactly this artifact (case gsm8k-318).
+    stripped = re.sub(r"\S*[/\\]\S*", " ", text)
+    stripped = re.sub(r"\S*_\d+\S*", " ", stripped)
+    nums = _NUMBER_RE.findall(stripped)
     for token in reversed(nums):
         value = _to_number(token)
         if value is not None:

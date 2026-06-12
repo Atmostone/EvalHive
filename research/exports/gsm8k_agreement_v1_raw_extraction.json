@@ -1,0 +1,29 @@
+{
+  "n": 49,
+  "agreement_rate": 0.9796,
+  "cohen_kappa": 0.8464,
+  "confusion": {
+    "judge_pass_gt_correct": 45,
+    "judge_pass_gt_wrong": 1,
+    "judge_fail_gt_correct": 0,
+    "judge_fail_gt_wrong": 3
+  },
+  "disagreements": [
+    {
+      "case_id": "gsm8k-318",
+      "run_index": 0,
+      "gold": 123.0,
+      "extracted": 318.0,
+      "judge_score": 10,
+      "judge_pass": true,
+      "gt_correct": false
+    }
+  ],
+  "excluded": [
+    {
+      "case_id": "gsm8k-689",
+      "run_index": 0,
+      "reason": "no number extractable from result text"
+    }
+  ]
+}

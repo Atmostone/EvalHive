@@ -119,3 +119,10 @@ returns **401**. Access requires a Hugging Face account, accepting the gate
 conditions on the dataset page (auto-approved checkbox: agree not to reshare),
 then downloading with an HF token (`huggingface-cli download
 gaia-benchmark/GAIA --repo-type dataset --token $HF_TOKEN`).
+
+## Результат RQ1a / GSM8K (2026-06-11/12)
+
+Эксперимент bc494ee5 (50 кейсов × glm-4.7, n=1): **judge vs exact GT — agreement 1.0, κ=1.0 (n=49)**.
+- `exports/gsm8k_agreement.json` — финальный результат (после фикса экстрактора).
+- `exports/gsm8k_agreement_v1_raw_extraction.json` — первая версия (agreement 0.98, κ=0.846): единственное «расхождение» (gsm8k-318) оказалось артефактом извлечения GT-ответа из имени файла `gsm8k_318_solution.txt`, а не ошибкой судьи — LLM-судья устойчивее наивного regex-извлечения. Методологический вывод для документа.
+- Исключение gsm8k-689: агент вернул «Task completed» без ответа где-либо — судья консистентно поставил 0 (fail); GT-сторона неизвестна, кейс исключён честно.

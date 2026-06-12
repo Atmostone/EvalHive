@@ -1,0 +1,19 @@
+{
+  "n": 49,
+  "agreement_rate": 1.0,
+  "cohen_kappa": 1.0,
+  "confusion": {
+    "judge_pass_gt_correct": 46,
+    "judge_pass_gt_wrong": 0,
+    "judge_fail_gt_correct": 0,
+    "judge_fail_gt_wrong": 3
+  },
+  "disagreements": [],
+  "excluded": [
+    {
+      "case_id": "gsm8k-689",
+      "run_index": 0,
+      "reason": "no number extractable from result text"
+    }
+  ]
+}
