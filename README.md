@@ -139,4 +139,4 @@ docker-compose.yml
 
 ## License
 
-[PolyForm Noncommercial License 1.0.0](LICENSE) — any **noncommercial** use is permitted (research, education, personal and evaluation use). Commercial use requires a separate license from the author.
+**Open, public source** under the [PolyForm Noncommercial License 1.0.0](LICENSE) — any **noncommercial** use is permitted (research, education, personal and evaluation use). Commercial use requires a separate license from the author.
