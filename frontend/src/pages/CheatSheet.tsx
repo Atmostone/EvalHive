@@ -121,10 +121,13 @@ const GROUPS: Group[] = [
   },
 ]
 
-function TermRow({ t }: { t: Term }) {
+function TermRow({ t, n }: { t: Term; n?: number }) {
   return (
     <div className="py-2 border-b last:border-0">
-      <div className="text-sm font-medium text-gray-900">{t.name}</div>
+      <div className="text-sm font-medium text-gray-900">
+        {n != null ? <span className="text-gray-400">{n}. </span> : null}
+        {t.name}
+      </div>
       <div className="text-sm text-gray-600 mt-0.5">{t.desc}</div>
     </div>
   )
@@ -153,16 +156,23 @@ export default function CheatSheet() {
 
       <section>
         <h2 className="text-lg font-semibold text-gray-900 mb-1">Evaluators &amp; metrics</h2>
-        <p className="text-xs text-gray-500 mb-3">Every signal the platform can compute on a run, grouped by what it measures.</p>
+        <p className="text-xs text-gray-500 mb-3">
+          Every signal the platform can compute on a run — 27 modules across 7 families, grouped by what they measure.
+        </p>
         <div className="space-y-5">
-          {GROUPS.map((g) => (
-            <div key={g.title}>
-              <h3 className="text-sm font-semibold text-gray-800 mb-1">{g.title}</h3>
-              <div className="bg-white border rounded-lg px-4">
-                {g.terms.map((t) => <TermRow key={t.name} t={t} />)}
+          {GROUPS.map((g, gi) => {
+            const offset = GROUPS.slice(0, gi).reduce((s, gg) => s + gg.terms.length, 0)
+            return (
+              <div key={g.title}>
+                <h3 className="text-sm font-semibold text-gray-800 mb-1">{g.title}</h3>
+                <div className="bg-white border rounded-lg px-4">
+                  {g.terms.map((t, i) => (
+                    <TermRow key={t.name} t={t} n={offset + i + 1} />
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </section>
     </div>

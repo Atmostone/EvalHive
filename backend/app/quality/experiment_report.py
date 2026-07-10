@@ -30,7 +30,10 @@ from app.quality.ranking import build_matches
 from app.quality.stats import MIN_SAMPLES, mann_whitney_u, welch_t_test
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 
-SCHEMA_VERSION = 12  # v12: checker↔human agreement (Cohen's κ + raw) — the executable
+SCHEMA_VERSION = 13  # v13: reliability traffic light on the OUTCOME rubric axes too
+# (outcome_axis_reliability), + rank-aware 'directional' zone: κ below the bar but
+# Spearman ρ≥0.5 = scale-shifted judge — ordering trustworthy, absolute scores not
+# v12: checker↔human agreement (Cohen's κ + raw) — the executable
 # checker vs the human gold verdict, surfaced beside judge↔human calibration
 # v11: retire the unreliable judge loop_detection axis — drop it
 # from the displayed E-07 axes AND from the trajectory aggregate (a quarantined axis
@@ -151,12 +154,21 @@ def _binary_kappa(both_yes: int, a_only: int, b_only: int, both_no: int) -> Opti
 # quarantined (shown for completeness, not weighed). Never fabricated.
 RELIABILITY_RELIABLE_KAPPA = 0.6     # judge agrees with the reference → trust it
 RELIABILITY_DIRECTIONAL_KAPPA = 0.4  # weak-but-directional floor
+# A judge can be systematically scale-shifted yet order runs correctly: band κ
+# collapses while rank correlation stays high. Such an axis is usable for
+# COMPARING runs (never for absolute scores), so strong ranks rescue it into
+# 'directional' instead of 'unreliable'. The κ thresholds above stay untouched.
+RELIABILITY_RANK_RHO = 0.5
 
 
-def _classify_reliability(kappa: Optional[float], n: int, *, has_source: bool) -> str:
-    """Bucket a process-judge axis. No calibration source → 'not_calibrated'
+def _classify_reliability(
+    kappa: Optional[float], n: int, *, has_source: bool, rho: Optional[float] = None
+) -> str:
+    """Bucket a judged axis. No calibration source → 'not_calibrated'
     (unknown, not known-bad). A live source with too little data or an undefined
-    κ → 'directional' (a hint, not a verdict). Otherwise threshold on κ."""
+    κ → 'directional' (a hint, not a verdict). Otherwise threshold on κ, with one
+    rescue: κ below the bar but ranks agreeing (Spearman ρ ≥ RELIABILITY_RANK_RHO)
+    → 'directional' — a scale-shifted judge, trustworthy for ordering only."""
     if not has_source:
         return "not_calibrated"
     if kappa is None or n < MIN_SAMPLES:
@@ -164,6 +176,8 @@ def _classify_reliability(kappa: Optional[float], n: int, *, has_source: bool) -
     if kappa >= RELIABILITY_RELIABLE_KAPPA:
         return "reliable"
     if kappa >= RELIABILITY_DIRECTIONAL_KAPPA:
+        return "directional"
+    if rho is not None and rho >= RELIABILITY_RANK_RHO:
         return "directional"
     return "unreliable"
 
@@ -218,6 +232,9 @@ def _axis_reliability(
         else:
             source, kappa, n = "none", None, 0
 
+        # Rank correlation only exists for the human source (the structural loop
+        # anchor is binary — no meaningful per-run ordering to correlate).
+        rho = hd.get("spearman") if source == "human" and hd is not None else None
         has_source = source != "none"
         any_source = any_source or has_source
         axes_out[key] = {
@@ -225,14 +242,55 @@ def _axis_reliability(
             "name": label,
             "source": source,
             "kappa": kappa,
+            "rho": rho,
             "n": n,
-            "status": _classify_reliability(kappa, n, has_source=has_source),
+            "status": _classify_reliability(kappa, n, has_source=has_source, rho=rho),
         }
 
     return {
         "available": any_source,
         "reliable_kappa": RELIABILITY_RELIABLE_KAPPA,
         "directional_kappa": RELIABILITY_DIRECTIONAL_KAPPA,
+        "rank_rho": RELIABILITY_RANK_RHO,
+        "min_samples": MIN_SAMPLES,
+        "axes": axes_out,
+    }
+
+
+def _outcome_axis_reliability(calibration: Optional[dict]) -> dict:
+    """The same reliability traffic light, applied to the OUTCOME rubric
+    dimensions. Unlike the fixed six trajectory axes, the outcome axis list is
+    rubric-dependent — so it is whatever dimensions the humans actually rated on
+    these runs (trajectory keys excluded; they are badged by _axis_reliability).
+    Source is always the human: the executable checker verifies the verdict, not
+    per-dimension scores, and on open tasks it does not exist at all."""
+    traj_keys = {key for key, _name, _desc in TRAJECTORY_AXES}
+    axes_out: dict[str, dict] = {}
+    any_source = False
+    if isinstance(calibration, dict) and calibration.get("available"):
+        for d in calibration.get("dimensions") or []:
+            key = d.get("key")
+            if not key or key in traj_keys:
+                continue
+            kappa = d.get("cohen_kappa")
+            rho = d.get("spearman")
+            n = int(d.get("n") or 0)
+            any_source = True
+            axes_out[key] = {
+                "key": key,
+                "name": d.get("name") or key,
+                "source": "human",
+                "kappa": kappa,
+                "rho": rho,
+                "n": n,
+                "status": _classify_reliability(kappa, n, has_source=True, rho=rho),
+            }
+
+    return {
+        "available": any_source,
+        "reliable_kappa": RELIABILITY_RELIABLE_KAPPA,
+        "directional_kappa": RELIABILITY_DIRECTIONAL_KAPPA,
+        "rank_rho": RELIABILITY_RANK_RHO,
         "min_samples": MIN_SAMPLES,
         "axes": axes_out,
     }
@@ -663,6 +721,7 @@ def build_report(
     # SPA-76: per-axis reliability gate — badge each E-07 trajectory axis by how far
     # the judge can be trusted (E-17 human κ, or the loop anchor for the loop axis).
     axis_reliability = _axis_reliability(calibration, loop_detection, axis_labels)
+    outcome_axis_reliability = _outcome_axis_reliability(calibration)
 
     # --- cleaned-trace stats (E-06) per config --------------------------------
     # trajectory_profile.trace_stats = {original_tokens, cleaned_tokens, steps_total}
@@ -1128,6 +1187,7 @@ def build_report(
         "trajectory_heatmap": trajectory_heatmap,
         "loop_detection": loop_detection,
         "axis_reliability": axis_reliability,
+        "outcome_axis_reliability": outcome_axis_reliability,
         "trace_stats": trace_stats,
         "longitudinal": longitudinal,
         "human_feedback": human_feedback,

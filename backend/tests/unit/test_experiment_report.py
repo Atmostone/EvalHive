@@ -162,7 +162,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 12
+    assert report["schema_version"] == 13
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -309,7 +309,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 12
+    assert report["schema_version"] == 13
 
     ext = report["external"]
     assert ext["available"] is True
@@ -608,6 +608,52 @@ def test_classify_reliability_buckets():
     assert _classify_reliability(0.9, 2, has_source=True) == "directional"  # too few pairs
     assert _classify_reliability(None, 10, has_source=True) == "directional"  # undefined κ
     assert _classify_reliability(0.9, 10, has_source=False) == "not_calibrated"
+
+
+def test_classify_reliability_rank_rescue():
+    # v13: κ below the bar but ranks agreeing (Spearman ρ≥0.5) → directional, not
+    # unreliable — a scale-shifted judge is usable for comparisons only.
+    from app.quality.experiment_report import _classify_reliability
+
+    assert _classify_reliability(0.0, 10, has_source=True, rho=0.93) == "directional"
+    assert _classify_reliability(0.0, 10, has_source=True, rho=0.5) == "directional"  # boundary
+    assert _classify_reliability(0.0, 10, has_source=True, rho=0.49) == "unreliable"
+    assert _classify_reliability(0.0, 10, has_source=True, rho=None) == "unreliable"
+    assert _classify_reliability(0.0, 10, has_source=True, rho=-0.2) == "unreliable"
+    # ranks never DEMOTE: κ above the bar stays what κ says
+    assert _classify_reliability(0.7, 10, has_source=True, rho=0.1) == "reliable"
+    assert _classify_reliability(0.5, 10, has_source=True, rho=0.1) == "directional"
+    # too few pairs still wins over the rank rescue
+    assert _classify_reliability(0.0, 2, has_source=True, rho=0.9) == "directional"
+
+
+def test_outcome_axis_reliability():
+    from app.quality.experiment_report import _outcome_axis_reliability
+
+    calibration = {
+        "available": True,
+        "dimensions": [
+            # outcome rubric dims
+            {"key": "task_completion", "name": "Task completion", "n": 39, "cohen_kappa": 0.24, "spearman": 0.62},
+            {"key": "format_compliance", "name": "Format compliance", "n": 39, "cohen_kappa": 0.03, "spearman": 0.18},
+            {"key": "readability", "name": "Readability", "n": 153, "cohen_kappa": 0.49, "spearman": 0.60},
+            # trajectory dim must be excluded here (badged by _axis_reliability)
+            {"key": "tool_selection", "name": "Tool selection", "n": 11, "cohen_kappa": 0.0, "spearman": 0.93},
+        ],
+    }
+    oar = _outcome_axis_reliability(calibration)
+    ax = oar["axes"]
+    assert oar["available"] is True
+    assert "tool_selection" not in ax
+    assert ax["task_completion"]["status"] == "directional"  # rank-rescued (ρ=0.62)
+    assert ax["format_compliance"]["status"] == "unreliable"  # low κ AND low ρ
+    assert ax["readability"]["status"] == "directional"  # κ in 0.4–0.6 band
+    assert ax["task_completion"]["rho"] == 0.62
+
+    # no calibration → honest empty state (axes dict empty: rubric-dependent list)
+    oar2 = _outcome_axis_reliability(None)
+    assert oar2["available"] is False
+    assert oar2["axes"] == {}
 
 
 def test_axis_reliability_sources_and_priority():
