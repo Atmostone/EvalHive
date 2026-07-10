@@ -1571,6 +1571,7 @@ export interface ExperimentReport {
     available: boolean
     reliable_kappa: number
     directional_kappa: number
+    rank_rho?: number
     min_samples: number
     axes: Record<
       string,
@@ -1579,6 +1580,28 @@ export interface ExperimentReport {
         name: string
         source: 'human' | 'structural' | 'none'
         kappa?: number | null
+        rho?: number | null
+        n: number
+        status: 'reliable' | 'directional' | 'unreliable' | 'not_calibrated'
+      }
+    >
+  } | null
+  // v13: the same reliability traffic light applied to the OUTCOME rubric axes
+  // (human source only — the checker verifies verdicts, not per-dimension scores).
+  outcome_axis_reliability?: {
+    available: boolean
+    reliable_kappa: number
+    directional_kappa: number
+    rank_rho?: number
+    min_samples: number
+    axes: Record<
+      string,
+      {
+        key: string
+        name: string
+        source: 'human' | 'structural' | 'none'
+        kappa?: number | null
+        rho?: number | null
         n: number
         status: 'reliable' | 'directional' | 'unreliable' | 'not_calibrated'
       }

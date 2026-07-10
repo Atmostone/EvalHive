@@ -98,7 +98,14 @@ function reliabilityTooltip(a?: AxisReliability): string {
   if (a.status === 'not_calibrated')
     return 'Reliability: not calibrated — no human rating or structural anchor for this axis. The judge score is shown but unverified.'
   const k = a.kappa != null ? `κ ${a.kappa.toFixed(2)}` : 'κ undefined'
-  return `Reliability: ${RELIABILITY_META[a.status].word} — judge vs ${reliabilitySource(a.source)} (${k}, n=${a.n}). Bar: κ≥0.6 reliable · 0.4–0.6 directional · <0.4 unreliable.`
+  const r = a.rho != null ? ` · rank ρ ${a.rho.toFixed(2)}` : ''
+  // Rank-rescued directional: κ below the bar but the judge orders runs like the
+  // human — a scale-shifted judge, usable for comparison, not absolute scores.
+  const rankNote =
+    a.status === 'directional' && a.kappa != null && a.kappa < 0.4 && a.rho != null && a.rho >= 0.5
+      ? ' Scale-shifted judge: ranks agree with the human, absolute scores do not — trust comparisons only.'
+      : ''
+  return `Reliability: ${RELIABILITY_META[a.status].word} — judge vs ${reliabilitySource(a.source)} (${k}${r}, n=${a.n}). Bar: κ≥0.6 reliable · 0.4–0.6 directional · <0.4 unreliable unless rank ρ≥0.5.${rankNote}`
 }
 
 function ReliabilityBadge({ a }: { a?: AxisReliability }) {
@@ -673,16 +680,26 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
         {report.heatmap.dimensions.length === 0 ? (
           <p className="text-sm text-gray-500">No rubric dimension scores yet (configure a judge model to score runs).</p>
         ) : (
+          <>
           <div className="bg-white border rounded-lg overflow-x-auto p-3">
             <table className="text-sm border-separate" style={{ borderSpacing: 3 }}>
               <thead>
                 <tr>
                   <th className="text-left text-xs text-gray-500 px-2">config</th>
-                  {report.heatmap.dimensions.map((d) => (
-                    <th key={d} className="text-xs text-gray-500 font-normal px-2" title={report.heatmap.dimension_labels?.[d]}>
-                      {(report.heatmap.dimension_labels?.[d] || d).replace(/_/g, ' ')}
-                    </th>
-                  ))}
+                  {report.heatmap.dimensions.map((d) => {
+                    const rel = report.outcome_axis_reliability?.axes?.[d]
+                    const q = rel?.status === 'unreliable'
+                    const dim = q || rel?.status === 'not_calibrated'
+                    return (
+                      <th key={d} className={`text-xs font-normal px-2 ${dim ? 'text-gray-400' : 'text-gray-500'}`}
+                        title={report.heatmap.dimension_labels?.[d]}>
+                        <span className={q ? 'line-through' : ''}>
+                          {(report.heatmap.dimension_labels?.[d] || d).replace(/_/g, ' ')}
+                        </span>
+                        <ReliabilityBadge a={rel} />
+                      </th>
+                    )
+                  })}
                   <th className="text-xs text-gray-700 font-medium px-2">weighted</th>
                 </tr>
               </thead>
@@ -692,9 +709,11 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                     <td className="text-xs font-medium px-2 whitespace-nowrap" title={row.config_key}>{row.label}</td>
                     {report.heatmap.dimensions.map((d) => {
                       const cell = row.cells[d]
+                      const q = report.outcome_axis_reliability?.axes?.[d]?.status === 'unreliable'
                       return (
-                        <td key={d} className="rounded px-3 py-2 text-center text-sm font-medium" style={heatStyle(cell?.mean)}
-                          title={cell ? `n=${cell.n}${cell.std != null ? ` · std=${cell.std}` : ''}` : ''}>
+                        <td key={d} className="rounded px-3 py-2 text-center text-sm font-medium"
+                          style={q ? { backgroundColor: '#f3f4f6', color: '#9ca3af' } : heatStyle(cell?.mean)}
+                          title={cell ? `n=${cell.n}${cell.std != null ? ` · std=${cell.std}` : ''}${q ? ' · axis quarantined: outcome judge unreliable here' : ''}` : ''}>
                           {fmt(cell?.mean, 1)}
                         </td>
                       )
@@ -707,6 +726,18 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
               </tbody>
             </table>
           </div>
+          {report.outcome_axis_reliability?.available && (
+            <p className="text-[11px] text-gray-400 mt-1 max-w-3xl">
+              <span className="font-medium">Reliability gate (outcome):</span> each rubric axis is badged by judge↔human agreement —{' '}
+              <span className="text-green-700 font-semibold">✓</span> reliable (κ≥{report.outcome_axis_reliability.reliable_kappa}),{' '}
+              <span className="text-amber-600 font-semibold">~</span> directional ({report.outcome_axis_reliability.directional_kappa}–{report.outcome_axis_reliability.reliable_kappa},
+              or rank ρ≥{report.outcome_axis_reliability.rank_rho ?? 0.5} below it — a scale-shifted judge: comparisons yes, absolute scores no),{' '}
+              <span className="text-red-600 font-semibold">⚠</span> unreliable,{' '}
+              <span className="text-gray-400 font-semibold">n/a</span> not calibrated.{' '}
+              <span className="font-medium">Greyed/struck (⚠) axes are below the reliability bar — shown for completeness, not weighed in conclusions.</span>
+            </p>
+          )}
+          </>
         )}
       </section>
 
@@ -782,8 +813,9 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
             <p className="text-[11px] text-gray-400 mt-1 max-w-3xl">
               <span className="font-medium">Reliability gate:</span> each axis is badged by how far the process judge can be
               trusted — <span className="text-green-700 font-semibold">✓</span> reliable (κ≥{report.axis_reliability.reliable_kappa}),{' '}
-              <span className="text-amber-600 font-semibold">~</span> directional ({report.axis_reliability.directional_kappa}–{report.axis_reliability.reliable_kappa}),{' '}
-              <span className="text-red-600 font-semibold">⚠</span> unreliable (κ&lt;{report.axis_reliability.directional_kappa}),{' '}
+              <span className="text-amber-600 font-semibold">~</span> directional ({report.axis_reliability.directional_kappa}–{report.axis_reliability.reliable_kappa},
+              or rank ρ≥{report.axis_reliability.rank_rho ?? 0.5} below it — a scale-shifted judge: comparisons yes, absolute scores no),{' '}
+              <span className="text-red-600 font-semibold">⚠</span> unreliable,{' '}
               <span className="text-gray-400 font-semibold">n/a</span> not calibrated. κ here is chance-corrected agreement with a human
               (the loop axis instead anchors to the deterministic counter — see Loop detection). <span className="font-medium">Greyed/struck (⚠) axes are below the reliability bar — shown for
               completeness, not weighed in conclusions.</span>
@@ -1054,7 +1086,8 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           title="Quality profile"
           subtitle={verifiable
             ? 'overlay · per-config dimensions (success-only) · ⚠ audited subject, not the verdict — checker is (Pass rate)'
-            : 'overlay · per-config dimensions (success-only) — toggle configs'}
+            : 'overlay · per-config dimensions (success-only) — toggle configs · ⚠ greyed axis = outcome judge below the reliability bar'}
+          axisStatus={(k) => report.outcome_axis_reliability?.axes?.[k]?.status}
           axes={report.heatmap.dimensions}
           axisLabel={(k) => report.heatmap.dimension_labels?.[k] ?? k.replace(/_/g, ' ')}
           rows={report.heatmap.rows}
