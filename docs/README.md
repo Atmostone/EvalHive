@@ -18,8 +18,8 @@ This folder is the single source of truth for the project. Any code change that 
 | [`data-model.md`](data-model.md) | Tables, indexes, invariants. |
 | [`api.md`](api.md) | Endpoint list, contracts. Auto-generation from OpenAPI is desirable. |
 | [`webhooks.md`](webhooks.md) | The agent → orchestrator contract, Pydantic schemas. |
-| [`memory.md`](memory.md) | P0: structured memory, extraction, dedup. (TODO) |
-| [`scheduler.md`](scheduler.md) | P8: APScheduler, scheduled_jobs, built-in jobs. (TODO) |
+| [`memory.md`](memory.md) | P0: structured memory, extraction, dedup. |
+| [`scheduler.md`](scheduler.md) | P8: APScheduler, scheduled_jobs, built-in jobs. |
 | [`development.md`](development.md) | How to run locally, migrations, tests. |
 | [`benchmarks.md`](benchmarks.md) | File-first store of reusable benchmark task definitions (pre-E-23), aggregated by suite × case × model. |
 | [`toolathlon.md`](toolathlon.md) | SPA-42: running the Toolathlon-GYM environment next to our stack (mock PostgreSQL profile + derived agent image). |

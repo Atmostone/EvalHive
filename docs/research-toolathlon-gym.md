@@ -20,9 +20,10 @@ Benchmark Case Store from `docs/benchmarks.md`).
 ## What it is (verified facts)
 
 503 tasks in `tasks/finalpool/`, 25 stdio MCP servers, everything runs locally off a single PostgreSQL
-(`db/init.sql.gz`, 8.2 MB → 11 schemas: `canvas`, `sf` (Snowflake mock), `email`, `gcal`, `gform`,
-`gsheet`, `notion`, `woocommerce`, `arxiv`, `scholarly`, `train`). No external APIs and no real tokens at
-runtime (`configs/token_key_session.py` is a stub). Built on the Toolathlon infrastructure (HKUST-NLP);
+(`db/init.sql.gz`, 8.2 MB). Schema list and counts below reflect the dump **as of the spike date
+(2026-06-10)** — the current dump shipped in the gym clone has since grown (15 task schemas as of
+SPA-42, see [`toolathlon.md`](toolathlon.md)). No external APIs and no real tokens at runtime
+(`configs/token_key_session.py` is a stub). Built on the Toolathlon infrastructure (HKUST-NLP);
 the enlarged pool is by eigent-ai (CAMEL).
 
 MCP-count distribution per task: 4 → 123, 5 → 133, 6 → 105, 7 → 126, 8 → 16.

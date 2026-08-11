@@ -13,7 +13,7 @@ A self-hosted platform for **evaluating and comparing AI agents**. It turns scat
 ## What makes it different
 
 - **Evaluation-first, two axes**: every run is scored on **outcome** (what was produced) **and** process/trajectory (how the agent worked — tool selection, parameters, error recovery, goal alignment, looping, efficiency), not a single point estimate.
-- **Reliability gate over the judge**: the platform formally measures judge↔human agreement (Cohen's κ) and **quarantines** the axes it cannot trust, so an unvalidated metric can't fake a "win" — measure and quarantine an unreliable judge first, then trust it to compare and improve agents.
+- **Reliability gate over the judge**: the platform formally measures judge↔human agreement (Cohen's κ) and grades each axis on a traffic light instead of a binary throw-out — `reliable` (κ≥0.6) / `directional` (weak κ but rank-usable, including the SPA-79 rank-rescue where κ<0.4 but Spearman ρ≥0.5, so a scale-shifted judge whose *ranking* matches humans can still say which of A/B is better) / `unreliable` (κ<0.4 and ρ<0.5) / `not_calibrated`, so an unvalidated metric can't fake a "win". The badge spans **both scoring axes** — the 6 E-07 trajectory axes and the E-02 outcome rubric axes (SCHEMA_VERSION 13) — measure reliability first, then trust the judge to compare and improve agents.
 - **Three independent oracles** on the same runs: an executable checker (deterministic side-effect verification), an LLM judge, and a human — with bias mitigation (position / verbosity / self-preference) on the judge.
 - **Agent optimization, not just execution**: the Experiment Runner (SPA-40) A/B-tests models, prompts, toolsets and orchestration itself over a benchmark dataset — with heatmaps, Pareto frontier, leaderboards and statistical significance, always scored.
 - **Orchestration as the run engine**: templates as agent roles (`(model, soul_md, tools, mcp_servers, limits)`, provider overridable per template), structured memory, bidirectional control (feedback / abort / switch_model into a live container) and MCP-first custom servers — the substrate that generates diverse, reproducible runs to evaluate.
@@ -38,7 +38,7 @@ A self-hosted platform for **evaluating and comparing AI agents**. It turns scat
 ## Status
 
 - ✅ Core MVP loop: kanban → orchestrator → agent → review → approve.
-- ✅ 11 default agent templates.
+- ✅ 5 default agent templates (Researcher, Writer, Coder, Analyst, Designer — `seed_templates` in `app/main.py:118`; copied to each new workspace on registration).
 - ✅ RAG (PDF/DOCX/MD/TXT), MCP servers, kill switch, kanban, chat WebSocket.
 - ✅ Pre-backlog (P0–P14): structured memory, bidirectional channel, periodic progress, Pydantic webhook schemas, per-template model routing, cost calculation, analytics + reasoning trail, priority in polling, APScheduler, depends_on in decomposition, audit log, workspace_id labels (stub), per-agent WS, slash commands, versioned templates.
 - ✅ Eval Phase 0 — **E-01 Quality Data Lake**: immutable, versioned per-task execution snapshots (Postgres summary + MinIO blob), with `/api/data-lake` query + parquet/JSON export, retention + backfill jobs, and nullable slots for downstream eval features (E-02/E-05/E-07/E-20/E-22).
