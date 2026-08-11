@@ -54,3 +54,11 @@ docker-compose.override.yml
 research/
 reports/
 final_reports/
+# research_old/ = the archived research/ + reports/ + final_reports/ trees (renamed 2026-08),
+# research_2/ = the current working set. Both are private. NOTE: renaming a private
+# directory silently drops it out of these rules — add the new name here in the same commit.
+research_old/
+research_2/
+# Submitted deliverables — private, kept out of the public repo
+Описание проекта.pdf
+*.pptx
