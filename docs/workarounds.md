@@ -1,6 +1,6 @@
 # Workarounds
 
-> This file tracks deliberate shortcuts — things that are **not** "the right thing", but acceptable at the current stage. Each entry has a reason and an exit criterion. Remove the entry once it's resolved.
+> This file tracks deliberate shortcuts — things that are **not** "the right thing", but acceptable at the current stage. Each entry has a reason and an exit criterion. Once an entry is resolved, move it to the **Resolved / historical** section at the bottom rather than deleting it, so the active list stays short while the reasoning and exit history stay on record.
 
 The legacy root `WORKAROUNDS.md` was migrated here.
 
@@ -36,32 +36,6 @@ The legacy root `WORKAROUNDS.md` was migrated here.
 
 **Exit:** once a retention policy is in place (the retention requirement) — old events get cleaned up, the cap can be lifted.
 
-## 5. provider_api_key plaintext in DB (P4) — partially closed in R6
-
-**What:** `templates.provider_api_key` is stored as a plain string.
-
-**Why:** it's a column-level secret, not a key/value pair. The current `SecretsProvider` is optimised for key/value access (`get(db, key, default)` calls).
-
-**Closed in R6:** `llm_api_key` is now read through `get_secrets_provider().get(db, "llm_api_key")` in `get_llm_settings` and `test_llm`. `EnvSecretsProvider` (selected via `SECRETS_PROVIDER=env`) immediately gives a vault-like read from environment variables.
-
-**Full exit:** move `templates.provider_api_key` and `minio_secret_key` behind the same facade. Becomes useful when a SOPS/Vault impl appears.
-
-## 6. workspace_id="shared" label on the container (P11) — RESOLVED in R1
-
-**Done:** R1 `spawn_agent` sets `spawnhive.workspace_id=<uuid>`; `list_agents/kill_*` filter on it.
-
-## 7. Audit middleware writes without user_id (P10) — RESOLVED in R1
-
-**Done:** R1 middleware reads `request.state.user` and writes user_id/email into the event `data`.
-
-## 8. Webhook without auth — RESOLVED in R2
-
-**Done:** R2 — `/api/v1/agent-webhook` requires `Authorization: Bearer <SPAWNHIVE_AGENT_TOKEN>` + `idempotency_key`. The legacy `/api/agent-webhook` is kept as an alias with `Sunset: 2026-08-01` headers and the same requirements.
-
-## 9. Orchestrator/scheduler inside the API lifespan — RESOLVED in R3
-
-**Done:** R3 — orchestrator/scheduler are separate docker-compose services (`app/workers/orchestrator_main.py` / `scheduler_main.py`), each holding a Postgres advisory lock. The API lifespan no longer spawns them.
-
 ## 13. api container still mounts docker.sock — partially closed in R6
 
 **What:** every call-site (`app/api/agents.py`, `app/api/chat.py`, `app/api/events.py`, `app/orchestrator/engine.py`, `app/scheduler.py`) now goes through `get_agent_runtime()`. But the default `DockerRuntime` is an in-process impl that hits the Docker SDK directly via `app.orchestrator.docker_manager.*`. So the api container *still* mounts `/var/run/docker.sock`.
@@ -96,17 +70,9 @@ The legacy root `WORKAROUNDS.md` was migrated here.
 
 **Exit:** part of the security-hardening track (after R1–R5).
 
-## 14. Coverage gate at 60% — now enforced in CI
-
-**What:** after the Providers+Models refactor, the new code (`api/providers.py`, `api/_resolve_model.py`, `api/workspaces.py`, the rewritten `api/templates.py`) added ~300 statements; new tests cover the happy path and key error branches but not every line. Coverage briefly dipped just under the 60% bar while the tests were filling in.
-
-**Why:** the 60% target is the production-readiness §R4 acceptance bar. It is now wired into CI — `.github/workflows/ci.yml` runs `pytest --cov=app --cov-report=term-missing --cov-fail-under=60`, so a green build means coverage is at or above 60%. The gap was closed by expanding provider/model CRUD tests (`require_role` 403 paths, 422 validation, etc.).
-
-**Exit:** resolved — the gate is active in CI and the build is green. Keep the bar honest: raise `--cov-fail-under` as the suite grows rather than letting headroom rot.
-
 ## 16. E-08 on-demand endpoint can exceed the nginx proxy timeout
 
-**What:** `POST /api/quality/records/{task_id}/evaluate-trajectory-evidence` (E-08) makes `N+1` *sequential* LLM calls (one `assess_step` per trajectory step + one final scoring). At ~8–13 s/call on the current judge (MiniMax-M2.7) a real trajectory takes tens of seconds to a few minutes end to end (E2E: 8–21-step traces took 82–171 s). Originally nginx's REST `location /` had no `proxy_read_timeout`, so the default **60 s** applied → long traces returned **504** and the request was cancelled before the profile persisted.
+**What:** `POST /api/quality/records/{task_id}/evaluate-trajectory-evidence` (E-08) makes `N+1` *sequential* LLM calls (one `assess_step` per trajectory step + one final scoring). At ~8–13 s/call on the current judge (MiniMax-M3) a real trajectory takes tens of seconds to a few minutes end to end (E2E: 8–21-step traces took 82–171 s). Originally nginx's REST `location /` had no `proxy_read_timeout`, so the default **60 s** applied → long traces returned **504** and the request was cancelled before the profile persisted.
 
 **Mitigated:** `nginx/nginx.conf` now sets `proxy_read_timeout/proxy_send_timeout 300s` on the REST location (the WS location was already 3600 s). 5 min covers typical real trajectories — verified: a 9-call HTTP run completed in 95 s with HTTP 200 (was a 504 before). Still a partial fix, not the right shape: holding an HTTP connection open for minutes is fragile, and a trace long enough to exceed 300 s would still 504.
 
@@ -123,3 +89,45 @@ The legacy root `WORKAROUNDS.md` was migrated here.
 **Migration:** `alembic/versions/f7e8d9c0b1a2_providers_and_models.py` seeds one Provider+Model per workspace from the old global `llm_*` settings, then drops the legacy columns. Existing templates' `model_id` is set to the migrated model.
 
 **Closes:** #5 (provider_api_key plaintext per template).
+
+---
+
+## Resolved / historical
+
+Entries below were resolved; they are archived here (rather than deleted) so the reasoning and exit history stay on record. Numbering is preserved from when each was active.
+
+### 5. provider_api_key plaintext in DB (P4) — closed by #15 (columns removed)
+
+**What:** `templates.provider_api_key` is stored as a plain string.
+
+**Why:** it's a column-level secret, not a key/value pair. The current `SecretsProvider` is optimised for key/value access (`get(db, key, default)` calls).
+
+**Closed in R6:** `llm_api_key` is now read through `get_secrets_provider().get(db, "llm_api_key")` in `get_llm_settings` and `test_llm`. `EnvSecretsProvider` (selected via `SECRETS_PROVIDER=env`) immediately gives a vault-like read from environment variables.
+
+**Full exit:** move `templates.provider_api_key` and `minio_secret_key` behind the same facade. Becomes useful when a SOPS/Vault impl appears.
+
+**Resolved:** #15 removed the `templates.provider_api_key` / `provider_url` columns entirely (replaced by `model_id` FK), closing the per-template plaintext concern.
+
+### 6. workspace_id="shared" label on the container (P11) — RESOLVED in R1
+
+**Done:** R1 `spawn_agent` sets `spawnhive.workspace_id=<uuid>`; `list_agents/kill_*` filter on it.
+
+### 7. Audit middleware writes without user_id (P10) — RESOLVED in R1
+
+**Done:** R1 middleware reads `request.state.user` and writes user_id/email into the event `data`.
+
+### 8. Webhook without auth — RESOLVED in R2
+
+**Done:** R2 — `/api/v1/agent-webhook` requires `Authorization: Bearer <SPAWNHIVE_AGENT_TOKEN>` + `idempotency_key`. The legacy `/api/agent-webhook` is kept as an alias with `Sunset: 2026-08-01` headers and the same requirements.
+
+### 9. Orchestrator/scheduler inside the API lifespan — RESOLVED in R3
+
+**Done:** R3 — orchestrator/scheduler are separate docker-compose services (`app/workers/orchestrator_main.py` / `scheduler_main.py`), each holding a Postgres advisory lock. The API lifespan no longer spawns them.
+
+### 14. Coverage gate at 60% — now enforced in CI
+
+**What:** after the Providers+Models refactor, the new code (`api/providers.py`, `api/_resolve_model.py`, `api/workspaces.py`, the rewritten `api/templates.py`) added ~300 statements; new tests cover the happy path and key error branches but not every line. Coverage briefly dipped just under the 60% bar while the tests were filling in.
+
+**Why:** the 60% target is the production-readiness §R4 acceptance bar. It is now wired into CI — `.github/workflows/ci.yml` runs `pytest --cov=app --cov-report=term-missing --cov-fail-under=60`, so a green build means coverage is at or above 60%. The gap was closed by expanding provider/model CRUD tests (`require_role` 403 paths, 422 validation, etc.).
+
+**Exit:** resolved — the gate is active in CI and the build is green. Keep the bar honest: raise `--cov-fail-under` as the suite grows rather than letting headroom rot.

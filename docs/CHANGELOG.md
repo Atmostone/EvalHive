@@ -2,6 +2,39 @@
 
 Формат: `YYYY-MM-DD — что изменилось — ссылка на блок плана / PR`.
 
+## 2026-08-11
+
+- **SPA-112 — Live event relay: the Redis→WebSocket subscriber no longer dies on an idle channel.** Every API start logged `Redis subscriber crashed: Timeout reading from redis:6379` within seconds, after which no event reached any WebSocket client: the UI showed no live agent log and no live run progress until the page was reloaded and the frontend re-read from the DB.
+  - **Cause.** redis-py 8.x defaults the connection's `socket_timeout` to 5s. `PubSub.listen()` reads with `block=True`, which falls back to that timeout, so any 5-second gap with no traffic raised `TimeoutError` — and idle gaps are the normal state of this channel. `_consume()` then caught the exception and *returned*, so nothing ever resubscribed. Because `_broadcast_event` publishes to Redis and returns early, the dead subscriber meant total silence rather than degraded delivery: events raised by any process, including the API's own, reached nobody.
+  - **Fix** (`app/utils/events.py`): consume via `get_message(timeout=…)` (an idle poll returns `None` instead of raising, whatever the client default); wrap subscribe-and-consume in a reconnect loop with bounded backoff (1/2/5/10/30s); track `_subscriber_live` so that while the relay is down `_broadcast_event` also broadcasts locally, keeping a client's own events visible.
+  - **Verified live**: 30s idle with no crash line; an event published from a separate process arriving at a connected WebSocket client; `docker compose restart redis` under a running API recovering via `resubscribing in 1s` with delivery working afterwards. Regression coverage in `tests/unit/test_event_subscriber.py` (5 tests over a scripted fake pubsub).
+
+## 2026-07-10
+
+- **SPA-79 — Rank-aware reliability: rescue rank-consistent low-κ axes to 'directional'; extend the trust badge to the outcome rubric axes.** Refinement of the SPA-76 per-axis reliability badge. A judge whose absolute scores are scale-shifted from the human's but whose *ranking* still tracks the human is usable for **comparisons** (which of A/B is better) even though it fails absolute κ — SPA-79 stops such an axis being written off as `unreliable`.
+  - **Rank-rescue.** An axis with κ<0.4 but Spearman ρ≥0.5 is now labelled **`directional`** (not `unreliable`): a scale-shifted judge whose ranking matches humans is usable for comparisons but not for absolute scores. New threshold `RELIABILITY_RANK_RHO=0.5`. Ranks only ever **rescue**, never demote — an axis at κ≥0.6 stays `reliable` regardless of ρ.
+  - **Full reliability traffic light** (`experiment_report.py`): `reliable` (κ≥0.6) / `directional` (0.4≤κ<0.6, OR κ<0.4 but ρ≥0.5, OR too few pairs n<3) / `unreliable` (κ<0.4 AND ρ<0.5) / `not_calibrated` (no calibration source). Constants `RELIABILITY_RELIABLE_KAPPA=0.6`, `RELIABILITY_DIRECTIONAL_KAPPA=0.4`, `RELIABILITY_RANK_RHO=0.5`.
+  - **Extended to the outcome rubric axes.** The same per-axis κ badge — previously only on the 6 E-07 trajectory axes (`_axis_reliability`) — now also applies to the **outcome** rubric axes via a new `_outcome_axis_reliability`, exposed as `report.outcome_axis_reliability`. **SCHEMA_VERSION 12→13.**
+  - **Report schema-version ladder (post-v3):** v4 human_feedback (E-05) per-config aggregate + cost_breakdown (SPA-73) · v5 per-config loop_detection + quality_gate + failure reasons (SPA-74) · v6 trace_stats (E-06) + longitudinal (E-22 across run_index) (SPA-74) · **v7 skipped** · v8 loop-anchor directional split (judge-only / counter-only) + Cohen's κ (SPA-75) · v9 per-axis reliability gate (SPA-76) · v10 confound-controlled token/$ effort (SPA-77) · **v11 skipped** · v12 checker↔human Cohen's κ (report UI overhaul) · **v13 rank-rescue + outcome-axis reliability (SPA-79)**.
+
+## 2026-07-05
+
+- **SPA-78 — Repo hygiene + VPS deployment.**
+  - **Repo hygiene** (`.gitignore`): private contest material (`research/`, `reports/`, `final_reports/`, `.claude/`) is now excluded so it can never reach the public repo, alongside the local-only `docker-compose.override.yml` (per-machine port remap).
+  - **License wording** (`README.md`): the License section now reads **source-available** rather than implying open source — PolyForm Noncommercial 1.0.0 is not an OSI license (any noncommercial use permitted: research, education, personal, evaluation; commercial use needs a separate license from the author).
+  - **VPS deploy** (landed 2026-07-01): production compose overlay (`docker-compose.prod.yml`), nginx + certbot TLS edge (`frontend/nginx.prod.conf`, `scripts/init-letsencrypt.sh`), auto-migrate on boot, env-driven secrets (`.env.prod.example`), `deploy.sh` + data-copy / sanitize scripts.
+
+## 2026-06-26
+
+- **SPA-76 — Reliability gate: per-axis trust badge + quarantine for the E-07 trajectory judge in the A/B report.** The process judge (E-07) was averaged into conclusions with no signal of *which* of its 6 axes can be trusted. `build_report` now derives a per-axis reliability label from **real calibration only** — judge↔human Cohen's κ (E-17) where a human rated the axis, else the judge↔counter loop anchor (SPA-75) for the loop axis, else an honest `not_calibrated` — classified **reliable** (κ≥0.6) / **directional** (0.4–0.6 or insufficient data) / **unreliable** (κ<0.4) / **not_calibrated**, exposed as `report.axis_reliability` (SCHEMA_VERSION 8→9).
+  - **Quarantine.** The UI de-weights below-bar axes so an unreliable axis can't silently imply a process win: the trajectory heatmap greys + strikes ⚠ columns (and neutralises their heat cells) with ✓/~/⚠/n-a header badges, the radar greys / strikes unreliable axis labels, the loop-detection section folds the badge in, and the aggregate E-07 trajectory row in the significance table is tagged and de-emphasised. Works on existing data (no re-runs). Verified live on Эксп 4 (all 6 trajectory axes human-κ unreliable) and Эксп 5b (loop structural-κ unreliable, rest not_calibrated).
+
+- **SPA-75 — Deterministic, LLM-free structural loop counter as an anchor for the E-07 loop axis.** New `app/quality/trace_loops.py::detect_loops()` (`LOOP_SCHEMA_VERSION=1`) counts consecutive identical actions + phase-aware tandem tool-cycles over the **full untrimmed** trace (stored as `trajectory_profile.loop_analysis`) — no LLM call. The report surfaces the counted **`structural_loop_rate`** next to the judge's loop rate with the directional split (judge-only / counter-only) and their agreement (judge↔counter Cohen's **κ≈0.33 on ~715 runs**), framed honestly as *different-input* signals (trimmed + holistic judge vs full + tool-only counter), not pure miscalibration.
+
+## 2026-06-24
+
+- **SPA-69 — Parallel Toolathlon runs via isolated per-lane Postgres.** The serial Toolathlon path shared a single `toolathlon_pg`, so only one case could be in flight at a time (`max_parallel=1`). SPA-69 adds **4 static per-lane Postgres containers** `toolathlon_pg_lane_0..3` (postgres:15) under a new compose profile **`toolathlon-lanes`** (opt-in — `docker compose --profile toolathlon-lanes up -d`, alongside or instead of the single serial `toolathlon_pg`). The scheduler **pins each run to a lane**, overriding only the PG host per lane so isolated cases run concurrently; the lane count is capped at the 4 provisioned containers (`MAX_TOOLATHLON_LANES`). New **`Experiment.n_toolathlon_lanes`** column (NULL → legacy serial shared-PG path, unchanged), plumbed through create / clone / serialize + validation and exposed in the create form and clone dialog.
+
 ## 2026-06-15
 
 - **SPA-57 — Toolathlon harness fixes: benchmark output-channel + портал-reachability + E-02 fail-closed (закрывает SPA-51).** Дебаг по итогам «почему glm-4.7 даёт 1/42 = 2%»: это баги харнесса, не способность модели. Три фикса одним PR.

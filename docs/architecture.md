@@ -1,6 +1,6 @@
 # Architecture
 
-> Snapshot as of 2026-06-27. Any PR that changes components or data flows must update this file.
+> Snapshot as of 2026-07-10. Any PR that changes components or data flows must update this file.
 
 ## Services (docker compose)
 
@@ -11,7 +11,7 @@
                                     │ /api/* + /ws/* via vite proxy → nginx
                                     ▼
                      ┌──────────────────────────────────┐
-                     │           nginx (LB)             │ :8001 → :8000
+                     │           nginx (LB)             │ :8002 → :8000
                      │  • REST: round-robin (DNS-resolved per request)
                      │  • WS:   sticky-ish (Upgrade headers, 1h timeout)
                      └──────────────┬───────────────────┘
@@ -41,6 +41,13 @@
 WS fan-out across api replicas goes through Redis pub/sub (`spawnhive.events`); when `REDIS_URL` is unset the broadcast falls back to in-process delivery (single-replica mode).
 
 api containers still mount `docker.sock` — they use the in-process `DockerRuntime`. This is the transitional workaround #13 until a `RemoteAgentRuntime` (RPC to orchestrator) lands; the call-site migration onto the `AgentRuntime` ABC is already done, what remains is the process split.
+
+Two **optional** profiles add Postgres sandboxes for the Toolathlon-GYM benchmark (SPA-69; neither starts by default — see [`toolathlon.md`](toolathlon.md)):
+
+- `toolathlon_pg` (profile `toolathlon`) — a single shared mock Postgres (the benchmark's "Google" stand-in) used by serial/legacy runs.
+- `toolathlon_pg_lane_0..3` (profile `toolathlon-lanes`) — four static per-run PG-isolation lanes for **parallel** Toolathlon runs; the scheduler pins each run to a lane via `Experiment.n_toolathlon_lanes`.
+
+With both profiles the compose stack defines 14 services (the 9 core services above + `toolathlon_pg` + 4 lanes).
 
 ## Main flows
 
@@ -313,6 +320,28 @@ axis.
 - On-demand `POST /api/quality/records/{task_id}/evaluate-trajectory` + read
   `GET …/trajectory`; optional batch job `trajectory_judge_evaluate` (off by default,
   gated by `trajectory_eval_enabled`).
+- **Report aggregation caveat (v11).** The per-task profile still scores all six axes,
+  but the experiment report's **trajectory aggregate now excludes `loop_detection`**
+  (`_AGG_EXCLUDED_AXES = {'loop_detection'}` in `experiment_report.py`; `_traj_score`
+  is the mean over the five surviving axes). The deterministic SPA-75 loop counter
+  (below) is now the loop anchor, so loop signal is read from it rather than from the
+  judge's `loop_detection` axis.
+
+### Structural loop counter (SPA-75)
+
+A **deterministic, LLM-free** loop detector (`app/quality/trace_loops.py::detect_loops`)
+that counts repetition over the **full, untrimmed** tool-call list (not the E-06 trimmed
+trace — nothing is dropped before counting). Two structures:
+
+- **Stuck-repeat run** — the longest run of the identical tool call repeated back to back.
+- **Tandem tool cycles** — a repeating multi-step tool pattern of period 2–5 (e.g.
+  `search → click → search → click`), found by a phase-aware global scan.
+
+Thresholds: `_MIN_REPEAT_RUN = 3` / `_MIN_CYCLE_REPEATS = 3`; `loop_detected` fires when
+either crosses its threshold. `LOOP_SCHEMA_VERSION = 1`. It feeds the report's
+`structural_loop_rate` and serves as the **E-07 loop anchor**: the report computes
+judge↔counter agreement (Cohen's κ ≈ 0.33 over ~715 runs) to badge how far the judge's
+`loop_detection` axis can be trusted.
 
 ### Evidence bank judge (E-08)
 
@@ -887,6 +916,18 @@ help" as one operation.
   config pair × metric (Welch t-test with an exact pure-python t-CDF as the
   primary marker, Mann-Whitney U normal-approximation as the non-parametric
   check; ★ p<0.05), failure-mode breakdown, orchestrator on/off comparison.
+- **Reliability gate (E-17 → report, SPA-76/79).** Every judge axis in the report
+  carries a traffic-light badge, computed in `experiment_report.py` from the E-17
+  calibration via `_classify_reliability`: **reliable** (κ ≥
+  `RELIABILITY_RELIABLE_KAPPA` = 0.6) / **directional** (`RELIABILITY_DIRECTIONAL_KAPPA`
+  = 0.4 ≤ κ < 0.6, **OR** κ < 0.4 but Spearman ρ ≥ `RELIABILITY_RANK_RHO` = 0.5, **OR**
+  too few pairs n < 3) / **unreliable** (κ < 0.4 AND ρ < 0.5) / **not_calibrated** (no
+  calibration source). The **rank-rescue** (v13) keeps a scale-shifted judge whose
+  *ranking* still tracks humans usable for **comparisons** (which of A/B is better) even
+  when its absolute κ is low — ranks only rescue, never demote (κ ≥ 0.6 stays reliable).
+  v13 also extends the same per-axis κ badge to the **outcome** rubric axes
+  (`_outcome_axis_reliability`), not just the six E-07 trajectory axes
+  (`_axis_reliability`); `SCHEMA_VERSION` bumped 12 → 13.
 - **Repro**: clone-with-changes (frozen dataset copied verbatim), re-run =
   clone + run; every run's E-20 snapshot lands in the quality record; CSV/JSON
   export is flat per-run rows. CLI:
@@ -928,6 +969,15 @@ help" as one operation.
 | `app/quality/variance.py` | E-11 Variance / Robustness Harness: `run_variance` + `advance_variance_run` — N re-runs of one scenario, cost-capped, drained by the orchestrator loop, aggregated into a dispersion `aggregate` (outcome/trajectory-length/trajectory-score distributions + success rate + tool stability) on `variance_runs`. Driven by the `variance_run_tick` job |
 | `app/quality/runs_common.py` | Shared helpers for the poll-driven harnesses (E-11/E-12): terminal-state sets, percentile/distribution stats, `ensure_child_evaluated` (inline E-02/E-07), `accumulated_cost`, `inflight_target` |
 | `app/quality/perturbation.py` | E-12 Adversarial / Perturbation Judge: `run_perturbation` + `advance_perturbation_run` — replays a scenario under 4 pluggable transforms (paraphrase/noise/reorder/inject) vs a clean baseline, aggregating per-transform + overall robustness and an injection safety flag on `perturbation_runs`. Driven by the `perturbation_run_tick` job |
+| `app/quality/trace_loops.py` | SPA-75 Structural loop counter: `detect_loops` — deterministic, LLM-free repetition scan over the full untrimmed tool-call list (longest stuck-repeat run + period-2..5 tandem cycles; thresholds `_MIN_REPEAT_RUN`/`_MIN_CYCLE_REPEATS`=3; `LOOP_SCHEMA_VERSION=1`). Feeds the report's `structural_loop_rate` + the E-07 `loop_detection` anchor (judge↔counter κ) |
+| `app/quality/judge_calibration.py` | E-17 Judge Calibration Protocol: `run_judge_calibration` + `collect_judge_human_pairs` + `_compute_report` — pure agreement stats (pearson/spearman/band κ/mean_bias) of judge (E-02) vs human (E-05) per dimension; versioned into `judge_calibrations`. No LLM call |
+| `app/quality/bias_mitigation.py` | E-18 Bias Mitigation Toolkit: live judge-config mitigations (verbosity/score_clustering/self_preference/position) + `run_bias_report` — controlled OFF/ON A/B re-judge run through E-17's `_compute_report` + per-bias diagnostics; versioned into `bias_reports` |
+| `app/quality/aggregation.py` | E-19 Aggregation Engine (pure, no DB/LLM): `rank(matches, method='bt'|'elo')` — `bradley_terry` (MM iteration + Bayesian prior) / `elo` on a shared Elo scale + seeded-bootstrap CIs; fully deterministic |
+| `app/quality/ranking.py` | E-19 DB bridge: `build_matches` / `derive_matches_from_records` (pointwise scores → matches within a `benchmark_case_id`) + `run_ranking` — persists versioned `ranking_reports` (`metrics.source` = explicit vs derived) |
+| `app/quality/reproducibility.py` | E-20 Reproducibility Snapshot: `assemble_snapshot` + `snapshot_fingerprint` + `diff_snapshots` + `capture_snapshot`/`replay_from_snapshot` — per-record `experiment_snapshot` (captured/missing manifest), SHA-256 determinism fingerprint, snapshot diff + re-run via `clone_task_for_rerun` |
+| `app/quality/comparison.py` | E-21 Pairwise Comparison: `create_comparison`/`advance_comparison` + `judge_pair_llm` (both-orders, position-bias mitigation) + `comparisons_to_matches`/`run_pairwise_leaderboard` — real A/B verdicts on `pairwise_comparisons`, handed to E-19 as explicit ELO matches |
+| `app/quality/experiments.py` | SPA-40 Experiment Runner: `create_experiment` + `expand_matrix`/`normalize_dataset` + `advance_experiment` — frozen dataset × config matrix × n_runs, poll-driven `experiment_runs` cells (E-02 + optional E-07/E-14/E-20), cost-capped. Driven by the `experiment_run_tick` job |
+| `app/quality/experiment_report.py` | SPA-40 Experiment report: `build_report`/`compute_report` — per-config summary, heatmap, Pareto frontier, pairwise leaderboard, `significance_matrix`, failure-mode/orchestrator breakdowns, plus the per-axis reliability traffic light (`_classify_reliability` / `_axis_reliability` / `_outcome_axis_reliability`; `SCHEMA_VERSION=13`) |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |

@@ -22,7 +22,7 @@ The container holds the Postgres advisory lock `8723452`. If multiple scheduler 
 
 ## Built-in jobs
 
-`seed_default_jobs` seeds **16** jobs on startup if missing (matched by name), all attached to the default workspace. `_job_runner` dispatches each by its `payload.action`.
+`seed_default_jobs` seeds **15** jobs on startup if missing (matched by name), all attached to the default workspace. `_job_runner` dispatches each by its `payload.action`.
 
 | name / action | kind | interval / expr | gating setting |
 |---------------|------|-----------------|----------------|
@@ -147,7 +147,7 @@ The container holds the Postgres advisory lock `8723452`. If multiple scheduler 
 }
 ```
 
-If `payload.action` is not one of the 16 built-in actions dispatched by `_job_runner` (see [Built-in jobs](#built-in-jobs)), the fallback `else` branch writes an `agent_events` row with `event_type=scheduled_job_fired` and the original `name` + `action` + `payload`.
+If `payload.action` is not one of the 15 built-in actions dispatched by `_job_runner` (see [Built-in jobs](#built-in-jobs)), the fallback `else` branch writes an `agent_events` row with `event_type=scheduled_job_fired` and the original `name` + `action` + `payload`.
 
 ## Extension
 
