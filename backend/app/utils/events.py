@@ -23,10 +23,72 @@ EVENTS_CHANNEL = "spawnhive.events"
 _redis_publisher: Any = None
 _redis_subscriber_task: asyncio.Task | None = None
 _redis_url: str | None = None
+# Is the subscriber task actually consuming right now? The Redis round-trip is
+# what delivers events back to *our own* WS clients, so when this is False the
+# publish path is not a delivery path and has to fall back to a local broadcast.
+_subscriber_live = False
+
+# Poll interval for the subscriber. Deliberately bounded rather than a blocking
+# listen(): redis-py 8.x defaults the connection's socket_timeout to 5s, so a
+# blocking read raises TimeoutError on any idle gap — which is the normal state
+# of this channel. get_message() with an explicit timeout returns None instead.
+_SUBSCRIBER_POLL_SECONDS = 1.0
+_SUBSCRIBER_BACKOFF_SECONDS = (1, 2, 5, 10, 30)
 
 
 def _get_redis_url() -> str | None:
     return os.environ.get("REDIS_URL")
+
+
+async def _consume() -> None:
+    """Relay Redis events to local WS clients, resubscribing for as long as the process lives.
+
+    A dropped subscription is the difference between a live UI and a silent one,
+    so it is never terminal here: any failure is logged, backed off, and retried.
+    """
+    global _subscriber_live
+    attempt = 0
+    while True:
+        sub = _redis_publisher.pubsub()
+        try:
+            await sub.subscribe(EVENTS_CHANNEL)
+            _subscriber_live = True
+            attempt = 0
+            logger.info(f"events: subscribed to Redis channel {EVENTS_CHANNEL}")
+            while True:
+                message = await sub.get_message(
+                    ignore_subscribe_messages=True, timeout=_SUBSCRIBER_POLL_SECONDS
+                )
+                if message is None:  # idle poll — no traffic, not a failure
+                    continue
+                if message.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(message["data"])
+                except Exception:
+                    continue
+                await _broadcast_event_local(payload)
+        except asyncio.CancelledError:
+            _subscriber_live = False
+            await _close_pubsub(sub)
+            raise
+        except Exception as e:
+            _subscriber_live = False
+            await _close_pubsub(sub)
+            delay = _SUBSCRIBER_BACKOFF_SECONDS[
+                min(attempt, len(_SUBSCRIBER_BACKOFF_SECONDS) - 1)
+            ]
+            attempt += 1
+            logger.warning(f"Redis subscriber dropped ({e}); resubscribing in {delay}s")
+            await asyncio.sleep(delay)
+
+
+async def _close_pubsub(sub: Any) -> None:
+    """Release a pubsub connection, ignoring whatever state it died in."""
+    try:
+        await sub.aclose()
+    except Exception:
+        pass
 
 
 async def start_event_subscriber() -> None:
@@ -51,27 +113,12 @@ async def start_event_subscriber() -> None:
         _redis_url = None
         return
 
-    async def _consume() -> None:
-        sub = _redis_publisher.pubsub()
-        await sub.subscribe(EVENTS_CHANNEL)
-        try:
-            async for message in sub.listen():
-                if message.get("type") != "message":
-                    continue
-                try:
-                    payload = json.loads(message["data"])
-                except Exception:
-                    continue
-                await _broadcast_event_local(payload)
-        except Exception as e:
-            logger.warning(f"Redis subscriber crashed: {e}")
-
     _redis_subscriber_task = asyncio.create_task(_consume())
-    logger.info(f"events: subscribed to Redis channel {EVENTS_CHANNEL}")
 
 
 async def stop_event_subscriber() -> None:
-    global _redis_publisher, _redis_subscriber_task
+    global _redis_publisher, _redis_subscriber_task, _subscriber_live
+    _subscriber_live = False
     if _redis_subscriber_task:
         _redis_subscriber_task.cancel()
         try:
@@ -152,11 +199,18 @@ async def _broadcast_event_local(event_dict: dict):
 
 
 async def _broadcast_event(event_dict: dict):
-    """Publish to Redis if configured (fans out across replicas), else local-only."""
+    """Publish to Redis if configured (fans out across replicas), else local-only.
+
+    Publishing only reaches our own WS clients by coming back through the
+    subscriber, so it replaces the local broadcast solely while that subscriber
+    is consuming. While it is down we broadcast locally instead — replicas lose
+    each other's events, but a client still sees the ones raised in its process.
+    """
     if _redis_publisher is not None:
         try:
             await _redis_publisher.publish(EVENTS_CHANNEL, json.dumps(event_dict, default=str))
-            return
+            if _subscriber_live:
+                return
         except Exception as e:
             logger.warning(f"Redis publish failed, falling back to local broadcast: {e}")
     await _broadcast_event_local(event_dict)
