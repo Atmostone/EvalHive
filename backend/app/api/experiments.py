@@ -78,6 +78,9 @@ async def _get_scoped(
 
 
 def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
+    # Retired configurations keep their entry (and their lineage) but are no
+    # longer part of the matrix, so they must not inflate the counts.
+    live_configs = [c for c in (exp.configurations or []) if not c.get("retired_at")]
     out = {
         "id": str(exp.id),
         "name": exp.name,
@@ -85,10 +88,12 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
         "status": exp.status,
         "dataset": exp.dataset,
         "n_cases": len(exp.dataset_cases or []),
-        "n_configs": len(exp.configurations or []),
+        "n_configs": len(live_configs),
+        "n_retired_configs": len(exp.configurations or []) - len(live_configs),
+        "revision": exp.revision,
         "n_runs_per_cell": exp.n_runs_per_cell,
         "total_runs": len(exp.dataset_cases or [])
-        * len(exp.configurations or [])
+        * len(live_configs)
         * exp.n_runs_per_cell,
         "budget_limit_usd": float(exp.budget_limit_usd)
         if exp.budget_limit_usd is not None
@@ -449,10 +454,14 @@ async def retry_failed_experiment(
     _role=Depends(require_role("owner", "admin")),
 ):
     """Reset cells that errored out (rate-limit / transient API / infra) back to
-    pending and re-open the experiment so the tick re-runs them in place — no
-    clone, valid cells untouched. Repeatable across provider quota windows."""
+    pending and re-run them — no clone, valid cells untouched. The superseded
+    state of each retried cell is kept in the attempt ledger. Repeatable across
+    provider quota windows. 409 unless the experiment is settled or paused."""
     exp = await _get_scoped(experiment_id, workspace, db)
-    retried = await service.retry_failed_experiment(db, exp)
+    try:
+        retried = await service.retry_failed_experiment(db, exp)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     return {**serialize(exp), "retried": retried}
 
 
@@ -470,7 +479,7 @@ async def add_config(
     try:
         result = await service.add_config_to_experiment(db, exp, body)
     except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     return {**serialize(exp), **result}
 
 
@@ -482,14 +491,14 @@ async def remove_config(
     db: AsyncSession = Depends(get_db),
     _role=Depends(require_role("owner", "admin")),
 ):
-    """Remove a configuration (e.g. a retired model) and all its runs from an
-    experiment in place — inverse of add-config. Drops it from the matrix/report
-    and clears the cached report; refuses to remove the last configuration."""
+    """Retire a configuration (e.g. a model that exhausted its quota) — inverse of
+    add-config. Its cells keep their lineage but leave the matrix and the report.
+    409 while running, on the last live configuration, or if already retired."""
     exp = await _get_scoped(experiment_id, workspace, db)
     try:
         result = await service.remove_config_from_experiment(db, exp, config_key)
     except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     return {**serialize(exp), **result}
 
 

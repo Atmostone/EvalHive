@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.experiment import (
     Experiment,
+    ExperimentAttempt,
     ExperimentRun,
     ExperimentRunStatus,
     ExperimentStatus,
@@ -664,6 +665,68 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
         await db.commit()
 
 
+async def _bump_revision(
+    db: AsyncSession, exp: Experiment, action: str, detail: dict
+) -> None:
+    """Record that the experiment's inputs changed (SPA-84).
+
+    Increments the revision, refreshes the input fingerprint, drops the cached
+    report and writes an audit event. Every mutation goes through here, which is
+    what lets a cached report be matched against the input it was built from
+    instead of being trusted because it merely exists.
+
+    Does not commit — the caller owns the transaction, so the bump and the
+    mutation it describes land together or not at all.
+    """
+    exp.revision = (exp.revision or 1) + 1
+    exp.input_fingerprint = experiment_input_fingerprint(exp)
+    exp.report = None
+    await log_event(
+        db,
+        "experiment_mutated",
+        "system",
+        {
+            "experiment_id": str(exp.id),
+            "action": action,
+            "revision": exp.revision,
+            "input_fingerprint": exp.input_fingerprint,
+            **detail,
+        },
+        workspace_id=exp.workspace_id,
+        commit=False,
+    )
+
+
+def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -> None:
+    """Copy a cell's current state into the attempt ledger before it is cleared.
+
+    Called for cells that actually ran — a never-claimed ``pending`` cell has
+    nothing worth preserving. The scores are denormalized rather than referenced
+    because the task they came from may be deleted later, and because a capped
+    run reports ``failed`` while still carrying a real evaluation: overwriting it
+    used to destroy the observation.
+    """
+    if not run.attempt_count:
+        return
+    db.add(
+        ExperimentAttempt(
+            experiment_run_id=run.id,
+            attempt_index=run.attempt_count,
+            task_id=run.task_id,
+            status=run.status,
+            cost_usd=run.cost_usd or Decimal(0),
+            weighted_score=run.weighted_score,
+            trajectory_score=run.trajectory_score,
+            duration_seconds=run.duration_seconds,
+            external_verdict=run.external_verdict,
+            launch_time=run.launch_time,
+            lane_index=run.lane_index,
+            retired_reason=reason,
+            completed_at=run.completed_at,
+        )
+    )
+
+
 async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
     """Reset failed cells back to ``pending`` and re-open the experiment so the
     tick re-runs them in place (no clone). Only cells that ERRORED OUT
@@ -672,7 +735,14 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
     finished but flunked the checker is ``status=success`` with
     ``external_verdict=False``. Idempotent and repeatable: press again to re-run
     whatever is still failed after a provider quota window resets.
+
+    The superseded state of every retried cell is written to the attempt ledger
+    first, so "re-run in place" no longer means the previous result is lost.
     """
+    if exp.status not in TERMINAL_EXPERIMENT and exp.status != ExperimentStatus.PAUSED.value:
+        raise ValueError(
+            f"cannot retry a {exp.status} experiment; pause or let it settle first"
+        )
     rows = (
         await db.execute(
             select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
@@ -685,6 +755,7 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
         # Best-effort cleanup of any lingering Toolathlon preprocess/eval containers.
         ext_eval.remove(r.preprocess_container_id)
         ext_eval.remove(r.eval_container_id)
+        _snapshot_attempt(db, r, "retry")
         r.task_id = None
         r.status = ExperimentRunStatus.PENDING.value
         r.cost_usd = Decimal(0)
@@ -700,10 +771,15 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
         r.preprocess_log = None
         r.eval_log = None
         r.completed_at = None
+        # Stale pin: the row claimed a lane it no longer holds. _first_free_lane
+        # reassigns at claim time, but until then the row misreports occupancy.
+        r.lane_index = None
         retried += 1
     if retried:
         exp.status = ExperimentStatus.RUNNING.value
         exp.completed_at = None
+        exp.error = None
+        await _bump_revision(db, exp, "retry_failed", {"cells_retried": retried})
     await db.commit()
     return retried
 
@@ -721,12 +797,18 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     errs = _config_errors(canon)
     if errs:
         raise ValueError("; ".join(errs))
+    # create_experiment validates these; the add path used to skip it, so a
+    # config could name a template or model that does not exist in the workspace.
+    await _validate_config_refs(db, exp.workspace_id, [canon])
     fp = _config_fingerprint(canon)
     existing = list(exp.configurations or [])
-    if any(c.get("fingerprint") == fp for c in existing):
+    live = [c for c in existing if not c.get("retired_at")]
+    if any(c.get("fingerprint") == fp for c in live):
         raise ValueError("a configuration with these settings already exists in this experiment")
-    if len(existing) >= MAX_CONFIGS:
-        raise ValueError(f"too many configurations: {len(existing)} >= {MAX_CONFIGS}")
+    if len(live) >= MAX_CONFIGS:
+        raise ValueError(f"too many configurations: {len(live)} >= {MAX_CONFIGS}")
+    # Count retired configs too: a key must never be reused, or the attempt
+    # ledger and the audit trail would silently merge two different conditions.
     nums = [
         int(str(c.get("config_key", "")).split("-")[1])
         for c in existing
@@ -755,6 +837,10 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     if exp.status in TERMINAL_EXPERIMENT:
         exp.status = ExperimentStatus.RUNNING.value
         exp.completed_at = None
+        exp.error = None
+    await _bump_revision(
+        db, exp, "add_config", {"config_key": cfg["config_key"], "runs_created": created}
+    )
     await db.commit()
     return {"config_key": cfg["config_key"], "label": cfg["label"], "runs_created": created}
 
@@ -762,21 +848,27 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
 async def remove_config_from_experiment(
     db: AsyncSession, exp: Experiment, config_key: str
 ) -> dict:
-    """Remove a configuration and ALL its runs from an experiment in place — the
-    inverse of :func:`add_config_to_experiment`. Drops the config from
-    ``configurations`` and (best effort, matched by re-fingerprint) from
-    ``matrix_spec``, deletes its ExperimentRun rows, tears down any in-flight
-    preprocess/eval/agent containers, and clears the cached report so it
-    re-assembles without the config. Use to retire a model (e.g. one that
-    exhausted its quota) without cloning the experiment. Refuses to remove the
-    last remaining configuration — delete the experiment instead.
+    """Retire a configuration — the inverse of :func:`add_config_to_experiment`.
+
+    Stamps ``retired_at`` on the config entry and on its ExperimentRun rows,
+    tears down any in-flight preprocess/eval/agent containers, and bumps the
+    revision so the report re-assembles without it. The lineage is deliberately
+    **kept**: this used to hard-delete the rows, which is how an experiment ended
+    up with more ``exp:<id>``-tagged tasks than it had runs, and left no way to
+    tell what had been measured before. Refuses to retire the last live
+    configuration — delete the experiment instead.
     """
+    if exp.status == ExperimentStatus.RUNNING.value:
+        raise ValueError("pause or cancel the experiment before retiring a configuration")
     existing = list(exp.configurations or [])
     target = next((c for c in existing if c.get("config_key") == config_key), None)
     if target is None:
         raise ValueError(f"no configuration '{config_key}' in this experiment")
-    if len(existing) <= 1:
-        raise ValueError("cannot remove the only configuration; delete the experiment instead")
+    if target.get("retired_at"):
+        raise ValueError(f"configuration '{config_key}' is already retired")
+    live = [c for c in existing if not c.get("retired_at")]
+    if len(live) <= 1:
+        raise ValueError("cannot retire the only configuration; delete the experiment instead")
 
     rows = (
         await db.execute(
@@ -795,17 +887,26 @@ async def remove_config_from_experiment(
         )
         and r.task_id
     ]
+    retired_at = datetime.utcnow()
     for r in rows:
         # Best-effort teardown of any Toolathlon preprocess/eval containers.
         ext_eval.remove(r.preprocess_container_id)
         ext_eval.remove(r.eval_container_id)
-        await db.delete(r)
+        _snapshot_attempt(db, r, "config_retired")
+        r.retired_at = retired_at
     removed = len(rows)
 
-    # Drop from the expanded list (reassign so the JSONB column is marked dirty).
-    exp.configurations = [c for c in existing if c.get("config_key") != config_key]
-    # Drop the matching raw spec entry too. matrix_spec carries the un-keyed user
-    # inputs, so match by re-canonicalized fingerprint; axes / other configs stay.
+    # Stamp the expanded entry rather than dropping it (reassign so the JSONB
+    # column is marked dirty). The key stays taken, so it can never be reused.
+    exp.configurations = [
+        {**c, "retired_at": retired_at.isoformat()}
+        if c.get("config_key") == config_key
+        else c
+        for c in existing
+    ]
+    # Drop the matching raw spec entry. matrix_spec carries the un-keyed user
+    # inputs and drives clone fidelity, so a retired config should not come back
+    # on clone; match by re-canonicalized fingerprint, axes / other configs stay.
     ms = dict(exp.matrix_spec or {})
     fp = target.get("fingerprint")
     kept, dropped_spec = [], False
@@ -818,8 +919,9 @@ async def remove_config_from_experiment(
         kept.append(raw)
     ms["configurations"] = kept
     exp.matrix_spec = ms
-    # Force the report to re-assemble without this config on next fetch.
-    exp.report = None
+    await _bump_revision(
+        db, exp, "retire_config", {"config_key": config_key, "runs_retired": removed}
+    )
     await db.commit()
 
     if inflight_task_ids:
@@ -839,7 +941,7 @@ async def remove_config_from_experiment(
                     logger.warning(f"remove config: kill failed for {t.id}: {e}")
         await db.commit()
 
-    return {"config_key": config_key, "label": target.get("label"), "runs_removed": removed}
+    return {"config_key": config_key, "label": target.get("label"), "runs_retired": removed}
 
 
 def child_run_config(
@@ -1424,7 +1526,12 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
     rows = (
         await db.execute(
             select(ExperimentRun)
-            .where(ExperimentRun.experiment_id == exp.id)
+            .where(
+                ExperimentRun.experiment_id == exp.id,
+                # Cells of a retired configuration keep their lineage but must
+                # not be claimed, settled or counted towards finalization.
+                ExperimentRun.retired_at.is_(None),
+            )
             .order_by(
                 ExperimentRun.config_key,
                 ExperimentRun.case_key,
@@ -1588,6 +1695,9 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
                 child = await _make_child(db, exp, r, cfg, case)
                 r.task_id = child.id
                 r.status = ExperimentRunStatus.RUNNING.value
+            # This execution is attempt N of the cell; a retry snapshots the
+            # state under this number before clearing it (SPA-84).
+            r.attempt_count = (r.attempt_count or 0) + 1
             claimed += 1
         await db.commit()
         if claimed:
