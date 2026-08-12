@@ -108,6 +108,39 @@ def _config_fingerprint(cfg: dict) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def experiment_input_fingerprint(exp: Experiment) -> str:
+    """Canonical-JSON fingerprint over everything a report is computed from (SPA-84).
+
+    Deliberately covers the *inputs* only — configurations, the frozen case
+    keys, repetitions and evaluation settings — not the results. Results change
+    as an experiment runs, and a report of a running experiment is never cached;
+    what must never change silently is the shape of the thing being measured.
+
+    Retired configurations are included with their ``retired_at`` stamp, so
+    retiring one changes the fingerprint even though the entry is kept.
+    """
+    configs = [
+        {
+            "config_key": c.get("config_key"),
+            "fingerprint": c.get("fingerprint"),
+            "retired_at": c.get("retired_at"),
+        }
+        for c in sorted(
+            exp.configurations or [], key=lambda c: str(c.get("config_key") or "")
+        )
+    ]
+    canon = {
+        "configurations": configs,
+        "case_keys": sorted(
+            str(c.get("case_key")) for c in (exp.dataset_cases or []) if c.get("case_key")
+        ),
+        "n_runs_per_cell": exp.n_runs_per_cell,
+        "eval_config": exp.eval_config or {},
+    }
+    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def _config_label(cfg: dict) -> str:
     """Compact human label for an unlabeled configuration."""
     parts = []

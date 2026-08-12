@@ -121,6 +121,19 @@ class Experiment(Base):
     report: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # --- SPA-84 immutability -----------------------------------------------------
+    # Bumped by every mutation (retry / add-config / retire-config). A cached
+    # report records the revision it was computed from, which turns "is this
+    # report stale?" from a guess into an equality check.
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    # Hash over the inputs a report depends on (configurations, case keys,
+    # n_runs_per_cell, eval_config). Catches input that changed without going
+    # through a mutation — a hand-edited row, a restored dump — where the
+    # revision counter cannot.
+    input_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     created_by: Mapped[str] = mapped_column(
         String(255), default="user", server_default="user"
     )
@@ -206,6 +219,71 @@ class ExperimentRun(Base):
     # ``toolathlon_pg_lane_<lane_index>``. None for plain runs and once settled (the
     # lane is freed for the next claim).
     lane_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # --- SPA-84 immutability -----------------------------------------------------
+    # Executions this cell has had, the current one included. 0 = never claimed.
+    # The row itself holds attempt number ``attempt_count``; the ones it
+    # superseded live in ``experiment_attempts``.
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Set when this cell's configuration is retired. Row and lineage are kept;
+    # the default report selection skips it.
+    retired_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+
+
+class ExperimentAttempt(Base):
+    """One superseded execution of a matrix cell (SPA-84).
+
+    ``ExperimentRun`` carries the *current* state of a cell. Before a retry
+    clears that row, its state is copied here, so a cell that took three tries
+    yields three addressable observations instead of one survivor. This matters
+    beyond bookkeeping: a run that hit the iteration cap reports ``failed`` yet
+    still carries a real evaluation, and retrying used to destroy it.
+
+    Scores are denormalized for the same reason they are on ``ExperimentRun`` —
+    they must outlive the task they came from.
+    """
+
+    __tablename__ = "experiment_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_run_id", "attempt_index", name="uq_experiment_attempts_cell"
+        ),
+        Index("idx_experiment_attempts_run", "experiment_run_id"),
+        Index("idx_experiment_attempts_task", "task_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    experiment_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("experiment_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # 1-based, in execution order.
+    attempt_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    cost_usd: Mapped[Decimal] = mapped_column(
+        Numeric(10, 6), default=Decimal("0"), server_default="0"
+    )
+    weighted_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    trajectory_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    external_verdict: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    launch_time: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    lane_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Why this attempt stopped being current: 'retry' | 'config_retired'.
+    retired_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
