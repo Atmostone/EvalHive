@@ -123,6 +123,21 @@ def _container_in_workspace(container, workspace_id: str | None) -> bool:
     return container.labels.get(f"{LABEL_PREFIX}.workspace_id") == str(workspace_id)
 
 
+def container_image_id(container_id: str) -> str | None:
+    """The resolved image id a running container was started from (SPA-84).
+
+    Reads the container rather than the tag: ``spawnhive-agent:latest`` is a
+    moving target, and a rebuild under the same tag is exactly the confounder
+    this is meant to catch. Best-effort — None means "could not tell", never
+    "unchanged".
+    """
+    try:
+        return get_docker_client().containers.get(container_id).attrs.get("Image")
+    except Exception as e:
+        logger.warning(f"docker: image id unavailable for {container_id[:12]}: {e}")
+        return None
+
+
 def kill_agent(container_id: str, workspace_id: str | None = None) -> bool:
     """Kill a specific agent container. If workspace_id is set, only kill if container is in it."""
     client = get_docker_client()

@@ -1360,14 +1360,25 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     if not pinned:
         return []
 
-    # What the cells of each config ACTUALLY ran under, recorded at claim time.
-    # This is the authoritative half: the pin describes intent at start, while
-    # the engine re-resolves the template and the model at every spawn.
-    # Current cells, plus the ledger: a cell retried under a changed template
+    # What the runs ACTUALLY executed under, recorded at spawn. This is the
+    # authoritative half: the pin describes intent at start, while the engine
+    # re-resolves the template, the model and the tool set at every spawn.
+    # Current cells plus the ledger — a cell retried under a changed template
     # holds only the newer condition, so the earlier attempt is the evidence.
+    #
+    # Grouped by (config_key, case_key), NOT by config alone: the resolved MCP
+    # server set is derived from the CASE, so one unchanged configuration
+    # legitimately runs different tool sets across cases. Comparing those would
+    # declare every Toolathlon experiment split. What must hold is narrower and
+    # actually meaningful: the same configuration on the same case is the same
+    # condition, however many runs and retries it took.
     rows = (
         await db.execute(
-            select(ExperimentRun.config_key, ExperimentRun.condition_fingerprint).where(
+            select(
+                ExperimentRun.config_key,
+                ExperimentRun.case_key,
+                ExperimentRun.condition_fingerprint,
+            ).where(
                 ExperimentRun.experiment_id == exp.id,
                 LIVE_CELL,
                 ExperimentRun.condition_fingerprint.isnot(None),
@@ -1376,7 +1387,11 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     ).all()
     attempt_rows = (
         await db.execute(
-            select(ExperimentRun.config_key, ExperimentAttempt.condition_fingerprint)
+            select(
+                ExperimentRun.config_key,
+                ExperimentRun.case_key,
+                ExperimentAttempt.condition_fingerprint,
+            )
             .join(ExperimentAttempt, ExperimentAttempt.experiment_run_id == ExperimentRun.id)
             .where(
                 ExperimentRun.experiment_id == exp.id,
@@ -1385,9 +1400,14 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
             )
         )
     ).all()
-    run_conditions: dict[str, set[str]] = {}
-    for config_key, fingerprint in [*rows, *attempt_rows]:
-        run_conditions.setdefault(config_key, set()).add(fingerprint)
+    per_cell: dict[tuple[str, str], set[str]] = {}
+    for config_key, case_key, fingerprint in [*rows, *attempt_rows]:
+        per_cell.setdefault((config_key, case_key), set()).add(fingerprint)
+    # A config is split when any one of its cases ran under more than one thing.
+    split_cases: dict[str, dict[str, list[str]]] = {}
+    for (config_key, case_key), fingerprints in per_cell.items():
+        if len(fingerprints) > 1:
+            split_cases.setdefault(config_key, {})[case_key] = sorted(fingerprints)
 
     images = _agent_image_ids()
     out: list[dict] = []
@@ -1414,12 +1434,11 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
                     "pinned": image_id,
                     "current": now_images[name],
                 }
-        # The stronger signal: not "the pin is out of date" but "these cells did
-        # not all run under the same thing". The pin is compared against NOW, so
-        # it misses an edit that was reverted before the report and cannot say
-        # which runs were affected. The per-run fingerprints can.
-        conditions = sorted(run_conditions.get(cfg.get("config_key")) or set())
-        split = len(conditions) > 1
+        # The stronger signal: not "the pin is out of date" but "runs of the same
+        # cell did not all execute under the same thing". The pin is compared
+        # against NOW, so it misses an edit reverted before the report and cannot
+        # say which runs were affected. The per-run fingerprints can.
+        split = split_cases.get(cfg.get("config_key")) or {}
         if changed or split:
             entry = {
                 "config_key": cfg.get("config_key"),
@@ -1428,7 +1447,7 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
                 "changed": changed,
             }
             if split:
-                entry["run_conditions"] = conditions
+                entry["split_cases"] = split
             out.append(entry)
     return out
 

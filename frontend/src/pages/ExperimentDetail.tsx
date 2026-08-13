@@ -687,11 +687,14 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
             {report.config_drift.map((d) => (
               <li key={d.config_key} className="text-xs text-amber-900">
                 <span className="font-medium">{d.label || d.config_key}</span>
-                {/* The stronger signal: the cells of this config did not all run
-                    under the same thing, whatever the pin says now. */}
-                {d.run_conditions && d.run_conditions.length > 1 && (
+                {/* The stronger signal: runs of the SAME cell did not all execute
+                    under the same thing, whatever the pin says now. Reported per
+                    case — the resolved tool set legitimately differs between cases. */}
+                {d.split_cases && Object.keys(d.split_cases).length > 0 && (
                   <span className="ml-1 font-medium text-red-700">
-                    — its runs split across {d.run_conditions.length} different conditions
+                    — {Object.keys(d.split_cases).length} case(s) ran under more than one
+                    condition ({Object.keys(d.split_cases).slice(0, 3).join(', ')}
+                    {Object.keys(d.split_cases).length > 3 ? ', …' : ''})
                   </span>
                 )}
                 {Object.keys(d.changed).length > 0 && (

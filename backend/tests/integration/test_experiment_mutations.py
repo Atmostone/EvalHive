@@ -739,10 +739,42 @@ async def test_cells_that_ran_under_different_conditions_are_reported(auth_clien
     rows[1].condition_fingerprint = "cond-after"
     await db_session.commit()
 
-    split = [d for d in await config_drift(db_session, exp) if d.get("run_conditions")]
+    split = [d for d in await config_drift(db_session, exp) if d.get("split_cases")]
     assert [d["config_key"] for d in split] == ["cfg-01"]
-    assert split[0]["run_conditions"] == ["cond-after", "cond-before"]
+    assert split[0]["split_cases"] == {"upload-001": ["cond-after", "cond-before"]}
     assert split[0]["changed"] == {}, "the pin still matches — only the runs disagree"
+
+
+@pytest.mark.asyncio
+async def test_different_cases_are_not_a_split(auth_client, db_session):
+    """The Toolathlon shape: the resolved MCP set comes from the CASE, so one
+    unchanged configuration legitimately differs across cases. Comparing those
+    would flag every such experiment."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name=f"T-{uuid.uuid4().hex[:6]}")
+    exp = await create_experiment(
+        db_session,
+        workspace_id=workspace_id,
+        payload=_payload(
+            tpl.id,
+            dataset={
+                "source": "upload",
+                "cases": [
+                    {"task_input": {"title": "Case A"}, "case_id": "case-a"},
+                    {"task_input": {"title": "Case B"}, "case_id": "case-b"},
+                ],
+            },
+        ),
+    )
+    await start_experiment(db_session, exp)
+    await _drain(db_session, exp)
+
+    for r in await _runs(db_session, exp):
+        # Same config, different case → different tool set → different hash.
+        r.condition_fingerprint = f"cond-{r.case_key}"
+    await db_session.commit()
+
+    assert [d for d in await config_drift(db_session, exp) if d.get("split_cases")] == []
 
 
 @pytest.mark.asyncio
@@ -763,9 +795,9 @@ async def test_a_condition_change_across_retries_survives_in_the_ledger(auth_cli
     row.condition_fingerprint = "cond-second"
     await db_session.commit()
 
-    split = [d for d in await config_drift(db_session, exp) if d.get("run_conditions")]
+    split = [d for d in await config_drift(db_session, exp) if d.get("split_cases")]
     assert split and split[0]["config_key"] == "cfg-01"
-    assert split[0]["run_conditions"] == ["cond-first", "cond-second"]
+    assert split[0]["split_cases"] == {"upload-001": ["cond-first", "cond-second"]}
 
 
 @pytest.mark.asyncio

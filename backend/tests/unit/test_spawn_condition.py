@@ -59,9 +59,21 @@ def test_the_resolved_tool_set_changes_the_condition():
     assert _fp(mcp_servers=[]) != _fp()
 
 
-def test_the_agent_image_changes_the_condition():
-    """Rebuilding the agent image has moved measured pass rates before."""
-    assert _fp(image="spawnhive-agent-toolathlon:latest") != _fp()
+def test_a_rebuilt_image_under_the_same_tag_changes_the_condition():
+    """The point of hashing the resolved id rather than the tag: rebuilding
+    spawnhive-agent:latest has moved measured pass rates in this project, and the
+    tag says nothing about it. Note spec.image is None on the default path."""
+    before = spawn_condition_fingerprint(_spec(), MODEL, "sha256:aaa")
+    after = spawn_condition_fingerprint(_spec(), MODEL, "sha256:bbb")
+    assert before != after
+    assert spawn_condition_fingerprint(_spec(), MODEL, "sha256:aaa") == before
+
+
+def test_an_unknown_image_id_is_not_treated_as_unchanged():
+    """A runtime that cannot answer reports None — missing evidence must not
+    collide with a real id."""
+    unknown = spawn_condition_fingerprint(_spec(), MODEL, None)
+    assert unknown != spawn_condition_fingerprint(_spec(), MODEL, "sha256:aaa")
 
 
 def test_resource_limits_change_the_condition():

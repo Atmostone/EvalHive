@@ -98,7 +98,7 @@ def _spawn_snapshot(
     }
 
 
-def spawn_condition_fingerprint(spec, model_api_name: str) -> str:
+def spawn_condition_fingerprint(spec, model_api_name: str, image_id: str | None = None) -> str:
     """Hash of everything that decides how this run behaves (SPA-84).
 
     Taken from the assembled ``AgentSpec`` immediately before the spawn, which is
@@ -121,7 +121,12 @@ def spawn_condition_fingerprint(spec, model_api_name: str) -> str:
         "mcp_servers": sorted(
             str(m.get("name") if isinstance(m, dict) else m) for m in (spec.mcp_servers or [])
         ),
-        "image": spec.image,
+        # The resolved image id of the container that was actually started, not
+        # the tag: ``spec.image`` is None on the default path and a tag is a
+        # moving target, so a rebuild under the same name would be invisible.
+        # None (runtime could not tell) is recorded as such — missing evidence,
+        # not evidence of sameness — so it never masquerades as "unchanged".
+        "image_id": image_id,
         "resource_limits": spec.resource_limits or {},
     }
     blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
@@ -306,7 +311,11 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         # Record what this run ACTUALLY ran under, from the spec that was just
         # spawned — not from a re-resolution elsewhere (SPA-84).
         await _record_run_condition(
-            db, task, spawn_condition_fingerprint(spec, agent_llm.model.api_name)
+            db,
+            task,
+            spawn_condition_fingerprint(
+                spec, agent_llm.model.api_name, runtime.image_id(container_id)
+            ),
         )
         task.agent_container_id = container_id
         task.model_used = agent_llm.model.api_name
