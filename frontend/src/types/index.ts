@@ -1505,6 +1505,11 @@ export interface ConfigDrift {
   label?: string
   resolved_at?: string
   changed: Record<string, { pinned: string | null; current: string | null }>
+  /** Distinct conditions this config's cells actually ran under, recorded per run
+   *  at claim time. More than one means the config_key covers two different
+   *  conditions — the stronger signal, since `changed` compares the pin against
+   *  now and misses an edit that was reverted before the report. */
+  run_conditions?: string[]
 }
 
 export interface ExperimentReport {

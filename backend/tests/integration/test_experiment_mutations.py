@@ -652,6 +652,88 @@ async def test_an_execution_survives_retry_then_retire_in_all_attempts(auth_clie
 
 
 @pytest.mark.asyncio
+async def test_each_run_records_what_it_actually_ran_under(auth_client, db_session):
+    """The config-level pin describes intent at start; the engine re-resolves the
+    template and the model at every spawn, so only the per-run record is proof."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+
+    rows = await _runs(db_session, exp)
+    assert all(r.condition_fingerprint for r in rows), "every claimed cell records its condition"
+    per_config = {}
+    for r in rows:
+        per_config.setdefault(r.config_key, set()).add(r.condition_fingerprint)
+    assert all(len(v) == 1 for v in per_config.values()), "one config_key, one condition"
+
+
+@pytest.mark.asyncio
+async def test_a_template_edited_mid_experiment_splits_the_config(auth_client, db_session):
+    """The finding this closes: a config_key could quietly cover two conditions,
+    and comparing the pin against 'now' misses it if the edit is reverted."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name=f"T-{uuid.uuid4().hex[:6]}")
+    exp = await create_experiment(
+        db_session,
+        workspace_id=workspace_id,
+        payload=_payload(tpl.id, n_runs_per_cell=2, max_parallel=1),
+    )
+    await start_experiment(db_session, exp)
+
+    # One run claimed, then the template changes, then the rest run.
+    await advance_experiment(db_session, exp)
+    original = tpl.soul_md
+    tpl.soul_md = "# edited between two runs of the same configuration"
+    await db_session.commit()
+    await _drain(db_session, exp)
+
+    # Reverted before the report — the pin-vs-now comparison now sees nothing.
+    tpl.soul_md = original
+    await db_session.commit()
+    await db_session.refresh(exp)
+
+    drift = await config_drift(db_session, exp)
+    split = [d for d in drift if d.get("run_conditions")]
+    assert split, "cells that ran under different conditions must still be reported"
+    assert len(split[0]["run_conditions"]) == 2
+    assert split[0]["changed"] == {}, "the pin itself matches again — only the runs disagree"
+
+
+@pytest.mark.asyncio
+async def test_retiring_recomputes_cost_and_status(auth_client, db_session):
+    """Every other view moved to the live population; the experiment's own totals
+    are rolled up by the tick, which never runs again once settled."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    assert exp.accumulated_cost_usd == Decimal("0.02")  # 2 cells × 0.01
+
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    assert exp.accumulated_cost_usd == Decimal("0.01"), (
+        "the retired config's spend must leave the total with its runs"
+    )
+    assert exp.status == ExperimentStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_retiring_the_only_failing_config_clears_the_failure(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+    assert exp.status == ExperimentStatus.FAILED.value
+
+    # Make cfg-01 a success so only cfg-02 keeps the experiment failed.
+    row = next(r for r in await _runs(db_session, exp) if r.config_key == "cfg-01")
+    row.status = ExperimentRunStatus.SUCCESS.value
+    await db_session.commit()
+
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    assert exp.status == ExperimentStatus.COMPLETED.value
+    assert exp.error is None
+
+
+@pytest.mark.asyncio
 async def test_unknown_selection_policy_is_rejected(auth_client, db_session):
     workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     exp, _ = await _settled_experiment(db_session, workspace_id)

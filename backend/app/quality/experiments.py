@@ -780,6 +780,24 @@ def _agent_image_ids() -> dict:
     return out
 
 
+def _condition_fingerprint(resolved: dict, agent_image: str) -> str:
+    """Hash of what a run actually executes under (SPA-84).
+
+    Only the parts that change behaviour, and only the ONE agent image this run
+    will use — including both would flag a rebuild of the image the run never
+    touched. Compared across the cells of a config to prove they all ran under
+    the same condition; the config-level pin cannot, because the runtime
+    re-resolves the template and the model at spawn.
+    """
+    canon = {
+        "model_api_name": resolved.get("model_api_name"),
+        "template_content_sha256": resolved.get("template_content_sha256"),
+        "agent_image": (resolved.get("agent_images") or {}).get(agent_image),
+    }
+    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
 async def _resolve_config_state(db: AsyncSession, cfg: dict, images: dict) -> dict:
     """Freeze what a configuration actually resolves to right now (SPA-84).
 
@@ -841,6 +859,19 @@ async def _retire_task_tag(db: AsyncSession, task_id: Optional[uuid.UUID]) -> No
     ).scalars().all():
         if rec.benchmark_suite and not rec.benchmark_suite.endswith(RETIRED_SUITE_SUFFIX):
             rec.benchmark_suite = f"{rec.benchmark_suite}{RETIRED_SUITE_SUFFIX}"
+
+
+async def _lock_experiment(db: AsyncSession, exp: Experiment) -> None:
+    """Serialize mutations of one experiment (SPA-84).
+
+    All three mutations read ``configurations``, derive the next state from it
+    and bump ``revision``. Without a lock two concurrent calls both read the old
+    list, both append, and the second write wins — losing a configuration while
+    its cells are already materialized, or advancing the revision once for two
+    changes. Taken before anything is read, released by the caller's commit.
+    """
+    await db.execute(select(Experiment.id).where(Experiment.id == exp.id).with_for_update())
+    await db.refresh(exp)
 
 
 async def _bump_revision(
@@ -934,6 +965,7 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
     The superseded state of every retried cell is written to the attempt ledger
     first, so "re-run in place" no longer means the previous result is lost.
     """
+    await _lock_experiment(db, exp)
     if exp.status not in TERMINAL_EXPERIMENT and exp.status != ExperimentStatus.PAUSED.value:
         raise ValueError(
             f"cannot retry a {exp.status} experiment; pause or let it settle first"
@@ -994,6 +1026,7 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     re-opening the experiment so the tick runs them. Lets you add a model in
     place instead of starting a fresh experiment. Frozen dataset is reused as-is.
     """
+    await _lock_experiment(db, exp)
     if exp.status == ExperimentStatus.DRAFT.value:
         raise ValueError("add the configuration at creation, or run the experiment first")
     canon = {k: cfg_input.get(k) for k in CONFIG_AXES if cfg_input.get(k) is not None}
@@ -1052,6 +1085,40 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     return {"config_key": cfg["config_key"], "label": cfg["label"], "runs_created": created}
 
 
+async def _resettle_after_retirement(db: AsyncSession, exp: Experiment) -> None:
+    """Bring the experiment's own totals back onto the live population (SPA-84).
+
+    Cost and terminal status are rolled up by the tick, which returns early
+    unless the experiment is running — so retiring a configuration on a settled
+    experiment left ``accumulated_cost_usd`` carrying the retired config's spend
+    and the status reflecting runs that are no longer counted. Every other view
+    had already moved to the live population, which is exactly the split this
+    change exists to close.
+    """
+    rows = (
+        await db.execute(
+            select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id, LIVE_CELL)
+        )
+    ).scalars().all()
+    exp.accumulated_cost_usd = sum((Decimal(r.cost_usd or 0) for r in rows), Decimal("0"))
+
+    # Only re-derive a terminal verdict; a paused experiment keeps its status,
+    # and the tick owns the running one.
+    if exp.status not in TERMINAL_EXPERIMENT or any(
+        r.status in _INFLIGHT_RUN or r.status == ExperimentRunStatus.PENDING.value
+        for r in rows
+    ):
+        return
+    if any(r.status == ExperimentRunStatus.SKIPPED.value for r in rows):
+        exp.status = ExperimentStatus.CAPPED.value
+    elif any(r.status == ExperimentRunStatus.SUCCESS.value for r in rows):
+        exp.status = ExperimentStatus.COMPLETED.value
+        exp.error = None
+    elif rows:
+        exp.status = ExperimentStatus.FAILED.value
+        exp.error = "no run succeeded"
+
+
 async def remove_config_from_experiment(
     db: AsyncSession, exp: Experiment, config_key: str
 ) -> dict:
@@ -1065,6 +1132,7 @@ async def remove_config_from_experiment(
     tell what had been measured before. Refuses to retire the last live
     configuration — delete the experiment instead.
     """
+    await _lock_experiment(db, exp)
     if exp.status == ExperimentStatus.RUNNING.value:
         raise ValueError("pause or cancel the experiment before retiring a configuration")
     existing = list(exp.configurations or [])
@@ -1133,6 +1201,7 @@ async def remove_config_from_experiment(
         kept.append(raw)
     ms["configurations"] = kept
     exp.matrix_spec = ms
+    await _resettle_after_retirement(db, exp)
     await _bump_revision(
         db, exp, "retire_config", {"config_key": config_key, "runs_retired": removed}
     )
@@ -1912,6 +1981,14 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
             # This execution is attempt N of the cell; a retry snapshots the
             # state under this number before clearing it (SPA-84).
             r.attempt_count = (r.attempt_count or 0) + 1
+            # Record what this run actually resolves to, now. The engine reads
+            # the template's prompt and the effective model live at spawn, so a
+            # template edited mid-experiment silently changes later runs of the
+            # same config_key — this is the only point where that is visible.
+            r.condition_fingerprint = _condition_fingerprint(
+                await _resolve_config_state(db, cfg, _agent_image_ids()),
+                TOOLATHLON_AGENT_IMAGE if _external_eval(case) else DEFAULT_AGENT_IMAGE,
+            )
             claimed += 1
         await db.commit()
         if claimed:

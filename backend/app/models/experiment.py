@@ -230,6 +230,14 @@ class ExperimentRun(Base):
     # Set when this cell's configuration is retired. Row and lineage are kept;
     # the default report selection skips it.
     retired_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # What this run ACTUALLY ran under, resolved at claim time: the effective
+    # model's api_name, the template's content hash and the agent image it will
+    # use. The config-level pin records the intent at start; the runtime
+    # re-resolves at spawn, so only this can prove that every cell of a
+    # config_key ran under one condition. NULL = never claimed.
+    condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)

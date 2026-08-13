@@ -1359,6 +1359,23 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     pinned = [c for c in live_configs(exp) if c.get("resolved")]
     if not pinned:
         return []
+
+    # What the cells of each config ACTUALLY ran under, recorded at claim time.
+    # This is the authoritative half: the pin describes intent at start, while
+    # the engine re-resolves the template and the model at every spawn.
+    rows = (
+        await db.execute(
+            select(ExperimentRun.config_key, ExperimentRun.condition_fingerprint).where(
+                ExperimentRun.experiment_id == exp.id,
+                LIVE_CELL,
+                ExperimentRun.condition_fingerprint.isnot(None),
+            )
+        )
+    ).all()
+    run_conditions: dict[str, set[str]] = {}
+    for config_key, fingerprint in rows:
+        run_conditions.setdefault(config_key, set()).add(fingerprint)
+
     images = _agent_image_ids()
     out: list[dict] = []
     for cfg in pinned:
@@ -1384,15 +1401,22 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
                     "pinned": image_id,
                     "current": now_images[name],
                 }
-        if changed:
-            out.append(
-                {
-                    "config_key": cfg.get("config_key"),
-                    "label": cfg.get("label"),
-                    "resolved_at": was.get("resolved_at"),
-                    "changed": changed,
-                }
-            )
+        # The stronger signal: not "the pin is out of date" but "these cells did
+        # not all run under the same thing". The pin is compared against NOW, so
+        # it misses an edit that was reverted before the report and cannot say
+        # which runs were affected. The per-run fingerprints can.
+        conditions = sorted(run_conditions.get(cfg.get("config_key")) or set())
+        split = len(conditions) > 1
+        if changed or split:
+            entry = {
+                "config_key": cfg.get("config_key"),
+                "label": cfg.get("label"),
+                "resolved_at": was.get("resolved_at"),
+                "changed": changed,
+            }
+            if split:
+                entry["run_conditions"] = conditions
+            out.append(entry)
     return out
 
 

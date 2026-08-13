@@ -687,14 +687,26 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
             {report.config_drift.map((d) => (
               <li key={d.config_key} className="text-xs text-amber-900">
                 <span className="font-medium">{d.label || d.config_key}</span>
-                {' — '}
-                {Object.entries(d.changed).map(([field, v], i, arr) => (
-                  <span key={field}>
-                    {field}: <code className="text-amber-700">{String(v.pinned ?? '—')}</code> →{' '}
-                    <code className="text-amber-700">{String(v.current ?? '—')}</code>
-                    {i < arr.length - 1 ? '; ' : ''}
+                {/* The stronger signal: the cells of this config did not all run
+                    under the same thing, whatever the pin says now. */}
+                {d.run_conditions && d.run_conditions.length > 1 && (
+                  <span className="ml-1 font-medium text-red-700">
+                    — its runs split across {d.run_conditions.length} different conditions
                   </span>
-                ))}
+                )}
+                {Object.keys(d.changed).length > 0 && (
+                  <>
+                    {' — '}
+                    {Object.entries(d.changed).map(([field, v], i, arr) => (
+                      <span key={field}>
+                        {field}:{' '}
+                        <code className="text-amber-700 break-all">{String(v.pinned ?? '—').slice(0, 20)}</code> →{' '}
+                        <code className="text-amber-700 break-all">{String(v.current ?? '—').slice(0, 20)}</code>
+                        {i < arr.length - 1 ? '; ' : ''}
+                      </span>
+                    ))}
+                  </>
+                )}
                 {d.resolved_at && (
                   <span className="text-amber-600"> (pinned {new Date(d.resolved_at).toLocaleString()})</span>
                 )}
