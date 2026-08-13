@@ -908,8 +908,31 @@ help" as one operation.
   `min(max_parallel, max_concurrent_agents)`, enforces `budget_limit_usd`
   (hit → remaining cells `skipped`, status `capped`, partial results kept) and
   finalizes. Pause/resume/cancel are status flips the tick respects.
+- **Immutability and lineage (SPA-84).** An experiment id denotes a fixed
+  statistical object. `experiments.revision` is bumped by every mutation —
+  retry, add-config, retire-config — each of which also refreshes
+  `input_fingerprint` (a hash of configurations, case keys, repetitions and
+  eval settings), drops the cached report and logs an `experiment_mutated`
+  event. `ExperimentRun` stays the **current** state of a cell
+  `(config_key, case_key, run_index)`; superseded executions are copied to the
+  append-only **`experiment_attempts`** ledger before the cell is cleared, so a
+  retry no longer destroys what it overwrote — which matters because a run that
+  hits the iteration cap reports `failed` while still carrying a real
+  evaluation. Retiring a configuration stamps `retired_at` on the entry and its
+  cells rather than deleting them, and re-tags their tasks to
+  `exp:<id>:retired` so tag-based aggregation matches the run-row-based report
+  by construction. `select_runs(selection=latest_valid|all_attempts|
+  first_attempt)` is the single place that decides which executions a reader
+  counts. Each configuration also records what it **resolved** to at start —
+  model `api_name` (config's, else the template's, mirroring the engine),
+  a template content hash, both agent image ids — and `report.config_drift`
+  reports when that stops being true, because the fingerprint covers ids and
+  cannot see a template edited mid-flight.
 - **Report** (`app/quality/experiment_report.py`, cached on the experiment
-  once terminal): per-config summary, heatmap (configs × rubric dimensions),
+  once terminal **and only while `input_revision` + `input_fingerprint` still
+  match it** — the cache used to be served on schema version alone, so a
+  mutated experiment kept returning its pre-mutation numbers): per-config
+  summary, heatmap (configs × rubric dimensions),
   Pareto frontier (quality ↑ × cost ↓ × time ↓), outcome × trajectory scatter,
   pairwise leaderboard (pointwise scores case-paired via E-19 `build_matches`
   + `rank`, Bradley-Terry/Elo + bootstrap CI), statistical significance per
