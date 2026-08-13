@@ -38,6 +38,7 @@ from app.quality.experiment_report import (
     SCHEMA_VERSION as REPORT_SCHEMA_VERSION,
     SELECTION_LATEST_VALID as REPORT_SELECTION_DEFAULT,
     compute_report,
+    config_drift,
 )
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -556,7 +557,12 @@ async def experiment_report(
         and cached.get("input_fingerprint") == service.experiment_input_fingerprint(exp)
         and (cached.get("leaderboard") or {}).get("method") == method
     ):
-        return cached
+        # config_drift watches inputs no fingerprint can see — the contents of a
+        # template, the model row behind model_id, the agent image. Frozen into
+        # the cache it would report the state at cache time forever, which is
+        # exactly the silence the pin exists to break. Recomputed per read; the
+        # stored report is left untouched.
+        return {**cached, "config_drift": await config_drift(db, exp)}
     report = await compute_report(
         db, exp, method=method, partial=not terminal, selection=selection
     )

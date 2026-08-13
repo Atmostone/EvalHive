@@ -636,6 +636,45 @@ async def test_a_retired_config_is_not_reported_as_drifted(auth_client, db_sessi
 
 
 @pytest.mark.asyncio
+async def test_drift_is_recomputed_even_when_the_report_is_cached(auth_client, db_session):
+    """Drift watches inputs no fingerprint can see, so freezing it into the cache
+    would report the state at cache time forever — the silence the pin exists to break."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, tpl = await _settled_experiment(db_session, workspace_id)
+
+    first = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    assert first["config_drift"] == []
+
+    tpl.soul_md = "# edited long after the report was cached"
+    await db_session.commit()
+
+    second = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    assert second["generated_at"] == first["generated_at"], "still the cached report"
+    assert {d["config_key"] for d in second["config_drift"]} == {"cfg-01", "cfg-02"}
+
+
+@pytest.mark.asyncio
+async def test_an_execution_survives_retry_then_retire_in_all_attempts(auth_client, db_session):
+    """A retry resets the cell without advancing the counter, so after a later
+    retirement the ledger row is the only copy of that execution."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+
+    await retry_failed_experiment(db_session, exp)
+    await db_session.refresh(exp)
+    exp.status = ExperimentStatus.PAUSED.value
+    await db_session.commit()
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    every = await select_runs(db_session, exp, selection=SELECTION_ALL_ATTEMPTS)
+    retired_rows = [r for r in every if r.config_key == "cfg-02"]
+    assert any(r.status == ExperimentRunStatus.FAILED.value for r in retired_rows), (
+        "the execution that actually ran must still be reachable"
+    )
+
+
+@pytest.mark.asyncio
 async def test_unknown_selection_policy_is_rejected(auth_client, db_session):
     workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     exp, _ = await _settled_experiment(db_session, workspace_id)

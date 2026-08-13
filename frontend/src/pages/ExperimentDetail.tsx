@@ -316,8 +316,8 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
       </div>
       <p className="text-[11px] text-gray-400 mb-3 max-w-3xl">
         {HEAT_HELP[heat]}
-        {detail.configurations.length > 4 && (
-          <span className="text-gray-400"> · {detail.configurations.length} configs — scroll horizontally to see them all →</span>
+        {liveConfigs.length > 4 && (
+          <span className="text-gray-400"> · {liveConfigs.length} configs — scroll horizontally to see them all →</span>
         )}
       </p>
       <table className="text-sm border-separate w-full" style={{ borderSpacing: 4 }}>

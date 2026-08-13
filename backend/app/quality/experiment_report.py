@@ -1320,9 +1320,18 @@ async def select_runs(
         # Retiring a config snapshots each cell WITHOUT clearing it, so that
         # ledger row describes the execution still sitting on the live row —
         # which is already in ``current``. Counting both reports one execution
-        # twice. Only strictly earlier indices are genuinely superseded.
+        # twice. But a cell that was retried and then retired holds no execution
+        # at all any more (the retry reset it to pending without advancing the
+        # counter), so there the ledger row is the ONLY copy and dropping it
+        # would lose the execution entirely.
+        def _live_holds_its_execution(cell: ExperimentRun) -> bool:
+            return cell.task_id is not None or cell.status != ExperimentRunStatus.PENDING.value
+
         superseded = [
-            a for a in attempts if a.attempt_index < (by_id[a.experiment_run_id].attempt_count or 0)
+            a
+            for a in attempts
+            if a.attempt_index < (by_id[a.experiment_run_id].attempt_count or 0)
+            or not _live_holds_its_execution(by_id[a.experiment_run_id])
         ]
         return current + [_as_run(by_id[a.experiment_run_id], a) for a in superseded]
 

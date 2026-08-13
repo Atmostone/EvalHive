@@ -21,6 +21,7 @@ import itertools
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -730,6 +731,14 @@ def _template_content_hash(tpl) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+# Image ids change only when somebody rebuilds an image, but they are now read on
+# every report fetch (drift is recomputed per read so it cannot go stale in the
+# cache). Memoize briefly so a polled report page does not hit the docker socket
+# once per poll — docker-py is synchronous and this runs on the API event loop.
+_IMAGE_ID_TTL_SECONDS = 60.0
+_image_id_cache: tuple[float, dict] | None = None
+
+
 def _agent_image_ids() -> dict:
     """Image ids of both agent images, best effort.
 
@@ -738,6 +747,10 @@ def _agent_image_ids() -> dict:
     one being pinned. Rebuilding these images has moved measured pass rates
     before, and nothing in the database recorded which build produced which run.
     """
+    global _image_id_cache
+    now = time.monotonic()
+    if _image_id_cache and now - _image_id_cache[0] < _IMAGE_ID_TTL_SECONDS:
+        return _image_id_cache[1]
     out: dict = {}
     try:
         import docker
@@ -750,6 +763,7 @@ def _agent_image_ids() -> dict:
                 out[name] = None
     except Exception as e:  # docker socket unavailable — pinning is best effort
         logger.warning(f"experiment: agent image ids unavailable ({e})")
+    _image_id_cache = (now, out)
     return out
 
 
