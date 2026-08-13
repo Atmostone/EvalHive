@@ -31,12 +31,18 @@ from app.models.experiment import (
 )
 from app.models.quality_record import QualityRecord
 from app.quality.aggregation import rank
-from app.quality.experiments import experiment_input_fingerprint
+from app.quality.experiments import (
+    _resolve_config_state,
+    _agent_image_ids,
+    experiment_input_fingerprint,
+)
 from app.quality.ranking import build_matches
 from app.quality.stats import MIN_SAMPLES, mann_whitney_u, welch_t_test
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 
-SCHEMA_VERSION = 14  # v14: the report records the experiment revision + input
+SCHEMA_VERSION = 15  # v15: config_drift — configurations whose frozen resolution
+# (model api_name, template content hash, agent image id) no longer matches reality
+# v14: the report records the experiment revision + input
 # fingerprint it was computed from, so a cached report can be matched against its
 # input instead of trusted for existing (SPA-84); explicit run-selection policy
 # v13: reliability traffic light on the OUTCOME rubric axes too
@@ -1331,6 +1337,58 @@ async def select_runs(
     ]
 
 
+async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
+    """Configurations whose frozen resolution no longer matches reality (SPA-84).
+
+    Pinning what a config resolved to is only worth doing if somebody is told
+    when it stops being true. A template edited mid-experiment, or a model row
+    repointed at another vendor, changes what a condition means at an unchanged
+    fingerprint — this is what makes that visible.
+    """
+    pinned = [
+        c
+        for c in (exp.configurations or [])
+        if c.get("resolved") and not c.get("retired_at")
+    ]
+    if not pinned:
+        return []
+    images = _agent_image_ids()
+    out: list[dict] = []
+    for cfg in pinned:
+        was = cfg["resolved"]
+        now = await _resolve_config_state(db, cfg, images)
+        changed = {
+            field: {"pinned": was.get(field), "current": now.get(field)}
+            for field in (
+                "model_api_name",
+                "template_content_sha256",
+                "provider_name",
+            )
+            # A field absent from the pin predates it; only a real change counts.
+            if field in was and was.get(field) != now.get(field)
+        }
+        pinned_images = was.get("agent_images") or {}
+        now_images = now.get("agent_images") or {}
+        for name, image_id in pinned_images.items():
+            # An unavailable docker socket reports None; that is missing
+            # evidence, not evidence of a rebuild.
+            if image_id and now_images.get(name) and now_images[name] != image_id:
+                changed[f"agent_image:{name}"] = {
+                    "pinned": image_id,
+                    "current": now_images[name],
+                }
+        if changed:
+            out.append(
+                {
+                    "config_key": cfg.get("config_key"),
+                    "label": cfg.get("label"),
+                    "resolved_at": was.get("resolved_at"),
+                    "changed": changed,
+                }
+            )
+    return out
+
+
 async def compute_report(
     db: AsyncSession,
     exp: Experiment,
@@ -1371,7 +1429,9 @@ async def compute_report(
         calibration = _compute_report(pairs, threshold_kappa=float(threshold))
         calibration["available"] = calibration.get("sample_size", 0) > 0
 
-    return build_report(
+    report = build_report(
         exp, runs, records_by_task, method=method, partial=partial,
         calibration=calibration, selection=selection,
     )
+    report["config_drift"] = await config_drift(db, exp)
+    return report

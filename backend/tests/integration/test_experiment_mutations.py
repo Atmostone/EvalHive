@@ -25,6 +25,7 @@ from app.quality.experiment_report import (
     SELECTION_FIRST_ATTEMPT,
     SELECTION_LATEST_VALID,
     compute_report,
+    config_drift,
     select_runs,
 )
 from app.quality.experiments import (
@@ -522,6 +523,116 @@ async def test_clone_does_not_resurrect_a_retired_config(auth_client, db_session
     clone = await clone_experiment(db_session, exp, name=f"clone-{uuid.uuid4().hex[:6]}")
     assert len(clone.configurations) == 1
     assert not any(c.get("retired_at") for c in clone.configurations)
+
+
+@pytest.mark.asyncio
+async def test_superseded_tasks_leave_the_experiments_suite_tag(auth_client, db_session):
+    """A retried cell's old task used to keep the plain exp:<id> tag, which is how
+    an experiment came to have three times more tagged tasks than run rows."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+
+    victim = next(
+        r for r in await _runs(db_session, exp) if r.status == ExperimentRunStatus.FAILED.value
+    )
+    old_task_id = victim.task_id
+    assert (await db_session.get(Task, old_task_id)).benchmark_suite == f"exp:{exp.id}"
+
+    await retry_failed_experiment(db_session, exp)
+
+    old_task = await db_session.get(Task, old_task_id)
+    assert old_task.benchmark_suite == f"exp:{exp.id}:retired"
+
+    live = (
+        await db_session.execute(
+            select(Task).where(Task.benchmark_suite == f"exp:{exp.id}")
+        )
+    ).scalars().all()
+    assert old_task_id not in {t.id for t in live}
+
+
+@pytest.mark.asyncio
+async def test_retiring_a_config_moves_its_tasks_out_of_the_suite(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    retired_task_ids = {
+        r.task_id for r in await _runs(db_session, exp) if r.config_key == "cfg-02" and r.task_id
+    }
+    assert retired_task_ids
+
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+
+    for tid in retired_task_ids:
+        assert (await db_session.get(Task, tid)).benchmark_suite == f"exp:{exp.id}:retired"
+
+    still_live = (
+        await db_session.execute(
+            select(Task).where(Task.benchmark_suite == f"exp:{exp.id}")
+        )
+    ).scalars().all()
+    assert not (retired_task_ids & {t.id for t in still_live})
+
+
+@pytest.mark.asyncio
+async def test_retagging_is_idempotent(auth_client, db_session):
+    """Retiring a config whose cell was already retried must not double-suffix."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+    row = next(r for r in await _runs(db_session, exp) if r.config_key == "cfg-02")
+    task_id = row.task_id
+
+    await retry_failed_experiment(db_session, exp)
+    await db_session.refresh(exp)
+    exp.status = ExperimentStatus.PAUSED.value
+    await db_session.commit()
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+
+    assert (await db_session.get(Task, task_id)).benchmark_suite == f"exp:{exp.id}:retired"
+
+
+@pytest.mark.asyncio
+async def test_start_freezes_what_each_config_resolves_to(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, tpl = await _settled_experiment(db_session, workspace_id)
+
+    for cfg in exp.configurations:
+        resolved = cfg.get("resolved")
+        assert resolved, f"{cfg['config_key']} has no frozen resolution"
+        assert resolved["template_name"] == tpl.name
+        assert resolved["template_content_sha256"]
+        assert resolved["resolved_at"]
+
+
+@pytest.mark.asyncio
+async def test_editing_the_template_mid_experiment_shows_up_as_drift(auth_client, db_session):
+    """The confounder that actually happened here: a template's contents changed
+    while an experiment was running, invisibly, at an unchanged fingerprint."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, tpl = await _settled_experiment(db_session, workspace_id)
+
+    assert await config_drift(db_session, exp) == []
+
+    tpl.soul_md = "# soul, but edited mid-flight"
+    await db_session.commit()
+
+    drift = await config_drift(db_session, exp)
+    assert {d["config_key"] for d in drift} == {"cfg-01", "cfg-02"}
+    assert "template_content_sha256" in drift[0]["changed"]
+    entry = drift[0]["changed"]["template_content_sha256"]
+    assert entry["pinned"] != entry["current"]
+
+
+@pytest.mark.asyncio
+async def test_a_retired_config_is_not_reported_as_drifted(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, tpl = await _settled_experiment(db_session, workspace_id)
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    tpl.soul_md = "# edited after the retirement"
+    await db_session.commit()
+
+    assert {d["config_key"] for d in await config_drift(db_session, exp)} == {"cfg-01"}
 
 
 @pytest.mark.asyncio

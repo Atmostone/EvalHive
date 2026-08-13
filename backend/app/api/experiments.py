@@ -633,6 +633,11 @@ async def experiment_results(
                 "case_key": r.case_key,
                 "run_index": r.run_index,
                 "status": r.status,
+                # SPA-84: how many times this cell has run, and whether its
+                # configuration was retired — without these the UI cannot tell a
+                # first result from the survivor of three retries.
+                "attempt_count": r.attempt_count,
+                "retired_at": r.retired_at.isoformat() if r.retired_at else None,
                 "task_id": str(r.task_id) if r.task_id else None,
                 "task_status": task.status if task else None,
                 "result_summary": task.result_summary if task else None,

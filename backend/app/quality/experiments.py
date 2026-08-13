@@ -56,6 +56,10 @@ logger = logging.getLogger(__name__)
 # Toolathlon executable-eval cases (gold.external_eval) run on a dedicated image
 # with the case's MCP servers force-enabled, and a higher iteration ceiling.
 TOOLATHLON_AGENT_IMAGE = "spawnhive-agent-toolathlon:latest"
+# The image a plain (non-executable-eval) case runs on; mirrors
+# app/orchestrator/docker_manager.AGENT_IMAGE, imported lazily there to keep the
+# docker dependency out of this module's import path.
+DEFAULT_AGENT_IMAGE = "spawnhive-agent:latest"
 TOOLATHLON_MAX_ITERATIONS = 150
 # A preprocess still running after this many seconds is a kept-alive mock server
 # (the agent runs against it); we proceed and remove it at the eval settle.
@@ -588,12 +592,18 @@ async def start_experiment(db: AsyncSession, exp: Experiment) -> None:
     """draft → running: materialize every matrix cell as a pending run row."""
     if exp.status != ExperimentStatus.DRAFT.value:
         raise ValueError(f"cannot run experiment in status '{exp.status}'")
+    images = _agent_image_ids()
+    resolved_configs = []
     for cfg in exp.configurations:
         # A config retired while the experiment was still a draft has no cells
         # and no lineage; materializing it here would silently run a condition
         # the author had already taken out of the matrix.
         if cfg.get("retired_at"):
+            resolved_configs.append(cfg)
             continue
+        resolved_configs.append(
+            {**cfg, "resolved": await _resolve_config_state(db, cfg, images)}
+        )
         for case in exp.dataset_cases:
             for idx in range(exp.n_runs_per_cell):
                 db.add(
@@ -604,6 +614,9 @@ async def start_experiment(db: AsyncSession, exp: Experiment) -> None:
                         run_index=idx,
                     )
                 )
+    # Reassign: the JSONB column is not mutation-tracked, so an in-place edit
+    # of a dict inside the list is silently dropped.
+    exp.configurations = resolved_configs
     exp.status = ExperimentStatus.RUNNING.value
     exp.started_at = datetime.utcnow()
     await db.commit()
@@ -688,6 +701,119 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
                 except Exception as e:
                     logger.warning(f"experiment cancel: kill failed for {t.id}: {e}")
         await db.commit()
+
+
+# Suffix moving a superseded child task out of the experiment's plain
+# ``exp:<id>`` population (SPA-84). Every reader filters the suite by exact
+# equality, so the suffix quietly narrows ``exp:<id>`` to what the report counts
+# while leaving the retired lineage addressable under its own tag.
+RETIRED_SUITE_SUFFIX = ":retired"
+
+# Template fields that change what a configuration MEANS when edited. Mirrors
+# _full_template_snapshot in app/api/templates.py; hashed rather than versioned
+# because a TemplateVersion row is a snapshot of the state BEFORE the edit that
+# created it, and a template that was never edited has no version rows at all.
+_TEMPLATE_IDENTITY_FIELDS = (
+    "soul_md",
+    "model_id",
+    "rubric_id",
+    "tool_ids",
+    "max_ram",
+    "max_cpu",
+    "timeout_minutes",
+)
+
+
+def _template_content_hash(tpl) -> str:
+    canon = {f: getattr(tpl, f, None) for f in _TEMPLATE_IDENTITY_FIELDS}
+    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _agent_image_ids() -> dict:
+    """Image ids of both agent images, best effort.
+
+    Which image a run uses is a property of the CASE, not the configuration — a
+    mixed dataset uses both within one config — so both are recorded rather than
+    one being pinned. Rebuilding these images has moved measured pass rates
+    before, and nothing in the database recorded which build produced which run.
+    """
+    out: dict = {}
+    try:
+        import docker
+
+        client = docker.from_env()
+        for name in (DEFAULT_AGENT_IMAGE, TOOLATHLON_AGENT_IMAGE):
+            try:
+                out[name] = client.images.get(name).id
+            except Exception:
+                out[name] = None
+    except Exception as e:  # docker socket unavailable — pinning is best effort
+        logger.warning(f"experiment: agent image ids unavailable ({e})")
+    return out
+
+
+async def _resolve_config_state(db: AsyncSession, cfg: dict, images: dict) -> dict:
+    """Freeze what a configuration actually resolves to right now (SPA-84).
+
+    The fingerprint covers ids and overrides; it cannot see that the template
+    behind ``template_id`` was edited, or that the model behind ``model_id`` was
+    repointed at a different vendor. Both have happened in this project's own
+    history — a template's model was swapped mid-experiment — and were invisible
+    afterwards. This records the resolution so the drift becomes visible instead.
+
+    Never store secrets here: ``GET /api/experiments/{id}`` returns
+    ``configurations`` verbatim and is not role-gated.
+    """
+    resolved: dict = {"resolved_at": datetime.utcnow().isoformat(), "agent_images": images}
+    tpl = None
+    if cfg.get("template_id"):
+        try:
+            tpl = await db.get(Template, uuid.UUID(str(cfg["template_id"])))
+        except (ValueError, TypeError):
+            tpl = None
+    if tpl is not None:
+        resolved["template_name"] = tpl.name
+        resolved["template_content_sha256"] = _template_content_hash(tpl)
+    # The effective model is the config's, else the template's — a config that
+    # omits model_id inherits it, which is exactly the case that drifted here.
+    model_id = cfg.get("model_id") or (getattr(tpl, "model_id", None) if tpl else None)
+    if model_id:
+        try:
+            model = await db.get(LLMModel, uuid.UUID(str(model_id)))
+        except (ValueError, TypeError):
+            model = None
+        if model is not None:
+            resolved["model_api_name"] = model.api_name
+            resolved["model_display_name"] = model.display_name
+            provider = await db.get(Provider, model.provider_id)
+            if provider is not None:
+                resolved["provider_name"] = provider.name
+    return resolved
+
+
+async def _retire_task_tag(db: AsyncSession, task_id: Optional[uuid.UUID]) -> None:
+    """Move a superseded run's task and quality record to the retired suite tag.
+
+    Retrying a cell used to leave its old task tagged as part of the experiment,
+    which is how an experiment ended up with three times more tagged tasks than
+    run rows — the report counted run rows, the suite aggregators counted tags,
+    and the two described different populations. The record carries its own copy
+    of the tag (denormalized at insert and never re-synced), so both must move.
+    """
+    if task_id is None:
+        return
+    task = await db.get(Task, task_id)
+    if task is None or not task.benchmark_suite:
+        return
+    if task.benchmark_suite.endswith(RETIRED_SUITE_SUFFIX):
+        return
+    task.benchmark_suite = f"{task.benchmark_suite}{RETIRED_SUITE_SUFFIX}"
+    for rec in (
+        await db.execute(select(QualityRecord).where(QualityRecord.task_id == task_id))
+    ).scalars().all():
+        if rec.benchmark_suite and not rec.benchmark_suite.endswith(RETIRED_SUITE_SUFFIX):
+            rec.benchmark_suite = f"{rec.benchmark_suite}{RETIRED_SUITE_SUFFIX}"
 
 
 async def _bump_revision(
@@ -816,6 +942,9 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
         ext_eval.remove(r.preprocess_container_id)
         ext_eval.remove(r.eval_container_id)
         await _snapshot_attempt(db, r, "retry")
+        # The ledger keeps the pointer; the task itself leaves the live
+        # population so tag-based aggregation matches the report.
+        await _retire_task_tag(db, r.task_id)
         r.task_id = None
         r.status = ExperimentRunStatus.PENDING.value
         r.cost_usd = Decimal(0)
@@ -878,6 +1007,9 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     cfg["fingerprint"] = fp
     cfg["label"] = cfg_input.get("label") or _config_label(canon)
     cfg["config_key"] = f"cfg-{(max(nums) + 1) if nums else 1:02d}"
+    # A config added after the start still gets its resolution frozen, or it
+    # would be the one condition in the matrix with no record of what it meant.
+    cfg["resolved"] = await _resolve_config_state(db, cfg, _agent_image_ids())
     exp.configurations = existing + [cfg]  # reassign so the JSONB column is marked dirty
     ms = dict(exp.matrix_spec or {})
     ms["configurations"] = list(ms.get("configurations") or []) + [cfg_input]
@@ -959,6 +1091,7 @@ async def remove_config_from_experiment(
             r.status = ExperimentRunStatus.FAILED.value
             r.completed_at = retired_at
         await _snapshot_attempt(db, r, "config_retired")
+        await _retire_task_tag(db, r.task_id)
         r.retired_at = retired_at
     removed = len(rows)
 
