@@ -30,6 +30,7 @@ from app.models.experiment import Experiment, ExperimentRun
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.quality.experiment_report import compute_report
 from app.quality.experiments import (
+    LIVE_CELL,
     TERMINAL_EXPERIMENT,
     advance_experiment,
     create_experiment,
@@ -79,7 +80,11 @@ async def _status(args) -> None:
             raise SystemExit("experiment not found")
         rows = (
             await db.execute(
-                select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+                select(ExperimentRun).where(
+                    ExperimentRun.experiment_id == exp.id,
+                    # Same population as the report: retired configs are out.
+                    LIVE_CELL,
+                )
             )
         ).scalars().all()
     counts = Counter(r.status for r in rows)

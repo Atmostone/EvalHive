@@ -1313,6 +1313,21 @@ export interface ExperimentConfig {
   soul_md?: string | null
   tools_override?: { enable?: string[]; disable?: string[] } | null
   memory_mode?: 'off' | 'flat' | 'structured' | null
+  /** SPA-84: set when the configuration was retired. Its cells keep their
+   *  lineage but leave the matrix, so it must be shown as retired rather than
+   *  drawn as an empty column. */
+  retired_at?: string | null
+  /** SPA-84: what this configuration actually resolved to when the experiment
+   *  started — the fingerprint covers ids, not the contents behind them. */
+  resolved?: {
+    resolved_at: string
+    template_name?: string
+    template_content_sha256?: string
+    model_api_name?: string
+    model_display_name?: string
+    provider_name?: string
+    agent_images?: Record<string, string | null>
+  } | null
 }
 
 export interface Experiment {
@@ -1323,6 +1338,10 @@ export interface Experiment {
   dataset: Record<string, unknown>
   n_cases: number
   n_configs: number
+  /** SPA-84: bumped by every mutation; a cached report is only valid for the
+   *  revision it was computed from. */
+  revision: number
+  n_retired_configs: number
   n_runs_per_cell: number
   total_runs: number
   budget_limit_usd?: number | null
@@ -1387,6 +1406,10 @@ export interface ExperimentRunResult {
   case_key: string
   run_index: number
   status: string
+  /** SPA-84: executions this cell has had. >1 means earlier attempts are in the
+   *  ledger and this row is the survivor, not the first result. */
+  attempt_count?: number
+  retired_at?: string | null
   task_id?: string | null
   task_status?: string | null
   result_summary?: string | null
@@ -1474,11 +1497,37 @@ export interface ExperimentRq2Cell {
   agreement?: number | null
 }
 
+/** SPA-84: a configuration whose frozen resolution no longer matches reality —
+ *  the template behind it was edited, the model row repointed, or the agent image
+ *  rebuilt. All of these change what a condition MEANS at an unchanged fingerprint. */
+export interface ConfigDrift {
+  config_key: string
+  label?: string
+  resolved_at?: string
+  changed: Record<string, { pinned: string | null; current: string | null }>
+  /** Cases whose runs did NOT all execute under the same condition, recorded per
+   *  run at spawn: `{case_key: [fingerprint, ...]}`. Grouped per case because the
+   *  resolved tool set legitimately differs between cases. The stronger signal —
+   *  `changed` compares the pin against now and misses an edit reverted before
+   *  the report. */
+  split_cases?: Record<string, string[]>
+  /** Distinct case-independent conditions across the WHOLE configuration —
+   *  model, prompt, image, limits. This is the one that catches an edit made
+   *  between two cases: with the default single run per cell, a per-case
+   *  comparison has exactly one value and can never disagree. */
+  core_conditions?: string[]
+}
+
 export interface ExperimentReport {
   schema_version: number
   generated_at: string
   partial: boolean
   n_terminal_runs: number
+  /** SPA-84: which experiment revision this report was computed from. */
+  input_revision?: number
+  input_fingerprint?: string
+  selection?: 'latest_valid' | 'all_attempts' | 'first_attempt'
+  config_drift?: ConfigDrift[]
   summary: {
     total_runs: number
     success: number

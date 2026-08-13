@@ -34,7 +34,12 @@ from app.models.task import Task
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality import experiments as service
-from app.quality.experiment_report import SCHEMA_VERSION as REPORT_SCHEMA_VERSION, compute_report
+from app.quality.experiment_report import (
+    SCHEMA_VERSION as REPORT_SCHEMA_VERSION,
+    SELECTION_LATEST_VALID as REPORT_SELECTION_DEFAULT,
+    compute_report,
+    config_drift,
+)
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
@@ -78,6 +83,9 @@ async def _get_scoped(
 
 
 def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
+    # Retired configurations keep their entry (and their lineage) but are no
+    # longer part of the matrix, so they must not inflate the counts.
+    live = service.live_configs(exp)
     out = {
         "id": str(exp.id),
         "name": exp.name,
@@ -85,10 +93,12 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
         "status": exp.status,
         "dataset": exp.dataset,
         "n_cases": len(exp.dataset_cases or []),
-        "n_configs": len(exp.configurations or []),
+        "n_configs": len(live),
+        "n_retired_configs": len(exp.configurations or []) - len(live),
+        "revision": exp.revision,
         "n_runs_per_cell": exp.n_runs_per_cell,
         "total_runs": len(exp.dataset_cases or [])
-        * len(exp.configurations or [])
+        * len(live)
         * exp.n_runs_per_cell,
         "budget_limit_usd": float(exp.budget_limit_usd)
         if exp.budget_limit_usd is not None
@@ -114,13 +124,23 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
     return out
 
 
-async def _load_runs(db: AsyncSession, exp: Experiment) -> list[ExperimentRun]:
+async def _load_runs(
+    db: AsyncSession, exp: Experiment, *, include_retired: bool = False
+) -> list[ExperimentRun]:
+    """Cells of the experiment, retired ones excluded by default (SPA-84).
+
+    The report counts only live cells, so every other read path has to agree —
+    otherwise the progress matrix, the results table and the export each describe
+    a different population than the report, which is the confusion this change
+    exists to end.
+    """
+    stmt = select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+    if not include_retired:
+        stmt = stmt.where(service.LIVE_CELL)
     return (
         (
             await db.execute(
-                select(ExperimentRun)
-                .where(ExperimentRun.experiment_id == exp.id)
-                .order_by(
+                stmt.order_by(
                     ExperimentRun.config_key,
                     ExperimentRun.case_key,
                     ExperimentRun.run_index,
@@ -449,10 +469,14 @@ async def retry_failed_experiment(
     _role=Depends(require_role("owner", "admin")),
 ):
     """Reset cells that errored out (rate-limit / transient API / infra) back to
-    pending and re-open the experiment so the tick re-runs them in place — no
-    clone, valid cells untouched. Repeatable across provider quota windows."""
+    pending and re-run them — no clone, valid cells untouched. The superseded
+    state of each retried cell is kept in the attempt ledger. Repeatable across
+    provider quota windows. 409 unless the experiment is settled or paused."""
     exp = await _get_scoped(experiment_id, workspace, db)
-    retried = await service.retry_failed_experiment(db, exp)
+    try:
+        retried = await service.retry_failed_experiment(db, exp)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     return {**serialize(exp), "retried": retried}
 
 
@@ -470,7 +494,7 @@ async def add_config(
     try:
         result = await service.add_config_to_experiment(db, exp, body)
     except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     return {**serialize(exp), **result}
 
 
@@ -482,14 +506,14 @@ async def remove_config(
     db: AsyncSession = Depends(get_db),
     _role=Depends(require_role("owner", "admin")),
 ):
-    """Remove a configuration (e.g. a retired model) and all its runs from an
-    experiment in place — inverse of add-config. Drops it from the matrix/report
-    and clears the cached report; refuses to remove the last configuration."""
+    """Retire a configuration (e.g. a model that exhausted its quota) — inverse of
+    add-config. Its cells keep their lineage but leave the matrix and the report.
+    409 while running, on the last live configuration, or if already retired."""
     exp = await _get_scoped(experiment_id, workspace, db)
     try:
         result = await service.remove_config_from_experiment(db, exp, config_key)
     except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     return {**serialize(exp), **result}
 
 
@@ -498,24 +522,51 @@ async def experiment_report(
     experiment_id: str,
     refresh: bool = False,
     method: str = Query("bt", pattern="^(bt|elo)$"),
+    selection: str = Query(
+        REPORT_SELECTION_DEFAULT, pattern="^(latest_valid|all_attempts|first_attempt)$"
+    ),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     """The assembled report. Cached on the experiment once it is terminal;
-    a running experiment gets a fresh partial report on every call."""
+    a running experiment gets a fresh partial report on every call.
+
+    ``selection`` chooses which executions of each cell are counted:
+    ``latest_valid`` (default) the current state of every live cell,
+    ``all_attempts`` every execution including retired cells, ``first_attempt``
+    each cell as it first came out. Only the default is ever cached — the others
+    are analysis views, not the experiment's headline numbers.
+    """
     exp = await _get_scoped(experiment_id, workspace, db)
     terminal = exp.status in service.TERMINAL_EXPERIMENT
     cached = exp.report
+    cacheable = selection == REPORT_SELECTION_DEFAULT
     if (
         terminal
         and cached
         and not refresh
+        and cacheable
         and cached.get("schema_version") == REPORT_SCHEMA_VERSION
+        # The report must have been built from the experiment as it stands now.
+        # Without this a mutated experiment kept serving its pre-mutation numbers
+        # once it settled again, and the cache was formally valid (SPA-84).
+        and cached.get("input_revision") == exp.revision
+        # Recomputed, not read from the stored column: the column moves only
+        # when a mutation moves it, so comparing it to itself would just repeat
+        # the revision check and never catch input changed by any other route.
+        and cached.get("input_fingerprint") == service.experiment_input_fingerprint(exp)
         and (cached.get("leaderboard") or {}).get("method") == method
     ):
-        return cached
-    report = await compute_report(db, exp, method=method, partial=not terminal)
-    if terminal:
+        # config_drift watches inputs no fingerprint can see — the contents of a
+        # template, the model row behind model_id, the agent image. Frozen into
+        # the cache it would report the state at cache time forever, which is
+        # exactly the silence the pin exists to break. Recomputed per read; the
+        # stored report is left untouched.
+        return {**cached, "config_drift": await config_drift(db, exp)}
+    report = await compute_report(
+        db, exp, method=method, partial=not terminal, selection=selection
+    )
+    if terminal and cacheable:
         exp.report = report
         await db.commit()
     return report
@@ -527,12 +578,16 @@ async def experiment_results(
     config: Optional[str] = None,
     case: Optional[str] = None,
     run_index: Optional[int] = None,
+    include_retired: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    """Per-cell run rows with task state and eval profiles."""
+    """Per-cell run rows with task state and eval profiles.
+
+    Cells of a retired configuration are excluded unless ``include_retired`` —
+    their lineage is kept, so this is the way back to it."""
     exp = await _get_scoped(experiment_id, workspace, db)
-    runs = await _load_runs(db, exp)
+    runs = await _load_runs(db, exp, include_retired=include_retired)
     if config:
         runs = [r for r in runs if r.config_key == config]
     if case:
@@ -584,6 +639,11 @@ async def experiment_results(
                 "case_key": r.case_key,
                 "run_index": r.run_index,
                 "status": r.status,
+                # SPA-84: how many times this cell has run, and whether its
+                # configuration was retired — without these the UI cannot tell a
+                # first result from the survivor of three retries.
+                "attempt_count": r.attempt_count,
+                "retired_at": r.retired_at.isoformat() if r.retired_at else None,
                 "task_id": str(r.task_id) if r.task_id else None,
                 "task_status": task.status if task else None,
                 "result_summary": task.result_summary if task else None,
@@ -639,12 +699,16 @@ async def clone_experiment(
 async def export_experiment(
     experiment_id: str,
     format: str = Query("json", pattern="^(json|csv)$"),
+    include_retired: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    """Flat per-run rows (pandas-friendly): config axes + scores + costs."""
+    """Flat per-run rows (pandas-friendly): config axes + scores + costs.
+
+    Matches the report's population by default; ``include_retired`` widens it to
+    the cells of retired configurations."""
     exp = await _get_scoped(experiment_id, workspace, db)
-    runs = await _load_runs(db, exp)
+    runs = await _load_runs(db, exp, include_retired=include_retired)
     configs = {c["config_key"]: c for c in exp.configurations}
 
     task_ids = [r.task_id for r in runs if r.task_id]

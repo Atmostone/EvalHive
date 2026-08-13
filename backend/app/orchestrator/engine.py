@@ -1,12 +1,14 @@
 """Orchestrator engine: polls for Ready tasks and manages agent lifecycle."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import uuid
 from datetime import datetime
 
-from sqlalchemy import case, select
+from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._resolve_model import resolve_model_by_id, resolve_workspace_model
@@ -14,6 +16,7 @@ from app.api.settings import get_setting
 from app.api.templates import template_to_dict
 from app.auth.tokens import issue_agent_token
 from app.database import async_session
+from app.models.experiment import ExperimentRun
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.orchestrator.llm import (
@@ -93,6 +96,84 @@ def _spawn_snapshot(
         "memory_context": memory_context or "",
         "flat_memory": _read_flat_memory(task.workspace_id),
     }
+
+
+def _hash(canon: dict) -> str:
+    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def spawn_condition_fingerprints(
+    spec, model_api_name: str, image_id: str | None = None
+) -> tuple[str, str]:
+    """What this run actually executed under, as ``(full, core)`` (SPA-84).
+
+    Taken from the assembled ``AgentSpec`` immediately before the spawn, the only
+    moment the answer is authoritative: the template's prompt, the effective
+    model and the resolved tool set are all read live here, well after the runner
+    claimed the cell. Recording it earlier would miss an edit landing in between
+    and would duplicate resolution already done properly once, right here.
+
+    Two hashes because the two comparisons have different scopes:
+
+    * **core** — model, prompt, image and resource limits. Identical for every
+      run of a configuration regardless of case, so it can be compared across
+      the WHOLE config. This is what catches a template edited between two
+      cases and reverted before the report — with the default one run per cell
+      there is nothing to compare inside a case.
+    * **full** — core plus the resolved tool and MCP set, which is derived from
+      the CASE and legitimately differs between cases. Only comparable within
+      one case, where it additionally catches a registry entry changing between
+      repeats or retries.
+
+    Both exclude anything per-run or secret: the task id and description, the
+    agent token, provider credentials in ``env``, the memory context and the
+    container-scoped ``network_mode``. MCP servers contribute names only — their
+    materialized form carries registry secrets.
+    """
+    core = {
+        "model_api_name": model_api_name,
+        "template_id": spec.template_id,
+        "soul_md_sha256": hashlib.sha256((spec.soul_md or "").encode()).hexdigest(),
+        # The resolved image id of the container that actually started, not the
+        # tag: ``spec.image`` is None on the default path and a tag is a moving
+        # target, so a rebuild under the same name would be invisible. None
+        # (the runtime could not tell) is recorded as such — missing evidence,
+        # never evidence of sameness.
+        "image_id": image_id,
+        "resource_limits": spec.resource_limits or {},
+    }
+    full = {
+        **core,
+        "tools": sorted(str(t) for t in (spec.tools or [])),
+        "mcp_servers": sorted(
+            str(m.get("name") if isinstance(m, dict) else m) for m in (spec.mcp_servers or [])
+        ),
+    }
+    return _hash(full), _hash(core)
+
+
+async def _record_run_condition(
+    db: AsyncSession, task: Task, full: str, core: str | None = None
+) -> None:
+    """Stamp the spawn-time condition onto the experiment cell this task belongs to."""
+    ref = ((task.run_config or {}).get("experiment") or {}) if task.run_config else {}
+    if not ref.get("id"):
+        return
+    try:
+        experiment_id = uuid.UUID(str(ref["id"]))
+    except (ValueError, TypeError):
+        return
+    await db.execute(
+        update(ExperimentRun)
+        .where(
+            ExperimentRun.experiment_id == experiment_id,
+            ExperimentRun.config_key == ref.get("config_key"),
+            ExperimentRun.case_key == ref.get("case_key"),
+            ExperimentRun.run_index == ref.get("run_index"),
+        )
+        .values(condition_fingerprint=full, core_condition_fingerprint=core)
+    )
 
 
 async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Template):
@@ -249,6 +330,15 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
             network_mode=network_mode,
         )
         container_id = runtime.spawn(spec)
+        # Record what this run ACTUALLY ran under, from the spec that was just
+        # spawned — not from a re-resolution elsewhere (SPA-84).
+        await _record_run_condition(
+            db,
+            task,
+            *spawn_condition_fingerprints(
+                spec, agent_llm.model.api_name, runtime.image_id(container_id)
+            ),
+        )
         task.agent_container_id = container_id
         task.model_used = agent_llm.model.api_name
         task.input_price_per_1m_usd = agent_llm.model.input_price_per_1m_usd

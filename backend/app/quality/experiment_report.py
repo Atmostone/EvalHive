@@ -23,14 +23,31 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.experiment import Experiment, ExperimentRun, ExperimentRunStatus
+from app.models.experiment import (
+    Experiment,
+    ExperimentAttempt,
+    ExperimentRun,
+    ExperimentRunStatus,
+)
 from app.models.quality_record import QualityRecord
 from app.quality.aggregation import rank
+from app.quality.experiments import (
+    LIVE_CELL,
+    _agent_image_ids,
+    _resolve_config_state,
+    experiment_input_fingerprint,
+    live_configs,
+)
 from app.quality.ranking import build_matches
 from app.quality.stats import MIN_SAMPLES, mann_whitney_u, welch_t_test
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 
-SCHEMA_VERSION = 13  # v13: reliability traffic light on the OUTCOME rubric axes too
+SCHEMA_VERSION = 15  # v15: config_drift — configurations whose frozen resolution
+# (model api_name, template content hash, agent image id) no longer matches reality
+# v14: the report records the experiment revision + input
+# fingerprint it was computed from, so a cached report can be matched against its
+# input instead of trusted for existing (SPA-84); explicit run-selection policy
+# v13: reliability traffic light on the OUTCOME rubric axes too
 # (outcome_axis_reliability), + rank-aware 'directional' zone: κ below the bar but
 # Spearman ρ≥0.5 = scale-shifted judge — ordering trustworthy, absolute scores not
 # v12: checker↔human agreement (Cohen's κ + raw) — the executable
@@ -48,6 +65,18 @@ SCHEMA_VERSION = 13  # v13: reliability traffic light on the OUTCOME rubric axes
 # quality-heatmap dimension_labels
 # v4: human_feedback (E-05 per-config aggregate) + cost_breakdown
 # v3: external (executable pass-rate) + rq2 (verdict × judge 2×2)
+# Which executions of a cell a report counts (SPA-84). Before the attempt ledger
+# existed there was only ever one survivor per cell, so this was not a choice
+# anyone could make — it was whatever the last retry happened to leave behind.
+SELECTION_LATEST_VALID = "latest_valid"  # current state of each live cell (default)
+SELECTION_ALL_ATTEMPTS = "all_attempts"  # every execution, retired cells included
+SELECTION_FIRST_ATTEMPT = "first_attempt"  # each cell's first execution only
+SELECTION_POLICIES = (
+    SELECTION_LATEST_VALID,
+    SELECTION_ALL_ATTEMPTS,
+    SELECTION_FIRST_ATTEMPT,
+)
+
 SIGNIFICANCE_ALPHA = 0.05
 # Outcome-judge threshold splitting "high" vs "low" in the RQ2 verdict×judge 2×2.
 RQ2_JUDGE_THRESHOLD = 5.0
@@ -403,11 +432,20 @@ def build_report(
     method: str = "bt",
     partial: bool = False,
     calibration: dict | None = None,
+    selection: str = SELECTION_LATEST_VALID,
 ) -> dict:
     """Assemble the full report from pre-loaded rows (pure). ``calibration`` is the
     per-experiment judge↔human agreement (E-17) scoped to this experiment's tasks,
     computed by the async caller (this function stays pure)."""
-    configs = {c["config_key"]: c for c in exp.configurations}
+    # A retired configuration left the matrix, so it must not produce a row —
+    # otherwise the report describes a different population than serialize(),
+    # /results and /export. all_attempts deliberately reaches back into the
+    # retired lineage, so its rows belong there (SPA-84).
+    configs = {
+        c["config_key"]: c
+        for c in (exp.configurations or [])
+        if selection == SELECTION_ALL_ATTEMPTS or not c.get("retired_at")
+    }
     labels = {k: c.get("label") or k for k, c in configs.items()}
     by_config: dict[str, list[ExperimentRun]] = {k: [] for k in configs}
     for r in runs:
@@ -1177,6 +1215,15 @@ def build_report(
 
     return {
         "schema_version": SCHEMA_VERSION,
+        # What this report was computed FROM (SPA-84). The cache is served only
+        # when both still match the experiment, which is what stops a mutated
+        # experiment returning its pre-mutation numbers. The fingerprint is
+        # recomputed here rather than read from the stored column: the column is
+        # only ever written by a mutation, so comparing it to itself would echo
+        # the revision counter instead of measuring the inputs.
+        "input_revision": exp.revision,
+        "input_fingerprint": experiment_input_fingerprint(exp),
+        "selection": selection,
         "generated_at": datetime.utcnow().isoformat(),
         "partial": partial,
         "n_terminal_runs": n_terminal,
@@ -1206,16 +1253,28 @@ def build_report(
     }
 
 
-async def compute_report(
-    db: AsyncSession, exp: Experiment, *, method: str = "bt", partial: bool = False
-) -> dict:
-    """Load the experiment's runs + records and assemble the report."""
-    runs = (
+async def select_runs(
+    db: AsyncSession, exp: Experiment, *, selection: str = SELECTION_LATEST_VALID
+) -> list[ExperimentRun]:
+    """Resolve which executions of each cell the report should count (SPA-84).
+
+    ``ExperimentRun`` holds a cell's current state; superseded executions live in
+    ``experiment_attempts``. Attempts are returned as detached ``ExperimentRun``
+    instances rather than a second shape, so every consumer downstream stays
+    unchanged — they are never added to the session.
+    """
+    if selection not in SELECTION_POLICIES:
+        raise ValueError(f"unknown selection policy: {selection!r}")
+
+    stmt = select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+    if selection != SELECTION_ALL_ATTEMPTS:
+        # A retired configuration left the matrix; only an explicit request for
+        # the full history brings it back.
+        stmt = stmt.where(LIVE_CELL)
+    current = list(
         (
             await db.execute(
-                select(ExperimentRun)
-                .where(ExperimentRun.experiment_id == exp.id)
-                .order_by(
+                stmt.order_by(
                     ExperimentRun.config_key,
                     ExperimentRun.case_key,
                     ExperimentRun.run_index,
@@ -1225,6 +1284,200 @@ async def compute_report(
         .scalars()
         .all()
     )
+    if selection == SELECTION_LATEST_VALID or not current:
+        return current
+
+    by_id = {r.id: r for r in current}
+    attempts = (
+        (
+            await db.execute(
+                select(ExperimentAttempt)
+                .where(ExperimentAttempt.experiment_run_id.in_(list(by_id)))
+                .order_by(ExperimentAttempt.attempt_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    def _as_run(cell: ExperimentRun, att: ExperimentAttempt) -> ExperimentRun:
+        return ExperimentRun(
+            experiment_id=cell.experiment_id,
+            config_key=cell.config_key,
+            case_key=cell.case_key,
+            run_index=cell.run_index,
+            task_id=att.task_id,
+            status=att.status,
+            cost_usd=att.cost_usd,
+            weighted_score=att.weighted_score,
+            trajectory_score=att.trajectory_score,
+            duration_seconds=att.duration_seconds,
+            external_verdict=att.external_verdict,
+            launch_time=att.launch_time,
+            attempt_count=att.attempt_index,
+            completed_at=att.completed_at,
+        )
+
+    if selection == SELECTION_ALL_ATTEMPTS:
+        # Retiring a config snapshots each cell WITHOUT clearing it, so that
+        # ledger row describes the execution still sitting on the live row —
+        # which is already in ``current``. Counting both reports one execution
+        # twice. But a cell that was retried and then retired holds no execution
+        # at all any more (the retry reset it to pending without advancing the
+        # counter), so there the ledger row is the ONLY copy and dropping it
+        # would lose the execution entirely.
+        def _live_holds_its_execution(cell: ExperimentRun) -> bool:
+            return cell.task_id is not None or cell.status != ExperimentRunStatus.PENDING.value
+
+        superseded = [
+            a
+            for a in attempts
+            if a.attempt_index < (by_id[a.experiment_run_id].attempt_count or 0)
+            or not _live_holds_its_execution(by_id[a.experiment_run_id])
+        ]
+        return current + [_as_run(by_id[a.experiment_run_id], a) for a in superseded]
+
+    # first_attempt: a cell that was retried is represented by attempt 1; a cell
+    # that ran once is already its own first attempt.
+    firsts = {}
+    for a in attempts:
+        firsts.setdefault(a.experiment_run_id, a)
+    return [
+        _as_run(cell, firsts[cell.id]) if cell.id in firsts else cell
+        for cell in current
+    ]
+
+
+async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
+    """Configurations whose frozen resolution no longer matches reality (SPA-84).
+
+    Pinning what a config resolved to is only worth doing if somebody is told
+    when it stops being true. A template edited mid-experiment, or a model row
+    repointed at another vendor, changes what a condition means at an unchanged
+    fingerprint — this is what makes that visible.
+    """
+    pinned = [c for c in live_configs(exp) if c.get("resolved")]
+    if not pinned:
+        return []
+
+    # What the runs ACTUALLY executed under, recorded at spawn. This is the
+    # authoritative half: the pin describes intent at start, while the engine
+    # re-resolves the template, the model and the tool set at every spawn.
+    # Current cells plus the ledger — a cell retried under a changed template
+    # holds only the newer condition, so the earlier attempt is the evidence.
+    #
+    # Grouped by (config_key, case_key), NOT by config alone: the resolved MCP
+    # server set is derived from the CASE, so one unchanged configuration
+    # legitimately runs different tool sets across cases. Comparing those would
+    # declare every Toolathlon experiment split. What must hold is narrower and
+    # actually meaningful: the same configuration on the same case is the same
+    # condition, however many runs and retries it took.
+    rows = (
+        await db.execute(
+            select(
+                ExperimentRun.config_key,
+                ExperimentRun.case_key,
+                ExperimentRun.condition_fingerprint,
+                ExperimentRun.core_condition_fingerprint,
+            ).where(
+                ExperimentRun.experiment_id == exp.id,
+                LIVE_CELL,
+                ExperimentRun.condition_fingerprint.isnot(None),
+            )
+        )
+    ).all()
+    attempt_rows = (
+        await db.execute(
+            select(
+                ExperimentRun.config_key,
+                ExperimentRun.case_key,
+                ExperimentAttempt.condition_fingerprint,
+                ExperimentAttempt.core_condition_fingerprint,
+            )
+            .join(ExperimentAttempt, ExperimentAttempt.experiment_run_id == ExperimentRun.id)
+            .where(
+                ExperimentRun.experiment_id == exp.id,
+                LIVE_CELL,
+                ExperimentAttempt.condition_fingerprint.isnot(None),
+            )
+        )
+    ).all()
+    per_cell: dict[tuple[str, str], set[str]] = {}
+    per_config: dict[str, set[str]] = {}
+    for config_key, case_key, full, core in [*rows, *attempt_rows]:
+        per_cell.setdefault((config_key, case_key), set()).add(full)
+        if core:
+            per_config.setdefault(config_key, set()).add(core)
+    # Within a case: the full hash, which additionally covers the tool set.
+    split_cases: dict[str, dict[str, list[str]]] = {}
+    for (config_key, case_key), fingerprints in per_cell.items():
+        if len(fingerprints) > 1:
+            split_cases.setdefault(config_key, {})[case_key] = sorted(fingerprints)
+    # Across the whole config: the case-independent hash. This is the one that
+    # catches an edit made between two CASES — with the default single run per
+    # cell, a per-case comparison has exactly one value and can never disagree.
+    split_configs = {
+        config_key: sorted(cores)
+        for config_key, cores in per_config.items()
+        if len(cores) > 1
+    }
+
+    images = _agent_image_ids()
+    out: list[dict] = []
+    for cfg in pinned:
+        was = cfg["resolved"]
+        now = await _resolve_config_state(db, cfg, images)
+        changed = {
+            field: {"pinned": was.get(field), "current": now.get(field)}
+            for field in (
+                "model_api_name",
+                "template_content_sha256",
+                "provider_name",
+            )
+            # A field absent from the pin predates it; only a real change counts.
+            if field in was and was.get(field) != now.get(field)
+        }
+        pinned_images = was.get("agent_images") or {}
+        now_images = now.get("agent_images") or {}
+        for name, image_id in pinned_images.items():
+            # An unavailable docker socket reports None; that is missing
+            # evidence, not evidence of a rebuild.
+            if image_id and now_images.get(name) and now_images[name] != image_id:
+                changed[f"agent_image:{name}"] = {
+                    "pinned": image_id,
+                    "current": now_images[name],
+                }
+        # The stronger signal: not "the pin is out of date" but "runs of the same
+        # cell did not all execute under the same thing". The pin is compared
+        # against NOW, so it misses an edit reverted before the report and cannot
+        # say which runs were affected. The per-run fingerprints can.
+        split = split_cases.get(cfg.get("config_key")) or {}
+        core_split = split_configs.get(cfg.get("config_key")) or []
+        if changed or split or core_split:
+            entry = {
+                "config_key": cfg.get("config_key"),
+                "label": cfg.get("label"),
+                "resolved_at": was.get("resolved_at"),
+                "changed": changed,
+            }
+            if split:
+                entry["split_cases"] = split
+            if core_split:
+                entry["core_conditions"] = core_split
+            out.append(entry)
+    return out
+
+
+async def compute_report(
+    db: AsyncSession,
+    exp: Experiment,
+    *,
+    method: str = "bt",
+    partial: bool = False,
+    selection: str = SELECTION_LATEST_VALID,
+) -> dict:
+    """Load the experiment's runs + records and assemble the report."""
+    runs = await select_runs(db, exp, selection=selection)
     task_ids = [r.task_id for r in runs if r.task_id]
     records_by_task: dict[uuid.UUID, QualityRecord] = {}
     if task_ids:
@@ -1255,7 +1508,9 @@ async def compute_report(
         calibration = _compute_report(pairs, threshold_kappa=float(threshold))
         calibration["available"] = calibration.get("sample_size", 0) > 0
 
-    return build_report(
+    report = build_report(
         exp, runs, records_by_task, method=method, partial=partial,
-        calibration=calibration,
+        calibration=calibration, selection=selection,
     )
+    report["config_drift"] = await config_drift(db, exp)
+    return report

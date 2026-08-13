@@ -622,6 +622,13 @@ export default function Experiments() {
                   <td className="px-4 py-2.5"><StatusPill status={e.status} /></td>
                   <td className="px-4 py-2.5 text-gray-600">
                     {e.n_configs} × {e.n_cases} × {e.n_runs_per_cell} = {e.total_runs} runs
+                    {/* SPA-84: an id alone no longer pins a fixed set of runs. */}
+                    {e.revision > 1 && (
+                      <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 font-medium"
+                        title={`Revision ${e.revision} — mutated ${e.revision - 1} time(s) since creation${e.n_retired_configs ? `, ${e.n_retired_configs} configuration(s) retired` : ''}.`}>
+                        rev {e.revision}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-gray-600">
                     ${e.accumulated_cost_usd.toFixed(2)}

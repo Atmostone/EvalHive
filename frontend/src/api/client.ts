@@ -783,20 +783,40 @@ export const experimentsApi = {
   cancel: (id: string) => request<Experiment>(`/experiments/${id}/cancel`, { method: 'POST' }),
   retryFailed: (id: string) =>
     request<Experiment & { retried: number }>(`/experiments/${id}/retry-failed`, { method: 'POST' }),
-  report: (id: string, params?: { method?: 'bt' | 'elo'; refresh?: boolean }) => {
+  report: (
+    id: string,
+    params?: {
+      method?: 'bt' | 'elo'
+      refresh?: boolean
+      // SPA-84: which executions of each cell to count. Only the default is cached.
+      selection?: 'latest_valid' | 'all_attempts' | 'first_attempt'
+    },
+  ) => {
     const qs = new URLSearchParams()
     if (params?.method) qs.set('method', params.method)
     if (params?.refresh) qs.set('refresh', 'true')
+    if (params?.selection) qs.set('selection', params.selection)
     const s = qs.toString()
     return request<ExperimentReport>(`/experiments/${id}/report${s ? `?${s}` : ''}`)
   },
-  results: (id: string, params?: { config?: string; case?: string }) => {
+  results: (
+    id: string,
+    params?: { config?: string; case?: string; includeRetired?: boolean },
+  ) => {
     const qs = new URLSearchParams()
     if (params?.config) qs.set('config', params.config)
     if (params?.case) qs.set('case', params.case)
+    // SPA-84: cells of a retired configuration keep their lineage; this is the
+    // only way back to it.
+    if (params?.includeRetired) qs.set('include_retired', 'true')
     const s = qs.toString()
     return request<ExperimentRunResult[]>(`/experiments/${id}/results${s ? `?${s}` : ''}`)
   },
+  retireConfig: (id: string, configKey: string) =>
+    request<Experiment & { config_key: string; runs_retired: number }>(
+      `/experiments/${id}/configs/${configKey}`,
+      { method: 'DELETE' },
+    ),
   clone: (id: string, data: { name?: string; changes?: Record<string, unknown> }) =>
     request<Experiment>(`/experiments/${id}/clone`, {
       method: 'POST',

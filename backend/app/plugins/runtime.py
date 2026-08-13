@@ -54,6 +54,17 @@ class AgentRuntime(ABC):
     @abstractmethod
     async def send_command(self, container_id: str, kind: str, payload: dict) -> bool: ...
 
+    def image_id(self, container_id: str) -> str | None:
+        """Id of the image the container is actually running (SPA-84).
+
+        A tag is not an identity: rebuilding ``spawnhive-agent:latest`` changes
+        what runs while the name stays put, and that has moved measured pass
+        rates in this project before. Only the resolved id can tell those apart.
+        Not abstract — a runtime that cannot answer returns None, and the caller
+        treats that as missing evidence rather than as evidence of sameness.
+        """
+        return None
+
 
 class DockerRuntime(AgentRuntime):
     """Thin adapter over the existing app.orchestrator.docker_manager helpers."""
@@ -91,6 +102,11 @@ class DockerRuntime(AgentRuntime):
             image=spec.image,
             network_mode=spec.network_mode,
         )
+
+    def image_id(self, container_id: str) -> str | None:
+        from app.orchestrator.docker_manager import container_image_id
+
+        return container_image_id(container_id)
 
     def kill(self, container_id: str, workspace_id: str | None = None) -> bool:
         from app.orchestrator.docker_manager import kill_agent
