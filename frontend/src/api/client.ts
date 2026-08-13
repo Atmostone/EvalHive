@@ -256,7 +256,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CalibrationQueue, ReviewContext, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, FailureAggregate, HallucinationProfile, HallucinationAggregate, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge, ExperimentSnapshot, SnapshotDiff, ReplayResult, PairwiseComparison, PairwiseListResponse, PairwiseVerdict, ComparisonSubject, ComparisonStatus, ExternalCheckerLogs } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, Annotation, CalibrationQueue, ReviewContext, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, FailureAggregate, HallucinationProfile, HallucinationAggregate, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge, ExperimentSnapshot, SnapshotDiff, ReplayResult, PairwiseComparison, PairwiseListResponse, PairwiseVerdict, ComparisonSubject, ComparisonStatus, ExternalCheckerLogs } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -289,6 +289,10 @@ export const qualityApi = {
     request<{ task_id: string; human_feedback: HumanFeedback }>(
       `/quality/records/${taskId}/feedback`,
       { method: 'PUT', body: JSON.stringify(body) },
+    ),
+  getAnnotations: (taskId: string) =>
+    request<{ task_id: string; annotations: Annotation[] }>(
+      `/quality/records/${taskId}/annotations`,
     ),
   getCalibrationQueue: (params?: { status?: 'pending' | 'done' | 'all'; limit?: number }) => {
     const q = new URLSearchParams()
@@ -535,6 +539,13 @@ export interface HumanFeedbackInput {
   verdict?: 'approve' | 'reject' | null
   overall_comment?: string | null
   dimensions: { key: string; name?: string; score: number; comment?: string | null }[]
+  /** Who is rating (SPA-85). Omitted = `human`, the caller themselves. */
+  annotator_type?: 'human' | 'llm_judge' | 'synthetic'
+  annotator_label?: string | null
+  /** The protocol as it actually was — set when the annotator rated without
+   *  seeing the judge's scores / the model identity. */
+  blind_to_model?: boolean
+  blind_to_judge?: boolean
 }
 
 import type { VarianceRun, PerturbationRun, PerturbationTransform } from '../types'

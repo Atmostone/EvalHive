@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { Download } from 'lucide-react'
+import { Download, EyeOff, Users } from 'lucide-react'
+import { format } from 'date-fns'
 import { qualityApi } from '@/api/client'
 import HumanFeedbackForm from './HumanFeedbackForm'
 import MarkdownView from '../MarkdownView'
-import type { QualityProfile, ReviewFile } from '@/types'
+import type { Annotation, AnnotatorType, QualityProfile, ReviewFile } from '@/types'
 
 /** Loads the judge profile (unless supplied), the review context (task prompt +
  *  deliverable) and any existing human feedback for a task, then shows what is
@@ -39,6 +40,10 @@ export default function AnnotationPanel({
   const trajectoryQuery = useQuery({
     queryKey: ['trajectory-profile', taskId],
     queryFn: () => qualityApi.getTrajectoryProfile(taskId),
+  })
+  const annotationsQuery = useQuery({
+    queryKey: ['annotations', taskId],
+    queryFn: () => qualityApi.getAnnotations(taskId),
   })
 
   const profile = profileProp ?? profileQuery.data?.quality_profile ?? null
@@ -92,6 +97,70 @@ export default function AnnotationPanel({
         defaultOpen
         onSaved={onSaved}
       />
+
+      <AnnotationLedger rows={annotationsQuery.data?.annotations ?? []} />
+    </div>
+  )
+}
+
+const TYPE_STYLE: Record<AnnotatorType, string> = {
+  human: 'bg-green-100 text-green-700',
+  llm_judge: 'bg-purple-100 text-purple-700',
+  synthetic: 'bg-purple-100 text-purple-700',
+  legacy: 'bg-gray-200 text-gray-600',
+}
+
+/** Every rating this run has ever carried (SPA-85). A second annotator is a
+ *  second row here — that is what makes inter-annotator agreement computable —
+ *  and a re-rating supersedes only its own author's previous row. */
+function AnnotationLedger({ rows }: { rows: Annotation[] }) {
+  if (rows.length === 0) return null
+  const superseded = new Set(rows.map((r) => r.supersedes_id).filter(Boolean) as string[])
+  const current = rows.filter((r) => !superseded.has(r.id))
+  const people = new Set(current.filter((r) => r.annotator_type === 'human').map((r) => r.annotator_id))
+
+  return (
+    <div>
+      <div className="text-xs font-medium uppercase tracking-wide text-gray-400 mb-1 flex items-center gap-1">
+        <Users className="h-3 w-3" />
+        Annotations · {current.length} current
+        {rows.length > current.length && ` (${rows.length - current.length} superseded)`}
+        {people.size > 1 && ` · ${people.size} people`}
+      </div>
+      <div className="border rounded-lg bg-white divide-y">
+        {rows.map((r) => {
+          const stale = superseded.has(r.id)
+          return (
+            <div
+              key={r.id}
+              className={`px-3 py-1.5 flex items-center gap-2 text-xs ${stale ? 'opacity-50' : ''}`}
+            >
+              <span className={`px-1.5 py-0.5 rounded ${TYPE_STYLE[r.annotator_type]}`}>
+                {r.annotator_type}
+              </span>
+              <span className="text-gray-700 truncate flex-1">{r.annotator_label ?? '—'}</span>
+              {r.blind_to_judge && (
+                <span
+                  className="flex items-center gap-0.5 text-indigo-600"
+                  title="Rated without seeing the judge's scores"
+                >
+                  <EyeOff className="h-3 w-3" /> blind
+                </span>
+              )}
+              {r.verdict && (
+                <span className={r.verdict === 'approve' ? 'text-green-600' : 'text-red-600'}>
+                  {r.verdict}
+                </span>
+              )}
+              <span className="text-gray-400">{r.dimensions.length} dims</span>
+              {stale && <span className="text-gray-400 italic">superseded</span>}
+              <span className="text-gray-400 whitespace-nowrap">
+                {r.created_at ? format(new Date(r.created_at), 'dd MMM HH:mm') : ''}
+              </span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

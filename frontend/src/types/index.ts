@@ -209,6 +209,30 @@ export interface HumanFeedback {
   submitted_at: string
 }
 
+// The append-only annotation ledger (SPA-85). `human_feedback` above is the
+// materialised latest human row of this list.
+export type AnnotatorType = 'human' | 'llm_judge' | 'synthetic' | 'legacy'
+
+export interface Annotation {
+  id: string
+  task_id: string
+  annotator_type: AnnotatorType
+  annotator_id: string | null
+  annotator_label: string | null
+  protocol_version: number
+  blind_to_model: boolean
+  blind_to_judge: boolean
+  verdict: FeedbackVerdict | null
+  overall_comment?: string | null
+  dimensions: HumanFeedbackDimension[]
+  /** What the judge had said at annotation time — frozen, so a re-judge cannot
+   *  rewrite this row's calibration pair. */
+  judge_observation: Record<string, unknown>
+  /** The row this one replaces — set only when the same annotator re-rated. */
+  supersedes_id: string | null
+  created_at: string | null
+}
+
 // Calibration queue (E-17): records carrying a judge profile, awaiting human annotation.
 export interface CalibrationQueueItem {
   task_id: string
@@ -690,11 +714,41 @@ export interface JudgeCalibrationDimension {
   status: 'ok' | 'insufficient_data'
 }
 
+/** Agreement between annotators who rated the same run (SPA-85) — impossible to
+ *  compute while a run could only carry one rating. */
+export interface InterAnnotatorAgreement {
+  available: boolean
+  n_records: number
+  n_annotators: number
+  dimensions: {
+    key: string
+    name: string
+    n: number
+    cohen_kappa: number | null
+    agreement_pct: number | null
+    reliable: boolean
+    status: 'ok' | 'insufficient_data'
+  }[]
+  overall: {
+    n: number
+    cohen_kappa: number | null
+    agreement_pct: number | null
+    reliable: boolean
+  }
+}
+
 export interface JudgeCalibrationMetrics {
   threshold_kappa: number
   sample_size: number
   n_records: number
+  /** People — distinct annotator ids of type `human` (SPA-85). */
   n_humans: number
+  n_annotators: number
+  n_annotations: number
+  /** Ratings collected before the ledger; they carry no attributable person. */
+  n_legacy: number
+  /** Share of pairs whose judge side came from a frozen observation. */
+  judge_frozen_pct: number | null
   n_dimensions: number
   dimensions: JudgeCalibrationDimension[]
   overall: {
@@ -703,6 +757,7 @@ export interface JudgeCalibrationMetrics {
     agreement_pct: number | null
     reliable: boolean
   }
+  inter_annotator: InterAnnotatorAgreement
   recommendations: string[]
 }
 
@@ -725,6 +780,10 @@ export interface JudgeCalibration {
 export interface JudgeCalibrationBadge {
   calibrated: boolean
   n_humans?: number
+  n_legacy?: number
+  judge_frozen_pct?: number | null
+  inter_annotator_kappa?: number | null
+  inter_annotator_records?: number
   sample_size?: number
   overall_kappa?: number | null
   judge_config_key?: string

@@ -2,7 +2,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, CheckCircle2, XCircle, Scale } from 'lucide-react'
 import { qualityApi } from '@/api/client'
 import { useAuth } from '@/stores/auth'
-import type { JudgeCalibration, JudgeCalibrationDimension } from '@/types'
+import type {
+  InterAnnotatorAgreement,
+  JudgeCalibration,
+  JudgeCalibrationDimension,
+} from '@/types'
 import { cn } from '@/lib/utils'
 import JudgeCalibrationBadge from './JudgeCalibrationBadge'
 
@@ -96,9 +100,27 @@ function ReportView({ report }: { report: JudgeCalibration }) {
         <span>
           {m.sample_size} pairs · {m.n_records} records · {m.n_humans} humans
         </span>
+        {m.n_legacy > 0 && (
+          <span
+            className="text-gray-400"
+            title="Ratings collected before the annotation ledger. They stay in the population but carry no attributable person, so they are not counted as humans."
+          >
+            +{m.n_legacy} legacy
+          </span>
+        )}
+        {m.judge_frozen_pct != null && m.judge_frozen_pct < 1 && (
+          <span
+            className="text-amber-600"
+            title="Share of pairs whose judge side came from the observation frozen at annotation time. Below 100% means some pair was rebuilt from the live profile and can still move under a re-judge."
+          >
+            {Math.round(m.judge_frozen_pct * 100)}% judge frozen
+          </span>
+        )}
         <span>threshold κ ≥ {report.threshold_kappa}</span>
         {report.created_at && <span>{new Date(report.created_at).toLocaleString()}</span>}
       </div>
+
+      <InterAnnotatorRow inter={m.inter_annotator} />
 
       <DimensionTable dimensions={m.dimensions} />
 
@@ -129,6 +151,39 @@ function ReportView({ report }: { report: JudgeCalibration }) {
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+/** How reproducible the human gold itself is (SPA-85) — it bounds what the judge
+ *  can be asked to match. Absent until some run carries a second annotator. */
+function InterAnnotatorRow({ inter }: { inter?: InterAnnotatorAgreement }) {
+  if (!inter) return null
+  if (!inter.available) {
+    return (
+      <p className="text-xs text-gray-400 border-t pt-2">
+        Inter-annotator agreement — no run has been rated by a second annotator yet, so
+        there is nothing to compare. Have a second person rate the same runs to get it.
+      </p>
+    )
+  }
+  const dims = inter.dimensions.map((d) => `${d.name} κ=${fmt(d.cohen_kappa)}`).join(' · ')
+  return (
+    <div className="text-xs border-t pt-2 space-y-1">
+      <div className="flex items-center gap-3">
+        <span className="font-medium text-gray-700">Inter-annotator agreement</span>
+        <span className="text-gray-500">
+          {inter.n_annotators} annotators · {inter.n_records} doubly-rated runs
+        </span>
+        <span className="ml-auto text-gray-500 tabular-nums">
+          verdict κ={fmt(inter.overall.cohen_kappa)} · agreement{' '}
+          {inter.overall.agreement_pct != null
+            ? `${Math.round(inter.overall.agreement_pct * 100)}%`
+            : '—'}{' '}
+          · n={inter.overall.n}
+        </span>
+      </div>
+      {dims && <div className="text-gray-500 tabular-nums">{dims}</div>}
     </div>
   )
 }
