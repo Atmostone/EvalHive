@@ -10,6 +10,9 @@ const EVENT_TYPES = [
   'task_created', 'task_status_changed', 'orchestrator_decision',
   'agent_spawned', 'agent_completed', 'agent_failed', 'agent_killed', 'agent_message',
   'webhook_received', 'user_approval', 'user_rejection', 'task_retry', 'kill_all_agents',
+  // SPA-84: every retry / add-config / retire-config on an experiment. Without it
+  // in this list the mutation audit trail exists but is unreachable from the UI.
+  'experiment_mutated', 'external_eval_verdict',
 ]
 
 const SOURCES = ['orchestrator', 'agent', 'user', 'system']

@@ -18,7 +18,7 @@ import {
 import { experimentsApi, qualityApi } from '@/api/client'
 import RunAnalysis from '@/components/quality/RunAnalysis'
 import SummaryRadarPanel from '@/components/quality/SummaryRadarPanel'
-import type { ExperimentDetail as ExperimentDetailType, ExperimentReport } from '@/types'
+import type { ExperimentConfig, ExperimentDetail as ExperimentDetailType, ExperimentReport } from '@/types'
 import { StatusPill } from './Experiments'
 import { ArrowLeft, Copy, Download, Pause, Play, RefreshCw, RotateCcw, Square, Trash2, X } from 'lucide-react'
 
@@ -106,6 +106,44 @@ function reliabilityTooltip(a?: AxisReliability): string {
       ? ' Scale-shifted judge: ranks agree with the human, absolute scores do not — trust comparisons only.'
       : ''
   return `Reliability: ${RELIABILITY_META[a.status].word} — judge vs ${reliabilitySource(a.source)} (${k}${r}, n=${a.n}). Bar: κ≥0.6 reliable · 0.4–0.6 directional · <0.4 unreliable unless rank ρ≥0.5.${rankNote}`
+}
+
+// SPA-84: an experiment id alone no longer identifies a fixed set of runs — every
+// mutation (retry, add-config, retire-config) bumps the revision. Showing it makes
+// "which version of this experiment am I looking at" answerable from the page.
+// SPA-84: what a configuration actually resolved to when the experiment started.
+// The column header is the only place a config is named, so it is where the frozen
+// resolution belongs — otherwise "cfg-01" says nothing about which model ran.
+function configTooltip(cfg: ExperimentConfig): string {
+  const r = cfg.resolved
+  if (!r) return cfg.config_key
+  const parts = [cfg.config_key]
+  if (r.model_api_name) parts.push(`model ${r.model_api_name}`)
+  if (r.provider_name) parts.push(`via ${r.provider_name}`)
+  if (r.template_name) parts.push(`template ${r.template_name}`)
+  if (r.template_content_sha256) parts.push(`template hash ${r.template_content_sha256}`)
+  if (r.resolved_at) parts.push(`frozen ${new Date(r.resolved_at).toLocaleString()}`)
+  return parts.join(' · ')
+}
+
+function RevisionBadge({ revision, retired }: { revision: number; retired: number }) {
+  if (!revision) return null
+  const mutated = revision > 1
+  return (
+    <span
+      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+        mutated ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'
+      }`}
+      title={
+        mutated
+          ? `Revision ${revision} — this experiment has been mutated ${revision - 1} time(s) since it was created (retry, add-config or retire-config). Superseded runs are kept in the attempt ledger.${retired ? ` ${retired} configuration(s) retired.` : ''}`
+          : 'Revision 1 — unchanged since it was created.'
+      }
+    >
+      rev {revision}
+      {retired > 0 && ` · ${retired} retired`}
+    </span>
+  )
 }
 
 function ReliabilityBadge({ a }: { a?: AxisReliability }) {
@@ -225,6 +263,11 @@ function CloneModal({ detail, pending, onClose, onClone }: {
 }
 
 function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell: (config: string, caseKey: string) => void }) {
+  const queryClient = useQueryClient()
+  const retireMutation = useMutation({
+    mutationFn: (configKey: string) => experimentsApi.retireConfig(detail.id, configKey),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['experiment', detail.id] }),
+  })
   // Verifiable bench: an executable checker provides a ground-truth verdict, but
   // the checker is itself unreliable (~21% vs gold), so the LLM judge (E-02) and
   // human (E-05) are shown ALONGSIDE it as independent oracles — all three are
@@ -235,6 +278,13 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
   const [heat, setHeat] = useState<HeatMode>(verifiable ? 'trajectory' : 'quality')
   const cases = detail.dataset_cases
   const cells = new Map(detail.matrix.map((c) => [`${c.config_key}|${c.case_key}`, c]))
+  // SPA-84: a retired configuration keeps its entry (and its lineage) but its
+  // cells are out of the matrix. Drawing its column anyway produced a phantom
+  // strip of "—" and made the header count disagree with what was on screen.
+  const liveConfigs = detail.configurations.filter((c) => !c.retired_at)
+  const retiredConfigs = detail.configurations.filter((c) => c.retired_at)
+  // The backend refuses to retire while running, and refuses the last live one.
+  const canRetire = detail.status !== 'running' && detail.status !== 'draft' && liveConfigs.length > 1
   if (detail.matrix.length === 0) {
     return (
       <div className="text-sm text-gray-500 p-4 max-w-2xl space-y-1">
@@ -274,9 +324,26 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
         <thead>
           <tr>
             <th className="text-left text-xs text-gray-500 px-2 sticky top-0 left-0 bg-white z-20">case \ config</th>
-            {detail.configurations.map((cfg) => (
-              <th key={cfg.config_key} className="text-xs text-gray-500 font-normal px-2 whitespace-nowrap sticky top-0 bg-white z-10" title={cfg.config_key}>
+            {liveConfigs.map((cfg) => (
+              <th key={cfg.config_key} className="text-xs text-gray-500 font-normal px-2 whitespace-nowrap sticky top-0 bg-white z-10"
+                title={configTooltip(cfg)}>
                 {cfg.label}
+                {/* SPA-84: retiring is only legal off the running path, and never
+                    on the last live configuration. */}
+                {canRetire && (
+                  <button
+                    onClick={() => {
+                      if (confirm(`Retire "${cfg.label}"? Its ${detail.n_cases * detail.n_runs_per_cell} cell(s) keep their lineage but leave the matrix and the report. This bumps the experiment revision and cannot be undone from the UI.`)) {
+                        retireMutation.mutate(cfg.config_key)
+                      }
+                    }}
+                    disabled={retireMutation.isPending}
+                    title="Retire this configuration — its runs are kept and stay reachable under Runs → include retired, but it leaves the matrix and the report."
+                    className="ml-1 text-gray-300 hover:text-red-500 disabled:opacity-40"
+                  >
+                    ⊘
+                  </button>
+                )}
               </th>
             ))}
           </tr>
@@ -287,7 +354,7 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
               <td className="text-xs text-gray-700 font-medium px-2 max-w-[16rem] truncate sticky left-0 z-10 bg-white" title={c.title}>
                 {c.case_key}
               </td>
-              {detail.configurations.map((cfg) => {
+              {liveConfigs.map((cfg) => {
                 const cell = cells.get(`${cfg.config_key}|${c.case_key}`)
                 const counts = cell?.counts || {}
                 const heatVal = heat === 'quality' ? cell?.quality_mean : heat === 'trajectory' ? cell?.trajectory_mean : heat === 'human' ? cell?.human_mean : null
@@ -351,6 +418,20 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
         </tbody>
       </table>
       <div className="text-xs text-gray-400 mt-2">🔩 run outcome + ✔pass/total executable checker (✓ success · ✗ failed · ⚙ preprocessing · … running · ⏳ evaluating · · pending · s skipped) · ⚖️ LLM judge (q = outcome quality · t = process trajectory) · 🧑 human (mean score + ✓/✗ verdict) · ±σ = spread across runs · hover q/t for the per-dimension/axis breakdown — click a cell for run details</div>
+      {retiredConfigs.length > 0 && (
+        <div className="text-xs text-gray-500 mt-2 border-t pt-2">
+          <span className="font-medium text-gray-600">Retired configurations:</span>{' '}
+          {retiredConfigs.map((c, i) => (
+            <span key={c.config_key} className="line-through text-gray-400" title={`${c.config_key} — retired ${c.retired_at}`}>
+              {c.label}
+              {i < retiredConfigs.length - 1 ? ', ' : ''}
+            </span>
+          ))}
+          <span className="text-gray-400">
+            {' '}— out of the matrix and out of the report. Their runs are kept; see them in Runs → include retired.
+          </span>
+        </div>
+      )}
     </div>
   )
 }
@@ -590,8 +671,44 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
     : report.significance
   return (
     <div className="space-y-6">
+      {/* SPA-84: pinning what a config resolved to is only worth doing if the
+          reader is told when it stops being true. */}
+      {!!report.config_drift?.length && (
+        <div className="border border-amber-300 bg-amber-50 rounded-lg p-3 text-sm">
+          <p className="font-medium text-amber-800">
+            Configuration drift — what these conditions mean has changed since the experiment started
+          </p>
+          <p className="text-xs text-amber-700 mt-1">
+            The matrix fingerprint covers ids, not the contents behind them. A template edited mid-flight
+            or a model row repointed at another vendor changes the condition without changing the id, so
+            these results may not be comparing what the labels say.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {report.config_drift.map((d) => (
+              <li key={d.config_key} className="text-xs text-amber-900">
+                <span className="font-medium">{d.label || d.config_key}</span>
+                {' — '}
+                {Object.entries(d.changed).map(([field, v], i, arr) => (
+                  <span key={field}>
+                    {field}: <code className="text-amber-700">{String(v.pinned ?? '—')}</code> →{' '}
+                    <code className="text-amber-700">{String(v.current ?? '—')}</code>
+                    {i < arr.length - 1 ? '; ' : ''}
+                  </span>
+                ))}
+                {d.resolved_at && (
+                  <span className="text-amber-600"> (pinned {new Date(d.resolved_at).toLocaleString()})</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="flex items-center justify-end gap-2">
-        <span className="text-xs text-gray-400 mr-auto">assembled {new Date(report.generated_at).toLocaleString()}</span>
+        <span className="text-xs text-gray-400 mr-auto">
+          assembled {new Date(report.generated_at).toLocaleString()}
+          {report.input_revision != null && ` · from revision ${report.input_revision}`}
+          {report.selection && report.selection !== 'latest_valid' && ` · ${report.selection}`}
+        </span>
         <JudgeTrustBadge />
         <button onClick={onRefresh} disabled={refreshing} title="Re-assemble report (bypass cache)"
           className="flex items-center gap-1.5 px-2.5 py-1.5 border rounded-lg hover:bg-gray-50 text-xs disabled:opacity-50">
@@ -1325,17 +1442,20 @@ function RunsTab({ id, detail, filter }: {
 }) {
   const [config, setConfig] = useState(filter.config || '')
   const [caseKey, setCaseKey] = useState(filter.case || '')
+  const [includeRetired, setIncludeRetired] = useState(false)
   const [openTask, setOpenTask] = useState<string | null>(null)
+  const hasRetired = detail.configurations.some((c) => c.retired_at)
   // Verifiable bench (executable checker = outcome ground truth): the outcome
   // judge (E-02) is the audited subject, not the eval — hide its score column. (SPA-68)
   const verifiable = detail.matrix.some((c) => (c.external_total ?? 0) > 0)
   const labelOf = new Map(detail.configurations.map((c) => [c.config_key, c.label]))
   const { data: rows = [] } = useQuery({
-    queryKey: ['experiment-results', id, config, caseKey],
+    queryKey: ['experiment-results', id, config, caseKey, includeRetired],
     queryFn: () =>
       experimentsApi.results(id, {
         ...(config ? { config } : {}),
         ...(caseKey ? { case: caseKey } : {}),
+        ...(includeRetired ? { includeRetired: true } : {}),
       }),
   })
   return (
@@ -1345,7 +1465,9 @@ function RunsTab({ id, detail, filter }: {
           className="px-2 py-1.5 border rounded text-sm bg-white">
           <option value="">all configurations</option>
           {detail.configurations.map((c) => (
-            <option key={c.config_key} value={c.config_key}>{c.label}</option>
+            <option key={c.config_key} value={c.config_key}>
+              {c.label}{c.retired_at ? ' (retired)' : ''}
+            </option>
           ))}
         </select>
         <select value={caseKey} onChange={(e) => setCaseKey(e.target.value)}
@@ -1355,6 +1477,14 @@ function RunsTab({ id, detail, filter }: {
             <option key={c.case_key} value={c.case_key}>{c.case_key}</option>
           ))}
         </select>
+        {hasRetired && (
+          <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer"
+            title="Cells of a retired configuration keep their lineage but are excluded from the report and every other view. This is the way back to them.">
+            <input type="checkbox" checked={includeRetired}
+              onChange={(e) => setIncludeRetired(e.target.checked)} />
+            include retired
+          </label>
+        )}
         <span className="text-xs text-gray-400">{rows.length} runs</span>
       </div>
       <div className="bg-white border rounded-lg overflow-x-auto">
@@ -1394,7 +1524,23 @@ function RunsTab({ id, detail, filter }: {
                       )}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-gray-700">
-                      {labelOf.get(r.config_key) || r.config_key} · {r.case_key} · #{r.run_index + 1}
+                      <span className={r.retired_at ? 'line-through text-gray-400' : ''}>
+                        {labelOf.get(r.config_key) || r.config_key} · {r.case_key} · #{r.run_index + 1}
+                      </span>
+                      {/* SPA-84: >1 means this row is the survivor of earlier
+                          attempts, which are preserved in the ledger. */}
+                      {(r.attempt_count ?? 0) > 1 && (
+                        <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 font-medium"
+                          title={`Attempt ${r.attempt_count} — this cell was re-run. Earlier attempts are kept in the ledger and are visible with selection=all_attempts on the report.`}>
+                          att {r.attempt_count}
+                        </span>
+                      )}
+                      {r.retired_at && (
+                        <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-gray-100 text-gray-500 font-medium"
+                          title={`Configuration retired ${r.retired_at} — kept for lineage, excluded from the report.`}>
+                          retired
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2">
                       <span className={
@@ -1517,6 +1663,7 @@ export default function ExperimentDetail() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
             {detail.name} <StatusPill status={detail.status} />
+            <RevisionBadge revision={detail.revision} retired={detail.n_retired_configs} />
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {detail.n_configs} configs × {detail.n_cases} cases × {detail.n_runs_per_cell} runs = {detail.total_runs} ·
@@ -1555,9 +1702,9 @@ export default function ExperimentDetail() {
             <Copy className="h-4 w-4" /> Clone…
           </button>
           {isTerminal && failedCount > 0 && (
-            <button onClick={() => { if (confirm(`Re-run ${failedCount} failed cell(s) in place (rate-limit / API / infra errors)? Valid cells and their scores are kept.`)) retryFailedMutation.mutate() }}
+            <button onClick={() => { if (confirm(`Re-run ${failedCount} failed cell(s) (rate-limit / API / infra errors)? Their current state is kept in the attempt ledger — nothing is overwritten. Valid cells and their scores are untouched.`)) retryFailedMutation.mutate() }}
               disabled={retryFailedMutation.isPending}
-              title="Reset only the failed cells to pending and re-run them in THIS experiment — no clone, valid cells untouched. Repeatable across provider quota windows."
+              title="Archive each failed cell's current state as an attempt, then reset it to pending and re-run it in THIS experiment — no clone, valid cells untouched. Bumps the experiment revision. Repeatable across provider quota windows."
               className="flex items-center gap-1.5 px-3 py-2 border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50 text-sm font-medium">
               <RotateCcw className="h-4 w-4" /> Retry failed ({failedCount})
             </button>
