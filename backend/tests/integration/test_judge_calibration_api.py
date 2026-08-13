@@ -304,6 +304,10 @@ async def test_inter_annotator_agreement_falls_out_of_the_data(auth_client: Asyn
     assert inter["overall"]["n"] == 4
     assert inter["overall"]["agreement_pct"] == 0.75
 
+    # judge-vs-human counts BOTH annotators' verdicts, not whichever the loop
+    # reached last: 4 runs × 2 people, judge gate passed everywhere
+    assert metrics["overall"]["n"] == 8
+
     r = await auth_client.get("/api/quality/judge-calibration/badge")
     assert r.json()["inter_annotator_records"] == 4
     assert r.json()["inter_annotator_kappa"] is not None

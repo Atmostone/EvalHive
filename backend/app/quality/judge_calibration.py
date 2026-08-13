@@ -314,8 +314,11 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
         }
         dimensions.append(dim)
 
-    # Overall verdict-agreement: one (judge_gate, human_verdict) pair per task.
-    verdict_pairs: dict[str, tuple[str, str]] = {}
+    # Overall verdict-agreement: one (judge_gate, human_verdict) pair per task
+    # AND annotator. Keying on the task alone was safe only while a run could
+    # carry a single rating — with two annotators it silently kept whichever one
+    # the iteration happened to reach last (SPA-85).
+    verdict_pairs: dict[tuple, tuple[str, str]] = {}
     for p in pairs:
         tid = p.get("task_id")
         verdict = p.get("verdict")
@@ -323,7 +326,7 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
         if tid is None or verdict not in VERDICT_LABELS or gate is None:
             continue
         judge_verdict = "approve" if gate else "reject"
-        verdict_pairs[tid] = (judge_verdict, verdict)
+        verdict_pairs[(tid, _annotator_key(p))] = (judge_verdict, verdict)
     j_v = [v[0] for v in verdict_pairs.values()]
     h_v = [v[1] for v in verdict_pairs.values()]
     n_v = len(j_v)
