@@ -25,12 +25,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # NULL for rows claimed before this existed, and for rows never claimed.
+    # NULL for rows spawned before this existed, and for rows never claimed.
     op.add_column(
         "experiment_runs",
+        sa.Column("condition_fingerprint", sa.String(32), nullable=True),
+    )
+    # The ledger needs it too, or a retried cell loses the condition its earlier
+    # attempt ran under — and a disagreement BETWEEN attempts of one cell is
+    # exactly the case the per-run record exists to catch.
+    op.add_column(
+        "experiment_attempts",
         sa.Column("condition_fingerprint", sa.String(32), nullable=True),
     )
 
 
 def downgrade() -> None:
+    op.drop_column("experiment_attempts", "condition_fingerprint")
     op.drop_column("experiment_runs", "condition_fingerprint")

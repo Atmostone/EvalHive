@@ -289,6 +289,11 @@ class ExperimentAttempt(Base):
     external_verdict: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     launch_time: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     lane_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # What this attempt ran under. Kept so a disagreement between the attempts of
+    # one cell stays visible after the cell is reset.
+    condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
 
     # Why this attempt stopped being current: 'retry' | 'config_retired'.
     retired_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

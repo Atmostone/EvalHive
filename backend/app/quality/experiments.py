@@ -780,24 +780,6 @@ def _agent_image_ids() -> dict:
     return out
 
 
-def _condition_fingerprint(resolved: dict, agent_image: str) -> str:
-    """Hash of what a run actually executes under (SPA-84).
-
-    Only the parts that change behaviour, and only the ONE agent image this run
-    will use — including both would flag a rebuild of the image the run never
-    touched. Compared across the cells of a config to prove they all ran under
-    the same condition; the config-level pin cannot, because the runtime
-    re-resolves the template and the model at spawn.
-    """
-    canon = {
-        "model_api_name": resolved.get("model_api_name"),
-        "template_content_sha256": resolved.get("template_content_sha256"),
-        "agent_image": (resolved.get("agent_images") or {}).get(agent_image),
-    }
-    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(blob.encode()).hexdigest()[:16]
-
-
 async def _resolve_config_state(db: AsyncSession, cfg: dict, images: dict) -> dict:
     """Freeze what a configuration actually resolves to right now (SPA-84).
 
@@ -947,6 +929,7 @@ async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -
             external_verdict=run.external_verdict,
             launch_time=run.launch_time,
             lane_index=run.lane_index,
+            condition_fingerprint=run.condition_fingerprint,
             retired_reason=reason,
             completed_at=run.completed_at,
         )
@@ -1100,7 +1083,17 @@ async def _resettle_after_retirement(db: AsyncSession, exp: Experiment) -> None:
             select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id, LIVE_CELL)
         )
     ).scalars().all()
-    exp.accumulated_cost_usd = sum((Decimal(r.cost_usd or 0) for r in rows), Decimal("0"))
+    # Mirror the tick's roll-up: settled cells carry their cost denormalized,
+    # in-flight ones still hold it on the task. Counting only the settled half
+    # would make a paused experiment's spend dip until the next tick.
+    total = sum((Decimal(r.cost_usd or 0) for r in rows), Decimal("0"))
+    inflight_task_ids = [r.task_id for r in rows if r.status in _INFLIGHT_RUN and r.task_id]
+    if inflight_task_ids:
+        for task in (
+            await db.execute(select(Task).where(Task.id.in_(inflight_task_ids)))
+        ).scalars().all():
+            total += Decimal(task.cost_usd or 0)
+    exp.accumulated_cost_usd = total
 
     # Only re-derive a terminal verdict; a paused experiment keeps its status,
     # and the tick owns the running one.
@@ -1981,14 +1974,6 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
             # This execution is attempt N of the cell; a retry snapshots the
             # state under this number before clearing it (SPA-84).
             r.attempt_count = (r.attempt_count or 0) + 1
-            # Record what this run actually resolves to, now. The engine reads
-            # the template's prompt and the effective model live at spawn, so a
-            # template edited mid-experiment silently changes later runs of the
-            # same config_key — this is the only point where that is visible.
-            r.condition_fingerprint = _condition_fingerprint(
-                await _resolve_config_state(db, cfg, _agent_image_ids()),
-                TOOLATHLON_AGENT_IMAGE if _external_eval(case) else DEFAULT_AGENT_IMAGE,
-            )
             claimed += 1
         await db.commit()
         if claimed:

@@ -20,6 +20,7 @@ from app.models.experiment import (
 )
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
+from app.orchestrator.engine import _record_run_condition
 from app.quality.experiment_report import (
     SELECTION_ALL_ATTEMPTS,
     SELECTION_FIRST_ATTEMPT,
@@ -121,6 +122,19 @@ async def _settled_experiment(db_session, workspace_id, *, task_status=TaskStatu
     await start_experiment(db_session, exp)
     await _drain(db_session, exp, task_status=task_status)
     return exp, tpl
+
+
+async def _settled_two_cell_experiment(db_session, workspace_id):
+    """One config, two runs of the same case — the minimum to show a split."""
+    tpl = await _template(db_session, workspace_id, name=f"T-{uuid.uuid4().hex[:6]}")
+    exp = await create_experiment(
+        db_session,
+        workspace_id=workspace_id,
+        payload=_payload(tpl.id, n_runs_per_cell=2),
+    )
+    await start_experiment(db_session, exp)
+    await _drain(db_session, exp)
+    return exp
 
 
 # --- retry ------------------------------------------------------------------
@@ -652,53 +666,6 @@ async def test_an_execution_survives_retry_then_retire_in_all_attempts(auth_clie
 
 
 @pytest.mark.asyncio
-async def test_each_run_records_what_it_actually_ran_under(auth_client, db_session):
-    """The config-level pin describes intent at start; the engine re-resolves the
-    template and the model at every spawn, so only the per-run record is proof."""
-    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
-    exp, _ = await _settled_experiment(db_session, workspace_id)
-
-    rows = await _runs(db_session, exp)
-    assert all(r.condition_fingerprint for r in rows), "every claimed cell records its condition"
-    per_config = {}
-    for r in rows:
-        per_config.setdefault(r.config_key, set()).add(r.condition_fingerprint)
-    assert all(len(v) == 1 for v in per_config.values()), "one config_key, one condition"
-
-
-@pytest.mark.asyncio
-async def test_a_template_edited_mid_experiment_splits_the_config(auth_client, db_session):
-    """The finding this closes: a config_key could quietly cover two conditions,
-    and comparing the pin against 'now' misses it if the edit is reverted."""
-    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
-    tpl = await _template(db_session, workspace_id, name=f"T-{uuid.uuid4().hex[:6]}")
-    exp = await create_experiment(
-        db_session,
-        workspace_id=workspace_id,
-        payload=_payload(tpl.id, n_runs_per_cell=2, max_parallel=1),
-    )
-    await start_experiment(db_session, exp)
-
-    # One run claimed, then the template changes, then the rest run.
-    await advance_experiment(db_session, exp)
-    original = tpl.soul_md
-    tpl.soul_md = "# edited between two runs of the same configuration"
-    await db_session.commit()
-    await _drain(db_session, exp)
-
-    # Reverted before the report — the pin-vs-now comparison now sees nothing.
-    tpl.soul_md = original
-    await db_session.commit()
-    await db_session.refresh(exp)
-
-    drift = await config_drift(db_session, exp)
-    split = [d for d in drift if d.get("run_conditions")]
-    assert split, "cells that ran under different conditions must still be reported"
-    assert len(split[0]["run_conditions"]) == 2
-    assert split[0]["changed"] == {}, "the pin itself matches again — only the runs disagree"
-
-
-@pytest.mark.asyncio
 async def test_retiring_recomputes_cost_and_status(auth_client, db_session):
     """Every other view moved to the live population; the experiment's own totals
     are rolled up by the tick, which never runs again once settled."""
@@ -731,6 +698,74 @@ async def test_retiring_the_only_failing_config_clears_the_failure(auth_client, 
 
     assert exp.status == ExperimentStatus.COMPLETED.value
     assert exp.error is None
+
+
+@pytest.mark.asyncio
+async def test_spawn_stamps_the_condition_onto_the_right_cell(auth_client, db_session):
+    """The engine writes it back by the cell key, at spawn — the only moment the
+    template, model and tool set are authoritative."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    target = (await _runs(db_session, exp))[0]
+    task = await db_session.get(Task, target.task_id)
+
+    await _record_run_condition(db_session, task, "cond-abc")
+    await db_session.commit()
+    await db_session.refresh(target)
+
+    assert target.condition_fingerprint == "cond-abc"
+    others = [r for r in await _runs(db_session, exp) if r.id != target.id]
+    assert all(r.condition_fingerprint is None for r in others), "only its own cell"
+
+
+@pytest.mark.asyncio
+async def test_a_non_experiment_task_is_ignored(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    plain = Task(title="plain", status=TaskStatus.READY.value, workspace_id=workspace_id)
+    db_session.add(plain)
+    await db_session.commit()
+    await _record_run_condition(db_session, plain, "cond-xyz")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_cells_that_ran_under_different_conditions_are_reported(auth_client, db_session):
+    """Two spawns of one config under different conditions — the pin cannot see
+    this, and neither could a claim-time record."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp = await _settled_two_cell_experiment(db_session, workspace_id)
+    rows = [r for r in await _runs(db_session, exp) if r.config_key == "cfg-01"]
+    assert len(rows) == 2
+    rows[0].condition_fingerprint = "cond-before"
+    rows[1].condition_fingerprint = "cond-after"
+    await db_session.commit()
+
+    split = [d for d in await config_drift(db_session, exp) if d.get("run_conditions")]
+    assert [d["config_key"] for d in split] == ["cfg-01"]
+    assert split[0]["run_conditions"] == ["cond-after", "cond-before"]
+    assert split[0]["changed"] == {}, "the pin still matches — only the runs disagree"
+
+
+@pytest.mark.asyncio
+async def test_a_condition_change_across_retries_survives_in_the_ledger(auth_client, db_session):
+    """The earlier attempt is the only evidence once the cell has been reset."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+    row = next(r for r in await _runs(db_session, exp) if r.config_key == "cfg-01")
+    row.condition_fingerprint = "cond-first"
+    await db_session.commit()
+
+    await retry_failed_experiment(db_session, exp)
+    kept = await _attempts(db_session, row.id)
+    assert [a.condition_fingerprint for a in kept] == ["cond-first"]
+
+    # The cell is re-claimed and spawns under a changed condition.
+    await db_session.refresh(row)
+    row.condition_fingerprint = "cond-second"
+    await db_session.commit()
+
+    split = [d for d in await config_drift(db_session, exp) if d.get("run_conditions")]
+    assert split and split[0]["config_key"] == "cfg-01"
+    assert split[0]["run_conditions"] == ["cond-first", "cond-second"]
 
 
 @pytest.mark.asyncio

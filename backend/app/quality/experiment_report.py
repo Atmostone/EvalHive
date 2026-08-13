@@ -1363,6 +1363,8 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     # What the cells of each config ACTUALLY ran under, recorded at claim time.
     # This is the authoritative half: the pin describes intent at start, while
     # the engine re-resolves the template and the model at every spawn.
+    # Current cells, plus the ledger: a cell retried under a changed template
+    # holds only the newer condition, so the earlier attempt is the evidence.
     rows = (
         await db.execute(
             select(ExperimentRun.config_key, ExperimentRun.condition_fingerprint).where(
@@ -1372,8 +1374,19 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
             )
         )
     ).all()
+    attempt_rows = (
+        await db.execute(
+            select(ExperimentRun.config_key, ExperimentAttempt.condition_fingerprint)
+            .join(ExperimentAttempt, ExperimentAttempt.experiment_run_id == ExperimentRun.id)
+            .where(
+                ExperimentRun.experiment_id == exp.id,
+                LIVE_CELL,
+                ExperimentAttempt.condition_fingerprint.isnot(None),
+            )
+        )
+    ).all()
     run_conditions: dict[str, set[str]] = {}
-    for config_key, fingerprint in rows:
+    for config_key, fingerprint in [*rows, *attempt_rows]:
         run_conditions.setdefault(config_key, set()).add(fingerprint)
 
     images = _agent_image_ids()
