@@ -253,17 +253,19 @@ agent code (pytest/jest) needs container isolation, not in-process execution; we
 ### Human feedback (E-05)
 
 A structured human signal on a finished task — a 0–10 rating per quality dimension
-(mirroring the E-02 axes), a free-text comment per dimension, an overall comment and
-an optional approve/reject verdict — captured by an optional, non-blocking form and
-stored in the `quality_records.human_feedback` slot (built on demand if the record
-does not yet exist). It is a **parallel** signal: it does **not** alter the judge gate
-or weighted score.
+(mirroring the E-02 axes and the E-07 trajectory axes), a free-text comment per
+dimension, an overall comment and an optional approve/reject verdict — captured by an
+optional, non-blocking form. It is a **parallel** signal: it does **not** alter the
+judge gate or weighted score.
 
 ```
-PUT /api/quality/records/{task_id}/feedback   (upsert; member)
-   → build_human_feedback: clamp 0-10, band each score, copy judge_score from the
-     profile by key, stamp submitted_by/at  →  human_feedback slot
-GET .../feedback                              (read; member)
+PUT /api/quality/records/{task_id}/feedback   (append; owner/admin)
+   → freeze_judge_observation: snapshot both judges' identity, per-key scores and gate
+   → build_human_feedback: clamp 0-10, band each score, pair judge_score by key
+   → append an `annotations` row, superseding this annotator's own previous one
+   → refresh the materialised human_feedback slot (human ratings only)
+GET .../feedback                              (latest human rating; member)
+GET .../annotations                           (the whole ledger; member)
 GET /api/quality/calibration                  (owner/admin) → flattened judge↔human
      pairs (one row per rated dimension) — the raw material for judge calibration (E-17)
 ```
@@ -271,11 +273,35 @@ GET /api/quality/calibration                  (owner/admin) → flattened judge�
 Scores are read in **bands** — `bad` (1-3, incorrect/fix) · `improve` (4-7) · `good`
 (8-10, leave as is); the band thresholds are constants for now and become
 rubric-configurable in **E-26**, which also routes the per-dimension comments back to
-the agent for a re-run. The form shows the judge's score next to each slider (one-click
-agree) so disagreements surface directly. **Deferred:** pairwise (A vs B) human
-comparison → **E-21** (needs a second candidate a single task does not hold);
+the agent for a re-run. By default the form shows the judge's score next to each slider
+(one-click agree) so disagreements surface directly. **Deferred:** pairwise (A vs B)
+human comparison → **E-21** (needs a second candidate a single task does not hold);
 configurable bands + feedback→re-run loop → **E-26**; agreement statistics (Cohen's κ,
 correlations) → **E-17**.
+
+- **Annotation provenance (SPA-85).** Ratings live in the append-only
+  **`annotations`** ledger; `quality_records.human_feedback` is the materialised
+  «latest human rating» projected from it, so every existing reader is unchanged.
+  Three properties the single JSONB slot could not have. **Who rated** —
+  `annotator_type` ∈ `human` \| `llm_judge` \| `synthetic` \| `legacy`; the
+  distinction recorded is «a person decided» versus «a model decided unattended»,
+  and what tools a person used while rating is deliberately not a field. `n_humans`
+  therefore counts distinct people rather than distinct account strings, and
+  pre-ledger `legacy` rows — attributable to nobody — are reported separately
+  instead of inflating it. **Two ratings of one run** — a re-rating supersedes its
+  own annotator's previous row, not the record's, so a second annotator's rating
+  stays current and **inter-annotator κ falls out of the data** (pooled over every
+  unordered annotator pair on runs rated more than once). It answers a different
+  question from judge↔human κ — how reproducible the human gold itself is — and it
+  bounds what the judge can be asked to match. **A judge that cannot move** —
+  `judge_observation` freezes the evaluator model, rubric, per-key scores and the
+  gate verdict at annotation time, so re-running a judge can no longer rewrite a
+  past calibration; `judge_source` on each exported pair says `frozen` or `live`.
+  The protocol is recorded rather than remembered (`protocol_version`,
+  `blind_to_model`, `blind_to_judge`), and the form's blind mode both hides the
+  judge's scores and clears every seeded value, so the flag describes what actually
+  happened. The write is `owner/admin`; the read is not, so annotation stays
+  visible to anyone who can see the task.
 
 ### Trace cleaner (E-06)
 
@@ -649,18 +675,24 @@ call** — pure agreement statistics over already-stored scores.
   `mean_bias`. Any metric with fewer than `MIN_SAMPLES` (3) pairs returns `None` and the
   dimension is marked `insufficient_data`.
 - **Shared pair collection.** `collect_judge_human_pairs` flattens one row per rated
-  dimension across records with human feedback — the single source of truth for **both**
+  dimension across the **current** annotations (SPA-85: superseded rows excluded, and
+  by default only the human types, so an unattended machine annotation never silently
+  enters a judge-vs-human comparison) — the single source of truth for **both**
   the `GET /api/quality/calibration` export and the E-17 report (DRY). Each row carries
-  the judge score (from the human dim's `judge_score`, falling back to the matching
-  `quality_profile` dimension), the human score/band, the per-task `verdict`,
-  `judge_gate_passed` (`quality_profile.gate.passed`) and `submitted_by`.
+  the judge score (from the observation frozen onto the annotation, falling back to the
+  dimension's own stored `judge_score`, and only then to the live profile — flagged as
+  `judge_source: live`), the human score/band, the `verdict`, `judge_gate_passed`
+  (frozen too), and the annotator's identity, type and protocol.
 - **Report** (`_compute_report`). Per dimension: `n`, `pearson`, `spearman`,
   `cohen_kappa` (on bands), `mean_bias`, and `reliable` = band κ ≥
   `judge_calibration_min_kappa` (default 0.6, a workspace setting). An **overall
-  verdict-agreement** dedupes to one (judge gate → approve/reject, human verdict) pair
-  per task and reports κ + raw agreement %. `recommendations[]` turn each dimension into
-  plain language ("judge reliable for Correctness (kappa=0.71, r=0.81)" / "judge diverges
-  on Tool Selection …"). `n_humans` = distinct `submitted_by`.
+  verdict-agreement** takes one (judge gate → approve/reject, human verdict) pair
+  per task **and annotator** and reports κ + raw agreement %. `recommendations[]` turn
+  each dimension into plain language ("judge reliable for Correctness (kappa=0.71,
+  r=0.81)" / "judge diverges on Tool Selection …"). `n_humans` = distinct
+  `annotator_id` of type `human` — people, not account strings — with `n_legacy`,
+  `n_annotators`, `n_annotations` and `judge_frozen_pct` reported alongside, and
+  `inter_annotator` giving agreement between annotators on runs rated more than once.
 - **Versioned artifact, not a per-task slot.** A judge calibration is per-(workspace,
   judge model), so it lives in its own `judge_calibrations` table — append-only,
   versioned per `judge_config_key` (the judge model's `api_name`; `_resolve_judge_model`,

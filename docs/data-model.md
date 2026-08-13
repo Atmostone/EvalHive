@@ -77,6 +77,12 @@ c7d8e9f0a1b2  providers.max_concurrency — per-provider LLM concurrency cap (SP
 d8e9f0a1b2c3  experiment_runs executable-eval columns — Toolathlon external eval (external_verdict, launch_time, preprocess/eval container ids + logs, etc.)
      ↓
 e9f0a1b2c3d4  experiments.n_toolathlon_lanes + experiment_runs.lane_index — parallel Toolathlon PG lanes (SPA-69)
+     ↓
+f0a1b2c3d4e5  experiments.revision + input_fingerprint, experiment_runs.attempt_count + retired_at, experiment_attempts (SPA-84)
+     ↓
+f1a2b3c4d5e6  experiment_runs/experiment_attempts condition_fingerprint + core_condition_fingerprint (SPA-84)
+     ↓
+f2a3b4c5d6e7  annotations — append-only annotation ledger, legacy backfill from quality_records.human_feedback (SPA-85)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -415,8 +421,12 @@ slot): `{schema_version, verdict: approve|reject|null, overall_comment?,
 dimensions: [{key, name, score 0-10, band: bad|improve|good, comment?, judge_score?}],
 submitted_by, submitted_at}`. Bands map score → quality (1-3 bad / 4-7 improve /
 8-10 good) with thresholds fixed for now (rubric-configurable in E-26); each
-dimension mirrors a `quality_profile` axis and copies the judge's score for
-calibration (E-17, exposed via `GET /api/quality/calibration`).
+dimension mirrors a `quality_profile` or `trajectory_profile` axis and copies the
+judge's score for calibration (E-17, exposed via `GET /api/quality/calibration`).
+Since SPA-85 the slot is a **materialised «latest human rating»**, not the system
+of record — the ratings themselves live in `annotations` below, and the slot is
+refreshed from the newest `human`/`legacy` row so every existing reader keeps
+working unchanged.
 
 The `trajectory_profile` slot is filled by the Trajectory Judge (E-07) —
 `POST /api/quality/records/{task_id}/evaluate-trajectory`, building the record on
@@ -548,6 +558,58 @@ rubric `dimension` (same design as E-13/E-14/E-15). The headline calibration met
 computes them overall and `by_model`/`by_template` over `bins` (default 10) equal-width
 confidence buckets, plus a per-model recommendation. The off-by-default
 `calibration_evaluate` job (setting `calibration_eval_enabled`) batches it.
+
+### annotations (E-05, SPA-85)
+
+Append-only: **one rating of one run by one annotator**. Added by migration
+`f2a3b4c5d6e7`. The system of record for human (and machine) ratings —
+`quality_records.human_feedback` is a projection of it, not the source.
+
+| column | type | note |
+|---|---|---|
+| id | UUID | PK |
+| quality_record_id | UUID | FK `quality_records.id` ON DELETE CASCADE |
+| task_id / workspace_id | UUID | denormalized — scoping a population needs no join |
+| annotator_type | VARCHAR(20) | `human` \| `llm_judge` \| `synthetic` \| `legacy` |
+| annotator_id | UUID? | FK `users.id` ON DELETE SET NULL; null for the machine types and for `legacy` |
+| annotator_label | VARCHAR(255)? | the user's email, or the model's `api_name` |
+| protocol_version | int | version of the collection protocol (currently 1) |
+| blind_to_model / blind_to_judge | bool | what the annotator actually could NOT see |
+| verdict | VARCHAR(20)? | `approve` \| `reject` \| null |
+| overall_comment | text? | |
+| dimensions | JSONB | same element shape as the `human_feedback` slot's `dimensions[]` |
+| judge_observation | JSONB? | the judge's side frozen at annotation time (see below) |
+| supersedes_id | UUID? | FK `annotations.id`, **unique** — the lineage is a chain, never a fork |
+| created_at | TIMESTAMP | |
+
+Indexes: `quality_record_id`, `task_id`, `(workspace_id, annotator_type)`,
+`annotator_id`.
+
+**Why a table rather than the JSONB slot.** The slot was overwritten on every
+save, so a run could carry exactly one rating: inter-annotator agreement was not
+computable from system data at all, and re-annotation destroyed the previous
+verdict. Adding a second annotator needed a schema change, not a second account.
+
+**Superseding.** A re-rating supersedes **its own annotator's** previous row, not
+the record's. A different annotator therefore adds an independent row and both
+stay current — which is what makes κ between annotators fall out of the data. A
+row is *current* unless some other row names it in `supersedes_id`; the
+calibration collector reads current rows only.
+
+**Frozen judge observation.** `{outcome: {judge_model, rubric_id, rubric_name,
+schema_version, evaluated_at, gate_passed, scores: {key: score}, reasoning: {key:
+text}}, trajectory: {judge_model, schema_version, evaluated_at, scores, reasoning}}`
+— captured from both judge profiles at annotation time. Without it a calibration
+pair is rebuilt from the *current* profile, so re-running a judge silently moves a
+past κ.
+
+**annotator_type.** The distinction recorded is «a person decided» versus «a model
+decided unattended». What tools a person used while annotating is deliberately not
+a field — someone working with an assistant is `human`. `legacy` is every rating
+collected before this table existed: the migration moves them across wholesale,
+with no user id and no frozen observation, because neither is reconstructable.
+They stay in the calibration population but are counted separately (`n_legacy`)
+and never as people.
 
 ### rubrics (E-02)
 
