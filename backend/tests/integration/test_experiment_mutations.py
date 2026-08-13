@@ -20,9 +20,17 @@ from app.models.experiment import (
 )
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
+from app.quality.experiment_report import (
+    SELECTION_ALL_ATTEMPTS,
+    SELECTION_FIRST_ATTEMPT,
+    SELECTION_LATEST_VALID,
+    compute_report,
+    select_runs,
+)
 from app.quality.experiments import (
     add_config_to_experiment,
     advance_experiment,
+    clone_experiment,
     create_experiment,
     pause_experiment,
     remove_config_from_experiment,
@@ -290,6 +298,238 @@ async def test_retiring_is_refused_while_running_and_on_the_last_config(auth_cli
         await remove_config_from_experiment(db_session, exp, "cfg-01")
     with pytest.raises(ValueError, match="already retired"):
         await remove_config_from_experiment(db_session, exp, "cfg-02")
+
+
+@pytest.mark.asyncio
+async def test_report_cache_is_rejected_after_a_mutation(auth_client, db_session):
+    """The defect that made 'how many runs?' unanswerable: a settled experiment
+    served its pre-mutation report, and the cache was formally valid."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, tpl = await _settled_experiment(db_session, workspace_id)
+
+    first = await compute_report(db_session, exp)
+    exp.report = first
+    await db_session.commit()
+    assert first["input_revision"] == exp.revision
+    assert first["input_fingerprint"], "the report records the inputs it was built from"
+
+    await add_config_to_experiment(
+        db_session, exp, {"template_id": str(tpl.id), "temperature": 1.3, "label": "new"}
+    )
+    await db_session.refresh(exp)
+
+    assert exp.report is None, "the mutation itself drops the cache"
+    assert first["input_revision"] != exp.revision, (
+        "a stale report must no longer match the experiment it claims to describe"
+    )
+
+
+@pytest.mark.asyncio
+async def test_selection_policies_see_different_populations(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+    n_cells = len(await _runs(db_session, exp))
+
+    await retry_failed_experiment(db_session, exp)
+    await _drain(db_session, exp)
+    await db_session.refresh(exp)
+
+    latest = await select_runs(db_session, exp, selection=SELECTION_LATEST_VALID)
+    every = await select_runs(db_session, exp, selection=SELECTION_ALL_ATTEMPTS)
+    first = await select_runs(db_session, exp, selection=SELECTION_FIRST_ATTEMPT)
+
+    assert len(latest) == n_cells
+    assert len(every) == n_cells * 2, "each cell ran twice"
+    assert len(first) == n_cells
+    assert all(r.status == ExperimentRunStatus.SUCCESS.value for r in latest)
+    assert all(r.status == ExperimentRunStatus.FAILED.value for r in first), (
+        "the first attempt is the one that failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_read_path_agrees_on_the_population(auth_client, db_session):
+    """The original defect in miniature: the report and the other read paths must
+    not describe different sets of runs for the same experiment."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    detail = await auth_client.get(f"/api/experiments/{exp.id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["n_configs"] == 1
+    assert body["n_retired_configs"] == 1
+    assert body["revision"] == exp.revision
+
+    live_rows = (await auth_client.get(f"/api/experiments/{exp.id}/results")).json()
+    assert {r["config_key"] for r in live_rows} == {"cfg-01"}
+    assert len(live_rows) == body["total_runs"]
+
+    export = (await auth_client.get(f"/api/experiments/{exp.id}/export")).json()
+    assert {r["config_key"] for r in export} == {"cfg-01"}
+
+    # The retired lineage is kept and stays reachable on request.
+    widened = (
+        await auth_client.get(
+            f"/api/experiments/{exp.id}/results", params={"include_retired": "true"}
+        )
+    ).json()
+    assert {r["config_key"] for r in widened} == {"cfg-01", "cfg-02"}
+
+
+@pytest.mark.asyncio
+async def test_retry_after_retiring_a_config_does_not_collide(auth_client, db_session):
+    """Both archiving events can land on the same execution — the ledger, not the
+    counter, decides which indices are taken."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    # cfg-01 is still failed and retryable; cfg-02's cell is retired and archived.
+    retried = await retry_failed_experiment(db_session, exp)
+    assert retried == 1, "only the live config's cell is retried"
+
+    retired_row = next(r for r in await _runs(db_session, exp) if r.config_key == "cfg-02")
+    assert len(await _attempts(db_session, retired_row.id)) == 1
+    assert retired_row.status == ExperimentRunStatus.FAILED.value, (
+        "a retired cell keeps the state it was frozen in"
+    )
+
+
+@pytest.mark.asyncio
+async def test_retiring_after_a_retry_does_not_collide(auth_client, db_session):
+    """The mirror case: retry archives attempt 1 and leaves the counter alone, so
+    retiring before the cell is re-claimed would archive index 1 a second time."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+
+    await retry_failed_experiment(db_session, exp)
+    await db_session.refresh(exp)
+    exp.status = ExperimentStatus.PAUSED.value
+    await db_session.commit()
+
+    result = await remove_config_from_experiment(db_session, exp, "cfg-02")
+    assert result["runs_retired"] == 1
+
+    row = next(r for r in await _runs(db_session, exp) if r.config_key == "cfg-02")
+    assert [a.attempt_index for a in await _attempts(db_session, row.id)] == [1], (
+        "the execution is archived once, not twice"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cell_that_ran_before_the_counter_existed_is_still_preserved(
+    auth_client, db_session
+):
+    """Rows predating the attempt column read as attempt_count=0. Treating that as
+    'never ran' is what would have destroyed 23 real evaluations on the live DB."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
+
+    victim = next(
+        r for r in await _runs(db_session, exp) if r.status == ExperimentRunStatus.FAILED.value
+    )
+    victim.attempt_count = 0  # simulate a pre-migration row
+    victim.weighted_score = 7.5
+    await db_session.commit()
+
+    await retry_failed_experiment(db_session, exp)
+
+    kept = await _attempts(db_session, victim.id)
+    assert [a.attempt_index for a in kept] == [1]
+    assert kept[0].weighted_score == 7.5, "the evaluation the cap-hit run carried survives"
+
+
+@pytest.mark.asyncio
+async def test_all_attempts_does_not_double_count_a_retired_cell(auth_client, db_session):
+    """Retiring archives the cell without clearing it, so the ledger row and the
+    live row describe the same execution."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    n_cells = len(await _runs(db_session, exp))
+
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    every = await select_runs(db_session, exp, selection=SELECTION_ALL_ATTEMPTS)
+    assert len(every) == n_cells, "one row per execution, retired cell included once"
+
+
+@pytest.mark.asyncio
+async def test_report_drops_retired_configs_but_all_attempts_keeps_them(
+    auth_client, db_session
+):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    default = await compute_report(db_session, exp)
+    assert {c["config_key"] for c in default["summary"]["per_config"]} == {"cfg-01"}
+
+    widened = await compute_report(db_session, exp, selection=SELECTION_ALL_ATTEMPTS)
+    assert {c["config_key"] for c in widened["summary"]["per_config"]} == {"cfg-01", "cfg-02"}
+
+
+@pytest.mark.asyncio
+async def test_http_report_cache_is_served_then_invalidated(auth_client, db_session):
+    """Covers the endpoint's cache branch itself, not just compute_report."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, tpl = await _settled_experiment(db_session, workspace_id)
+
+    first = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    second = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    assert first["generated_at"] == second["generated_at"], "second call served from cache"
+    assert first["input_revision"] == exp.revision
+
+    await add_config_to_experiment(
+        db_session, exp, {"template_id": str(tpl.id), "temperature": 1.7, "label": "x"}
+    )
+    await _drain(db_session, exp)
+    await db_session.refresh(exp)
+
+    third = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    assert third["generated_at"] != first["generated_at"], "recomputed after the mutation"
+    assert third["input_revision"] == exp.revision
+    assert {c["config_key"] for c in third["summary"]["per_config"]} == {"cfg-01", "cfg-02", "cfg-03"}
+
+
+@pytest.mark.asyncio
+async def test_a_config_retired_while_draft_never_materializes_cells(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name=f"T-{uuid.uuid4().hex[:6]}")
+    exp = await create_experiment(
+        db_session, workspace_id=workspace_id, payload=_payload(tpl.id)
+    )
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    await start_experiment(db_session, exp)
+    assert {r.config_key for r in await _runs(db_session, exp)} == {"cfg-01"}
+
+
+@pytest.mark.asyncio
+async def test_clone_does_not_resurrect_a_retired_config(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    await remove_config_from_experiment(db_session, exp, "cfg-02")
+    await db_session.refresh(exp)
+
+    clone = await clone_experiment(db_session, exp, name=f"clone-{uuid.uuid4().hex[:6]}")
+    assert len(clone.configurations) == 1
+    assert not any(c.get("retired_at") for c in clone.configurations)
+
+
+@pytest.mark.asyncio
+async def test_unknown_selection_policy_is_rejected(auth_client, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+    with pytest.raises(ValueError, match="unknown selection policy"):
+        await select_runs(db_session, exp, selection="whatever")
 
 
 @pytest.mark.asyncio

@@ -162,7 +162,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 13
+    assert report["schema_version"] == 14
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -309,7 +309,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 13
+    assert report["schema_version"] == 14
 
     ext = report["external"]
     assert ext["available"] is True

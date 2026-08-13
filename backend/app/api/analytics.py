@@ -117,6 +117,11 @@ async def config_analytics(
     if to_dt:
         where.append(ExperimentRun.created_at <= datetime.fromisoformat(to_dt))
 
+    # Cells of a retired configuration are out of the matrix everywhere else —
+    # the report, /results, /export and the CLI all skip them — so aggregating
+    # them here would make this the one place describing a wider population.
+    where.append(ExperimentRun.retired_at.is_(None))
+
     s_success = ExperimentRunStatus.SUCCESS.value
     s_failed = ExperimentRunStatus.FAILED.value
     settled = case((ExperimentRun.status.in_([s_success, s_failed]), 1), else_=0)

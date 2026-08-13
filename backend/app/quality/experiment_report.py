@@ -23,14 +23,23 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.experiment import Experiment, ExperimentRun, ExperimentRunStatus
+from app.models.experiment import (
+    Experiment,
+    ExperimentAttempt,
+    ExperimentRun,
+    ExperimentRunStatus,
+)
 from app.models.quality_record import QualityRecord
 from app.quality.aggregation import rank
+from app.quality.experiments import experiment_input_fingerprint
 from app.quality.ranking import build_matches
 from app.quality.stats import MIN_SAMPLES, mann_whitney_u, welch_t_test
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 
-SCHEMA_VERSION = 13  # v13: reliability traffic light on the OUTCOME rubric axes too
+SCHEMA_VERSION = 14  # v14: the report records the experiment revision + input
+# fingerprint it was computed from, so a cached report can be matched against its
+# input instead of trusted for existing (SPA-84); explicit run-selection policy
+# v13: reliability traffic light on the OUTCOME rubric axes too
 # (outcome_axis_reliability), + rank-aware 'directional' zone: κ below the bar but
 # Spearman ρ≥0.5 = scale-shifted judge — ordering trustworthy, absolute scores not
 # v12: checker↔human agreement (Cohen's κ + raw) — the executable
@@ -48,6 +57,18 @@ SCHEMA_VERSION = 13  # v13: reliability traffic light on the OUTCOME rubric axes
 # quality-heatmap dimension_labels
 # v4: human_feedback (E-05 per-config aggregate) + cost_breakdown
 # v3: external (executable pass-rate) + rq2 (verdict × judge 2×2)
+# Which executions of a cell a report counts (SPA-84). Before the attempt ledger
+# existed there was only ever one survivor per cell, so this was not a choice
+# anyone could make — it was whatever the last retry happened to leave behind.
+SELECTION_LATEST_VALID = "latest_valid"  # current state of each live cell (default)
+SELECTION_ALL_ATTEMPTS = "all_attempts"  # every execution, retired cells included
+SELECTION_FIRST_ATTEMPT = "first_attempt"  # each cell's first execution only
+SELECTION_POLICIES = (
+    SELECTION_LATEST_VALID,
+    SELECTION_ALL_ATTEMPTS,
+    SELECTION_FIRST_ATTEMPT,
+)
+
 SIGNIFICANCE_ALPHA = 0.05
 # Outcome-judge threshold splitting "high" vs "low" in the RQ2 verdict×judge 2×2.
 RQ2_JUDGE_THRESHOLD = 5.0
@@ -403,11 +424,20 @@ def build_report(
     method: str = "bt",
     partial: bool = False,
     calibration: dict | None = None,
+    selection: str = SELECTION_LATEST_VALID,
 ) -> dict:
     """Assemble the full report from pre-loaded rows (pure). ``calibration`` is the
     per-experiment judge↔human agreement (E-17) scoped to this experiment's tasks,
     computed by the async caller (this function stays pure)."""
-    configs = {c["config_key"]: c for c in exp.configurations}
+    # A retired configuration left the matrix, so it must not produce a row —
+    # otherwise the report describes a different population than serialize(),
+    # /results and /export. all_attempts deliberately reaches back into the
+    # retired lineage, so its rows belong there (SPA-84).
+    configs = {
+        c["config_key"]: c
+        for c in (exp.configurations or [])
+        if selection == SELECTION_ALL_ATTEMPTS or not c.get("retired_at")
+    }
     labels = {k: c.get("label") or k for k, c in configs.items()}
     by_config: dict[str, list[ExperimentRun]] = {k: [] for k in configs}
     for r in runs:
@@ -1177,6 +1207,15 @@ def build_report(
 
     return {
         "schema_version": SCHEMA_VERSION,
+        # What this report was computed FROM (SPA-84). The cache is served only
+        # when both still match the experiment, which is what stops a mutated
+        # experiment returning its pre-mutation numbers. The fingerprint is
+        # recomputed here rather than read from the stored column: the column is
+        # only ever written by a mutation, so comparing it to itself would echo
+        # the revision counter instead of measuring the inputs.
+        "input_revision": exp.revision,
+        "input_fingerprint": experiment_input_fingerprint(exp),
+        "selection": selection,
         "generated_at": datetime.utcnow().isoformat(),
         "partial": partial,
         "n_terminal_runs": n_terminal,
@@ -1206,16 +1245,28 @@ def build_report(
     }
 
 
-async def compute_report(
-    db: AsyncSession, exp: Experiment, *, method: str = "bt", partial: bool = False
-) -> dict:
-    """Load the experiment's runs + records and assemble the report."""
-    runs = (
+async def select_runs(
+    db: AsyncSession, exp: Experiment, *, selection: str = SELECTION_LATEST_VALID
+) -> list[ExperimentRun]:
+    """Resolve which executions of each cell the report should count (SPA-84).
+
+    ``ExperimentRun`` holds a cell's current state; superseded executions live in
+    ``experiment_attempts``. Attempts are returned as detached ``ExperimentRun``
+    instances rather than a second shape, so every consumer downstream stays
+    unchanged — they are never added to the session.
+    """
+    if selection not in SELECTION_POLICIES:
+        raise ValueError(f"unknown selection policy: {selection!r}")
+
+    stmt = select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+    if selection != SELECTION_ALL_ATTEMPTS:
+        # A retired configuration left the matrix; only an explicit request for
+        # the full history brings it back.
+        stmt = stmt.where(ExperimentRun.retired_at.is_(None))
+    current = list(
         (
             await db.execute(
-                select(ExperimentRun)
-                .where(ExperimentRun.experiment_id == exp.id)
-                .order_by(
+                stmt.order_by(
                     ExperimentRun.config_key,
                     ExperimentRun.case_key,
                     ExperimentRun.run_index,
@@ -1225,6 +1276,71 @@ async def compute_report(
         .scalars()
         .all()
     )
+    if selection == SELECTION_LATEST_VALID or not current:
+        return current
+
+    by_id = {r.id: r for r in current}
+    attempts = (
+        (
+            await db.execute(
+                select(ExperimentAttempt)
+                .where(ExperimentAttempt.experiment_run_id.in_(list(by_id)))
+                .order_by(ExperimentAttempt.attempt_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    def _as_run(cell: ExperimentRun, att: ExperimentAttempt) -> ExperimentRun:
+        return ExperimentRun(
+            experiment_id=cell.experiment_id,
+            config_key=cell.config_key,
+            case_key=cell.case_key,
+            run_index=cell.run_index,
+            task_id=att.task_id,
+            status=att.status,
+            cost_usd=att.cost_usd,
+            weighted_score=att.weighted_score,
+            trajectory_score=att.trajectory_score,
+            duration_seconds=att.duration_seconds,
+            external_verdict=att.external_verdict,
+            launch_time=att.launch_time,
+            attempt_count=att.attempt_index,
+            completed_at=att.completed_at,
+        )
+
+    if selection == SELECTION_ALL_ATTEMPTS:
+        # Retiring a config snapshots each cell WITHOUT clearing it, so that
+        # ledger row describes the execution still sitting on the live row —
+        # which is already in ``current``. Counting both reports one execution
+        # twice. Only strictly earlier indices are genuinely superseded.
+        superseded = [
+            a for a in attempts if a.attempt_index < (by_id[a.experiment_run_id].attempt_count or 0)
+        ]
+        return current + [_as_run(by_id[a.experiment_run_id], a) for a in superseded]
+
+    # first_attempt: a cell that was retried is represented by attempt 1; a cell
+    # that ran once is already its own first attempt.
+    firsts = {}
+    for a in attempts:
+        firsts.setdefault(a.experiment_run_id, a)
+    return [
+        _as_run(cell, firsts[cell.id]) if cell.id in firsts else cell
+        for cell in current
+    ]
+
+
+async def compute_report(
+    db: AsyncSession,
+    exp: Experiment,
+    *,
+    method: str = "bt",
+    partial: bool = False,
+    selection: str = SELECTION_LATEST_VALID,
+) -> dict:
+    """Load the experiment's runs + records and assemble the report."""
+    runs = await select_runs(db, exp, selection=selection)
     task_ids = [r.task_id for r in runs if r.task_id]
     records_by_task: dict[uuid.UUID, QualityRecord] = {}
     if task_ids:
@@ -1257,5 +1373,5 @@ async def compute_report(
 
     return build_report(
         exp, runs, records_by_task, method=method, partial=partial,
-        calibration=calibration,
+        calibration=calibration, selection=selection,
     )

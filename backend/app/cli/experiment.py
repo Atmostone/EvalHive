@@ -79,7 +79,11 @@ async def _status(args) -> None:
             raise SystemExit("experiment not found")
         rows = (
             await db.execute(
-                select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+                select(ExperimentRun).where(
+                    ExperimentRun.experiment_id == exp.id,
+                    # Same population as the report: retired configs are out.
+                    ExperimentRun.retired_at.is_(None),
+                )
             )
         ).scalars().all()
     counts = Counter(r.status for r in rows)

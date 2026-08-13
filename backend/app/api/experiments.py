@@ -34,7 +34,11 @@ from app.models.task import Task
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality import experiments as service
-from app.quality.experiment_report import SCHEMA_VERSION as REPORT_SCHEMA_VERSION, compute_report
+from app.quality.experiment_report import (
+    SCHEMA_VERSION as REPORT_SCHEMA_VERSION,
+    SELECTION_LATEST_VALID as REPORT_SELECTION_DEFAULT,
+    compute_report,
+)
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
@@ -119,13 +123,23 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
     return out
 
 
-async def _load_runs(db: AsyncSession, exp: Experiment) -> list[ExperimentRun]:
+async def _load_runs(
+    db: AsyncSession, exp: Experiment, *, include_retired: bool = False
+) -> list[ExperimentRun]:
+    """Cells of the experiment, retired ones excluded by default (SPA-84).
+
+    The report counts only live cells, so every other read path has to agree —
+    otherwise the progress matrix, the results table and the export each describe
+    a different population than the report, which is the confusion this change
+    exists to end.
+    """
+    stmt = select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+    if not include_retired:
+        stmt = stmt.where(ExperimentRun.retired_at.is_(None))
     return (
         (
             await db.execute(
-                select(ExperimentRun)
-                .where(ExperimentRun.experiment_id == exp.id)
-                .order_by(
+                stmt.order_by(
                     ExperimentRun.config_key,
                     ExperimentRun.case_key,
                     ExperimentRun.run_index,
@@ -507,24 +521,46 @@ async def experiment_report(
     experiment_id: str,
     refresh: bool = False,
     method: str = Query("bt", pattern="^(bt|elo)$"),
+    selection: str = Query(
+        REPORT_SELECTION_DEFAULT, pattern="^(latest_valid|all_attempts|first_attempt)$"
+    ),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     """The assembled report. Cached on the experiment once it is terminal;
-    a running experiment gets a fresh partial report on every call."""
+    a running experiment gets a fresh partial report on every call.
+
+    ``selection`` chooses which executions of each cell are counted:
+    ``latest_valid`` (default) the current state of every live cell,
+    ``all_attempts`` every execution including retired cells, ``first_attempt``
+    each cell as it first came out. Only the default is ever cached — the others
+    are analysis views, not the experiment's headline numbers.
+    """
     exp = await _get_scoped(experiment_id, workspace, db)
     terminal = exp.status in service.TERMINAL_EXPERIMENT
     cached = exp.report
+    cacheable = selection == REPORT_SELECTION_DEFAULT
     if (
         terminal
         and cached
         and not refresh
+        and cacheable
         and cached.get("schema_version") == REPORT_SCHEMA_VERSION
+        # The report must have been built from the experiment as it stands now.
+        # Without this a mutated experiment kept serving its pre-mutation numbers
+        # once it settled again, and the cache was formally valid (SPA-84).
+        and cached.get("input_revision") == exp.revision
+        # Recomputed, not read from the stored column: the column moves only
+        # when a mutation moves it, so comparing it to itself would just repeat
+        # the revision check and never catch input changed by any other route.
+        and cached.get("input_fingerprint") == service.experiment_input_fingerprint(exp)
         and (cached.get("leaderboard") or {}).get("method") == method
     ):
         return cached
-    report = await compute_report(db, exp, method=method, partial=not terminal)
-    if terminal:
+    report = await compute_report(
+        db, exp, method=method, partial=not terminal, selection=selection
+    )
+    if terminal and cacheable:
         exp.report = report
         await db.commit()
     return report
@@ -536,12 +572,16 @@ async def experiment_results(
     config: Optional[str] = None,
     case: Optional[str] = None,
     run_index: Optional[int] = None,
+    include_retired: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    """Per-cell run rows with task state and eval profiles."""
+    """Per-cell run rows with task state and eval profiles.
+
+    Cells of a retired configuration are excluded unless ``include_retired`` —
+    their lineage is kept, so this is the way back to it."""
     exp = await _get_scoped(experiment_id, workspace, db)
-    runs = await _load_runs(db, exp)
+    runs = await _load_runs(db, exp, include_retired=include_retired)
     if config:
         runs = [r for r in runs if r.config_key == config]
     if case:
@@ -648,12 +688,16 @@ async def clone_experiment(
 async def export_experiment(
     experiment_id: str,
     format: str = Query("json", pattern="^(json|csv)$"),
+    include_retired: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    """Flat per-run rows (pandas-friendly): config axes + scores + costs."""
+    """Flat per-run rows (pandas-friendly): config axes + scores + costs.
+
+    Matches the report's population by default; ``include_retired`` widens it to
+    the cells of retired configurations."""
     exp = await _get_scoped(experiment_id, workspace, db)
-    runs = await _load_runs(db, exp)
+    runs = await _load_runs(db, exp, include_retired=include_retired)
     configs = {c["config_key"]: c for c in exp.configurations}
 
     task_ids = [r.task_id for r in runs if r.task_id]

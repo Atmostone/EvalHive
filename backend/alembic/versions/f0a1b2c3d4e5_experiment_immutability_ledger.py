@@ -48,6 +48,16 @@ def upgrade() -> None:
         "experiment_runs",
         sa.Column("attempt_count", sa.Integer(), nullable=False, server_default="0"),
     )
+    # Cells that ran before this column existed would otherwise read as "never
+    # claimed", and the ledger write is skipped for those — so the first retry
+    # of any pre-existing experiment would clear a real result with no record and
+    # no error. 'pending' and 'skipped' are the only states a cell reaches
+    # without ever having been claimed (skipped is stamped at the budget cap,
+    # before the claim), and a task_id proves a claim regardless of status.
+    op.execute(
+        "UPDATE experiment_runs SET attempt_count = 1 "
+        "WHERE task_id IS NOT NULL OR status NOT IN ('pending', 'skipped')"
+    )
     # Set when the cell's configuration is retired. The row and its lineage stay;
     # the default report selection skips it.
     op.add_column(

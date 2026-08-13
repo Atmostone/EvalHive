@@ -470,6 +470,7 @@ async def create_experiment(
     payload: dict,
     created_by: str = "user",
     frozen_cases: Optional[list[dict]] = None,
+    exclude_fingerprints: Optional[set[str]] = None,
 ) -> Experiment:
     """Validate + freeze the experiment request into a draft Experiment.
 
@@ -484,6 +485,16 @@ async def create_experiment(
         raise ValueError("experiment name is required")
 
     configs = expand_matrix(payload.get("configurations"), payload.get("axes"))
+    if exclude_fingerprints:
+        # Clone path: a configuration retired in the source must not come back.
+        # Retiring drops it from matrix_spec.configurations, but an axes-defined
+        # matrix regenerates it from the cartesian product, so the exclusion has
+        # to happen after expansion (SPA-84).
+        configs = [c for c in configs if c.get("fingerprint") not in exclude_fingerprints]
+        if not configs:
+            raise ValueError("every configuration of the source experiment is retired")
+        for i, c in enumerate(configs, start=1):
+            c["config_key"] = f"cfg-{i:02d}"
     await _validate_config_refs(db, workspace_id, configs)
 
     dataset_spec = payload.get("dataset") or {}
@@ -564,6 +575,9 @@ async def create_experiment(
         eval_config=payload.get("eval_config") or {},
         created_by=created_by,
     )
+    # Record the inputs from the start, so the column always means "the inputs as
+    # of the last write" rather than being empty until the first mutation.
+    exp.input_fingerprint = experiment_input_fingerprint(exp)
     db.add(exp)
     await db.commit()
     await db.refresh(exp)
@@ -575,6 +589,11 @@ async def start_experiment(db: AsyncSession, exp: Experiment) -> None:
     if exp.status != ExperimentStatus.DRAFT.value:
         raise ValueError(f"cannot run experiment in status '{exp.status}'")
     for cfg in exp.configurations:
+        # A config retired while the experiment was still a draft has no cells
+        # and no lineage; materializing it here would silently run a condition
+        # the author had already taken out of the matrix.
+        if cfg.get("retired_at"):
+            continue
         for case in exp.dataset_cases:
             for idx in range(exp.n_runs_per_cell):
                 db.add(
@@ -617,7 +636,13 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
         raise ValueError(f"experiment already terminal ('{exp.status}')")
     rows = (
         await db.execute(
-            select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+            select(ExperimentRun).where(
+                ExperimentRun.experiment_id == exp.id,
+                # A retired config's cells were already settled and archived when
+                # it was retired; rewriting them now would overwrite the very
+                # lineage retirement froze.
+                ExperimentRun.retired_at.is_(None),
+            )
         )
     ).scalars().all()
     now = datetime.utcnow()
@@ -697,7 +722,7 @@ async def _bump_revision(
     )
 
 
-def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -> None:
+async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -> None:
     """Copy a cell's current state into the attempt ledger before it is cleared.
 
     Called for cells that actually ran — a never-claimed ``pending`` cell has
@@ -705,13 +730,42 @@ def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -> None
     because the task they came from may be deleted later, and because a capped
     run reports ``failed`` while still carrying a real evaluation: overwriting it
     used to destroy the observation.
+
+    Idempotent per execution. ``attempt_count`` only advances when the tick
+    claims the cell, so two archiving events can land on the same execution — a
+    retry followed by a retirement, say — and the ledger is the authority on
+    which indices are taken. Without this the second one violates
+    ``uq_experiment_attempts_cell`` and takes the whole transaction down.
     """
-    if not run.attempt_count:
+    # attempt_count is 0 both for a cell that never ran and for one that ran
+    # before the counter existed. Only the former may be dropped, so decide on
+    # evidence of execution rather than on the counter alone — a row that
+    # escapes the migration's backfill (restored dump, out-of-band migrate)
+    # must still be preserved.
+    never_claimed = (
+        not run.attempt_count
+        and run.task_id is None
+        and run.status
+        in (ExperimentRunStatus.PENDING.value, ExperimentRunStatus.SKIPPED.value)
+    )
+    if never_claimed:
         return
+    index = run.attempt_count or 1
+    already = await db.scalar(
+        select(ExperimentAttempt.id).where(
+            ExperimentAttempt.experiment_run_id == run.id,
+            ExperimentAttempt.attempt_index == index,
+        )
+    )
+    if already:
+        return
+    # Keep the counter monotonic: the next claim does attempt_count + 1, which
+    # would collide with the row just written if the counter stayed at 0.
+    run.attempt_count = index
     db.add(
         ExperimentAttempt(
             experiment_run_id=run.id,
-            attempt_index=run.attempt_count,
+            attempt_index=index,
             task_id=run.task_id,
             status=run.status,
             cost_usd=run.cost_usd or Decimal(0),
@@ -745,7 +799,13 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
         )
     rows = (
         await db.execute(
-            select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
+            select(ExperimentRun).where(
+                ExperimentRun.experiment_id == exp.id,
+                # A retired config's cells are out of the matrix and are never
+                # re-claimed by the tick, so re-running them would resurrect a
+                # condition the author deliberately retired.
+                ExperimentRun.retired_at.is_(None),
+            )
         )
     ).scalars().all()
     retried = 0
@@ -755,7 +815,7 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
         # Best-effort cleanup of any lingering Toolathlon preprocess/eval containers.
         ext_eval.remove(r.preprocess_container_id)
         ext_eval.remove(r.eval_container_id)
-        _snapshot_attempt(db, r, "retry")
+        await _snapshot_attempt(db, r, "retry")
         r.task_id = None
         r.status = ExperimentRunStatus.PENDING.value
         r.cost_usd = Decimal(0)
@@ -892,7 +952,13 @@ async def remove_config_from_experiment(
         # Best-effort teardown of any Toolathlon preprocess/eval containers.
         ext_eval.remove(r.preprocess_container_id)
         ext_eval.remove(r.eval_container_id)
-        _snapshot_attempt(db, r, "config_retired")
+        # Settle anything still in flight BEFORE archiving, so the ledger records
+        # how the execution actually ended. The tick skips retired rows, so a
+        # cell left mid-flight here would stay that way forever.
+        if r.status in _INFLIGHT_RUN:
+            r.status = ExperimentRunStatus.FAILED.value
+            r.completed_at = retired_at
+        await _snapshot_attempt(db, r, "config_retired")
         r.retired_at = retired_at
     removed = len(rows)
 
@@ -1841,6 +1907,8 @@ async def clone_experiment(
     frozen dataset) are copied from the source. Re-run = clone + run.
     """
     changes = dict(changes or {})
+    # Must be read before the pops below empty the dict.
+    caller_respecified_matrix = "configurations" in changes or "axes" in changes
     payload: dict = {
         "name": name
         or changes.pop("name", None)
@@ -1865,10 +1933,27 @@ async def clone_experiment(
     if changes:
         raise ValueError(f"unknown clone changes: {sorted(changes)}")
 
+    # Unless the caller respecifies the matrix, a configuration retired in the
+    # source stays retired in the copy — otherwise "re-run this experiment"
+    # quietly reinstates the condition the author took out.
+    retired_fps = (
+        None
+        if caller_respecified_matrix
+        else {
+            c.get("fingerprint")
+            for c in (exp.configurations or [])
+            if c.get("retired_at") and c.get("fingerprint")
+        }
+    )
+
     if new_dataset is not None:
         payload["dataset"] = new_dataset
         return await create_experiment(
-            db, workspace_id=exp.workspace_id, payload=payload, created_by=created_by
+            db,
+            workspace_id=exp.workspace_id,
+            payload=payload,
+            created_by=created_by,
+            exclude_fingerprints=retired_fps,
         )
 
     # Same dataset: copy the frozen cases verbatim instead of re-normalizing
@@ -1880,4 +1965,5 @@ async def clone_experiment(
         payload=payload,
         created_by=created_by,
         frozen_cases=exp.dataset_cases,
+        exclude_fingerprints=retired_fps,
     )
