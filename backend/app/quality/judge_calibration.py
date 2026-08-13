@@ -31,8 +31,10 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.annotation import Annotation
 from app.models.judge_calibration import JudgeCalibration
 from app.models.quality_record import QualityRecord
+from app.quality.feedback import HUMAN_TYPES, observed_reasoning, observed_scores
 from app.quality.judge import _resolve_judge_model
 from app.quality.stats import (
     BANDS,
@@ -61,18 +63,36 @@ async def collect_judge_human_pairs(
     suite: str | None = None,
     template_id=None,
     task_ids=None,
+    annotator_types: tuple[str, ...] = HUMAN_TYPES,
 ) -> list[dict]:
-    """One row per rated dimension across records that carry human feedback.
+    """One row per rated dimension across the *current* annotations (SPA-85).
 
     The source of truth for both the ``GET /api/quality/calibration`` export and
     the E-17 report. ``suite``/``template_id`` narrow the population; ``task_ids``
-    (a collection of task UUIDs) scopes calibration to one experiment's runs. Each
-    row pairs the human score with the judge's score for the same dimension key and
-    carries the per-task ``verdict`` and ``judge_gate_passed`` so the report can
-    build the overall verdict-agreement."""
-    q = select(QualityRecord).where(
-        QualityRecord.workspace_id == workspace_id,
-        QualityRecord.human_feedback.isnot(None),
+    (a collection of task UUIDs) scopes calibration to one experiment's runs;
+    ``annotator_types`` defaults to the human ones, so an unattended machine
+    annotation never silently enters a judge-vs-human comparison.
+
+    Superseded rows are excluded: a re-rating replaces its predecessor rather
+    than adding a second sample from the same annotator. Two *different*
+    annotators on one run stay as two rows — that is the population
+    inter-annotator agreement is computed over.
+
+    The judge's side comes from the observation frozen into the annotation, so
+    re-running a judge cannot move a past pair; ``judge_source`` says whether
+    that held (``frozen``) or the row had to fall back to the live profile
+    (``live`` — only reachable for pre-ledger ``legacy`` rows)."""
+    superseded = select(Annotation.supersedes_id).where(
+        Annotation.supersedes_id.isnot(None)
+    )
+    q = (
+        select(Annotation, QualityRecord)
+        .join(QualityRecord, Annotation.quality_record_id == QualityRecord.id)
+        .where(
+            Annotation.workspace_id == workspace_id,
+            Annotation.annotator_type.in_(annotator_types),
+            Annotation.id.notin_(superseded),
+        )
     )
     if suite:
         q = q.where(QualityRecord.benchmark_suite == suite)
@@ -82,38 +102,55 @@ async def collect_judge_human_pairs(
         ids = list(task_ids)
         if not ids:
             return []
-        q = q.where(QualityRecord.task_id.in_(ids))
-    rows = (await db.execute(q)).scalars().all()
+        q = q.where(Annotation.task_id.in_(ids))
+    rows = (await db.execute(q)).all()
 
     out: list[dict] = []
-    for r in rows:
-        hf = r.human_feedback or {}
-        profile = r.quality_profile or {}
-        judge = {d.get("key"): d for d in (profile.get("dimensions") or [])}
-        # Process/trajectory (E-07) axes are also calibratable judge dimensions:
-        # human feedback may carry trajectory-axis keys, paired against the E-07 judge.
-        for a in (r.trajectory_profile or {}).get("axes") or []:
-            judge.setdefault(a.get("key"), a)
-        gate_passed = (profile.get("gate") or {}).get("passed")
-        for d in hf.get("dimensions") or []:
-            jd = judge.get(d.get("key")) or {}
-            judge_score = d.get("judge_score")
+    for ann, record in rows:
+        frozen_scores = observed_scores(ann.judge_observation)
+        frozen_reasoning = observed_reasoning(ann.judge_observation)
+        # Live profiles, consulted only where the annotation froze nothing.
+        profile = record.quality_profile or {}
+        live = {d.get("key"): d for d in (profile.get("dimensions") or [])}
+        # Process/trajectory (E-07) axes are calibratable judge dimensions too.
+        for a in (record.trajectory_profile or {}).get("axes") or []:
+            live.setdefault(a.get("key"), a)
+        gate_passed = (ann.judge_observation or {}).get("outcome", {}).get("gate_passed")
+        if gate_passed is None:
+            gate_passed = (profile.get("gate") or {}).get("passed")
+
+        for d in ann.dimensions or []:
+            key = d.get("key")
+            judge_score = frozen_scores.get(key)
             if judge_score is None:
-                judge_score = jd.get("score")
+                # Captured alongside the rating, so still frozen in time.
+                judge_score = d.get("judge_score")
+            judge_source = "frozen"
+            if judge_score is None:
+                judge_score = (live.get(key) or {}).get("score")
+                judge_source = "live"
             out.append(
                 {
-                    "task_id": str(r.task_id),
-                    "dimension_key": d.get("key"),
+                    "task_id": str(ann.task_id),
+                    "annotation_id": str(ann.id),
+                    "annotator_type": ann.annotator_type,
+                    "annotator_id": str(ann.annotator_id) if ann.annotator_id else None,
+                    "protocol_version": ann.protocol_version,
+                    "blind_to_model": ann.blind_to_model,
+                    "blind_to_judge": ann.blind_to_judge,
+                    "dimension_key": key,
                     "dimension_name": d.get("name"),
                     "judge_score": judge_score,
+                    "judge_source": judge_source,
                     "human_score": d.get("score"),
                     "band": d.get("band"),
-                    "judge_reasoning": jd.get("reasoning"),
+                    "judge_reasoning": frozen_reasoning.get(key)
+                    or (live.get(key) or {}).get("reasoning"),
                     "human_comment": d.get("comment"),
-                    "verdict": hf.get("verdict"),
+                    "verdict": ann.verdict,
                     "judge_gate_passed": gate_passed,
-                    "submitted_by": hf.get("submitted_by"),
-                    "submitted_at": hf.get("submitted_at"),
+                    "submitted_by": ann.annotator_label,
+                    "submitted_at": ann.created_at.isoformat() if ann.created_at else None,
                 }
             )
     return out
@@ -135,6 +172,98 @@ def _recommendation(dim: dict) -> str | None:
     if dim["reliable"]:
         return f"judge reliable for {dim['name']} (kappa={k_s}, r={r_s})"
     return f"judge diverges on {dim['name']} (kappa={k_s}, r={r_s})"
+
+
+def _annotator_key(p: dict) -> str | None:
+    """Stable identity of the annotator behind a pair — the user id when there
+    is one, else the display label (legacy rows carry no user)."""
+    return p.get("annotator_id") or p.get("submitted_by")
+
+
+def _pooled_kappa(
+    by_unit: dict[str, dict[str, str]], labels: list[str]
+) -> tuple[float | None, float | None, int]:
+    """Cohen's κ pooled over every unordered pair of annotators who rated the
+    same unit. ``by_unit`` maps unit → annotator → label; a unit rated by k
+    annotators contributes k(k-1)/2 observations. Pooling is the honest
+    approximation while the corpus is small: with two annotators it *is* Cohen's
+    κ, and with more it averages the pairwise agreement rather than pretending
+    to a single fixed pair."""
+    a: list[str] = []
+    b: list[str] = []
+    for raters in by_unit.values():
+        who = sorted(raters)
+        for i in range(len(who)):
+            for j in range(i + 1, len(who)):
+                a.append(raters[who[i]])
+                b.append(raters[who[j]])
+    n = len(a)
+    if not n:
+        return None, None, 0
+    kappa = cohen_kappa(a, b, labels) if n >= MIN_SAMPLES else None
+    agreement = round(sum(1 for x, y in zip(a, b) if x == y) / n, 4)
+    return kappa, agreement, n
+
+
+def _inter_annotator(pairs: list[dict], *, threshold_kappa: float) -> dict:
+    """Agreement BETWEEN annotators on the same run.
+
+    The number a single overwritable feedback slot made impossible to compute:
+    before the ledger a run could only ever carry one rating. It answers a
+    different question from the judge-vs-human κ above — how reproducible the
+    human gold itself is — and it bounds what the judge can be asked to match."""
+    by_dim: dict[str, dict[str, dict[str, str]]] = {}   # dim → task → annotator → band
+    by_verdict: dict[str, dict[str, str]] = {}          # task → annotator → verdict
+    names: dict[str, str] = {}
+    raters_by_task: dict[str, set] = {}
+
+    for p in pairs:
+        who = _annotator_key(p)
+        task = p.get("task_id")
+        if not who or not task:
+            continue
+        raters_by_task.setdefault(task, set()).add(who)
+        key = p.get("dimension_key")
+        band = p.get("band") or score_to_band(p.get("human_score"))
+        if key and band:
+            names.setdefault(key, p.get("dimension_name") or key)
+            by_dim.setdefault(key, {}).setdefault(task, {})[who] = band
+        if p.get("verdict") in VERDICT_LABELS:
+            by_verdict.setdefault(task, {})[who] = p["verdict"]
+
+    dimensions: list[dict] = []
+    for key in sorted(by_dim):
+        kappa, agreement, n = _pooled_kappa(by_dim[key], BANDS)
+        if not n:
+            continue
+        dimensions.append(
+            {
+                "key": key,
+                "name": names.get(key, key),
+                "n": n,
+                "cohen_kappa": kappa,
+                "agreement_pct": agreement,
+                "reliable": kappa is not None and kappa >= threshold_kappa,
+                "status": "ok" if n >= MIN_SAMPLES else "insufficient_data",
+            }
+        )
+
+    o_kappa, o_agreement, o_n = _pooled_kappa(by_verdict, VERDICT_LABELS)
+    n_records = sum(1 for who in raters_by_task.values() if len(who) > 1)
+    return {
+        # False when no run in the population carries a second annotator — the
+        # normal state of a corpus collected by one person.
+        "available": n_records > 0,
+        "n_records": n_records,
+        "n_annotators": len({w for who in raters_by_task.values() for w in who}),
+        "dimensions": dimensions,
+        "overall": {
+            "n": o_n,
+            "cohen_kappa": o_kappa,
+            "agreement_pct": o_agreement,
+            "reliable": o_kappa is not None and o_kappa >= threshold_kappa,
+        },
+    }
 
 
 def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
@@ -210,17 +339,45 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
     }
 
     recommendations = [rec for d in dimensions if (rec := _recommendation(d))]
-    n_humans = len({p.get("submitted_by") for p in pairs if p.get("submitted_by")})
+    # People, not account strings (SPA-85). `legacy` rows — everything collected
+    # before the ledger — carry no user id and are counted separately rather
+    # than folded in, because there is no honest way to attribute them.
+    n_humans = len(
+        {
+            p.get("annotator_id")
+            for p in pairs
+            if p.get("annotator_type") == "human" and p.get("annotator_id")
+        }
+    )
     n_records = len({p.get("task_id") for p in pairs if p.get("task_id")})
+    n_annotations = len({p.get("annotation_id") for p in pairs if p.get("annotation_id")})
+    n_legacy = len(
+        {
+            p.get("annotation_id")
+            for p in pairs
+            if p.get("annotator_type") == "legacy" and p.get("annotation_id")
+        }
+    )
+    n_annotators = len({k for p in pairs if (k := _annotator_key(p))})
+    # Share of pairs whose judge side came from the observation frozen into the
+    # annotation. Below 1.0 means some pair was rebuilt from a live profile and
+    # can still move under a re-judge.
+    frozen = sum(1 for p in pairs if p.get("judge_source") == "frozen")
+    judge_frozen_pct = round(frozen / len(pairs), 4) if pairs else None
 
     return {
         "threshold_kappa": threshold_kappa,
         "sample_size": len(pairs),
         "n_records": n_records,
         "n_humans": n_humans,
+        "n_annotators": n_annotators,
+        "n_annotations": n_annotations,
+        "n_legacy": n_legacy,
+        "judge_frozen_pct": judge_frozen_pct,
         "n_dimensions": len(dimensions),
         "dimensions": dimensions,
         "overall": overall,
+        "inter_annotator": _inter_annotator(pairs, threshold_kappa=threshold_kappa),
         "recommendations": recommendations,
     }
 
@@ -311,6 +468,7 @@ async def run_judge_calibration(
             "version": version,
             "sample_size": report["sample_size"],
             "n_humans": report["n_humans"],
+            "n_legacy": report["n_legacy"],
             "overall_kappa": report["overall"]["cohen_kappa"],
             "passed": row.passed,
         },
@@ -355,9 +513,15 @@ async def get_judge_calibration_badge(db: AsyncSession, *, workspace_id) -> dict
         return {"calibrated": False}
     metrics = latest.get("metrics") or {}
     overall = metrics.get("overall") or {}
+    inter = metrics.get("inter_annotator") or {}
     return {
         "calibrated": True,
         "n_humans": metrics.get("n_humans", 0),
+        # Pre-ledger ratings, which cannot be attributed to a person (SPA-85).
+        "n_legacy": metrics.get("n_legacy", 0),
+        "judge_frozen_pct": metrics.get("judge_frozen_pct"),
+        "inter_annotator_kappa": (inter.get("overall") or {}).get("cohen_kappa"),
+        "inter_annotator_records": inter.get("n_records", 0),
         "sample_size": latest.get("sample_size", 0),
         "overall_kappa": overall.get("cohen_kappa"),
         "judge_config_key": latest.get("judge_config_key"),

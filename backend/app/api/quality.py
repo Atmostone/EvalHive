@@ -97,6 +97,15 @@ class HumanFeedbackBody(BaseModel):
     verdict: Optional[Literal["approve", "reject"]] = None
     overall_comment: Optional[str] = None
     dimensions: list[FeedbackDimensionBody] = Field(default_factory=list)
+    # Who is rating (SPA-85). `human` is the caller themselves — what tools they
+    # used while rating is deliberately not a field. The machine types are for
+    # scripted annotators and carry a label instead of a user id.
+    annotator_type: Literal["human", "llm_judge", "synthetic"] = "human"
+    annotator_label: Optional[str] = Field(default=None, max_length=255)
+    # The protocol as it actually was, not as intended: set by the UI when the
+    # annotator rated without seeing the model / the judge's scores.
+    blind_to_model: bool = False
+    blind_to_judge: bool = False
 
 
 def _rubric_to_dict(r: Rubric) -> dict:
@@ -732,11 +741,31 @@ async def get_feedback(
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    """Human feedback (E-05) for a task, or null if none submitted yet."""
+    """The latest human rating (E-05) for a task, or null if none submitted yet.
+
+    Readable by any workspace member — annotation stays visible to everyone who
+    can see the task. Only the *write* is role-gated (SPA-85)."""
     from app.quality.feedback import get_human_feedback
 
     task = await _get_owned_task(db, task_id, workspace)
     return {"task_id": task_id, "human_feedback": await get_human_feedback(db, task)}
+
+
+@router.get("/records/{task_id}/annotations")
+async def get_annotations(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """The append-only annotation ledger for a task, oldest first (SPA-85).
+
+    Every rating this run has ever carried, with its annotator, protocol and the
+    judge observation frozen at that moment. `human_feedback` above is the
+    materialised latest human row of this list."""
+    from app.quality.feedback import list_annotations
+
+    task = await _get_owned_task(db, task_id, workspace)
+    return {"task_id": task_id, "annotations": await list_annotations(db, task)}
 
 
 @router.put("/records/{task_id}/feedback")
@@ -746,13 +775,32 @@ async def put_feedback(
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    _role=Depends(require_role("owner", "admin")),
 ):
-    """Upsert structured human feedback (E-05). Stored alongside the judge profile
-    in the task's quality record; a parallel signal that does not change the gate."""
-    from app.quality.feedback import save_human_feedback
+    """Append a rating of this task to the annotation ledger (E-05).
+
+    A parallel signal that does not change the judge gate. Rating the same task
+    again as the same annotator supersedes that annotator's previous row rather
+    than the record's, so a second annotator's rating stays intact and the two
+    can be compared. Role-gated: calibration data is what the reliability claims
+    rest on, and any member could previously overwrite it."""
+    from app.quality.feedback import save_annotation
 
     task = await _get_owned_task(db, task_id, workspace)
-    feedback = await save_human_feedback(db, task, body.model_dump(), user.email)
+    payload = body.model_dump()
+    human = body.annotator_type == "human"
+    feedback = await save_annotation(
+        db,
+        task,
+        payload,
+        annotator_type=body.annotator_type,
+        # A machine annotator has no user behind it, so it carries a label only —
+        # counting it as a person is exactly the confusion this replaces.
+        annotator_id=user.id if human else None,
+        annotator_label=(user.email if human else body.annotator_label) or user.email,
+        blind_to_model=body.blind_to_model,
+        blind_to_judge=body.blind_to_judge,
+    )
     return {"task_id": task_id, "human_feedback": feedback}
 
 
