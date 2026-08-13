@@ -30,6 +30,7 @@ from app.models.experiment import Experiment, ExperimentRun
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.quality.experiment_report import compute_report
 from app.quality.experiments import (
+    LIVE_CELL,
     TERMINAL_EXPERIMENT,
     advance_experiment,
     create_experiment,
@@ -82,7 +83,7 @@ async def _status(args) -> None:
                 select(ExperimentRun).where(
                     ExperimentRun.experiment_id == exp.id,
                     # Same population as the report: retired configs are out.
-                    ExperimentRun.retired_at.is_(None),
+                    LIVE_CELL,
                 )
             )
         ).scalars().all()

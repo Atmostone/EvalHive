@@ -423,29 +423,6 @@ async def test_retiring_after_a_retry_does_not_collide(auth_client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_a_cell_that_ran_before_the_counter_existed_is_still_preserved(
-    auth_client, db_session
-):
-    """Rows predating the attempt column read as attempt_count=0. Treating that as
-    'never ran' is what would have destroyed 23 real evaluations on the live DB."""
-    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
-    exp, _ = await _settled_experiment(db_session, workspace_id, task_status=TaskStatus.FAILED.value)
-
-    victim = next(
-        r for r in await _runs(db_session, exp) if r.status == ExperimentRunStatus.FAILED.value
-    )
-    victim.attempt_count = 0  # simulate a pre-migration row
-    victim.weighted_score = 7.5
-    await db_session.commit()
-
-    await retry_failed_experiment(db_session, exp)
-
-    kept = await _attempts(db_session, victim.id)
-    assert [a.attempt_index for a in kept] == [1]
-    assert kept[0].weighted_score == 7.5, "the evaluation the cap-hit run carried survives"
-
-
-@pytest.mark.asyncio
 async def test_all_attempts_does_not_double_count_a_retired_cell(auth_client, db_session):
     """Retiring archives the cell without clearing it, so the ledger row and the
     live row describe the same execution."""

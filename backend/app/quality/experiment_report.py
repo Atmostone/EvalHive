@@ -32,9 +32,11 @@ from app.models.experiment import (
 from app.models.quality_record import QualityRecord
 from app.quality.aggregation import rank
 from app.quality.experiments import (
-    _resolve_config_state,
+    LIVE_CELL,
     _agent_image_ids,
+    _resolve_config_state,
     experiment_input_fingerprint,
+    live_configs,
 )
 from app.quality.ranking import build_matches
 from app.quality.stats import MIN_SAMPLES, mann_whitney_u, welch_t_test
@@ -1268,7 +1270,7 @@ async def select_runs(
     if selection != SELECTION_ALL_ATTEMPTS:
         # A retired configuration left the matrix; only an explicit request for
         # the full history brings it back.
-        stmt = stmt.where(ExperimentRun.retired_at.is_(None))
+        stmt = stmt.where(LIVE_CELL)
     current = list(
         (
             await db.execute(
@@ -1354,11 +1356,7 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     repointed at another vendor, changes what a condition means at an unchanged
     fingerprint — this is what makes that visible.
     """
-    pinned = [
-        c
-        for c in (exp.configurations or [])
-        if c.get("resolved") and not c.get("retired_at")
-    ]
+    pinned = [c for c in live_configs(exp) if c.get("resolved")]
     if not pinned:
         return []
     images = _agent_image_ids()

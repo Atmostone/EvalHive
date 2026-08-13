@@ -13,6 +13,7 @@ from app.models.experiment import Experiment, ExperimentRun, ExperimentRunStatus
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.models.workspace import Workspace
+from app.quality.experiments import LIVE_CELL
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -120,7 +121,7 @@ async def config_analytics(
     # Cells of a retired configuration are out of the matrix everywhere else —
     # the report, /results, /export and the CLI all skip them — so aggregating
     # them here would make this the one place describing a wider population.
-    where.append(ExperimentRun.retired_at.is_(None))
+    where.append(LIVE_CELL)
 
     s_success = ExperimentRunStatus.SUCCESS.value
     s_failed = ExperimentRunStatus.FAILED.value

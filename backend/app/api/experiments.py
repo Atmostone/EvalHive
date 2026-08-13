@@ -85,7 +85,7 @@ async def _get_scoped(
 def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
     # Retired configurations keep their entry (and their lineage) but are no
     # longer part of the matrix, so they must not inflate the counts.
-    live_configs = [c for c in (exp.configurations or []) if not c.get("retired_at")]
+    live = service.live_configs(exp)
     out = {
         "id": str(exp.id),
         "name": exp.name,
@@ -93,12 +93,12 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
         "status": exp.status,
         "dataset": exp.dataset,
         "n_cases": len(exp.dataset_cases or []),
-        "n_configs": len(live_configs),
-        "n_retired_configs": len(exp.configurations or []) - len(live_configs),
+        "n_configs": len(live),
+        "n_retired_configs": len(exp.configurations or []) - len(live),
         "revision": exp.revision,
         "n_runs_per_cell": exp.n_runs_per_cell,
         "total_runs": len(exp.dataset_cases or [])
-        * len(live_configs)
+        * len(live)
         * exp.n_runs_per_cell,
         "budget_limit_usd": float(exp.budget_limit_usd)
         if exp.budget_limit_usd is not None
@@ -136,7 +136,7 @@ async def _load_runs(
     """
     stmt = select(ExperimentRun).where(ExperimentRun.experiment_id == exp.id)
     if not include_retired:
-        stmt = stmt.where(ExperimentRun.retired_at.is_(None))
+        stmt = stmt.where(service.LIVE_CELL)
     return (
         (
             await db.execute(

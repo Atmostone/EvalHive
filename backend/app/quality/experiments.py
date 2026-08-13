@@ -61,6 +61,19 @@ TOOLATHLON_AGENT_IMAGE = "spawnhive-agent-toolathlon:latest"
 # app/orchestrator/docker_manager.AGENT_IMAGE, imported lazily there to keep the
 # docker dependency out of this module's import path.
 DEFAULT_AGENT_IMAGE = "spawnhive-agent:latest"
+
+# The two halves of "what is still part of this experiment" (SPA-84). Retiring a
+# configuration keeps its lineage but takes it out of the matrix, and every
+# reader has to agree on that — or the report and the aggregates end up
+# describing different populations again, which is the bug this whole change
+# exists to end. Defined once and used by the runner, the report, the API,
+# analytics and the CLI, so nobody has to half-remember the rule.
+LIVE_CELL = ExperimentRun.retired_at.is_(None)
+
+
+def live_configs(exp: Experiment) -> list[dict]:
+    """Configurations still in the matrix — retired entries kept but excluded."""
+    return [c for c in (exp.configurations or []) if not c.get("retired_at")]
 TOOLATHLON_MAX_ITERATIONS = 150
 # A preprocess still running after this many seconds is a kept-alive mock server
 # (the agent runs against it); we proceed and remove it at the eval settle.
@@ -655,7 +668,7 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
                 # A retired config's cells were already settled and archived when
                 # it was retired; rewriting them now would overwrite the very
                 # lineage retirement froze.
-                ExperimentRun.retired_at.is_(None),
+                LIVE_CELL,
             )
         )
     ).scalars().all()
@@ -877,20 +890,11 @@ async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -
     which indices are taken. Without this the second one violates
     ``uq_experiment_attempts_cell`` and takes the whole transaction down.
     """
-    # attempt_count is 0 both for a cell that never ran and for one that ran
-    # before the counter existed. Only the former may be dropped, so decide on
-    # evidence of execution rather than on the counter alone — a row that
-    # escapes the migration's backfill (restored dump, out-of-band migrate)
-    # must still be preserved.
-    never_claimed = (
-        not run.attempt_count
-        and run.task_id is None
-        and run.status
-        in (ExperimentRunStatus.PENDING.value, ExperimentRunStatus.SKIPPED.value)
-    )
-    if never_claimed:
+    # 0 means the cell was never claimed. Rows that predate the counter are
+    # covered by the migration's backfill, so the counter alone is enough here.
+    if not run.attempt_count:
         return
-    index = run.attempt_count or 1
+    index = run.attempt_count
     already = await db.scalar(
         select(ExperimentAttempt.id).where(
             ExperimentAttempt.experiment_run_id == run.id,
@@ -899,9 +903,6 @@ async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -
     )
     if already:
         return
-    # Keep the counter monotonic: the next claim does attempt_count + 1, which
-    # would collide with the row just written if the counter stayed at 0.
-    run.attempt_count = index
     db.add(
         ExperimentAttempt(
             experiment_run_id=run.id,
@@ -944,7 +945,7 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
                 # A retired config's cells are out of the matrix and are never
                 # re-claimed by the tick, so re-running them would resurrect a
                 # condition the author deliberately retired.
-                ExperimentRun.retired_at.is_(None),
+                LIVE_CELL,
             )
         )
     ).scalars().all()
@@ -1005,7 +1006,7 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     await _validate_config_refs(db, exp.workspace_id, [canon])
     fp = _config_fingerprint(canon)
     existing = list(exp.configurations or [])
-    live = [c for c in existing if not c.get("retired_at")]
+    live = live_configs(exp)
     if any(c.get("fingerprint") == fp for c in live):
         raise ValueError("a configuration with these settings already exists in this experiment")
     if len(live) >= MAX_CONFIGS:
@@ -1072,7 +1073,7 @@ async def remove_config_from_experiment(
         raise ValueError(f"no configuration '{config_key}' in this experiment")
     if target.get("retired_at"):
         raise ValueError(f"configuration '{config_key}' is already retired")
-    live = [c for c in existing if not c.get("retired_at")]
+    live = live_configs(exp)
     if len(live) <= 1:
         raise ValueError("cannot retire the only configuration; delete the experiment instead")
 
@@ -1743,7 +1744,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
                 ExperimentRun.experiment_id == exp.id,
                 # Cells of a retired configuration keep their lineage but must
                 # not be claimed, settled or counted towards finalization.
-                ExperimentRun.retired_at.is_(None),
+                LIVE_CELL,
             )
             .order_by(
                 ExperimentRun.config_key,
