@@ -30,6 +30,15 @@ def upgrade() -> None:
         "experiment_runs",
         sa.Column("condition_fingerprint", sa.String(32), nullable=True),
     )
+    # The case-independent half: model, prompt, image and resource limits, with
+    # the case-derived tool set left out. The full hash is only comparable within
+    # one case, and with the default one run per cell there is nothing to compare
+    # there — so an edit made between two cases and reverted before the report
+    # would be invisible without this.
+    op.add_column(
+        "experiment_runs",
+        sa.Column("core_condition_fingerprint", sa.String(32), nullable=True),
+    )
     # The ledger needs it too, or a retried cell loses the condition its earlier
     # attempt ran under — and a disagreement BETWEEN attempts of one cell is
     # exactly the case the per-run record exists to catch.
@@ -37,8 +46,14 @@ def upgrade() -> None:
         "experiment_attempts",
         sa.Column("condition_fingerprint", sa.String(32), nullable=True),
     )
+    op.add_column(
+        "experiment_attempts",
+        sa.Column("core_condition_fingerprint", sa.String(32), nullable=True),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("experiment_attempts", "core_condition_fingerprint")
     op.drop_column("experiment_attempts", "condition_fingerprint")
+    op.drop_column("experiment_runs", "core_condition_fingerprint")
     op.drop_column("experiment_runs", "condition_fingerprint")

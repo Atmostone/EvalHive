@@ -690,6 +690,12 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                 {/* The stronger signal: runs of the SAME cell did not all execute
                     under the same thing, whatever the pin says now. Reported per
                     case — the resolved tool set legitimately differs between cases. */}
+                {d.core_conditions && d.core_conditions.length > 1 && (
+                  <span className="ml-1 font-medium text-red-700">
+                    — its runs used {d.core_conditions.length} different model/prompt/image
+                    combinations
+                  </span>
+                )}
                 {d.split_cases && Object.keys(d.split_cases).length > 0 && (
                   <span className="ml-1 font-medium text-red-700">
                     — {Object.keys(d.split_cases).length} case(s) ran under more than one

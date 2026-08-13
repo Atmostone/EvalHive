@@ -7,7 +7,7 @@ moving on per-run noise, which would make every single run look like its own
 condition and the signal useless.
 """
 
-from app.orchestrator.engine import spawn_condition_fingerprint
+from app.orchestrator.engine import spawn_condition_fingerprints
 from app.plugins.runtime import AgentSpec
 
 MODEL = "vendor/model-x"
@@ -32,7 +32,13 @@ def _spec(**over) -> AgentSpec:
 
 
 def _fp(**over) -> str:
-    return spawn_condition_fingerprint(_spec(**over), over.pop("_model", MODEL))
+    """The full (case-scoped) hash."""
+    return spawn_condition_fingerprints(_spec(**over), MODEL)[0]
+
+
+def _core(**over) -> str:
+    """The case-independent hash, compared across a whole configuration."""
+    return spawn_condition_fingerprints(_spec(**over), MODEL)[1]
 
 
 def test_identical_specs_hash_identically():
@@ -49,7 +55,7 @@ def test_the_prompt_changes_the_condition():
 
 
 def test_the_model_changes_the_condition():
-    assert spawn_condition_fingerprint(_spec(), "vendor/other-model") != _fp()
+    assert spawn_condition_fingerprints(_spec(), "vendor/other-model")[0] != _fp()
 
 
 def test_the_resolved_tool_set_changes_the_condition():
@@ -63,17 +69,17 @@ def test_a_rebuilt_image_under_the_same_tag_changes_the_condition():
     """The point of hashing the resolved id rather than the tag: rebuilding
     spawnhive-agent:latest has moved measured pass rates in this project, and the
     tag says nothing about it. Note spec.image is None on the default path."""
-    before = spawn_condition_fingerprint(_spec(), MODEL, "sha256:aaa")
-    after = spawn_condition_fingerprint(_spec(), MODEL, "sha256:bbb")
+    before = spawn_condition_fingerprints(_spec(), MODEL, "sha256:aaa")
+    after = spawn_condition_fingerprints(_spec(), MODEL, "sha256:bbb")
     assert before != after
-    assert spawn_condition_fingerprint(_spec(), MODEL, "sha256:aaa") == before
+    assert spawn_condition_fingerprints(_spec(), MODEL, "sha256:aaa") == before
 
 
 def test_an_unknown_image_id_is_not_treated_as_unchanged():
     """A runtime that cannot answer reports None — missing evidence must not
     collide with a real id."""
-    unknown = spawn_condition_fingerprint(_spec(), MODEL, None)
-    assert unknown != spawn_condition_fingerprint(_spec(), MODEL, "sha256:aaa")
+    unknown = spawn_condition_fingerprints(_spec(), MODEL, None)
+    assert unknown != spawn_condition_fingerprints(_spec(), MODEL, "sha256:aaa")
 
 
 def test_resource_limits_change_the_condition():
@@ -101,3 +107,27 @@ def test_credentials_never_reach_the_hash_input():
 
 def test_a_renamed_server_is_a_different_condition():
     assert _fp(mcp_servers=[{"name": "toolathlon-gcal", "env": {}}]) != _fp()
+
+
+# --- the case-independent half ------------------------------------------------
+
+
+def test_the_core_hash_ignores_the_case_derived_tool_set():
+    """This is what makes it comparable across a whole configuration: the MCP set
+    comes from the case, so including it would make every case its own value."""
+    assert _core(tools=["bash"]) == _core()
+    assert _core(mcp_servers=[]) == _core()
+    assert _core(mcp_servers=[{"name": "toolathlon-gcal", "env": {}}]) == _core()
+
+
+def test_the_core_hash_still_moves_on_what_actually_matters():
+    """Prompt, model, image and limits are the cross-case confounders."""
+    assert _core(soul_md="# edited") != _core()
+    assert spawn_condition_fingerprints(_spec(), "vendor/other")[1] != _core()
+    assert spawn_condition_fingerprints(_spec(), MODEL, "sha256:aaa")[1] != _core()
+    assert _core(resource_limits={"max_ram": "8g", "max_cpu": 2}) != _core()
+
+
+def test_the_two_hashes_are_not_the_same_value():
+    full, core = spawn_condition_fingerprints(_spec(), MODEL)
+    assert full != core, "distinct scopes must not collide"

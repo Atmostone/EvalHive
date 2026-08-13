@@ -930,6 +930,7 @@ async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -
             launch_time=run.launch_time,
             lane_index=run.lane_index,
             condition_fingerprint=run.condition_fingerprint,
+            core_condition_fingerprint=run.core_condition_fingerprint,
             retired_reason=reason,
             completed_at=run.completed_at,
         )

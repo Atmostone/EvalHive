@@ -1378,6 +1378,7 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
                 ExperimentRun.config_key,
                 ExperimentRun.case_key,
                 ExperimentRun.condition_fingerprint,
+                ExperimentRun.core_condition_fingerprint,
             ).where(
                 ExperimentRun.experiment_id == exp.id,
                 LIVE_CELL,
@@ -1391,6 +1392,7 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
                 ExperimentRun.config_key,
                 ExperimentRun.case_key,
                 ExperimentAttempt.condition_fingerprint,
+                ExperimentAttempt.core_condition_fingerprint,
             )
             .join(ExperimentAttempt, ExperimentAttempt.experiment_run_id == ExperimentRun.id)
             .where(
@@ -1401,13 +1403,24 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
         )
     ).all()
     per_cell: dict[tuple[str, str], set[str]] = {}
-    for config_key, case_key, fingerprint in [*rows, *attempt_rows]:
-        per_cell.setdefault((config_key, case_key), set()).add(fingerprint)
-    # A config is split when any one of its cases ran under more than one thing.
+    per_config: dict[str, set[str]] = {}
+    for config_key, case_key, full, core in [*rows, *attempt_rows]:
+        per_cell.setdefault((config_key, case_key), set()).add(full)
+        if core:
+            per_config.setdefault(config_key, set()).add(core)
+    # Within a case: the full hash, which additionally covers the tool set.
     split_cases: dict[str, dict[str, list[str]]] = {}
     for (config_key, case_key), fingerprints in per_cell.items():
         if len(fingerprints) > 1:
             split_cases.setdefault(config_key, {})[case_key] = sorted(fingerprints)
+    # Across the whole config: the case-independent hash. This is the one that
+    # catches an edit made between two CASES — with the default single run per
+    # cell, a per-case comparison has exactly one value and can never disagree.
+    split_configs = {
+        config_key: sorted(cores)
+        for config_key, cores in per_config.items()
+        if len(cores) > 1
+    }
 
     images = _agent_image_ids()
     out: list[dict] = []
@@ -1439,7 +1452,8 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
         # against NOW, so it misses an edit reverted before the report and cannot
         # say which runs were affected. The per-run fingerprints can.
         split = split_cases.get(cfg.get("config_key")) or {}
-        if changed or split:
+        core_split = split_configs.get(cfg.get("config_key")) or []
+        if changed or split or core_split:
             entry = {
                 "config_key": cfg.get("config_key"),
                 "label": cfg.get("label"),
@@ -1448,6 +1462,8 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
             }
             if split:
                 entry["split_cases"] = split
+            if core_split:
+                entry["core_conditions"] = core_split
             out.append(entry)
     return out
 

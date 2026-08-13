@@ -1511,6 +1511,11 @@ export interface ConfigDrift {
    *  `changed` compares the pin against now and misses an edit reverted before
    *  the report. */
   split_cases?: Record<string, string[]>
+  /** Distinct case-independent conditions across the WHOLE configuration —
+   *  model, prompt, image, limits. This is the one that catches an edit made
+   *  between two cases: with the default single run per cell, a per-case
+   *  comparison has exactly one value and can never disagree. */
+  core_conditions?: string[]
 }
 
 export interface ExperimentReport {

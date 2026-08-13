@@ -98,42 +98,64 @@ def _spawn_snapshot(
     }
 
 
-def spawn_condition_fingerprint(spec, model_api_name: str, image_id: str | None = None) -> str:
-    """Hash of everything that decides how this run behaves (SPA-84).
-
-    Taken from the assembled ``AgentSpec`` immediately before the spawn, which is
-    the only moment the answer is authoritative: the template's prompt, the
-    effective model and the resolved tool set are all read live here, well after
-    the experiment runner claimed the cell. Recording it earlier would miss an
-    edit landing in between, and would duplicate resolution logic that has
-    already been done properly once, right here.
-
-    Deliberately excludes anything per-run or secret: the task description and
-    id, the agent token, provider credentials in ``env``, the memory context,
-    and the container-scoped ``network_mode``. MCP servers contribute their
-    names only — their materialized form carries registry secrets.
-    """
-    canon = {
-        "model_api_name": model_api_name,
-        "template_id": spec.template_id,
-        "soul_md_sha256": hashlib.sha256((spec.soul_md or "").encode()).hexdigest(),
-        "tools": sorted(str(t) for t in (spec.tools or [])),
-        "mcp_servers": sorted(
-            str(m.get("name") if isinstance(m, dict) else m) for m in (spec.mcp_servers or [])
-        ),
-        # The resolved image id of the container that was actually started, not
-        # the tag: ``spec.image`` is None on the default path and a tag is a
-        # moving target, so a rebuild under the same name would be invisible.
-        # None (runtime could not tell) is recorded as such — missing evidence,
-        # not evidence of sameness — so it never masquerades as "unchanged".
-        "image_id": image_id,
-        "resource_limits": spec.resource_limits or {},
-    }
+def _hash(canon: dict) -> str:
     blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-async def _record_run_condition(db: AsyncSession, task: Task, fingerprint: str) -> None:
+def spawn_condition_fingerprints(
+    spec, model_api_name: str, image_id: str | None = None
+) -> tuple[str, str]:
+    """What this run actually executed under, as ``(full, core)`` (SPA-84).
+
+    Taken from the assembled ``AgentSpec`` immediately before the spawn, the only
+    moment the answer is authoritative: the template's prompt, the effective
+    model and the resolved tool set are all read live here, well after the runner
+    claimed the cell. Recording it earlier would miss an edit landing in between
+    and would duplicate resolution already done properly once, right here.
+
+    Two hashes because the two comparisons have different scopes:
+
+    * **core** — model, prompt, image and resource limits. Identical for every
+      run of a configuration regardless of case, so it can be compared across
+      the WHOLE config. This is what catches a template edited between two
+      cases and reverted before the report — with the default one run per cell
+      there is nothing to compare inside a case.
+    * **full** — core plus the resolved tool and MCP set, which is derived from
+      the CASE and legitimately differs between cases. Only comparable within
+      one case, where it additionally catches a registry entry changing between
+      repeats or retries.
+
+    Both exclude anything per-run or secret: the task id and description, the
+    agent token, provider credentials in ``env``, the memory context and the
+    container-scoped ``network_mode``. MCP servers contribute names only — their
+    materialized form carries registry secrets.
+    """
+    core = {
+        "model_api_name": model_api_name,
+        "template_id": spec.template_id,
+        "soul_md_sha256": hashlib.sha256((spec.soul_md or "").encode()).hexdigest(),
+        # The resolved image id of the container that actually started, not the
+        # tag: ``spec.image`` is None on the default path and a tag is a moving
+        # target, so a rebuild under the same name would be invisible. None
+        # (the runtime could not tell) is recorded as such — missing evidence,
+        # never evidence of sameness.
+        "image_id": image_id,
+        "resource_limits": spec.resource_limits or {},
+    }
+    full = {
+        **core,
+        "tools": sorted(str(t) for t in (spec.tools or [])),
+        "mcp_servers": sorted(
+            str(m.get("name") if isinstance(m, dict) else m) for m in (spec.mcp_servers or [])
+        ),
+    }
+    return _hash(full), _hash(core)
+
+
+async def _record_run_condition(
+    db: AsyncSession, task: Task, full: str, core: str | None = None
+) -> None:
     """Stamp the spawn-time condition onto the experiment cell this task belongs to."""
     ref = ((task.run_config or {}).get("experiment") or {}) if task.run_config else {}
     if not ref.get("id"):
@@ -150,7 +172,7 @@ async def _record_run_condition(db: AsyncSession, task: Task, fingerprint: str) 
             ExperimentRun.case_key == ref.get("case_key"),
             ExperimentRun.run_index == ref.get("run_index"),
         )
-        .values(condition_fingerprint=fingerprint)
+        .values(condition_fingerprint=full, core_condition_fingerprint=core)
     )
 
 
@@ -313,7 +335,7 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         await _record_run_condition(
             db,
             task,
-            spawn_condition_fingerprint(
+            *spawn_condition_fingerprints(
                 spec, agent_llm.model.api_name, runtime.image_id(container_id)
             ),
         )

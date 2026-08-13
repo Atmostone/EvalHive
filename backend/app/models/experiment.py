@@ -238,6 +238,11 @@ class ExperimentRun(Base):
     condition_fingerprint: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True
     )
+    # The same, minus the case-derived tool set — comparable across every cell of
+    # a configuration, which the full hash is not.
+    core_condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
@@ -292,6 +297,9 @@ class ExperimentAttempt(Base):
     # What this attempt ran under. Kept so a disagreement between the attempts of
     # one cell stays visible after the cell is reset.
     condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
+    core_condition_fingerprint: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True
     )
 

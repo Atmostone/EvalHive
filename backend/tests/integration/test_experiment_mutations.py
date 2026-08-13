@@ -737,12 +737,53 @@ async def test_cells_that_ran_under_different_conditions_are_reported(auth_clien
     assert len(rows) == 2
     rows[0].condition_fingerprint = "cond-before"
     rows[1].condition_fingerprint = "cond-after"
+    rows[0].core_condition_fingerprint = rows[1].core_condition_fingerprint = "core-same"
     await db_session.commit()
 
     split = [d for d in await config_drift(db_session, exp) if d.get("split_cases")]
     assert [d["config_key"] for d in split] == ["cfg-01"]
     assert split[0]["split_cases"] == {"upload-001": ["cond-after", "cond-before"]}
     assert split[0]["changed"] == {}, "the pin still matches — only the runs disagree"
+
+
+@pytest.mark.asyncio
+async def test_an_edit_between_two_cases_is_caught(auth_client, db_session):
+    """The hole a per-case comparison leaves: with the default one run per cell
+    each case has exactly one run, so a template edited between case A and case B
+    — and reverted before the report — has nothing to disagree with locally."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name=f"T-{uuid.uuid4().hex[:6]}")
+    exp = await create_experiment(
+        db_session,
+        workspace_id=workspace_id,
+        payload=_payload(
+            tpl.id,
+            dataset={
+                "source": "upload",
+                "cases": [
+                    {"task_input": {"title": "Case A"}, "case_id": "case-a"},
+                    {"task_input": {"title": "Case B"}, "case_id": "case-b"},
+                ],
+            },
+        ),
+    )
+    await start_experiment(db_session, exp)
+    await _drain(db_session, exp)
+
+    for r in await _runs(db_session, exp):
+        if r.config_key != "cfg-01":
+            continue
+        # The tool set differs by case (legitimate); the core differs because the
+        # template was edited between the two cases.
+        r.condition_fingerprint = f"full-{r.case_key}"
+        r.core_condition_fingerprint = "core-before" if r.case_key == "case-a" else "core-after"
+    await db_session.commit()
+
+    drift = await config_drift(db_session, exp)
+    flagged = [d for d in drift if d.get("core_conditions")]
+    assert [d["config_key"] for d in flagged] == ["cfg-01"]
+    assert flagged[0]["core_conditions"] == ["core-after", "core-before"]
+    assert "split_cases" not in flagged[0], "no case disagrees with itself"
 
 
 @pytest.mark.asyncio
@@ -770,11 +811,15 @@ async def test_different_cases_are_not_a_split(auth_client, db_session):
     await _drain(db_session, exp)
 
     for r in await _runs(db_session, exp):
-        # Same config, different case → different tool set → different hash.
-        r.condition_fingerprint = f"cond-{r.case_key}"
+        # Same config, different case → different tool set → different full hash,
+        # but the case-independent core is identical: nothing actually changed.
+        r.condition_fingerprint = f"full-{r.case_key}"
+        r.core_condition_fingerprint = "core-same"
     await db_session.commit()
 
-    assert [d for d in await config_drift(db_session, exp) if d.get("split_cases")] == []
+    drift = await config_drift(db_session, exp)
+    assert [d for d in drift if d.get("split_cases")] == []
+    assert [d for d in drift if d.get("core_conditions")] == []
 
 
 @pytest.mark.asyncio
