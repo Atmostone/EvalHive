@@ -256,7 +256,7 @@ export const workspaceApi = {
 }
 
 // Quality Rubric Engine (E-02)
-import type { Rubric, QualityProfile, HumanFeedback, CalibrationQueue, ReviewContext, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, FailureAggregate, HallucinationProfile, HallucinationAggregate, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge, ExperimentSnapshot, SnapshotDiff, ReplayResult, PairwiseComparison, PairwiseListResponse, PairwiseVerdict, ComparisonSubject, ComparisonStatus, ExternalCheckerLogs } from '../types'
+import type { Rubric, QualityProfile, HumanFeedback, Annotation, AnnotationSessionBundle, CalibrationQueue, ReviewContext, CleanedTrace, TrajectoryProfile, TrajectoryEvidenceProfile, TrajectoryMatchProfile, CapabilityProfile, CapabilityAggregate, FailureProfile, FailureAggregate, HallucinationProfile, HallucinationAggregate, CalibrationProfile, CalibrationAggregate, JudgeCalibration, JudgeCalibrationBadge, BiasReport, RankingReport, RankingBadge, ExperimentSnapshot, SnapshotDiff, ReplayResult, PairwiseComparison, PairwiseListResponse, PairwiseVerdict, ComparisonSubject, ComparisonStatus, ExternalCheckerLogs } from '../types'
 
 type RubricInput = Pick<Rubric, 'name' | 'description' | 'applies_to' | 'is_default' | 'dimensions'>
 
@@ -290,10 +290,27 @@ export const qualityApi = {
       `/quality/records/${taskId}/feedback`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),
-  getCalibrationQueue: (params?: { status?: 'pending' | 'done' | 'all'; limit?: number }) => {
+  getAnnotations: (taskId: string) =>
+    request<{ task_id: string; annotations: Annotation[] }>(
+      `/quality/records/${taskId}/annotations`,
+    ),
+  /** Open an annotation session and get the whole sanitized bundle in one call.
+   *  The protocol is declared before anything is fetched; the returned
+   *  `session_id` is what the submitted rating records it from (SPA-85). */
+  startAnnotationSession: (taskId: string, blind: boolean) =>
+    request<AnnotationSessionBundle>(`/quality/records/${taskId}/annotation-session`, {
+      method: 'POST',
+      body: JSON.stringify({ blind }),
+    }),
+  getCalibrationQueue: (params?: {
+    status?: 'pending' | 'done' | 'all'
+    limit?: number
+    blind?: boolean
+  }) => {
     const q = new URLSearchParams()
     if (params?.status) q.set('status', params.status)
     if (params?.limit != null) q.set('limit', String(params.limit))
+    if (params?.blind) q.set('blind', 'true')
     const s = q.toString()
     return request<CalibrationQueue>(`/quality/calibration/queue${s ? `?${s}` : ''}`)
   },
@@ -535,6 +552,15 @@ export interface HumanFeedbackInput {
   verdict?: 'approve' | 'reject' | null
   overall_comment?: string | null
   dimensions: { key: string; name?: string; score: number; comment?: string | null }[]
+  /** Who is rating (SPA-85). Omitted = `human`, the caller themselves. */
+  annotator_type?: 'human' | 'llm_judge' | 'synthetic'
+  annotator_label?: string | null
+  /** The session that served this annotator their bundle. It — not the body —
+   *  decides the recorded protocol; without one the rating is sighted. */
+  session_id?: string | null
+  /** Declarable only by a scripted annotator, which owns its own protocol. */
+  blind_to_model?: boolean
+  blind_to_judge?: boolean
 }
 
 import type { VarianceRun, PerturbationRun, PerturbationTransform } from '../types'

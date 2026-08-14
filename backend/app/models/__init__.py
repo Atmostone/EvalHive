@@ -13,6 +13,7 @@ from app.models.scheduled_job import ScheduledJob
 from app.models.template_version import TemplateVersion
 from app.models.provider import Provider, LLMModel
 from app.models.quality_record import QualityRecord
+from app.models.annotation import Annotation, AnnotationSession
 from app.models.rubric import Rubric
 from app.models.variance_run import VarianceRun
 from app.models.perturbation_run import PerturbationRun
@@ -42,6 +43,8 @@ __all__ = [
     "Provider",
     "LLMModel",
     "QualityRecord",
+    "Annotation",
+    "AnnotationSession",
     "Rubric",
     "VarianceRun",
     "PerturbationRun",

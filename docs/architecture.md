@@ -253,17 +253,19 @@ agent code (pytest/jest) needs container isolation, not in-process execution; we
 ### Human feedback (E-05)
 
 A structured human signal on a finished task — a 0–10 rating per quality dimension
-(mirroring the E-02 axes), a free-text comment per dimension, an overall comment and
-an optional approve/reject verdict — captured by an optional, non-blocking form and
-stored in the `quality_records.human_feedback` slot (built on demand if the record
-does not yet exist). It is a **parallel** signal: it does **not** alter the judge gate
-or weighted score.
+(mirroring the E-02 axes and the E-07 trajectory axes), a free-text comment per
+dimension, an overall comment and an optional approve/reject verdict — captured by an
+optional, non-blocking form. It is a **parallel** signal: it does **not** alter the
+judge gate or weighted score.
 
 ```
-PUT /api/quality/records/{task_id}/feedback   (upsert; member)
-   → build_human_feedback: clamp 0-10, band each score, copy judge_score from the
-     profile by key, stamp submitted_by/at  →  human_feedback slot
-GET .../feedback                              (read; member)
+PUT /api/quality/records/{task_id}/feedback   (append; owner/admin)
+   → freeze_judge_observation: snapshot both judges' identity, per-key scores and gate
+   → build_human_feedback: clamp 0-10, band each score, pair judge_score by key
+   → append an `annotations` row, superseding this annotator's own previous one
+   → refresh the materialised human_feedback slot (human ratings only)
+GET .../feedback                              (latest human rating; member)
+GET .../annotations                           (the whole ledger; member)
 GET /api/quality/calibration                  (owner/admin) → flattened judge↔human
      pairs (one row per rated dimension) — the raw material for judge calibration (E-17)
 ```
@@ -271,11 +273,95 @@ GET /api/quality/calibration                  (owner/admin) → flattened judge�
 Scores are read in **bands** — `bad` (1-3, incorrect/fix) · `improve` (4-7) · `good`
 (8-10, leave as is); the band thresholds are constants for now and become
 rubric-configurable in **E-26**, which also routes the per-dimension comments back to
-the agent for a re-run. The form shows the judge's score next to each slider (one-click
-agree) so disagreements surface directly. **Deferred:** pairwise (A vs B) human
-comparison → **E-21** (needs a second candidate a single task does not hold);
+the agent for a re-run. By default the form shows the judge's score next to each slider
+(one-click agree) so disagreements surface directly. **Deferred:** pairwise (A vs B)
+human comparison → **E-21** (needs a second candidate a single task does not hold);
 configurable bands + feedback→re-run loop → **E-26**; agreement statistics (Cohen's κ,
 correlations) → **E-17**.
+
+- **Annotation provenance (SPA-85).** Ratings live in the append-only
+  **`annotations`** ledger; `quality_records.human_feedback` is the materialised
+  «latest human rating» projected from it, so every existing reader is unchanged.
+  Three properties the single JSONB slot could not have. **Who rated** —
+  `annotator_type` ∈ `human` \| `llm_judge` \| `synthetic` \| `legacy`; the
+  distinction recorded is «a person decided» versus «a model decided unattended»,
+  and what tools a person used while rating is deliberately not a field. `n_humans`
+  therefore counts distinct people rather than distinct account strings, and
+  pre-ledger `legacy` rows — attributable to nobody — are reported separately
+  instead of inflating it. **Two ratings of one run** — a re-rating supersedes its
+  own annotator's previous row, not the record's, so a second annotator's rating
+  stays current and **inter-annotator κ falls out of the data** (pooled over every
+  unordered annotator pair on runs rated more than once). It answers a different
+  question from judge↔human κ — how reproducible the human gold itself is — and it
+  bounds what the judge can be asked to match. **A judge that cannot move** —
+  `judge_observation` freezes the evaluator model, the rubric and prompt
+  fingerprints, the E-18 mitigation flags, whether the judge saw the agent's
+  self-report (`files_only`), the per-key scores and the gate verdict, all as of
+  annotation time. An **absence** is frozen too: an axis the judge had not scored
+  when the human rated it stays unpaired forever, because letting a later judge
+  run fill the gap is the same retroactive change by another route. `judge_source`
+  on each exported pair says which: `frozen`, `unscored`, or `live` — and `live`
+  is reachable only for pre-ledger `legacy` rows, which froze nothing and never
+  can. A **verdict-only** rating (no per-dimension scores) yields one
+  dimension-less pair rather than disappearing from the population it feeds.
+  The write is `owner/admin`; the read is not, so annotation stays visible to
+  anyone who can see the task.
+
+- **Blindness is a property of the session (SPA-85).** A flag the client sets is
+  worth nothing — the UI could show the judge's scores, let the annotator read
+  them, and still submit `blind_to_judge: true`. The obvious repair, tracking
+  every judge score the server has ever shown a user, is worse: scores also reach
+  a client from the on-demand evaluate endpoints, the whole experiment-results
+  payload and every analytical surface, so the tracking is necessarily partial —
+  and a partial guarantee reads as a guarantee while being false.
+
+  So the claim is narrowed to one the server can prove. An **annotation session**
+  (`annotation_sessions`) is opened before anything is fetched, declares its
+  protocol, and is handed **one** bundle built to match it —
+  `POST /api/quality/records/{id}/annotation-session` returns the review context,
+  both profiles, the existing rating, the ledger and `model_used` in a single
+  payload, so a blind session physically cannot receive a judge score: the same
+  branch builds every part of what it is given. The rating is submitted with that
+  `session_id`, the stored flags are read off the session row, and the session is
+  consumed — single-use, because otherwise one blind bundle could vouch for a
+  rating made much later, after the annotator had looked elsewhere. A session is
+  checked against the caller and the task, so it cannot vouch for someone else's
+  rating or for a different run. **No session means no claim**: the rating is
+  recorded as sighted.
+
+  `blind_to_judge` therefore means «this rating was produced through a session
+  that was served no judge scores». It does **not** mean the person never saw the
+  judge — that is not a property this system can establish, and it is not the
+  property the protocol needs. `annotations.session_id` keeps the evidence
+  attached to the row, under a unique index so the database, not a
+  read-then-write, decides single-use; the claim takes `SELECT … FOR UPDATE` on
+  the session and checks caller, run **and** workspace *before* any rating is
+  looked up — resolving by session id alone would answer a replay of somebody
+  else's id with their feedback. A retry whose own session already produced a
+  rating gets that rating back; anything else is a **409** — silently recording a
+  sighted rating for a caller who asked for a blind one is the failure this whole
+  design removes.
+
+- **Annotators do not see each other until they have rated (SPA-85).** The
+  session serves **this** annotator's own current rating as `human_feedback` —
+  never the materialised `quality_records.human_feedback`, which holds whoever
+  rated last. Serving the slot handed the second annotator the first one's
+  scores, comments and verdict as the initial state of their form, so the two
+  ratings were not independent and the κ between them measured agreement with a
+  pre-filled value rather than between people.
+
+  Other annotators' ledger rows are served with their scores, verdict and
+  comments removed (`redacted: true`) — **always**, not «until you have rated».
+  Revealing them afterwards left re-annotation open: the collector takes each
+  annotator's *current* row, so an annotator who had seen their peers could rate
+  again and the dependent re-rating would silently replace the independent one.
+  Who rated, when and under which protocol stay visible, because provenance is
+  not an anchor. A session is for producing an independent rating; reading what
+  everyone thought is a different activity, served by `GET …/annotations` and the
+  calibration export. Each session-produced rating records `blind_to_peers`, and
+  **inter-annotator κ is computed only over ratings that carry it** — a rating
+  collected without a session makes no independence claim, so it cannot be paired
+  into a number that asserts one.
 
 ### Trace cleaner (E-06)
 
@@ -649,18 +735,26 @@ call** — pure agreement statistics over already-stored scores.
   `mean_bias`. Any metric with fewer than `MIN_SAMPLES` (3) pairs returns `None` and the
   dimension is marked `insufficient_data`.
 - **Shared pair collection.** `collect_judge_human_pairs` flattens one row per rated
-  dimension across records with human feedback — the single source of truth for **both**
+  dimension across the **current** annotations (SPA-85: superseded rows excluded, and
+  by default only the human types, so an unattended machine annotation never silently
+  enters a judge-vs-human comparison) — the single source of truth for **both**
   the `GET /api/quality/calibration` export and the E-17 report (DRY). Each row carries
-  the judge score (from the human dim's `judge_score`, falling back to the matching
-  `quality_profile` dimension), the human score/band, the per-task `verdict`,
-  `judge_gate_passed` (`quality_profile.gate.passed`) and `submitted_by`.
+  the judge score (from the observation frozen onto the annotation, falling back to the
+  dimension's own stored `judge_score`; the live profile is consulted **only** for
+  `legacy` rows, and a non-legacy annotation whose observation holds no score for that
+  axis stays `judge_source: unscored` with no pair), the human score/band, the
+  `verdict`, `judge_gate_passed` (frozen too), and the annotator's identity, type and
+  protocol. A verdict-only annotation contributes one row with `dimension_key: None`.
 - **Report** (`_compute_report`). Per dimension: `n`, `pearson`, `spearman`,
   `cohen_kappa` (on bands), `mean_bias`, and `reliable` = band κ ≥
   `judge_calibration_min_kappa` (default 0.6, a workspace setting). An **overall
-  verdict-agreement** dedupes to one (judge gate → approve/reject, human verdict) pair
-  per task and reports κ + raw agreement %. `recommendations[]` turn each dimension into
-  plain language ("judge reliable for Correctness (kappa=0.71, r=0.81)" / "judge diverges
-  on Tool Selection …"). `n_humans` = distinct `submitted_by`.
+  verdict-agreement** takes one (judge gate → approve/reject, human verdict) pair
+  per task **and annotator** and reports κ + raw agreement %. `recommendations[]` turn
+  each dimension into plain language ("judge reliable for Correctness (kappa=0.71,
+  r=0.81)" / "judge diverges on Tool Selection …"). `n_humans` = distinct
+  `annotator_id` of type `human` — people, not account strings — with `n_legacy`,
+  `n_annotators`, `n_annotations` and `judge_frozen_pct` reported alongside, and
+  `inter_annotator` giving agreement between annotators on runs rated more than once.
 - **Versioned artifact, not a per-task slot.** A judge calibration is per-(workspace,
   judge model), so it lives in its own `judge_calibrations` table — append-only,
   versioned per `judge_config_key` (the judge model's `api_name`; `_resolve_judge_model`,

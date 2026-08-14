@@ -15,9 +15,11 @@ from httpx import AsyncClient
 from sqlalchemy import text
 
 from app import database
+from app.models.annotation import Annotation
 from app.models.provider import LLMModel, Provider
 from app.models.quality_record import QualityRecord
 from app.models.task import Task, TaskStatus
+from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality.stats import score_to_band
 
@@ -51,8 +53,30 @@ async def _seed_judge_model(ws, *, api_name="judge-m"):
         await s.commit()
 
 
+async def _seed_annotators(s) -> list:
+    """Two real people behind the ratings, so `n_humans` can mean people rather
+    than distinct account strings (SPA-85)."""
+    ids = []
+    for email in _SUBMITTERS:
+        u = User(email=email, display_name=email.split("@")[0])
+        s.add(u)
+        await s.flush()
+        ids.append(u.id)
+    return ids
+
+
+def _dims(ch, th):
+    return [
+        {"key": "correctness", "name": "Correctness", "score": ch,
+         "band": score_to_band(ch)},
+        {"key": "tool_selection", "name": "Tool Selection", "score": th,
+         "band": score_to_band(th)},
+    ]
+
+
 async def _seed_records(ws):
     async with database.async_session() as s:
+        annotators = await _seed_annotators(s)
         for i in range(len(_CORRECTNESS)):
             cj, ch = _CORRECTNESS[i]
             tj, th = _TOOL[i]
@@ -61,7 +85,7 @@ async def _seed_records(ws):
                      result_summary="answer", model_used="doer-m")
             s.add(t)
             await s.flush()
-            s.add(QualityRecord(
+            record = QualityRecord(
                 task_id=t.id, workspace_id=ws, model_used="doer-m",
                 final_status=TaskStatus.DONE.value,
                 quality_profile={
@@ -76,14 +100,28 @@ async def _seed_records(ws):
                 human_feedback={
                     "schema_version": 1,
                     "verdict": verdict,
-                    "dimensions": [
-                        {"key": "correctness", "name": "Correctness", "score": ch,
-                         "band": score_to_band(ch)},
-                        {"key": "tool_selection", "name": "Tool Selection", "score": th,
-                         "band": score_to_band(th)},
-                    ],
+                    "dimensions": _dims(ch, th),
                     "submitted_by": _SUBMITTERS[i % 2],
                     "submitted_at": "2026-05-30T00:00:00",
+                },
+            )
+            s.add(record)
+            await s.flush()
+            # Each record is rated by one of the two people; nobody rates the
+            # same run twice, so there is no inter-annotator overlap here.
+            s.add(Annotation(
+                quality_record_id=record.id, task_id=t.id, workspace_id=ws,
+                annotator_type="human", annotator_id=annotators[i % 2],
+                annotator_label=_SUBMITTERS[i % 2], verdict=verdict,
+                blind_to_peers=True,
+                dimensions=_dims(ch, th),
+                judge_observation={
+                    "outcome": {
+                        "judge_model": "judge-m",
+                        "gate_passed": gate_passed,
+                        "scores": {"correctness": cj, "tool_selection": tj},
+                        "reasoning": {"correctness": "j", "tool_selection": "j"},
+                    }
                 },
             ))
         await s.commit()
@@ -108,6 +146,13 @@ async def test_run_get_history_and_badge(auth_client: AsyncClient):
     assert dims["correctness"]["n"] == 8
     assert dims["tool_selection"]["reliable"] is False
     assert metrics["n_humans"] == 2
+    # people, annotations and provenance are reported separately (SPA-85)
+    assert metrics["n_annotators"] == 2
+    assert metrics["n_annotations"] == 8
+    assert metrics["n_legacy"] == 0
+    assert metrics["judge_frozen_pct"] == 1.0
+    # nobody rated the same run twice, so there is no agreement to report
+    assert metrics["inter_annotator"]["available"] is False
     recs = " ".join(metrics["recommendations"]).lower()
     assert "correctness" in recs and "tool selection" in recs
 
@@ -134,6 +179,8 @@ async def test_run_get_history_and_badge(auth_client: AsyncClient):
     badge = r.json()
     assert badge["calibrated"] is True
     assert badge["n_humans"] == 2
+    assert badge["n_legacy"] == 0
+    assert badge["judge_frozen_pct"] == 1.0
     assert badge["judge_config_key"] == "judge-m"
     assert badge["overall_kappa"] is not None
 
@@ -178,3 +225,139 @@ async def test_calibration_export_regression(auth_client: AsyncClient):
     # judge_score falls back to the quality_profile dimension score
     corr = [x for x in rows if x["dimension_key"] == "correctness"]
     assert all(x["judge_score"] is not None for x in corr)
+    # provenance of each pair's judge side (SPA-85)
+    assert {x["judge_source"] for x in rows} == {"frozen"}
+    assert {x["annotator_type"] for x in rows} == {"human"}
+
+
+# --------------------------------------------------------------------------- #
+# Inter-annotator agreement (SPA-85)
+# --------------------------------------------------------------------------- #
+# Four runs, each rated by BOTH people. Correctness bands agree on three and
+# disagree on the fourth; verdicts agree on three of four.
+_PAIRED = [
+    #  alice, bob, alice verdict, bob verdict
+    (9, 8, "approve", "approve"),
+    (2, 3, "reject", "reject"),
+    (5, 6, "approve", "approve"),
+    (9, 2, "reject", "approve"),
+]
+
+
+async def _seed_paired_records(ws):
+    async with database.async_session() as s:
+        annotators = await _seed_annotators(s)
+        for i, (a_score, b_score, a_verdict, b_verdict) in enumerate(_PAIRED):
+            t = Task(title=f"p{i}", status=TaskStatus.DONE.value, workspace_id=ws,
+                     result_summary="answer", model_used="doer-m")
+            s.add(t)
+            await s.flush()
+            record = QualityRecord(
+                task_id=t.id, workspace_id=ws, model_used="doer-m",
+                final_status=TaskStatus.DONE.value,
+                quality_profile={
+                    "dimensions": [
+                        {"key": "correctness", "name": "Correctness", "score": 7},
+                    ],
+                    "gate": {"passed": True},
+                },
+            )
+            s.add(record)
+            await s.flush()
+            observation = {
+                "outcome": {"gate_passed": True, "scores": {"correctness": 7}}
+            }
+            for who, score, verdict in (
+                (0, a_score, a_verdict),
+                (1, b_score, b_verdict),
+            ):
+                s.add(Annotation(
+                    quality_record_id=record.id, task_id=t.id, workspace_id=ws,
+                    annotator_type="human", annotator_id=annotators[who],
+                    annotator_label=_SUBMITTERS[who], verdict=verdict,
+                    # collected independently — which is what lets these rows
+                    # enter the inter-annotator agreement at all (SPA-85)
+                    blind_to_peers=True,
+                    dimensions=[{"key": "correctness", "name": "Correctness",
+                                 "score": score, "band": score_to_band(score)}],
+                    judge_observation=observation,
+                ))
+        await s.commit()
+
+
+async def test_inter_annotator_agreement_falls_out_of_the_data(auth_client: AsyncClient):
+    """The number a single overwritable feedback slot made uncomputable: two
+    people rate the same run, and κ between them is just there."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    await _seed_judge_model(ws)
+    await _seed_paired_records(ws)
+
+    r = await auth_client.post("/api/quality/judge-calibration/run")
+    assert r.status_code == 200, r.text
+    metrics = r.json()["metrics"]
+
+    assert metrics["n_humans"] == 2
+    assert metrics["n_annotations"] == 8          # 4 runs × 2 people
+    inter = metrics["inter_annotator"]
+    assert inter["available"] is True
+    assert inter["n_records"] == 4 and inter["n_annotators"] == 2
+    dim = {d["key"]: d for d in inter["dimensions"]}["correctness"]
+    assert dim["n"] == 4                          # one annotator pair per run
+    assert dim["agreement_pct"] == 0.75           # three bands out of four
+    assert 0 < dim["cohen_kappa"] < 1
+    assert inter["overall"]["n"] == 4
+    assert inter["overall"]["agreement_pct"] == 0.75
+
+    # judge-vs-human counts BOTH annotators' verdicts, not whichever the loop
+    # reached last: 4 runs × 2 people, judge gate passed everywhere
+    assert metrics["overall"]["n"] == 8
+
+    r = await auth_client.get("/api/quality/judge-calibration/badge")
+    assert r.json()["inter_annotator_records"] == 4
+    assert r.json()["inter_annotator_kappa"] is not None
+
+
+async def test_legacy_rows_are_labelled_not_counted_as_people(auth_client: AsyncClient):
+    """Ratings collected before the ledger carry no user and no frozen judge —
+    they stay in the population, but they are not people and their judge side is
+    honestly reported as re-read from the live profile."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    await _seed_judge_model(ws)
+    async with database.async_session() as s:
+        t = Task(title="old", status=TaskStatus.DONE.value, workspace_id=ws,
+                 result_summary="answer", model_used="doer-m")
+        s.add(t)
+        await s.flush()
+        record = QualityRecord(
+            task_id=t.id, workspace_id=ws, model_used="doer-m",
+            final_status=TaskStatus.DONE.value,
+            quality_profile={
+                "dimensions": [{"key": "correctness", "name": "Correctness", "score": 7}],
+                "gate": {"passed": True},
+            },
+        )
+        s.add(record)
+        await s.flush()
+        s.add(Annotation(
+            quality_record_id=record.id, task_id=t.id, workspace_id=ws,
+            annotator_type="legacy", annotator_id=None,
+            annotator_label="alice@x.com", verdict="approve",
+            dimensions=[{"key": "correctness", "name": "Correctness",
+                         "score": 6, "band": score_to_band(6)}],
+            judge_observation=None,
+        ))
+        await s.commit()
+
+    r = await auth_client.get("/api/quality/calibration")
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["annotator_type"] == "legacy"
+    assert rows[0]["annotator_id"] is None
+    assert rows[0]["judge_score"] == 7 and rows[0]["judge_source"] == "live"
+
+    r = await auth_client.post("/api/quality/judge-calibration/run")
+    metrics = r.json()["metrics"]
+    assert metrics["n_humans"] == 0        # nobody attributable
+    assert metrics["n_legacy"] == 1
+    assert metrics["n_annotators"] == 1    # the label still identifies a rater
+    assert metrics["judge_frozen_pct"] == 0.0

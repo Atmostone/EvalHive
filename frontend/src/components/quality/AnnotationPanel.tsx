@@ -1,55 +1,63 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Download } from 'lucide-react'
+import { Download, EyeOff, Users } from 'lucide-react'
+import { format } from 'date-fns'
 import { qualityApi } from '@/api/client'
 import HumanFeedbackForm from './HumanFeedbackForm'
 import MarkdownView from '../MarkdownView'
-import type { QualityProfile, ReviewFile } from '@/types'
+import type { Annotation, AnnotatorType, ReviewFile } from '@/types'
 
-/** Loads the judge profile (unless supplied), the review context (task prompt +
- *  deliverable) and any existing human feedback for a task, then shows what is
- *  being rated above the rating form. Used by the calibration queue and the
- *  experiment results drawer so both annotate through the one feedback API. */
+/** Opens an annotation session and shows everything it was served: what is being
+ *  rated, the existing ledger, and the rating form. Used by the calibration
+ *  queue and the experiment results drawer.
+ *
+ *  One session call rather than five reads is the point (SPA-85): the protocol is
+ *  declared before anything is fetched, the server builds the whole bundle to
+ *  match it in one place, and the submitted rating records the protocol from the
+ *  session id — so a blind session cannot be half-applied. */
 export default function AnnotationPanel({
   taskId,
-  profile: profileProp,
   verifiable = false,
+  blind: blindProp = false,
   onSaved,
 }: {
   taskId: string
-  profile?: QualityProfile | null
   /** Verifiable bench (executable checker = outcome ground truth): surface a
    *  top-level "rate the process only" banner so the annotator knows there is no
    *  human outcome rating here. (SPA-74) */
   verifiable?: boolean
+  /** Blind protocol (SPA-85). Captured once, on mount — the choice has to precede
+   *  the fetch. It only *declares* the protocol; what the rating records comes
+   *  from the session the server opened, so this prop cannot manufacture a blind
+   *  annotation. */
+  blind?: boolean
   onSaved?: () => void
 }) {
-  const profileQuery = useQuery({
-    queryKey: ['quality-profile', taskId],
-    queryFn: () => qualityApi.getProfile(taskId),
-    enabled: profileProp == null,
-  })
-  const reviewQuery = useQuery({
-    queryKey: ['review-context', taskId],
-    queryFn: () => qualityApi.getReview(taskId),
-  })
-  const feedbackQuery = useQuery({
-    queryKey: ['human-feedback', taskId],
-    queryFn: () => qualityApi.getFeedback(taskId),
-  })
-  const trajectoryQuery = useQuery({
-    queryKey: ['trajectory-profile', taskId],
-    queryFn: () => qualityApi.getTrajectoryProfile(taskId),
+  const [blind] = useState(blindProp)
+  const sessionQuery = useQuery({
+    queryKey: ['annotation-session', taskId, blind],
+    queryFn: () => qualityApi.startAnnotationSession(taskId, blind),
+    // A session is single-use and stamps a row, so it must not be replayed from
+    // cache or refetched behind the annotator's back.
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    retry: false,
   })
 
-  const profile = profileProp ?? profileQuery.data?.quality_profile ?? null
-  const loading =
-    feedbackQuery.isLoading ||
-    reviewQuery.isLoading ||
-    trajectoryQuery.isLoading ||
-    (profileProp == null && profileQuery.isLoading)
-  if (loading) return <div className="text-xs text-gray-400 py-2">Loading…</div>
+  if (sessionQuery.isLoading) return <div className="text-xs text-gray-400 py-2">Loading…</div>
+  if (!sessionQuery.data) {
+    return (
+      <div className="text-xs text-red-600 py-2">
+        Could not open an annotation session — rating is disabled rather than recorded
+        under an unknown protocol.
+      </div>
+    )
+  }
 
-  const review = reviewQuery.data
+  const bundle = sessionQuery.data
+  const profile = bundle.quality_profile
+  const review = bundle.review
 
   return (
     <div className="space-y-3">
@@ -57,6 +65,17 @@ export default function AnnotationPanel({
         <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
           Verifiable bench — the executable checker is the outcome ground truth (the outcome judge is off). Rate the{' '}
           <span className="font-medium">process (trajectory)</span> only; there's no human outcome rating here.
+        </div>
+      )}
+      {bundle.protocol.blind_to_judge && (
+        <div className="flex items-start gap-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+          <EyeOff className="h-4 w-4 shrink-0 mt-px" />
+          <span>
+            <span className="font-medium">Blind session.</span> The judge's scores and the
+            model name were not sent to this page, and your rating will record that. It
+            says what this session was served — not that you have never seen the judge
+            elsewhere.
+          </span>
         </div>
       )}
       {review && (
@@ -87,11 +106,89 @@ export default function AnnotationPanel({
       <HumanFeedbackForm
         taskId={taskId}
         profile={profile}
-        trajectoryProfile={trajectoryQuery.data?.trajectory_profile ?? null}
-        existing={feedbackQuery.data?.human_feedback ?? null}
+        trajectoryProfile={bundle.trajectory_profile}
+        existing={bundle.human_feedback}
+        blind={bundle.protocol.blind_to_judge}
+        sessionId={bundle.session_id}
         defaultOpen
         onSaved={onSaved}
       />
+
+      <AnnotationLedger rows={bundle.annotations} />
+    </div>
+  )
+}
+
+const TYPE_STYLE: Record<AnnotatorType, string> = {
+  human: 'bg-green-100 text-green-700',
+  llm_judge: 'bg-purple-100 text-purple-700',
+  synthetic: 'bg-purple-100 text-purple-700',
+  legacy: 'bg-gray-200 text-gray-600',
+}
+
+/** Every rating this run has ever carried (SPA-85). A second annotator is a
+ *  second row here — that is what makes inter-annotator agreement computable —
+ *  and a re-rating supersedes only its own author's previous row. */
+function AnnotationLedger({ rows }: { rows: Annotation[] }) {
+  if (rows.length === 0) return null
+  const superseded = new Set(rows.map((r) => r.supersedes_id).filter(Boolean) as string[])
+  const current = rows.filter((r) => !superseded.has(r.id))
+  const people = new Set(current.filter((r) => r.annotator_type === 'human').map((r) => r.annotator_id))
+  // Who rated stays visible even when what they said does not — that count is
+  // provenance, not an anchor.
+  const hidden = current.some((r) => r.redacted)
+
+  return (
+    <div>
+      <div className="text-xs font-medium uppercase tracking-wide text-gray-400 mb-1 flex items-center gap-1">
+        <Users className="h-3 w-3" />
+        Annotations · {current.length} current
+        {rows.length > current.length && ` (${rows.length - current.length} superseded)`}
+        {people.size > 1 && ` · ${people.size} people`}
+        {hidden && ' · others’ ratings hidden'}
+      </div>
+      <div className="border rounded-lg bg-white divide-y">
+        {rows.map((r) => {
+          const stale = superseded.has(r.id)
+          return (
+            <div
+              key={r.id}
+              className={`px-3 py-1.5 flex items-center gap-2 text-xs ${stale ? 'opacity-50' : ''}`}
+            >
+              <span className={`px-1.5 py-0.5 rounded ${TYPE_STYLE[r.annotator_type]}`}>
+                {r.annotator_type}
+              </span>
+              <span className="text-gray-700 truncate flex-1">{r.annotator_label ?? '—'}</span>
+              {r.blind_to_judge && (
+                <span
+                  className="flex items-center gap-0.5 text-indigo-600"
+                  title="Rated without seeing the judge's scores"
+                >
+                  <EyeOff className="h-3 w-3" /> blind
+                </span>
+              )}
+              {r.verdict && (
+                <span className={r.verdict === 'approve' ? 'text-green-600' : 'text-red-600'}>
+                  {r.verdict}
+                </span>
+              )}
+              {r.redacted && (
+                <span
+                  className="text-gray-400 italic"
+                  title="Another annotator's rating is never shown inside an annotation session: reading it would make yours dependent on theirs, and the agreement between you would measure nothing. It is visible outside the session, in the calibration export."
+                >
+                  hidden
+                </span>
+              )}
+              <span className="text-gray-400">{r.dimensions.length} dims</span>
+              {stale && <span className="text-gray-400 italic">superseded</span>}
+              <span className="text-gray-400 whitespace-nowrap">
+                {r.created_at ? format(new Date(r.created_at), 'dd MMM HH:mm') : ''}
+              </span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

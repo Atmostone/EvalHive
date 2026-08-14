@@ -22,6 +22,7 @@ fit before the call). Model selection reuses E-02's resolver
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -39,7 +40,9 @@ from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
 
-TRAJECTORY_SCHEMA_VERSION = 2  # v2: loop_analysis (deterministic loop detector, E-07 anchor)
+# v2: loop_analysis (deterministic loop detector, E-07 anchor)
+# v3: prompt_fingerprint — the conditions the verdict was obtained under (SPA-85)
+TRAJECTORY_SCHEMA_VERSION = 3
 _MAX_SCALE = 10
 # Default cap on the judge's input (cleaned trace) tokens per task; overridable
 # via the `trajectory_judge_max_input_tokens` setting (acceptance: cost cap).
@@ -64,6 +67,39 @@ AXES: list[tuple[str, str, str]] = [
     ("loop_detection", "Loop detection",
      "did the agent get stuck repeating itself (10 = no loops, 0 = badly stuck)"),
 ]
+
+
+# Pulled out of the call site so the prompt can be fingerprinted (SPA-85) rather
+# than reconstructed. The axis wording lives in AXES and is hashed with it.
+_TRAJECTORY_SYSTEM_PROMPT = (
+    "You are a strict, fair judge of an AI agent's execution trajectory. "
+    "Assess HOW the agent reached its result — not whether the final answer "
+    "is correct. Score each of the six axes from 0 (worst) to 10 (best) using "
+    "the score_trajectory tool, with a brief reason per axis and a one-line "
+    "summary. Be calibrated: 10 is flawless, 5 is mediocre, 0 is absent/broken. "
+    "Set applicable=false for an axis that does not apply to this run (it will "
+    "be excluded from the aggregate, not scored 0): parameter_quality and "
+    "efficiency when the agent made zero tool calls / did no real work; "
+    "error_recovery when no tool errors occurred (nothing to recover from); "
+    "loop_detection when there was no real activity (crashed at step 1)."
+)
+
+
+def _axes_block() -> str:
+    return "Axes to score:\n" + "\n".join(f"- {name}: {desc}" for _, name, desc in AXES)
+
+
+def trajectory_prompt_fingerprint() -> str:
+    """Hash of everything the trajectory judge is asked, minus the trace itself:
+    the system prompt, the axis definitions and the tool schema."""
+    payload = {
+        "system": _TRAJECTORY_SYSTEM_PROMPT,
+        "axes": _axes_block(),
+        "tool": TRAJECTORY_TOOL,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 def _axis_schema() -> dict:
@@ -297,30 +333,8 @@ async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens:
     a result dict with ``status: "error"``."""
     serialized, input_capped = _fit_trace_to_budget(cleaned_trace, max_input_tokens)
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a strict, fair judge of an AI agent's execution trajectory. "
-                "Assess HOW the agent reached its result — not whether the final answer "
-                "is correct. Score each of the six axes from 0 (worst) to 10 (best) using "
-                "the score_trajectory tool, with a brief reason per axis and a one-line "
-                "summary. Be calibrated: 10 is flawless, 5 is mediocre, 0 is absent/broken. "
-                "Set applicable=false for an axis that does not apply to this run (it will "
-                "be excluded from the aggregate, not scored 0): parameter_quality and "
-                "efficiency when the agent made zero tool calls / did no real work; "
-                "error_recovery when no tool errors occurred (nothing to recover from); "
-                "loop_detection when there was no real activity (crashed at step 1)."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Axes to score:\n"
-                + "\n".join(f"- {name}: {desc}" for _, name, desc in AXES)
-                + "\n\nAgent trajectory:\n"
-                + serialized
-            ),
-        },
+        {"role": "system", "content": _TRAJECTORY_SYSTEM_PROMPT},
+        {"role": "user", "content": _axes_block() + "\n\nAgent trajectory:\n" + serialized},
     ]
     last_err: Exception | None = None
     for attempt in range(2):  # one retry — malformed/truncated judge JSON is transient
@@ -397,6 +411,9 @@ async def evaluate_task_trajectory(
     stats = cleaned_trace.get("stats") or {}
     profile = {
         "schema_version": TRAJECTORY_SCHEMA_VERSION,
+        # What the judge was asked, so an edited prompt cannot be mistaken for
+        # the one that produced a stored score (SPA-85).
+        "prompt_fingerprint": trajectory_prompt_fingerprint(),
         "status": result.get("status"),
         "axes": result.get("axes", []),
         "overall_score": result.get("overall_score"),

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { qualityApi } from '@/api/client'
-import { MessageSquarePlus, Check } from 'lucide-react'
+import { MessageSquarePlus, Check, EyeOff } from 'lucide-react'
 import type { QualityProfile, TrajectoryProfile, HumanFeedback, FeedbackBand, FeedbackVerdict } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -52,13 +52,21 @@ interface Props {
   profile: QualityProfile | null
   trajectoryProfile?: TrajectoryProfile | null
   existing: HumanFeedback | null
+  /** Blind protocol (SPA-85) — the session's, not this form's. Under blind the
+   *  profiles arrive already stripped by the server, so this only changes the
+   *  copy: it must not advertise an absent judge score as «the judge did not
+   *  score this». */
+  blind?: boolean
+  /** The session that served this bundle; submitted with the rating so the
+   *  recorded protocol comes from what the server served. */
+  sessionId?: string | null
   /** Start expanded (e.g. the calibration queue, where the form is the whole point). */
   defaultOpen?: boolean
   /** Called after a successful submit, for callers that track annotation progress. */
   onSaved?: () => void
 }
 
-export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, existing, defaultOpen = false, onSaved }: Props) {
+export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, existing, blind = false, sessionId = null, defaultOpen = false, onSaved }: Props) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(defaultOpen)
 
@@ -121,9 +129,14 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
             score: scores[d.key] as number,
             comment: comments[d.key]?.trim() || null,
           })),
+        // No blindness flag is sent — an unverifiable self-report is worth
+        // nothing. The session id is: the server reads the protocol off the row
+        // it created when it served this bundle (SPA-85).
+        session_id: sessionId,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['human-feedback', taskId] })
+      queryClient.invalidateQueries({ queryKey: ['annotations', taskId] })
       setOpen(false)
       onSaved?.()
     },
@@ -144,7 +157,14 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
   return (
     <div className="mt-2 border rounded-lg p-3 bg-gray-50 space-y-3">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-gray-700">Your feedback</h4>
+        <h4 className="text-sm font-medium text-gray-700 flex items-center gap-2">
+          Your feedback
+          {blind && (
+            <span className="flex items-center gap-1 text-xs font-normal px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
+              <EyeOff className="h-3 w-3" /> blind
+            </span>
+          )}
+        </h4>
         <button onClick={() => setOpen(false)} className="text-xs text-gray-400 hover:underline">
           cancel
         </button>
@@ -168,7 +188,10 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
             const score = scores[d.key]
             const rated = score != null
             const b = rated ? band(score) : null
-            const note = judgeNote(d.judgeScore, d.status)
+            // Under blind the judge score is absent because the server withheld
+            // it, not because the judge skipped the dimension — saying otherwise
+            // would be a false statement about the run.
+            const note = blind ? null : judgeNote(d.judgeScore, d.status)
             return (
               <div key={d.key} className="space-y-1">
                 <div className="flex items-center justify-between text-sm">
@@ -191,7 +214,7 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
                     ) : (
                       <span className="text-xs text-gray-400">not rated</span>
                     )}
-                    {d.judgeScore != null && (
+                    {!blind && d.judgeScore != null && (
                       <button
                         type="button"
                         onClick={() => setScores((s) => ({ ...s, [d.key]: d.judgeScore as number }))}
@@ -222,11 +245,11 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
                         placeholder="comment (optional)"
                         className="flex-1 px-2 py-1 border rounded text-xs bg-white"
                       />
-                      {d.judgeScore == null && (
+                      {(blind || d.judgeScore == null) && (
                         <button
                           type="button"
                           onClick={() => setScores((s) => ({ ...s, [d.key]: null }))}
-                          title="Clear your rating — leave this judge-unscored dimension unrated"
+                          title="Clear your rating — leave this dimension unrated"
                           className="text-[11px] text-gray-400 hover:text-red-600 whitespace-nowrap"
                         >
                           clear
@@ -237,7 +260,7 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setScores((s) => ({ ...s, [d.key]: d.judgeScore ?? 5 }))}
+                    onClick={() => setScores((s) => ({ ...s, [d.key]: blind ? 5 : d.judgeScore ?? 5 }))}
                     className="text-xs px-2 py-1 border border-dashed rounded text-gray-500 hover:text-blue-600 hover:border-blue-400"
                   >
                     + rate this dimension

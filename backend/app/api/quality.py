@@ -97,6 +97,25 @@ class HumanFeedbackBody(BaseModel):
     verdict: Optional[Literal["approve", "reject"]] = None
     overall_comment: Optional[str] = None
     dimensions: list[FeedbackDimensionBody] = Field(default_factory=list)
+    # Who is rating (SPA-85). `human` is the caller themselves — what tools they
+    # used while rating is deliberately not a field. The machine types are for
+    # scripted annotators and carry a label instead of a user id.
+    annotator_type: Literal["human", "llm_judge", "synthetic"] = "human"
+    annotator_label: Optional[str] = Field(default=None, max_length=255)
+    # The annotation session that served this annotator their bundle. It, not the
+    # body, decides the protocol for a human rating.
+    session_id: Optional[uuid.UUID] = None
+    # Declarable ONLY by a scripted annotator, which owns its own protocol. For a
+    # human rating these are ignored: an unverifiable self-report is worth nothing.
+    blind_to_model: bool = False
+    blind_to_judge: bool = False
+
+
+class AnnotationSessionBody(BaseModel):
+    """`blind` is the protocol declared up front — it decides what the session's
+    bundle is allowed to contain, and is what gets recorded on the rating."""
+
+    blind: bool = False
 
 
 def _rubric_to_dict(r: Rubric) -> dict:
@@ -732,11 +751,99 @@ async def get_feedback(
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    """Human feedback (E-05) for a task, or null if none submitted yet."""
+    """The latest human rating (E-05) for a task, or null if none submitted yet.
+
+    Readable by any workspace member — annotation stays visible to everyone who
+    can see the task. Only the *write* is role-gated (SPA-85). This is the
+    sighted view; a blind annotator reads the same material through the session
+    bundle below."""
     from app.quality.feedback import get_human_feedback
 
     task = await _get_owned_task(db, task_id, workspace)
     return {"task_id": task_id, "human_feedback": await get_human_feedback(db, task)}
+
+
+@router.get("/records/{task_id}/annotations")
+async def get_annotations(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """The append-only annotation ledger for a task, oldest first (SPA-85).
+
+    Every rating this run has ever carried, with its annotator, protocol, the
+    judge observation frozen at that moment and the session it was produced
+    through. `human_feedback` above is the materialised latest human row."""
+    from app.quality.feedback import list_annotations
+
+    task = await _get_owned_task(db, task_id, workspace)
+    return {"task_id": task_id, "annotations": await list_annotations(db, task)}
+
+
+@router.post("/records/{task_id}/annotation-session")
+async def start_annotation_session(
+    task_id: str,
+    body: AnnotationSessionBody,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+    _role=Depends(require_role("owner", "admin")),
+):
+    """Open an annotation session and get everything needed to rate this run.
+
+    The protocol is declared **before** anything is fetched and the bundle is
+    built to match it in one place, so a blind session physically cannot receive
+    a judge score. Submitting a rating with the returned `session_id` records the
+    protocol from the session rather than from the request body, and consumes it.
+
+    What the flag then means, precisely: «this rating was produced through a
+    session that was served no judge scores». It is not a claim that the person
+    never saw the judge — scores also reach a client from the evaluate endpoints,
+    the experiment-results payload and the analytical surfaces, and a partial
+    version of that claim would read as a guarantee while being false."""
+    from app.quality.feedback import (
+        annotation_bundle,
+        feedback_from_annotation,
+        list_annotations,
+        open_annotation_session,
+        own_annotation,
+    )
+
+    task = await _get_owned_task(db, task_id, workspace)
+    rec = (
+        await db.execute(
+            select(QualityRecord).where(QualityRecord.task_id == task.id)
+        )
+    ).scalar_one_or_none()
+    session = await open_annotation_session(
+        db, task, user_id=user.id, blind=body.blind, commit=False
+    )
+    # This annotator's own rating — never the materialised `human_feedback`
+    # slot, which holds whoever rated last. Serving the slot would hand a second
+    # annotator the first one's scores to edit, and inter-annotator κ over that
+    # measures agreement with a pre-filled form.
+    mine = await own_annotation(db, task, user.id)
+    bundle = annotation_bundle(
+        review=await _review_context(db, task),
+        quality_profile=rec.quality_profile if rec is not None else None,
+        trajectory_profile=rec.trajectory_profile if rec is not None else None,
+        own_feedback=feedback_from_annotation(mine) if mine is not None else None,
+        annotations=await list_annotations(db, task),
+        annotator_id=user.id,
+        model_used=(rec.model_used if rec is not None else None) or task.model_used,
+        blind=body.blind,
+    )
+    await db.commit()
+    return {
+        "session_id": str(session.id),
+        "task_id": task_id,
+        "protocol": {
+            "protocol_version": session.protocol_version,
+            "blind_to_judge": session.blind_to_judge,
+            "blind_to_model": session.blind_to_model,
+        },
+        **bundle,
+    }
 
 
 @router.put("/records/{task_id}/feedback")
@@ -746,32 +853,86 @@ async def put_feedback(
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
+    _role=Depends(require_role("owner", "admin")),
 ):
-    """Upsert structured human feedback (E-05). Stored alongside the judge profile
-    in the task's quality record; a parallel signal that does not change the gate."""
-    from app.quality.feedback import save_human_feedback
+    """Append a rating of this task to the annotation ledger (E-05).
+
+    A parallel signal that does not change the judge gate. Rating the same task
+    again as the same annotator supersedes that annotator's previous row rather
+    than the record's, so a second annotator's rating stays intact and the two
+    can be compared. Role-gated: calibration data is what the reliability claims
+    rest on, and any member could previously overwrite it."""
+    from app.quality.feedback import (
+        feedback_from_annotation,
+        resolve_annotation_session,
+        save_annotation,
+    )
 
     task = await _get_owned_task(db, task_id, workspace)
-    feedback = await save_human_feedback(db, task, body.model_dump(), user.email)
+    payload = body.model_dump()
+    human = body.annotator_type == "human"
+    # The protocol comes from the session that served this annotator their
+    # bundle — never from the body, which cannot be verified. Omitting the
+    # session means making no claim: the rating is recorded as sighted. A machine
+    # annotator has no session and declares its own protocol.
+    session = None
+    if human and body.session_id:
+        # Identity first, rating second. Resolving the rating by session id alone
+        # would answer a replay of somebody else's id with their feedback — in
+        # any workspace.
+        session, existing = await resolve_annotation_session(
+            db,
+            body.session_id,
+            task_id=task.id,
+            workspace_id=workspace.id,
+            user_id=user.id,
+        )
+        if session is None:
+            # Unknown, or not this caller's / this run's / this workspace's.
+            # Downgrading to sighted would record a protocol the caller did not
+            # ask for, so this is a conflict, not a default.
+            raise HTTPException(
+                status_code=409,
+                detail="annotation session is unknown or not yours",
+            )
+        if existing is not None:
+            # A retry after a lost response finds its own rating rather than
+            # writing a second one under a silently different protocol.
+            return {
+                "task_id": task_id,
+                "human_feedback": feedback_from_annotation(existing),
+            }
+        if session.consumed_at is not None:
+            raise HTTPException(
+                status_code=409, detail="annotation session has already been used"
+            )
+    feedback = await save_annotation(
+        db,
+        task,
+        payload,
+        annotator_type=body.annotator_type,
+        # A machine annotator has no user behind it, so it carries a label only —
+        # counting it as a person is exactly the confusion this replaces.
+        annotator_id=user.id if human else None,
+        annotator_label=(user.email if human else body.annotator_label) or user.email,
+        blind_to_model=False if human else body.blind_to_model,
+        blind_to_judge=False if human else body.blind_to_judge,
+        session=session,
+    )
     return {"task_id": task_id, "human_feedback": feedback}
 
 
-@router.get("/records/{task_id}/review")
-async def get_review_context(
-    task_id: str,
-    workspace: Workspace = Depends(get_current_workspace),
-    db: AsyncSession = Depends(get_db),
-):
+async def _review_context(db: AsyncSession, task) -> dict:
     """Everything a human annotator needs to judge a result: the task prompt
     (the question), the reference answer if any, the result summary, and text
-    excerpts of the deliverable files — the same material the judge sees. Lets
-    the calibration UI show what is being rated, not just the rubric axes."""
+    excerpts of the deliverable files — the same material the judge sees.
+
+    Carries nothing judge-derived, so it is identical under either protocol and
+    the session bundle reuses it verbatim."""
     import asyncio
 
     from app.storage.artifact_markdown import result_file_markdown
     from app.storage.minio_client import read_result_file_text
-
-    task = await _get_owned_task(db, task_id, workspace)
 
     async def _one(path: str) -> dict:
         """Text excerpt + converted Markdown for one deliverable. ``binary`` keeps
@@ -797,13 +958,25 @@ async def get_review_context(
     paths = [str(f) for f in (task.result_files or [])][:6]
     files = list(await asyncio.gather(*[_one(p) for p in paths])) if paths else []
     return {
-        "task_id": task_id,
+        "task_id": str(task.id),
         "title": task.title,
         "description": task.description,
         "reference_answer": task.reference_answer,
         "result_summary": task.result_summary,
         "files": files,
     }
+
+
+@router.get("/records/{task_id}/review")
+async def get_review_context(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lets the calibration UI show what is being rated, not just the rubric
+    axes. Shares its body with the session bundle."""
+    task = await _get_owned_task(db, task_id, workspace)
+    return await _review_context(db, task)
 
 
 @router.get("/records/{task_id}/trace")
@@ -849,13 +1022,19 @@ async def calibration_export(
 async def calibration_queue(
     status: Literal["pending", "done", "all"] = Query("pending"),
     limit: int = Query(300, ge=1, le=1000),
+    blind: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     """Records eligible for human annotation (E-17 calibration): those carrying a
     judge profile. ``status=pending`` (default) returns only the ones still
     missing human feedback. Includes ``origin='experiment'`` tasks, which the
-    task board hides — this is the only UI path to annotate them."""
+    task board hides — this is the only UI path to annotate them.
+
+    ``blind=true`` withholds `model_used` and `weighted_score` (SPA-85): the queue
+    is the first thing an annotator sees, so a blind campaign must not have the
+    model and the judge's verdict sitting on the row. It is a convenience for the
+    annotation surface — what a rating actually records comes from its session."""
     rows = (
         await db.execute(
             select(QualityRecord, Task.title, Task.origin)
@@ -884,9 +1063,9 @@ async def calibration_queue(
                 "title": title,
                 "origin": origin,
                 "template_name": rec.template_name,
-                "model_used": rec.model_used,
+                "model_used": None if blind else rec.model_used,
                 "benchmark_suite": rec.benchmark_suite,
-                "weighted_score": profile.get("weighted_score"),
+                "weighted_score": None if blind else profile.get("weighted_score"),
                 "n_dimensions": sum(
                     1 for d in (profile.get("dimensions") or []) if d.get("status") == "scored"
                 ),

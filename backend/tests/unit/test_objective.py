@@ -13,6 +13,7 @@ from app.models.rubric import Rubric
 from app.models.task import Task, TaskStatus
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.quality import judge as judge_mod
+from app.quality.judge import PROFILE_SCHEMA_VERSION
 from app.quality import objective as obj
 
 pytestmark = pytest.mark.asyncio
@@ -180,7 +181,7 @@ async def test_objective_dim_folds_into_profile(db_session, default_model, monke
     # weighted over judge(8, w0.5) + objective(10, w0.5) = 9.0
     assert profile["weighted_score"] == 9.0
     assert profile["gate"]["passed"] is True
-    assert profile["schema_version"] == 2
+    assert profile["schema_version"] == PROFILE_SCHEMA_VERSION
 
 
 async def test_objective_dim_skipped_without_code(db_session, default_model, monkeypatch):
@@ -209,4 +210,4 @@ async def test_objective_dim_skipped_without_code(db_session, default_model, mon
     rec = (
         await db_session.execute(select(QualityRecord).where(QualityRecord.task_id == task.id))
     ).scalar_one()
-    assert rec.quality_profile["schema_version"] == 2
+    assert rec.quality_profile["schema_version"] == PROFILE_SCHEMA_VERSION

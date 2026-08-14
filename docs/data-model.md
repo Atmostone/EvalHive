@@ -77,6 +77,18 @@ c7d8e9f0a1b2  providers.max_concurrency — per-provider LLM concurrency cap (SP
 d8e9f0a1b2c3  experiment_runs executable-eval columns — Toolathlon external eval (external_verdict, launch_time, preprocess/eval container ids + logs, etc.)
      ↓
 e9f0a1b2c3d4  experiments.n_toolathlon_lanes + experiment_runs.lane_index — parallel Toolathlon PG lanes (SPA-69)
+     ↓
+f0a1b2c3d4e5  experiments.revision + input_fingerprint, experiment_runs.attempt_count + retired_at, experiment_attempts (SPA-84)
+     ↓
+f1a2b3c4d5e6  experiment_runs/experiment_attempts condition_fingerprint + core_condition_fingerprint (SPA-84)
+     ↓
+f2a3b4c5d6e7  annotations — append-only annotation ledger, legacy backfill from quality_records.human_feedback (SPA-85)
+     ↓
+f3a4b5c6d7e8  annotation_sessions + annotations.session_id — the protocol a rating was collected under (SPA-85)
+     ↓
+f5a6b7c8d9e0  unique annotations.session_id — one bundle vouches for one rating (SPA-85)
+     ↓
+f8a9b0c1d2e3  blind_to_peers on annotation_sessions + annotations — independence of a rating (SPA-85)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -382,8 +394,8 @@ placeholders filled by downstream eval features.
 | is_decomposition_root | bool | parent task with subtasks |
 | cost_usd | NUMERIC(10,6) | denormalized |
 | input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics |
-| quality_profile | JSONB? | **slot E-02** |
-| trajectory_profile | JSONB? | **slot E-07** |
+| quality_profile | JSONB? | **slot E-02** (v3 adds `rubric_fingerprint` / `prompt_fingerprint` / `files_only` — the conditions the verdict was obtained under, SPA-85) |
+| trajectory_profile | JSONB? | **slot E-07** (v3 adds `prompt_fingerprint`) |
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
 | capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
@@ -415,8 +427,12 @@ slot): `{schema_version, verdict: approve|reject|null, overall_comment?,
 dimensions: [{key, name, score 0-10, band: bad|improve|good, comment?, judge_score?}],
 submitted_by, submitted_at}`. Bands map score → quality (1-3 bad / 4-7 improve /
 8-10 good) with thresholds fixed for now (rubric-configurable in E-26); each
-dimension mirrors a `quality_profile` axis and copies the judge's score for
-calibration (E-17, exposed via `GET /api/quality/calibration`).
+dimension mirrors a `quality_profile` or `trajectory_profile` axis and copies the
+judge's score for calibration (E-17, exposed via `GET /api/quality/calibration`).
+Since SPA-85 the slot is a **materialised «latest human rating»**, not the system
+of record — the ratings themselves live in `annotations` below, and the slot is
+refreshed from the newest `human`/`legacy` row so every existing reader keeps
+working unchanged.
 
 The `trajectory_profile` slot is filled by the Trajectory Judge (E-07) —
 `POST /api/quality/records/{task_id}/evaluate-trajectory`, building the record on
@@ -548,6 +564,112 @@ rubric `dimension` (same design as E-13/E-14/E-15). The headline calibration met
 computes them overall and `by_model`/`by_template` over `bins` (default 10) equal-width
 confidence buckets, plus a per-model recommendation. The off-by-default
 `calibration_evaluate` job (setting `calibration_eval_enabled`) batches it.
+
+### annotations (E-05, SPA-85)
+
+Append-only: **one rating of one run by one annotator**. Added by migration
+`f2a3b4c5d6e7`. The system of record for human (and machine) ratings —
+`quality_records.human_feedback` is a projection of it, not the source.
+
+| column | type | note |
+|---|---|---|
+| id | UUID | PK |
+| quality_record_id | UUID | FK `quality_records.id` ON DELETE CASCADE |
+| task_id / workspace_id | UUID | denormalized — scoping a population needs no join |
+| annotator_type | VARCHAR(20) | `human` \| `llm_judge` \| `synthetic` \| `legacy` |
+| annotator_id | UUID? | FK `users.id` ON DELETE SET NULL; null for the machine types and for `legacy` |
+| annotator_label | VARCHAR(255)? | the user's email, or the model's `api_name` |
+| protocol_version | int | version of the collection protocol (currently 1) |
+| blind_to_model / blind_to_judge / blind_to_peers | bool | what the session that produced this rating did NOT serve. Inter-annotator κ is computed only over rows with `blind_to_peers` |
+| verdict | VARCHAR(20)? | `approve` \| `reject` \| null |
+| overall_comment | text? | |
+| dimensions | JSONB | same element shape as the `human_feedback` slot's `dimensions[]` |
+| judge_observation | JSONB? | the judge's side frozen at annotation time (see below) |
+| supersedes_id | UUID? | FK `annotations.id`, **unique** — the lineage is a chain, never a fork |
+| session_id | UUID? | FK `annotation_sessions.id`, **unique** — the session that produced this rating (the evidence behind the blindness flags), and the database-level guarantee that one bundle vouches for one rating |
+| created_at | TIMESTAMP | |
+
+Indexes: `quality_record_id`, `task_id`, `(workspace_id, annotator_type)`,
+`annotator_id`, `session_id`.
+
+**Why a table rather than the JSONB slot.** The slot was overwritten on every
+save, so a run could carry exactly one rating: inter-annotator agreement was not
+computable from system data at all, and re-annotation destroyed the previous
+verdict. Adding a second annotator needed a schema change, not a second account.
+
+**Superseding.** A re-rating supersedes **its own annotator's** previous row, not
+the record's. A different annotator therefore adds an independent row and both
+stay current — which is what makes κ between annotators fall out of the data. A
+row is *current* unless some other row names it in `supersedes_id`; the
+calibration collector reads current rows only.
+
+**Frozen judge observation.** `{outcome: {judge_model, rubric_id, rubric_name,
+rubric_fingerprint, prompt_fingerprint, bias_mitigation, files_only,
+schema_version, evaluated_at, gate_passed, scores: {key: score}, reasoning: {key:
+text}}, trajectory: {judge_model, prompt_fingerprint, schema_version,
+evaluated_at, scores, reasoning}}` — captured from both judge profiles at
+annotation time. Without it a calibration pair is rebuilt from the *current*
+profile, so re-running a judge silently moves a past κ. The fingerprints exist
+because `rubric_id` and a model name cannot prove the conditions: a rubric row is
+editable in place and the judge prompt changes with the E-18 mitigations (both are
+written into the profiles themselves at `PROFILE_SCHEMA_VERSION` 3 /
+`TRAJECTORY_SCHEMA_VERSION` 3, so they are frozen for every reader, not just for
+annotations). An **absence is frozen too**: an axis the judge had not scored when
+the human rated it never acquires a pair, since letting a later judge run fill it
+in would be the same retroactive change.
+
+**annotator_type.** The distinction recorded is «a person decided» versus «a model
+decided unattended». What tools a person used while annotating is deliberately not
+a field — someone working with an assistant is `human`. `legacy` is every rating
+collected before this table existed: the migration moves them across wholesale,
+with no user id and no frozen observation, because neither is reconstructable.
+They stay in the calibration population but are counted separately (`n_legacy`)
+and never as people.
+
+### annotation_sessions (E-05, SPA-85)
+
+The protocol one rating was collected under. Added by migration `f3a4b5c6d7e8`.
+
+| column | type | note |
+|---|---|---|
+| id | UUID | PK |
+| task_id | UUID | FK `tasks.id` ON DELETE CASCADE |
+| workspace_id | UUID | |
+| user_id | UUID? | FK `users.id` ON DELETE SET NULL — the protocol record outlives the account |
+| protocol_version | int | |
+| blind_to_judge / blind_to_model / blind_to_peers | bool | what the bundle served under this session did **not** contain. `blind_to_peers` is always true: a session never serves another annotator's opinion |
+| created_at | TIMESTAMP | |
+| consumed_at | TIMESTAMP? | stamped when a rating is submitted against it — single-use |
+
+Index: `(user_id, task_id)`.
+
+**Why a session rather than a flag on the rating.** A blindness flag the client
+asserts is unverifiable, and tracking every judge score a user has ever been
+shown cannot be made complete — scores also reach a client from the on-demand
+evaluate endpoints, the whole experiment-results payload and every analytical
+surface. A partial version of that guarantee is worse than none, because it reads
+as a guarantee.
+
+A session is opened **before** anything is fetched, declares its protocol, and is
+served one bundle built to match it (`POST …/annotation-session`, which returns
+the review context, both profiles, the existing rating, the ledger and
+`model_used` in a single payload). The rating carries the `session_id`, the stored
+flags come from this row, and the session is consumed. `blind_to_judge` therefore
+means «this rating was produced through a session that was served no judge
+scores» — a fact about what was served, not a claim about the annotator's whole
+browsing history.
+
+The bundle also serves **the caller's own** current rating rather than the
+materialised `quality_records.human_feedback` slot, and always redacts other
+annotators' scores/verdicts/comments: two ratings seeded from each other are not
+independent, and the inter-annotator κ over them measures nothing. Revealing them
+after the caller had rated was not enough — re-annotation would then replace the
+independent rating with a dependent one, since the collector reads each
+annotator's *current* row.
+
+Single-use is enforced by the unique index on `annotations.session_id` together
+with a `SELECT … FOR UPDATE` on the session row, so two concurrent submissions
+cannot both consume one bundle.
 
 ### rubrics (E-02)
 

@@ -327,7 +327,8 @@ async def run_bias_report(
             rated = [
                 p
                 for p in task_pairs
-                if p.get("dimension_key") in judge_dims
+                if p.get("dimension_key") is not None
+                and p.get("dimension_key") in judge_dims
                 and p.get("human_score") is not None
             ]
             if not rated:
@@ -361,8 +362,11 @@ async def run_bias_report(
                 key = p["dimension_key"]
                 off_by_key[key] = off_s
                 on_by_key[key] = on_s
-                task_off.append({**p, "judge_score": off_s})
-                task_on.append({**p, "judge_score": on_s})
+                # Not the observation frozen into the annotation — this judge
+                # score was just recomputed, so say so rather than inheriting the
+                # original row's provenance.
+                task_off.append({**p, "judge_score": off_s, "judge_source": "rejudged"})
+                task_on.append({**p, "judge_score": on_s, "judge_source": "rejudged"})
                 if off_s is not None and on_s is not None:
                     length_rows.append((result_len, off_s, on_s, float(p["human_score"])))
 

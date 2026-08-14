@@ -20,10 +20,12 @@ from httpx import AsyncClient
 from sqlalchemy import text
 
 from app import database
+from app.models.annotation import Annotation
 from app.models.provider import LLMModel, Provider
 from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
 from app.models.task import Task, TaskStatus
+from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality import judge as judge_mod
 from app.quality.stats import score_to_band
@@ -100,8 +102,21 @@ async def _seed_judge_model(ws, *, api_name="judge-m"):
         await s.commit()
 
 
+async def _seed_annotators(s) -> list:
+    """Two real people behind the ratings, so the calibration set is a
+    population of annotators rather than a set of strings (SPA-85)."""
+    ids = []
+    for email in _SUBMITTERS:
+        u = User(email=email, display_name=email.split("@")[0])
+        s.add(u)
+        await s.flush()
+        ids.append(u.id)
+    return ids
+
+
 async def _seed_records(ws, *, agent_model="doer-m"):
     async with database.async_session() as s:
+        annotators = await _seed_annotators(s)
         for i in range(len(_CORRECTNESS)):
             c, t = _CORRECTNESS[i], _TOOL[i]
             # The result encodes the true per-dimension scores for the ON pass.
@@ -110,22 +125,34 @@ async def _seed_records(ws, *, agent_model="doer-m"):
                         result_summary=summary, model_used=agent_model)
             s.add(task)
             await s.flush()
-            s.add(QualityRecord(
+            dimensions = [
+                {"key": "correctness", "name": "Correctness", "score": c,
+                 "band": score_to_band(c)},
+                {"key": "tool_selection", "name": "Tool Selection", "score": t,
+                 "band": score_to_band(t)},
+            ]
+            record = QualityRecord(
                 task_id=task.id, workspace_id=ws, model_used=agent_model,
                 final_status=TaskStatus.DONE.value,
                 quality_profile=None,
                 human_feedback={
                     "schema_version": 1,
                     "verdict": "reject",
-                    "dimensions": [
-                        {"key": "correctness", "name": "Correctness", "score": c,
-                         "band": score_to_band(c)},
-                        {"key": "tool_selection", "name": "Tool Selection", "score": t,
-                         "band": score_to_band(t)},
-                    ],
+                    "dimensions": dimensions,
                     "submitted_by": _SUBMITTERS[i % 2],
                     "submitted_at": "2026-05-30T00:00:00",
                 },
+            )
+            s.add(record)
+            await s.flush()
+            s.add(Annotation(
+                quality_record_id=record.id, task_id=task.id, workspace_id=ws,
+                annotator_type="human", annotator_id=annotators[i % 2],
+                annotator_label=_SUBMITTERS[i % 2], verdict="reject",
+                dimensions=dimensions,
+                # No judge profile on these records — the A/B run supplies both
+                # judge sides itself.
+                judge_observation={},
             ))
         await s.commit()
 
