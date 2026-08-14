@@ -230,7 +230,30 @@ export interface Annotation {
   judge_observation: Record<string, unknown>
   /** The row this one replaces — set only when the same annotator re-rated. */
   supersedes_id: string | null
+  /** The session that produced this rating — the evidence behind the blindness
+   *  flags. Null for machine annotators and pre-session rows. */
+  session_id: string | null
   created_at: string | null
+}
+
+/** One annotation session's whole payload (SPA-85): the protocol declared before
+ *  anything was fetched, plus everything needed to rate the run, sanitized to
+ *  match it in one place. Under a blind session the judge material is absent
+ *  from the response — not hidden by the client. */
+export interface AnnotationSessionBundle {
+  session_id: string
+  task_id: string
+  protocol: {
+    protocol_version: number
+    blind_to_judge: boolean
+    blind_to_model: boolean
+  }
+  review: ReviewContext
+  quality_profile: QualityProfile | null
+  trajectory_profile: TrajectoryProfile | null
+  human_feedback: HumanFeedback | null
+  annotations: Annotation[]
+  model_used: string | null
 }
 
 // Calibration queue (E-17): records carrying a judge profile, awaiting human annotation.

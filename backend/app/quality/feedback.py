@@ -34,7 +34,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.annotation import Annotation
+from app.models.annotation import Annotation, AnnotationSession
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.quality.judge import _MAX_SCALE
@@ -211,12 +211,23 @@ def build_human_feedback(
 
 
 # --------------------------------------------------------------------------- #
-# Blind protocol — enforced server-side (SPA-85)
+# Blind protocol — a property of the session, enforced server-side (SPA-85)
 # --------------------------------------------------------------------------- #
-# A blindness flag is worth nothing if the client could have seen the judge
-# anyway, so under `blind` the API never sends the judge's scores in the first
-# place. The dimension keys and names survive: the annotator has to know WHICH
-# axes to rate, only not what the judge said about them.
+# A blindness flag the client asserts is worth nothing, and tracking every judge
+# score a user has ever been shown cannot be made complete — scores also reach a
+# client from the on-demand evaluate endpoints, the whole experiment-results
+# payload and the analytical surfaces. A partial version of that guarantee is
+# worse than none, because it reads as a guarantee.
+#
+# So the claim is narrowed to one the server can prove. An annotation session is
+# opened before anything is fetched, declares its protocol, and is served ONE
+# bundle sanitized to match; the rating is submitted against that session and the
+# stored flags come from the session row. `blind_to_judge` means «this rating was
+# produced through a session that was served no judge scores» — a fact about what
+# was served, not a claim about the annotator's whole browsing history.
+#
+# The sanitizers below build that bundle. Dimension keys and names survive: the
+# annotator has to know WHICH axes to rate, only not what the judge said.
 def blind_quality_profile(profile: dict | None) -> dict | None:
     """The outcome profile with every judge score, reasoning and gate removed."""
     if not profile:
@@ -277,6 +288,86 @@ def blind_annotation(row: dict) -> dict:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# Annotation sessions
+# --------------------------------------------------------------------------- #
+async def open_annotation_session(
+    db: AsyncSession,
+    task: Task,
+    *,
+    user_id,
+    blind: bool,
+    commit: bool = True,
+) -> AnnotationSession:
+    """Start a session and record the protocol it will be served under."""
+    session = AnnotationSession(
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        user_id=user_id,
+        protocol_version=PROTOCOL_VERSION,
+        blind_to_judge=blind,
+        blind_to_model=blind,
+    )
+    db.add(session)
+    await db.flush()
+    if commit:
+        await db.commit()
+        await db.refresh(session)
+    return session
+
+
+async def claim_annotation_session(
+    db: AsyncSession, session_id, *, task_id, user_id
+) -> AnnotationSession | None:
+    """The unconsumed session this rating is being submitted against, or ``None``.
+
+    Checked against the caller and the task so a session cannot vouch for someone
+    else's rating or for a different run, and single-use so one blind bundle
+    cannot vouch for ratings made long after it was served."""
+    if not session_id:
+        return None
+    session = await db.get(AnnotationSession, session_id)
+    if session is None or session.consumed_at is not None:
+        return None
+    if session.task_id != task_id or session.user_id != user_id:
+        return None
+    return session
+
+
+def annotation_bundle(
+    *,
+    review: dict,
+    quality_profile: dict | None,
+    trajectory_profile: dict | None,
+    human_feedback: dict | None,
+    annotations: list[dict],
+    model_used: str | None,
+    blind: bool,
+) -> dict:
+    """Everything an annotator needs to rate one run, in one payload.
+
+    One endpoint rather than five means the protocol cannot be half-applied — a
+    blind session physically cannot receive a judge score, because the same
+    branch builds every part of what it is given."""
+    if not blind:
+        return {
+            "review": review,
+            "quality_profile": quality_profile,
+            "trajectory_profile": trajectory_profile,
+            "human_feedback": human_feedback,
+            "annotations": annotations,
+            "model_used": model_used,
+        }
+    return {
+        "review": review,
+        "quality_profile": blind_quality_profile(quality_profile),
+        "trajectory_profile": blind_trajectory_profile(trajectory_profile),
+        "human_feedback": blind_human_feedback(human_feedback),
+        "annotations": [blind_annotation(r) for r in annotations],
+        "model_used": None,
+    }
+
+
 def serialize_annotation(row: Annotation) -> dict:
     """One ledger row, as returned by the annotations endpoint."""
     return {
@@ -293,6 +384,9 @@ def serialize_annotation(row: Annotation) -> dict:
         "dimensions": row.dimensions or [],
         "judge_observation": row.judge_observation or {},
         "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
+        # The evidence behind the blindness flags: which served bundle this
+        # rating came from.
+        "session_id": str(row.session_id) if row.session_id else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -334,6 +428,7 @@ async def save_annotation(
     annotator_label: str,
     blind_to_model: bool = False,
     blind_to_judge: bool = False,
+    session: AnnotationSession | None = None,
     commit: bool = True,
 ) -> dict:
     """Append one rating of ``task`` to the annotation ledger.
@@ -343,9 +438,21 @@ async def save_annotation(
     annotator's own previous rating rather than the record's — and refreshes the
     materialised ``human_feedback`` slot when the rating came from a human.
     Returns the stored feedback dict.
+
+    ``session`` is the annotation session this rating was produced through; when
+    given it is the authority on the protocol (and is consumed here), because it
+    records what the server actually served. Without one the rating is recorded
+    as sighted — no session, no claim.
     """
     if annotator_type not in ANNOTATOR_TYPES:
         raise ValueError(f"unknown annotator_type: {annotator_type}")
+    if session is not None:
+        blind_to_judge = session.blind_to_judge
+        blind_to_model = session.blind_to_model
+        protocol_version = session.protocol_version
+        session.consumed_at = datetime.utcnow()
+    else:
+        protocol_version = PROTOCOL_VERSION
 
     record = await _record_for(db, task)
     if record is None:
@@ -388,7 +495,7 @@ async def save_annotation(
             annotator_type=annotator_type,
             annotator_id=annotator_id,
             annotator_label=annotator_label,
-            protocol_version=PROTOCOL_VERSION,
+            protocol_version=protocol_version,
             blind_to_model=blind_to_model,
             blind_to_judge=blind_to_judge,
             verdict=feedback["verdict"],
@@ -396,6 +503,7 @@ async def save_annotation(
             dimensions=feedback["dimensions"],
             judge_observation=observation,
             supersedes_id=supersedes_id,
+            session_id=session.id if session is not None else None,
         )
     )
     if annotator_type in HUMAN_TYPES:

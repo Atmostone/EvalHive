@@ -109,8 +109,10 @@ export default function RunAnalysis({
             </Dimmed>
           </>
         )}
+        {/* Always sighted: this drawer shows the judge's analysis in its other
+            tabs, so a blind session here would be a claim we could not make. */}
         {tab === 'annotate' && (
-          <AnnotationPanel taskId={taskId} profile={profile ?? null} verifiable={verifiable} onSaved={onSaved} />
+          <AnnotationPanel taskId={taskId} verifiable={verifiable} onSaved={onSaved} />
         )}
       </div>
     </div>

@@ -52,18 +52,21 @@ interface Props {
   profile: QualityProfile | null
   trajectoryProfile?: TrajectoryProfile | null
   existing: HumanFeedback | null
-  /** Blind protocol (SPA-85) — decided by the annotation surface *before* it
-   *  fetched anything, and not flippable here. Under blind the profiles arrive
-   *  already stripped by the server, so this only changes the copy: it must not
-   *  advertise an absent judge score as «the judge did not score this». */
+  /** Blind protocol (SPA-85) — the session's, not this form's. Under blind the
+   *  profiles arrive already stripped by the server, so this only changes the
+   *  copy: it must not advertise an absent judge score as «the judge did not
+   *  score this». */
   blind?: boolean
+  /** The session that served this bundle; submitted with the rating so the
+   *  recorded protocol comes from what the server served. */
+  sessionId?: string | null
   /** Start expanded (e.g. the calibration queue, where the form is the whole point). */
   defaultOpen?: boolean
   /** Called after a successful submit, for callers that track annotation progress. */
   onSaved?: () => void
 }
 
-export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, existing, blind = false, defaultOpen = false, onSaved }: Props) {
+export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, existing, blind = false, sessionId = null, defaultOpen = false, onSaved }: Props) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(defaultOpen)
 
@@ -126,9 +129,10 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
             score: scores[d.key] as number,
             comment: comments[d.key]?.trim() || null,
           })),
-        // No blindness flag is sent: the server derives it from what it actually
-        // served this user for this run (SPA-85). A client-asserted flag would be
-        // worth nothing, and sending one would only invite it to be trusted.
+        // No blindness flag is sent — an unverifiable self-report is worth
+        // nothing. The session id is: the server reads the protocol off the row
+        // it created when it served this bundle (SPA-85).
+        session_id: sessionId,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['human-feedback', taskId] })

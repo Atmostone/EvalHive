@@ -307,22 +307,33 @@ correlations) → **E-17**.
   The write is `owner/admin`; the read is not, so annotation stays visible to
   anyone who can see the task.
 
-- **The blind protocol is enforced, not asserted (SPA-85).** A blindness flag the
-  client sets is worth nothing: the UI could show the judge's scores, let the
-  annotator read them, and still submit `blind_to_judge: true`. So the client does
-  not get to set it. The annotation surface chooses its protocol **before** it
-  fetches anything; under `blind` the API strips judge scores from the profile,
-  the trajectory, the stored feedback and the ledger, and withholds `model_used`
-  and `weighted_score` from the calibration queue — the queue being the first
-  thing an annotator sees. Every *sighted* read of a judge score is recorded
-  against (user, task) in Redis (`app/quality/blind.py`), and the write derives
-  the stored flag from that ledger, failing safe to «revealed» when it cannot be
-  read. So the flag states a fact about what the server served, the choice
-  necessarily precedes the rating, and it cannot be taken back. Scope, stated
-  plainly: only blindness to the **judge** is certified. `model_used` is served by
-  surfaces outside annotation (task detail, the data lake, analytics, experiment
-  results), so `blind_to_model` is never derived from the UI — it is declarable
-  only by a scripted annotator that owns its own protocol.
+- **Blindness is a property of the session (SPA-85).** A flag the client sets is
+  worth nothing — the UI could show the judge's scores, let the annotator read
+  them, and still submit `blind_to_judge: true`. The obvious repair, tracking
+  every judge score the server has ever shown a user, is worse: scores also reach
+  a client from the on-demand evaluate endpoints, the whole experiment-results
+  payload and every analytical surface, so the tracking is necessarily partial —
+  and a partial guarantee reads as a guarantee while being false.
+
+  So the claim is narrowed to one the server can prove. An **annotation session**
+  (`annotation_sessions`) is opened before anything is fetched, declares its
+  protocol, and is handed **one** bundle built to match it —
+  `POST /api/quality/records/{id}/annotation-session` returns the review context,
+  both profiles, the existing rating, the ledger and `model_used` in a single
+  payload, so a blind session physically cannot receive a judge score: the same
+  branch builds every part of what it is given. The rating is submitted with that
+  `session_id`, the stored flags are read off the session row, and the session is
+  consumed — single-use, because otherwise one blind bundle could vouch for a
+  rating made much later, after the annotator had looked elsewhere. A session is
+  checked against the caller and the task, so it cannot vouch for someone else's
+  rating or for a different run. **No session means no claim**: the rating is
+  recorded as sighted.
+
+  `blind_to_judge` therefore means «this rating was produced through a session
+  that was served no judge scores». It does **not** mean the person never saw the
+  judge — that is not a property this system can establish, and it is not the
+  property the protocol needs. `annotations.session_id` keeps the evidence
+  attached to the row.
 
 ### Trace cleaner (E-06)
 

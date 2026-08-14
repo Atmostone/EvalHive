@@ -324,52 +324,75 @@ async def test_machine_annotation_is_kept_out_of_the_human_population(auth_clien
 
 
 @pytest.mark.asyncio
-async def test_blind_is_derived_from_what_the_server_served(auth_client: AsyncClient):
-    """A client-asserted blind flag is worth nothing, so the client does not get
-    to assert one: blindness is derived from whether this caller was ever served
-    the judge's opinion on this run (SPA-85)."""
+async def test_blind_session_is_served_no_judge_material(auth_client: AsyncClient):
+    """The whole bundle is built in one place from the declared protocol, so a
+    blind session physically cannot receive a judge score (SPA-85)."""
     ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     tid = await _seed_judged_record(ws)
+    # a prior rating, so the bundle's `human_feedback` and ledger are non-empty
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 9}],
+    })).status_code == 200
 
-    # fetch blind → the judge's scores never reach the page
-    r = await auth_client.get(f"/api/quality/records/{tid}/profile?blind=true")
+    r = await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True}
+    )
     assert r.status_code == 200, r.text
-    blinded = r.json()["quality_profile"]
-    assert blinded["blinded"] is True and blinded["gate"] is None
-    assert blinded["dimensions"] == [
+    b = r.json()
+    assert b["protocol"]["blind_to_judge"] is True
+    assert b["protocol"]["blind_to_model"] is True
+    # every part of the payload, not just the profile
+    assert b["quality_profile"]["blinded"] is True
+    assert b["quality_profile"]["gate"] is None
+    assert b["quality_profile"]["dimensions"] == [
         {"key": "correctness", "name": "Correctness", "status": None}
     ]
-    r = await auth_client.get(f"/api/quality/records/{tid}/trajectory?blind=true")
-    assert all(a.get("score") is None for a in r.json()["trajectory_profile"]["axes"])
+    assert all(a.get("score") is None for a in b["trajectory_profile"]["axes"])
+    assert all(d.get("judge_score") is None for d in b["human_feedback"]["dimensions"])
+    assert all(a["judge_observation"] == {} for a in b["annotations"])
+    assert b["model_used"] is None
+    # ...while what is being rated is fully there
+    assert b["review"]["result_summary"]
 
-    # ...and asking to be recorded as sighted does not make it so
+
+@pytest.mark.asyncio
+async def test_the_session_decides_the_protocol_not_the_body(auth_client: AsyncClient):
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    blind = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True}
+    )).json()
+
+    # asking to be recorded as sighted does not make it so
     r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "session_id": blind["session_id"],
         "blind_to_judge": False,
+        "blind_to_model": False,
         "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
     })
     assert r.status_code == 200, r.text
     row = (await auth_client.get(
         f"/api/quality/records/{tid}/annotations"
     )).json()["annotations"][0]
-    assert row["blind_to_judge"] is True
-    # blindness to the model is never certified from the UI — `model_used` is
-    # served by surfaces outside annotation, so the claim is not made
-    assert row["blind_to_model"] is False
+    assert row["blind_to_judge"] is True and row["blind_to_model"] is True
+    assert row["session_id"] == blind["session_id"]
     # the judge is still frozen onto the row: blindness is about what the
-    # annotator saw, not about what we record
+    # annotator was served, not about what we record
     assert row["judge_observation"]["outcome"]["scores"] == {"correctness": 8}
 
 
 @pytest.mark.asyncio
-async def test_seeing_the_judge_forfeits_the_blind_claim(auth_client: AsyncClient):
+async def test_a_sighted_session_cannot_claim_blind(auth_client: AsyncClient):
     ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     tid = await _seed_judged_record(ws)
-
-    # a sighted read of the profile is recorded against the caller
-    assert (await auth_client.get(f"/api/quality/records/{tid}/profile")).status_code == 200
+    sighted = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": False}
+    )).json()
+    assert sighted["quality_profile"]["dimensions"][0]["score"] == 8
 
     r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
-        "blind_to_judge": True,   # asserted, and refused
+        "session_id": sighted["session_id"],
+        "blind_to_judge": True,   # asserted, and ignored
         "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
     })
     assert r.status_code == 200, r.text
@@ -380,7 +403,85 @@ async def test_seeing_the_judge_forfeits_the_blind_claim(auth_client: AsyncClien
 
 
 @pytest.mark.asyncio
+async def test_no_session_means_no_claim(auth_client: AsyncClient):
+    """Rating without a session — a script, or a client that skipped the flow —
+    is recorded as sighted rather than believed."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+
+    r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "blind_to_judge": True,
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+    })
+    assert r.status_code == 200, r.text
+    row = (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"][0]
+    assert row["blind_to_judge"] is False and row["session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_session_vouches_for_one_rating_only(auth_client: AsyncClient):
+    """Single-use: otherwise one blind bundle could vouch for ratings made much
+    later, after the annotator had looked at the judge somewhere else."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    blind = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True}
+    )).json()
+    body = {
+        "session_id": blind["session_id"],
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+    }
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json=body)).status_code == 200
+    # the same session again — accepted as a rating, but no longer blind
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json=body)).status_code == 200
+
+    rows = (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"]
+    assert [r["blind_to_judge"] for r in rows] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_session_cannot_vouch_for_another_annotator(auth_client: AsyncClient):
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    other = await _join_workspace(auth_client, ws, "admin")
+    blind = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True}
+    )).json()
+
+    r = await auth_client.put(
+        f"/api/quality/records/{tid}/feedback",
+        json={
+            "session_id": blind["session_id"],
+            "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+        },
+        headers=other,
+    )
+    assert r.status_code == 200, r.text
+    row = (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"][0]
+    assert row["blind_to_judge"] is False and row["session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_annotation_session_requires_admin(auth_client: AsyncClient):
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    member = await _join_workspace(auth_client, ws, "member")
+    r = await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True}, headers=member
+    )
+    assert r.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_blind_queue_withholds_model_and_judge_score(auth_client: AsyncClient):
+    """A convenience for a blind campaign: the queue is the first thing an
+    annotator sees. What a rating records still comes from its session."""
     ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     tid = await _seed_judged_record(ws)
     async with database.async_session() as s:

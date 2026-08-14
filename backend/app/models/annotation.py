@@ -18,6 +18,52 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
+class AnnotationSession(Base):
+    """The protocol one rating was collected under (E-05, SPA-85).
+
+    Opened *before* anything is fetched, it declares its protocol and is handed
+    one sanitized bundle built to match it; the rating is then submitted against
+    it and the stored flags come from here, not from the request body.
+
+    This is deliberately a claim about **what was served**, not about what the
+    annotator has ever seen. Judge scores also reach a client from the on-demand
+    evaluate endpoints, the experiment-results payload and the analytical
+    surfaces, so «this person never saw the judge» is not a property the server
+    can establish — and a partial version of it would read as a guarantee while
+    being false.
+    """
+
+    __tablename__ = "annotation_sessions"
+    __table_args__ = (
+        Index("idx_annotation_sessions_user_task", "user_id", "task_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    protocol_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1"
+    )
+    blind_to_judge: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    blind_to_model: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Single-use: one bundle vouches for one rating. Without this, a blind bundle
+    # could be opened once and then vouch for ratings made much later, after the
+    # annotator had looked at the judge somewhere else.
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+
+
 class Annotation(Base):
     """One rating of one run by one annotator — append-only (E-05, SPA-85).
 
@@ -43,6 +89,7 @@ class Annotation(Base):
         Index("idx_annotations_task", "task_id"),
         Index("idx_annotations_workspace_type", "workspace_id", "annotator_type"),
         Index("idx_annotations_annotator", "annotator_id"),
+        Index("idx_annotations_session", "session_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -88,5 +135,12 @@ class Annotation(Base):
 
     supersedes_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("annotations.id", ondelete="SET NULL"), nullable=True
+    )
+    # The session that produced this rating — the evidence behind the blindness
+    # flags above. Null for machine annotators, which declare their own protocol.
+    session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("annotation_sessions.id", ondelete="SET NULL"),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())

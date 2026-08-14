@@ -83,6 +83,8 @@ f0a1b2c3d4e5  experiments.revision + input_fingerprint, experiment_runs.attempt_
 f1a2b3c4d5e6  experiment_runs/experiment_attempts condition_fingerprint + core_condition_fingerprint (SPA-84)
      ↓
 f2a3b4c5d6e7  annotations — append-only annotation ledger, legacy backfill from quality_records.human_feedback (SPA-85)
+     ↓
+f3a4b5c6d7e8  annotation_sessions + annotations.session_id — the protocol a rating was collected under (SPA-85)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -580,10 +582,11 @@ Append-only: **one rating of one run by one annotator**. Added by migration
 | dimensions | JSONB | same element shape as the `human_feedback` slot's `dimensions[]` |
 | judge_observation | JSONB? | the judge's side frozen at annotation time (see below) |
 | supersedes_id | UUID? | FK `annotations.id`, **unique** — the lineage is a chain, never a fork |
+| session_id | UUID? | FK `annotation_sessions.id` — the session that produced this rating, i.e. the evidence behind the blindness flags |
 | created_at | TIMESTAMP | |
 
 Indexes: `quality_record_id`, `task_id`, `(workspace_id, annotator_type)`,
-`annotator_id`.
+`annotator_id`, `session_id`.
 
 **Why a table rather than the JSONB slot.** The slot was overwritten on every
 save, so a run could carry exactly one rating: inter-annotator agreement was not
@@ -618,6 +621,39 @@ collected before this table existed: the migration moves them across wholesale,
 with no user id and no frozen observation, because neither is reconstructable.
 They stay in the calibration population but are counted separately (`n_legacy`)
 and never as people.
+
+### annotation_sessions (E-05, SPA-85)
+
+The protocol one rating was collected under. Added by migration `f3a4b5c6d7e8`.
+
+| column | type | note |
+|---|---|---|
+| id | UUID | PK |
+| task_id | UUID | FK `tasks.id` ON DELETE CASCADE |
+| workspace_id | UUID | |
+| user_id | UUID? | FK `users.id` ON DELETE SET NULL — the protocol record outlives the account |
+| protocol_version | int | |
+| blind_to_judge / blind_to_model | bool | what the bundle served under this session did **not** contain |
+| created_at | TIMESTAMP | |
+| consumed_at | TIMESTAMP? | stamped when a rating is submitted against it — single-use |
+
+Index: `(user_id, task_id)`.
+
+**Why a session rather than a flag on the rating.** A blindness flag the client
+asserts is unverifiable, and tracking every judge score a user has ever been
+shown cannot be made complete — scores also reach a client from the on-demand
+evaluate endpoints, the whole experiment-results payload and every analytical
+surface. A partial version of that guarantee is worse than none, because it reads
+as a guarantee.
+
+A session is opened **before** anything is fetched, declares its protocol, and is
+served one bundle built to match it (`POST …/annotation-session`, which returns
+the review context, both profiles, the existing rating, the ledger and
+`model_used` in a single payload). The rating carries the `session_id`, the stored
+flags come from this row, and the session is consumed. `blind_to_judge` therefore
+means «this rating was produced through a session that was served no judge
+scores» — a fact about what was served, not a claim about the annotator's whole
+browsing history.
 
 ### rubrics (E-02)
 
