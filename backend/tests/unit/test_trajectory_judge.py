@@ -461,3 +461,41 @@ def test_error_output_is_still_spared_when_the_budget_allows():
     text, trim = fit_trace_to_budget(_trace(steps), 800)
     assert "traceback short" in text          # the error survived whole
     assert trim["outputs_shrunk"] == 1        # only the ordinary output was cut
+
+
+def _mixed(normal_words, error_words):
+    def s(i, content):
+        return {"seq": i, "kind": "tool", "tool_name": "t", "arguments": {"i": i},
+                "content": content, "truncated": False}
+    return [s(0, "word " * normal_words),
+            s(1, "ERROR: traceback " + "x " * error_words + " ERRTAIL")]
+
+
+def test_a_big_error_output_is_still_sacrificed_after_a_small_ordinary_one():
+    """Both passes used to halve from the GLOBAL maximum. With a small ordinary
+    output beside a huge error one, the first pass began above anything it was
+    allowed to cut, its first halving changed nothing, and the «stopped buying
+    anything» guard exited it — so the error was sacrificed first, inverting the
+    whole order."""
+    _text, trim = fit_trace_to_budget(_trace(_mixed(750, 7500)), 900)
+    assert trim["outputs_shrunk"] == 2
+    # The ordinary output is driven to the floor; the error is cut later and less.
+    assert trim["output_cap_applied"] == 50
+    assert trim["error_output_cap_applied"] > trim["output_cap_applied"]
+
+
+def test_a_small_error_output_is_shrunk_before_any_hard_cut():
+    """The mirror case: the error pass began above the error's own size, exited
+    immediately, and the trace was hard-cut with shrinkable evidence still on the
+    table."""
+    _text, trim = fit_trace_to_budget(_trace(_mixed(7500, 750)), 300)
+    assert trim["outputs_shrunk"] == 2
+    assert trim["error_output_cap_applied"] is not None
+    assert trim["hard_cut_tokens"] == 0
+    assert trim["steps_omitted"] == 0
+
+
+def test_error_output_untouched_when_the_ordinary_one_suffices():
+    text, trim = fit_trace_to_budget(_trace(_mixed(7500, 3)), 800)
+    assert trim["error_output_cap_applied"] is None
+    assert "ERRTAIL" in text

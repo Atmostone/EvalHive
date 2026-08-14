@@ -370,6 +370,8 @@ export interface TrajectoryTrim {
   pre_trim_args_truncated?: number
   pre_trim_dropped_tokens?: number
   output_cap_applied?: number | null
+  /** Error-looking outputs get their own cap and are given up last. */
+  error_output_cap_applied?: number | null
   reasoning_cap_applied?: number | null
   outputs_shrunk?: number
   reasoning_shrunk?: number

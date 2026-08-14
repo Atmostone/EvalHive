@@ -333,6 +333,28 @@ def _max_content_tokens(steps: list[dict], kind: str) -> int:
     )
 
 
+def _max_output_tokens(steps: list[dict], *, errors: bool) -> int:
+    """Largest tool output of ONE class — error-looking, or not.
+
+    Each pass must halve from the largest output it is actually allowed to touch.
+    Starting both passes from the global maximum inverted the whole order whenever
+    the two classes differed in size: with a 1K ordinary output beside a 10K error,
+    the first pass began at 10K, its first halving changed nothing it was permitted
+    to cut, and the «halving stopped buying anything» guard exited the pass — so the
+    error was sacrificed first, and the ordinary output it was supposed to outlive
+    was never touched. The mirror case wasted the error pass and hard-cut instead.
+    """
+    return max(
+        (
+            _count_tokens(s.get("content") or "")
+            for s in steps
+            if s.get("kind") == "tool"
+            and bool(_ERROR_RE.search(s.get("content") or "")) is errors
+        ),
+        default=0,
+    )
+
+
 def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str, dict]:
     """Serialize the trace, trimming it to the judge's input budget if needed.
 
@@ -371,6 +393,7 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
         "capped": False,
         **pre,
         "output_cap_applied": None,
+        "error_output_cap_applied": None,
         "reasoning_cap_applied": None,
         "outputs_shrunk": 0,
         "reasoning_shrunk": 0,
@@ -401,14 +424,15 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
     #    ORIGINAL steps: the first spares error outputs (error_output_cap = 0), the
     #    second gives them up too while holding the cap the first pass settled on.
     base = list(steps)
-    out_cap = 0  # 0 = untouched
+    out_cap = 0  # 0 = that class is untouched
     err_cap = 0
-    for pass_errors in (False, True):
-        cap = _max_content_tokens(base, "tool")
+    for is_error_pass in (False, True):
+        # Halve from the largest output of THIS class, never the global maximum.
+        cap = _max_output_tokens(base, errors=is_error_pass)
         while cap > _OUTPUT_FLOOR_TOKENS and _count_tokens(text) > max_input_tokens:
             cap = max(_OUTPUT_FLOOR_TOKENS, cap // 2)
-            trial_out = cap if not pass_errors else (out_cap or cap)
-            trial_err = cap if pass_errors else 0
+            trial_out = out_cap if is_error_pass else cap
+            trial_err = cap if is_error_pass else 0
             trimmed, n_out, _ = _apply_caps(
                 base, output_cap=trial_out, error_output_cap=trial_err, reasoning_cap=0
             )
@@ -418,8 +442,11 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
             text = candidate
             out_cap, err_cap = trial_out, trial_err
             # Counted against the originals, so both passes' shrinking is included
-            # rather than the later pass overwriting the earlier one's tally.
-            report["output_cap_applied"], report["outputs_shrunk"] = cap, n_out
+            # rather than the later pass overwriting the earlier one's tally. The
+            # two caps are reported separately because they are two decisions.
+            report["outputs_shrunk"] = n_out
+            report["output_cap_applied"] = out_cap or None
+            report["error_output_cap_applied"] = err_cap or None
             steps = trimmed
         if _count_tokens(text) <= max_input_tokens:
             return text, report

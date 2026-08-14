@@ -424,7 +424,11 @@ inputs). The budget is now spent by **value**:
 
 1. **tool outputs** shrink first, the effective cap halved and re-fitted until it
    fits or hits a floor; error-looking outputs are given up last, extending the
-   cleaner's `keep_tail_on_error` preference;
+   cleaner's `keep_tail_on_error` preference. Each pass halves from the largest
+   output **of its own class** and records its own effective cap — halving both
+   from the global maximum inverted the order whenever the two differed in size,
+   because the first halving changed nothing the pass was allowed to touch and the
+   «stopped buying anything» guard exited it;
 2. **reasoning blocks** shrink only once outputs are exhausted;
 3. **whole middle steps** are dropped third, and the gap marker now names the tool
    signatures that went with them (`read_file×3, bash×2`) rather than only their count;

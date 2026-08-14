@@ -233,7 +233,13 @@ function TrimPolicy({ trim }: { trim?: TrajectoryTrim }) {
   const losses: string[] = []
   if (trim.outputs_shrunk)
     losses.push(
-      `${trim.outputs_shrunk} tool output(s) shrunk to ${trim.output_cap_applied?.toLocaleString()} tok`,
+      `${trim.outputs_shrunk} tool output(s) shrunk to ${trim.output_cap_applied?.toLocaleString()} tok` +
+        // Error output is given up last and under its own cap, so saying which is
+        // the difference between "the budget cost us noise" and "it cost us the
+        // failure evidence".
+        (trim.error_output_cap_applied
+          ? ` (error output(s) to ${trim.error_output_cap_applied.toLocaleString()} tok)`
+          : ''),
     )
   if (trim.reasoning_shrunk)
     losses.push(

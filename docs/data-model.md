@@ -457,7 +457,7 @@ untrimmed trace and one from a trace whose middle was evicted answer different
 questions, and without this block they are silently comparable:
 `{mode: none|budget, max_input_tokens, capped, anything_removed, pre_trim_outputs_truncated,
 pre_trim_args_truncated, pre_trim_dropped_tokens, output_cap_applied,
-reasoning_cap_applied, outputs_shrunk, reasoning_shrunk, steps_omitted,
+error_output_cap_applied, reasoning_cap_applied, outputs_shrunk, reasoning_shrunk, steps_omitted,
 omitted_signatures, hard_cut_tokens, tool_output_token_cap, tool_args_token_cap,
 keep_tail_on_error}`. `capped` is the **budget** stage alone; the cleaner's per-output
 caps run first, so `anything_removed` (either stage) is what «nothing was lost» must be
