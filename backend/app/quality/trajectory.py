@@ -34,7 +34,14 @@ from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
 from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_response
-from app.quality.trace_cleaner import _count_tokens, _truncate_to_tokens, build_cleaned_trace
+from app.quality.trace_cleaner import (
+    _count_tokens,
+    _ERROR_RE,
+    _truncate_to_tokens,
+    build_cleaned_trace,
+    render_arguments,
+    TraceCleanerConfig,
+)
 from app.quality.trace_loops import detect_loops
 from app.utils.events import log_event
 
@@ -42,7 +49,9 @@ logger = logging.getLogger(__name__)
 
 # v2: loop_analysis (deterministic loop detector, E-07 anchor)
 # v3: prompt_fingerprint — the conditions the verdict was obtained under (SPA-85)
-TRAJECTORY_SCHEMA_VERSION = 3
+# v4: tool-call arguments in the trace + the `trim` policy the verdict was
+#     obtained under (SPA-86)
+TRAJECTORY_SCHEMA_VERSION = 4
 _MAX_SCALE = 10
 # Default cap on the judge's input (cleaned trace) tokens per task; overridable
 # via the `trajectory_judge_max_input_tokens` setting (acceptance: cost cap).
@@ -220,8 +229,13 @@ def _parse_axes_from_args(args: dict) -> tuple[list[dict], float | None, bool]:
     return axes, overall, loop_detected
 
 
-def _serialize_trace(cleaned_trace: dict) -> str:
-    """Render a cleaned trace (E-06 dict) as the judge's text input."""
+def _serialize_trace(cleaned_trace: dict, steps: list[dict] | None = None) -> str:
+    """Render a cleaned trace (E-06 dict) as the judge's text input.
+
+    A tool step is rendered as the CALL — name and arguments — followed by its
+    output, because `parameter_quality` and `tool_selection` are questions about
+    the call, and until SPA-86 the judge was shown only the name and the result.
+    """
     task = cleaned_trace.get("task") or {}
     lines = [
         f"Task title: {task.get('title') or '(none)'}",
@@ -229,45 +243,184 @@ def _serialize_trace(cleaned_trace: dict) -> str:
         "",
         "Trajectory steps (chronological):",
     ]
-    for s in cleaned_trace.get("steps") or []:
+    for s in cleaned_trace.get("steps") if steps is None else steps:
         tool = s.get("tool_name")
         label = f"{s.get('kind')}/{tool}" if tool else str(s.get("kind"))
         trunc = " [truncated]" if s.get("truncated") else ""
+        rendered_args = render_arguments(s.get("arguments"))
+        args = f" args={rendered_args}" if rendered_args else ""
+        if s.get("arguments_truncated"):
+            args += " [args truncated]"
         content = (s.get("content") or "").strip()
-        lines.append(f"[{s.get('seq')}] {label}{trunc}: {content}")
+        lines.append(f"[{s.get('seq')}] {label}{trunc}{args}: {content}")
     return "\n".join(lines)
 
 
-def _fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str, bool]:
+# Below these a shrunken block stops being evidence and becomes noise, so the
+# trim moves on to the next kind rather than grinding them to nothing.
+_OUTPUT_FLOOR_TOKENS = 50
+_REASONING_FLOOR_TOKENS = 40
+
+
+def _shrink(content: str, cap: int) -> tuple[str, bool]:
+    """Cut `content` to `cap` tokens with an explicit marker. The marker names the
+    budget, so a block shortened here is distinguishable from one the cleaner's
+    per-output cap had already trimmed."""
+    if cap <= 0 or _count_tokens(content) <= cap:
+        return content, False
+    head, dropped = _truncate_to_tokens(content, cap)
+    return f"{head}\n…[{dropped} more tokens dropped to fit the judge budget]…", True
+
+
+def _apply_caps(
+    steps: list[dict], *, output_cap: int, reasoning_cap: int, spare_errors: bool
+) -> tuple[list[dict], int, int]:
+    """Shorten step contents per kind. Tool calls and their arguments are never
+    touched — only the *results* and the reasoning prose are negotiable."""
+    out: list[dict] = []
+    outputs_shrunk = 0
+    reasoning_shrunk = 0
+    for s in steps:
+        kind = s.get("kind")
+        content = s.get("content") or ""
+        if kind == "tool" and output_cap:
+            # Error output is the most informative thing in a failing trajectory —
+            # the same preference the cleaner's `keep_tail_on_error` encodes.
+            if spare_errors and _ERROR_RE.search(content):
+                out.append(s)
+                continue
+            content, changed = _shrink(content, output_cap)
+            outputs_shrunk += int(changed)
+        elif kind == "reasoning" and reasoning_cap:
+            content, changed = _shrink(content, reasoning_cap)
+            reasoning_shrunk += int(changed)
+        else:
+            out.append(s)
+            continue
+        out.append({**s, "content": content, "truncated": s.get("truncated") or content != (s.get("content") or "")})
+    return out, outputs_shrunk, reasoning_shrunk
+
+
+def _signature_summary(steps: list[dict]) -> str:
+    """`read_file×3, bash×2` — what the omitted middle actually consisted of."""
+    counts: dict[str, int] = {}
+    for s in steps:
+        key = str(s.get("tool_name") or s.get("kind") or "step")
+        counts[key] = counts.get(key, 0) + 1
+    return ", ".join(
+        f"{k}×{n}" for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+
+
+def _max_content_tokens(steps: list[dict], kind: str) -> int:
+    return max(
+        (_count_tokens(s.get("content") or "") for s in steps if s.get("kind") == kind),
+        default=0,
+    )
+
+
+def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str, dict]:
     """Serialize the trace, trimming it to the judge's input budget if needed.
 
-    The outcome lives in the tail, so middle steps are dropped first (head+tail
-    preserved); a hard token truncation is the last resort. Returns
-    (serialized_text, input_capped).
-    """
-    text = _serialize_trace(cleaned_trace)
-    if _count_tokens(text) <= max_input_tokens:
-        return text, False
+    A budget has to be spent on something, and what it is spent on is a condition
+    of the verdict — so the order is by **value**, not by position, and every
+    omission leaves a marker:
 
+    1. **tool outputs** shrink first (progressively halved), error outputs last;
+    2. **reasoning** shrinks only once outputs are at the floor;
+    3. **whole middle steps** are dropped third, and the gap marker names the tool
+       signatures that went with them;
+    4. a **hard tail cut** is the last resort, and it says so in the text.
+
+    Never trimmed: the tool call and its arguments, step ordering, head and tail.
+    `max_input_tokens <= 0` means no budget at all. Returns (text, trim_report).
+    """
     steps = list(cleaned_trace.get("steps") or [])
-    omitted = 0
+    report: dict = {
+        "mode": "budget",
+        "max_input_tokens": max_input_tokens,
+        "capped": False,
+        "output_cap_applied": None,
+        "reasoning_cap_applied": None,
+        "outputs_shrunk": 0,
+        "reasoning_shrunk": 0,
+        "steps_omitted": 0,
+        "omitted_signatures": "",
+        "hard_cut_tokens": 0,
+    }
+
+    if not max_input_tokens or max_input_tokens <= 0:
+        report["mode"] = "none"
+        report["max_input_tokens"] = None
+        return _serialize_trace(cleaned_trace, steps), report
+
+    text = _serialize_trace(cleaned_trace, steps)
+    if _count_tokens(text) <= max_input_tokens:
+        return text, report
+
+    report["capped"] = True
+
+    # 1) Tool outputs, halved until they fit or hit the floor. Two passes: the
+    #    first spares error outputs, the second gives them up too.
+    for spare_errors in (True, False):
+        cap = _max_content_tokens(steps, "tool")
+        while cap > _OUTPUT_FLOOR_TOKENS and _count_tokens(text) > max_input_tokens:
+            cap = max(_OUTPUT_FLOOR_TOKENS, cap // 2)
+            trimmed, n_out, _ = _apply_caps(
+                steps, output_cap=cap, reasoning_cap=0, spare_errors=spare_errors
+            )
+            candidate = _serialize_trace(cleaned_trace, trimmed)
+            if _count_tokens(candidate) >= _count_tokens(text):
+                break  # halving stopped buying anything
+            text, report["output_cap_applied"], report["outputs_shrunk"] = candidate, cap, n_out
+            steps = trimmed
+        if _count_tokens(text) <= max_input_tokens:
+            return text, report
+
+    # 2) Reasoning, once the outputs are spent.
+    cap = _max_content_tokens(steps, "reasoning")
+    while cap > _REASONING_FLOOR_TOKENS and _count_tokens(text) > max_input_tokens:
+        cap = max(_REASONING_FLOOR_TOKENS, cap // 2)
+        trimmed, _, n_reason = _apply_caps(
+            steps, output_cap=0, reasoning_cap=cap, spare_errors=False
+        )
+        candidate = _serialize_trace(cleaned_trace, trimmed)
+        if _count_tokens(candidate) >= _count_tokens(text):
+            break
+        text, report["reasoning_cap_applied"], report["reasoning_shrunk"] = candidate, cap, n_reason
+        steps = trimmed
+    if _count_tokens(text) <= max_input_tokens:
+        return text, report
+
+    # 3) Whole middle steps — the outcome lives in the tail, so head and tail stay.
+    omitted: list[dict] = []
     while len(steps) > 2 and _count_tokens(text) > max_input_tokens:
-        steps.pop(len(steps) // 2)
-        omitted += 1
+        omitted.append(steps.pop(len(steps) // 2))
         marker = {
             "seq": "…",
             "kind": "omitted",
             "tool_name": None,
+            "arguments": None,
             "truncated": True,
-            "content": f"[{omitted} middle step(s) omitted to fit the judge token budget]",
+            "content": (
+                f"[{len(omitted)} middle step(s) omitted to fit the judge token "
+                f"budget: {_signature_summary(omitted)}]"
+            ),
         }
         head = len(steps) // 2
-        view = {**cleaned_trace, "steps": steps[:head] + [marker] + steps[head:]}
-        text = _serialize_trace(view)
+        text = _serialize_trace(cleaned_trace, steps[:head] + [marker] + steps[head:])
+    report["steps_omitted"] = len(omitted)
+    report["omitted_signatures"] = _signature_summary(omitted)
+    if _count_tokens(text) <= max_input_tokens:
+        return text, report
 
-    if _count_tokens(text) > max_input_tokens:
-        text, _ = _truncate_to_tokens(text, max_input_tokens)
-    return text, True
+    # 4) Last resort. It used to cut silently and set a flag; now it says so in the
+    #    text the judge reads, which is the only place the judge can see it.
+    marker = "\n…[trace hard-cut here to fit the judge token budget]…"
+    total = _count_tokens(text)
+    text, dropped = _truncate_to_tokens(text, max(1, max_input_tokens - _count_tokens(marker)))
+    report["hard_cut_tokens"] = dropped or max(0, total - max_input_tokens)
+    return text + marker, report
 
 
 def _loads_lenient(raw: str | None) -> dict:
@@ -331,7 +484,8 @@ def _extract_tool_args(choice) -> dict:
 async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens: int) -> dict:
     """Score the whole trajectory in one LLM call. Never raises — failures become
     a result dict with ``status: "error"``."""
-    serialized, input_capped = _fit_trace_to_budget(cleaned_trace, max_input_tokens)
+    serialized, trim = fit_trace_to_budget(cleaned_trace, max_input_tokens)
+    input_capped = bool(trim["capped"])
     messages = [
         {"role": "system", "content": _TRAJECTORY_SYSTEM_PROMPT},
         {"role": "user", "content": _axes_block() + "\n\nAgent trajectory:\n" + serialized},
@@ -362,15 +516,26 @@ async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens:
                 "judge_output_tokens": out_tok,
                 "judge_cost_usd": _judge_cost(judge_llm, in_tok, out_tok),
                 "input_capped": input_capped,
+                "trim": trim,
             }
         except Exception as e:  # noqa: BLE001 — the judge must not crash the request
             last_err = e
             logger.warning(f"trajectory judge attempt {attempt + 1}/2 failed for task: {e}")
-    return {"status": "error", "error": str(last_err)[:300], "input_capped": input_capped}
+    return {
+        "status": "error",
+        "error": str(last_err)[:300],
+        "input_capped": input_capped,
+        "trim": trim,
+    }
 
 
 async def evaluate_task_trajectory(
-    db: AsyncSession, task: Task, *, commit: bool = True
+    db: AsyncSession,
+    task: Task,
+    *,
+    commit: bool = True,
+    trace_config: TraceCleanerConfig | None = None,
+    max_input_tokens: int | None = None,
 ) -> dict | None:
     """Judge ``task``'s trajectory and write the profile to its quality record.
 
@@ -378,6 +543,10 @@ async def evaluate_task_trajectory(
     empty trace with no steps to score). Re-running overwrites any existing
     profile (intentional, for on-demand re-judge). A failed LLM/parse call is
     persisted as a profile with ``status: "error"`` — not skipped.
+
+    ``trace_config`` and ``max_input_tokens`` override the workspace settings for
+    this one evaluation — an experiment can ask for an untrimmed trace
+    (``max_input_tokens=0``) without changing what every other run is judged on.
     """
     judge_llm = await _resolve_judge_model(db, task.workspace_id)
     if judge_llm is None:
@@ -386,18 +555,21 @@ async def evaluate_task_trajectory(
         )
         return None
 
-    cleaned_trace = await build_cleaned_trace(db, task)
+    cleaned_trace = await build_cleaned_trace(db, task, config=trace_config)
     if not (cleaned_trace.get("steps") or []):
         logger.info(f"trajectory eval skipped — empty trace for task {task.id}")
         return None
 
-    from app.api.settings import get_setting
+    if max_input_tokens is None:
+        from app.api.settings import get_setting
 
-    raw_cap = await get_setting(db, "trajectory_judge_max_input_tokens", DEFAULT_MAX_INPUT_TOKENS)
-    try:
-        max_input_tokens = int(raw_cap)
-    except (TypeError, ValueError):
-        max_input_tokens = DEFAULT_MAX_INPUT_TOKENS
+        raw_cap = await get_setting(
+            db, "trajectory_judge_max_input_tokens", DEFAULT_MAX_INPUT_TOKENS
+        )
+        try:
+            max_input_tokens = int(raw_cap)
+        except (TypeError, ValueError):
+            max_input_tokens = DEFAULT_MAX_INPUT_TOKENS
 
     result = await _judge_trajectory(cleaned_trace, judge_llm, max_input_tokens=max_input_tokens)
 
@@ -425,10 +597,19 @@ async def evaluate_task_trajectory(
         "judge_output_tokens": result.get("judge_output_tokens", 0),
         "judge_cost_usd": result.get("judge_cost_usd", 0.0),
         "input_capped": result.get("input_capped", False),
+        # What the judge was allowed to read, and what it cost to fit (SPA-86). An
+        # E-07 score from an untrimmed run and one from a trimmed run answer
+        # different questions; without this block they are silently comparable.
+        "trim": {
+            **(result.get("trim") or {}),
+            **{k: v for k, v in (cleaned_trace.get("config") or {}).items()},
+        },
         "trace_stats": {
             "original_tokens": stats.get("original_tokens"),
             "cleaned_tokens": stats.get("cleaned_tokens"),
             "steps_total": stats.get("steps_total"),
+            "steps_truncated": stats.get("steps_truncated"),
+            "steps_args_truncated": stats.get("steps_args_truncated"),
         },
         "evaluated_at": datetime.utcnow().isoformat(),
         "errors": (

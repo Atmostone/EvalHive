@@ -17,10 +17,10 @@ from app.quality.trace_cleaner import _count_tokens
 from app.quality.trajectory import (
     AXES,
     _extract_tool_args,
-    _fit_trace_to_budget,
     _judge_trajectory,
     _loads_lenient,
     _serialize_trace,
+    fit_trace_to_budget,
 )
 
 
@@ -104,19 +104,106 @@ def test_serialize_contains_task_and_steps():
     assert "Build X" in text and "web_search" in text and "[0]" in text
 
 
+def test_serialize_renders_tool_call_arguments():
+    """The call, not just its name and result — `parameter_quality` cannot be
+    scored on evidence that contains no parameters (SPA-86)."""
+    steps = [
+        {
+            "seq": 0,
+            "kind": "tool",
+            "tool_name": "write_file",
+            "arguments": {"path": "out/report.md", "content": "hello"},
+            "content": "ok",
+            "truncated": False,
+        }
+    ]
+    text = _serialize_trace(_trace(steps))
+    assert "out/report.md" in text and "args=" in text
+
+
+def test_serialize_flags_truncated_arguments():
+    steps = [
+        {
+            "seq": 0,
+            "kind": "tool",
+            "tool_name": "write_file",
+            "arguments": {"path": "a", "content": "x…[truncated 900 chars]…"},
+            "arguments_truncated": True,
+            "content": "ok",
+            "truncated": False,
+        }
+    ]
+    assert "[args truncated]" in _serialize_trace(_trace(steps))
+
+
 def test_fit_within_budget_not_capped():
-    text, capped = _fit_trace_to_budget(_trace(), 10_000)
-    assert capped is False and "Build X" in text
+    text, trim = fit_trace_to_budget(_trace(), 10_000)
+    assert trim["capped"] is False and trim["mode"] == "budget" and "Build X" in text
 
 
-def test_fit_over_budget_drops_middle_steps():
+def test_fit_with_no_budget_trims_nothing():
+    """`max_input_tokens = 0` is the off sentinel: a 1M-context judge can be asked
+    to read the whole trajectory, and the profile has to say that it did."""
+    big = [
+        {"seq": i, "kind": "tool", "tool_name": "t", "content": "word " * 500, "truncated": False}
+        for i in range(20)
+    ]
+    text, trim = fit_trace_to_budget(_trace(big), 0)
+    assert trim["mode"] == "none" and trim["capped"] is False
+    assert trim["steps_omitted"] == 0 and trim["hard_cut_tokens"] == 0
+    assert _count_tokens(text) > 5_000  # nothing was removed
+
+
+def test_fit_spends_tool_outputs_before_dropping_steps():
+    """Order of sacrifice: an output is cheaper than a whole step. A budget that
+    can be met by shrinking outputs must not evict steps to get there."""
+    big = [
+        {"seq": i, "kind": "tool", "tool_name": f"t{i}", "content": "word " * 400, "truncated": False}
+        for i in range(6)
+    ]
+    text, trim = fit_trace_to_budget(_trace(big), 900)
+    assert trim["capped"] is True
+    assert trim["outputs_shrunk"] > 0
+    assert trim["steps_omitted"] == 0
+    # Every call survives, which is the point — the calls are the evidence.
+    for i in range(6):
+        assert f"t{i}" in text
+
+
+def test_fit_shrinks_reasoning_only_after_outputs():
+    steps = [
+        {"seq": 0, "kind": "reasoning", "tool_name": None, "content": "think " * 400, "truncated": False},
+        {"seq": 1, "kind": "tool", "tool_name": "t", "content": "word " * 400, "truncated": False},
+    ]
+    _text, trim = fit_trace_to_budget(_trace(steps), 300)
+    assert trim["outputs_shrunk"] > 0
+    assert trim["reasoning_shrunk"] > 0
+    assert trim["output_cap_applied"] is not None
+
+
+def test_fit_over_budget_drops_middle_steps_with_signatures():
     big = [
         {"seq": i, "kind": "tool", "tool_name": "t", "content": "word " * 200, "truncated": False}
         for i in range(20)
     ]
-    text, capped = _fit_trace_to_budget(_trace(big), 200)
-    assert capped is True
+    text, trim = fit_trace_to_budget(_trace(big), 200)
+    assert trim["capped"] is True
     assert _count_tokens(text) <= 200
+    assert trim["steps_omitted"] > 0
+    # The judge is told WHAT went, not merely how much (canonical plan E4).
+    assert "t×" in trim["omitted_signatures"]
+
+
+def test_hard_cut_is_marked_not_silent():
+    """The last resort used to cut the text and only set a flag the judge never
+    sees. Now the text says so where the judge reads it."""
+    steps = [
+        {"seq": 0, "kind": "tool", "tool_name": "t", "content": "word " * 5000, "truncated": False},
+        {"seq": 1, "kind": "tool", "tool_name": "t", "content": "word " * 5000, "truncated": False},
+    ]
+    text, trim = fit_trace_to_budget(_trace(steps), 120)
+    assert trim["hard_cut_tokens"] > 0
+    assert "hard-cut" in text
 
 
 # --- judging ----------------------------------------------------------------

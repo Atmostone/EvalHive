@@ -46,7 +46,7 @@ from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_re
 from app.quality.trace_cleaner import _count_tokens, build_cleaned_trace
 from app.quality.trajectory import (
     AXES as TRAJECTORY_AXES,
-    _fit_trace_to_budget,
+    fit_trace_to_budget,
 )
 from app.utils.events import log_event
 
@@ -216,7 +216,8 @@ def _build_inputs(
 
     # Fit the trace into the budget left after the (small) context block.
     remaining = max(200, max_input_tokens - _count_tokens(context_block))
-    trace_text, input_capped = _fit_trace_to_budget(cleaned_trace, remaining)
+    trace_text, _trim = fit_trace_to_budget(cleaned_trace, remaining)
+    input_capped = bool(_trim["capped"])
     return (
         context_block + trace_text,
         input_capped,

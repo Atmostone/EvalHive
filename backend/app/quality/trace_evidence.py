@@ -39,7 +39,12 @@ from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
 from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_response
-from app.quality.trace_cleaner import _count_tokens, _truncate_to_tokens, build_cleaned_trace
+from app.quality.trace_cleaner import (
+    _count_tokens,
+    _truncate_to_tokens,
+    build_cleaned_trace,
+    render_arguments,
+)
 from app.quality.trajectory import (
     _MAX_SCALE,
     AXES,
@@ -124,11 +129,18 @@ def _select_steps(steps: list[dict], max_steps: int) -> tuple[list[dict], bool]:
 
 
 def _serialize_step(step: dict) -> str:
+    """One step as the judge reads it: the CALL — name and arguments — then its
+    result. E-08 scores the same six axes as E-07, `parameter_quality` among them,
+    so it needs the parameters for the same reason (SPA-86)."""
     tool = step.get("tool_name")
     label = f"{step.get('kind')}/{tool}" if tool else str(step.get("kind"))
     trunc = " [truncated]" if step.get("truncated") else ""
+    rendered_args = render_arguments(step.get("arguments"))
+    args = f" args={rendered_args}" if rendered_args else ""
+    if step.get("arguments_truncated"):
+        args += " [args truncated]"
     content = (step.get("content") or "").strip()
-    return f"[{step.get('seq')}] {label}{trunc}: {content}"
+    return f"[{step.get('seq')}] {label}{trunc}{args}: {content}"
 
 
 def _is_non_evidential(step: dict) -> bool:
