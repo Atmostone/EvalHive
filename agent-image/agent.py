@@ -273,19 +273,80 @@ async def _send_progress(payload: dict) -> None:
 # cap. Larger tool outputs are split into N consecutive chunks by chunk_seq.
 LOG_CHUNK_MAX_BYTES = 240 * 1024
 
+# Transport guard for tool-call arguments (SPA-86) — NOT the judge's cap, which
+# lives in the trace cleaner and is measured in tokens. A file body can arrive as
+# a parameter, and nothing else bounds it: without this a single write_file call
+# could push tens of megabytes at the ingest endpoint.
+ARG_VALUE_MAX_CHARS = 8 * 1024
+ARGS_MAX_BYTES = 64 * 1024
 
-async def _send_log_chunk(content: str, tool_name: str | None, seq_iter: list[int]) -> None:
+
+def _clip_arguments(args: dict) -> tuple[dict, bool]:
+    """Shrink oversized tool-call arguments to something transportable.
+
+    Long string values are cut to a head plus an explicit marker; keys are NEVER
+    dropped. Which parameters the agent passed is the signal the process judge is
+    missing — a truncated value still answers "did it pass a path at all", an
+    absent key answers nothing. Returns (clipped, was_truncated).
+    """
+    if not isinstance(args, dict) or not args:
+        return (args if isinstance(args, dict) else {}), False
+
+    truncated = False
+
+    def _clip_value(v, limit: int):
+        nonlocal truncated
+        if isinstance(v, str) and len(v) > limit:
+            truncated = True
+            return f"{v[:limit]}…[truncated {len(v) - limit} chars]…"
+        if isinstance(v, dict):
+            return {k: _clip_value(x, limit) for k, x in v.items()}
+        if isinstance(v, list):
+            return [_clip_value(x, limit) for x in v]
+        return v
+
+    limit = ARG_VALUE_MAX_CHARS
+    out = args
+    # Halve the per-value limit until the whole payload fits. A dict of many
+    # medium strings can exceed the total while no single value exceeds the cap.
+    for _ in range(8):
+        out = {k: _clip_value(v, limit) for k, v in args.items()}
+        try:
+            size = len(json.dumps(out, ensure_ascii=False, default=str).encode("utf-8"))
+        except Exception:
+            return {"_unserializable": str(list(args.keys()))}, True
+        if size <= ARGS_MAX_BYTES:
+            return out, truncated
+        limit = max(64, limit // 2)
+    return out, True
+
+
+async def _send_log_chunk(
+    content: str,
+    tool_name: str | None,
+    seq_iter: list[int],
+    *,
+    arguments: dict | None = None,
+    tool_call_id: str | None = None,
+) -> None:
     """POST /api/v1/agent-log/{task_id} — full-output streaming.
 
     `seq_iter` is a single-element list used as a mutable counter shared with
     the caller (each tool invocation increments it). Long outputs are split
-    into multiple consecutive chunks so each POST stays under the backend cap.
+    into multiple consecutive chunks so each POST stays under the backend cap;
+    `tool_call_id` + `part_index` let the trace cleaner re-join those parts into
+    the one call they came from, instead of reading them as N separate steps.
+
+    The arguments ride on EVERY part on purpose: parts are rare, and a dropped
+    first POST must not cost the call its identity.
     """
     base_url = os.environ.get("API_BASE_URL", "http://api:8000")
     task_id = os.environ.get("TASK_ID", "")
     token = os.environ.get("SPAWNHIVE_AGENT_TOKEN", "")
     if not task_id or not token:
         return
+
+    clipped_args, args_truncated = _clip_arguments(arguments or {})
 
     pieces = [
         content[i : i + LOG_CHUNK_MAX_BYTES]
@@ -296,11 +357,16 @@ async def _send_log_chunk(content: str, tool_name: str | None, seq_iter: list[in
     url = f"{base_url}/api/v1/agent-log/{task_id}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for piece in pieces:
+            for part_index, piece in enumerate(pieces):
                 payload = {
                     "chunk_seq": seq_iter[0],
                     "content": piece,
                     "tool_name": tool_name,
+                    "arguments": clipped_args if arguments is not None else None,
+                    "arguments_truncated": args_truncated,
+                    "tool_call_id": tool_call_id,
+                    "part_index": part_index,
+                    "part_total": len(pieces),
                     "idempotency_key": uuid.uuid4().hex,
                 }
                 seq_iter[0] += 1
@@ -572,7 +638,13 @@ async def run_agent() -> dict:
                         "content": str(result),
                     })
 
-                    await _send_log_chunk(str(result), fn.name, log_chunk_seq)
+                    await _send_log_chunk(
+                        str(result),
+                        fn.name,
+                        log_chunk_seq,
+                        arguments=args,
+                        tool_call_id=tool_call.id,
+                    )
 
                     now = time.monotonic()
                     if now - last_progress_at >= PROGRESS_MIN_INTERVAL:
