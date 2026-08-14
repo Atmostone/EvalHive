@@ -32,11 +32,19 @@ from app.models.task import Task
 
 logger = logging.getLogger(__name__)
 
-TRACE_SCHEMA_VERSION = 1
+# v2: tool-call arguments per step, and joined multi-part outputs (SPA-86)
+TRACE_SCHEMA_VERSION = 2
 
 DEFAULT_TOOL_OUTPUT_TOKEN_CAP = 600
+# Arguments get a cap of their own: a file body can arrive as a parameter, and the
+# names of the parameters matter more to the judge than their full contents.
+DEFAULT_TOOL_ARGS_TOKEN_CAP = 400
 TOKEN_CAP_MIN = 50
-TOKEN_CAP_MAX = 8000
+# The ceiling catches typos; it is not meant to bound the model's context. With a
+# 1M-context judge a five-figure cap is an ordinary request.
+TOKEN_CAP_MAX = 50000
+# Both caps accept 0 as «do not truncate at all» (SPA-86).
+TOKEN_CAP_OFF = 0
 
 # Reasoning/decision events — the agent's thinking, kept in full (the judge needs
 # the "why" to assess optimality). Mapped to a step `kind`.
@@ -69,13 +77,30 @@ _ERROR_RE = re.compile(r"\b(error|traceback|exception|failed|fatal)\b", re.IGNOR
 class TraceCleanerConfig:
     """Tunables for trace cleaning.
 
-    tool_output_token_cap — truncate tool outputs longer than this many tokens.
+    tool_output_token_cap — truncate tool outputs longer than this many tokens;
+        ``0`` disables output truncation entirely.
+    tool_args_token_cap — the same, for the tool call's arguments; ``0`` disables.
     keep_tail_on_error — when set, tool steps that look like errors are kept in
         full (the bug is often in the ignored tail); for debugging runs.
     """
 
     tool_output_token_cap: int = DEFAULT_TOOL_OUTPUT_TOKEN_CAP
+    tool_args_token_cap: int = DEFAULT_TOOL_ARGS_TOKEN_CAP
     keep_tail_on_error: bool = False
+
+
+def effective_cap(raw, default: int) -> int:
+    """Resolve a configured token cap. ``0`` (or any non-positive value) means «no
+    truncation» and is passed through as 0; anything else is clamped into the sane
+    band. A garbage value falls back to the default rather than silently disabling
+    the cap — off has to be asked for explicitly."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        return TOKEN_CAP_OFF
+    return max(TOKEN_CAP_MIN, min(TOKEN_CAP_MAX, value))
 
 
 # --- token counting -------------------------------------------------------
@@ -169,19 +194,119 @@ def _event_step(ev) -> dict | None:
         "kind": kind,
         "event_type": event_type,
         "tool_name": None,
+        "arguments": None,
+        "arguments_truncated": False,
         "content": text,
         "_ts": _ts(getattr(ev, "created_at", None)),
         "_order": 0,
     }
 
 
-def _chunk_step(chunk, order: int) -> dict:
+def render_arguments(args: dict | None) -> str:
+    """The judge-facing rendering of a tool call's arguments. Shared with the
+    serializer so what is measured against the cap is what is actually sent."""
+    if not args:
+        return ""
+    try:
+        return json.dumps(args, ensure_ascii=False, default=str)
+    except Exception:
+        return str(args)
+
+
+def _clip_str_values(args: dict, char_limit: int) -> tuple[dict, bool]:
+    """Shorten every string value longer than `char_limit`, recursively."""
+    truncated = False
+
+    def _clip(v):
+        nonlocal truncated
+        if isinstance(v, str) and len(v) > char_limit:
+            truncated = True
+            return f"{v[:char_limit]}…[truncated {len(v) - char_limit} chars]…"
+        if isinstance(v, dict):
+            return {k: _clip(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [_clip(x) for x in v]
+        return v
+
+    return {k: _clip(v) for k, v in args.items()}, truncated
+
+
+def _truncate_arguments(args: dict | None, cap: int) -> tuple[dict | None, bool]:
+    """Fit a tool call's arguments into `cap` tokens by shortening long string
+    values. **Keys are never dropped** — which parameters were passed is the signal
+    the process judge is missing, and a truncated value still answers «did it pass a
+    path at all», where an absent key answers nothing. `cap <= 0` disables the cap.
+    Returns (arguments, was_truncated)."""
+    if not args or cap <= 0:
+        return args, False
+    if _count_tokens(render_arguments(args)) <= cap:
+        return args, False
+
+    limit = max(16, cap * 4)  # tokens → rough char budget
+    out, truncated = args, False
+    for _ in range(12):
+        out, truncated = _clip_str_values(args, limit)
+        if _count_tokens(render_arguments(out)) <= cap:
+            return out, truncated
+        limit = max(8, limit // 2)
+    # Enough keys to blow the cap on their names alone. Keep them all and say so,
+    # rather than deciding which parameter the judge is allowed to know about.
+    return out, True
+
+
+def _chunk_attr(chunk, name, default=None):
+    """Read a field off a chunk that may be an ORM row or a decoded archive dict."""
+    value = chunk.get(name, default) if isinstance(chunk, dict) else getattr(chunk, name, default)
+    return default if value is None else value
+
+
+def _join_tool_call_parts(log_chunks) -> list[dict]:
+    """Re-join the parts of one tool output into one call.
+
+    An output over the agent's transport cap arrives as several consecutive rows
+    sharing a `tool_call_id`. Left alone, each becomes its own step — separately
+    truncated, separately counted by the loop detector — so one call reads as three.
+    Only *consecutive* rows are merged: a provider that reuses ids across turns must
+    not fuse two genuinely different calls. Rows with no call id (pre-SPA-86 rows,
+    legacy archives) keep one step per chunk."""
+    joined: list[dict] = []
+    for chunk in log_chunks:
+        call_id = _chunk_attr(chunk, "tool_call_id")
+        content = _chunk_attr(chunk, "content", "") or ""
+        prev = joined[-1] if joined else None
+        if call_id and prev is not None and prev["tool_call_id"] == call_id:
+            prev["parts"].append((_chunk_attr(chunk, "part_index", 0), content))
+            if prev["arguments"] is None:
+                prev["arguments"] = _chunk_attr(chunk, "arguments")
+            prev["arguments_truncated"] = prev["arguments_truncated"] or bool(
+                _chunk_attr(chunk, "arguments_truncated", False)
+            )
+            continue
+        joined.append(
+            {
+                "tool_name": _chunk_attr(chunk, "tool_name"),
+                "tool_call_id": call_id,
+                "arguments": _chunk_attr(chunk, "arguments"),
+                "arguments_truncated": bool(_chunk_attr(chunk, "arguments_truncated", False)),
+                "created_at": _chunk_attr(chunk, "created_at"),
+                "parts": [(_chunk_attr(chunk, "part_index", 0), content)],
+            }
+        )
+    for entry in joined:
+        entry["content"] = "".join(c for _, c in sorted(entry["parts"], key=lambda p: p[0]))
+        del entry["parts"]
+    return joined
+
+
+def _chunk_step(chunk: dict, order: int) -> dict:
     return {
         "kind": "tool",
         "event_type": None,
-        "tool_name": getattr(chunk, "tool_name", None),
-        "content": getattr(chunk, "content", "") or "",
-        "_ts": _ts(getattr(chunk, "created_at", None)),
+        "tool_name": chunk.get("tool_name"),
+        "arguments": chunk.get("arguments"),
+        "arguments_truncated": bool(chunk.get("arguments_truncated")),
+        "content": chunk.get("content", "") or "",
+        "_ts": _ts(chunk.get("created_at")),
         "_order": order,
     }
 
@@ -199,15 +324,18 @@ def clean_trajectory(
     truncates long tool outputs, and reports token savings. Never raises.
     """
     config = config or TraceCleanerConfig()
-    cap = max(TOKEN_CAP_MIN, min(TOKEN_CAP_MAX, int(config.tool_output_token_cap)))
+    cap = effective_cap(config.tool_output_token_cap, DEFAULT_TOOL_OUTPUT_TOKEN_CAP)
+    args_cap = effective_cap(config.tool_args_token_cap, DEFAULT_TOOL_ARGS_TOKEN_CAP)
     task_failed = getattr(task, "status", None) == "failed"
 
     try:
         events = list(events or [])
-        log_chunks = list(log_chunks or [])
+        # Parts of one split output are re-joined here, before anything is counted:
+        # otherwise a single call is capped N times and counted N times.
+        calls = _join_tool_call_parts(list(log_chunks or []))
 
         # Baseline: what a naive trace would cost — system snapshot + every
-        # event payload + every (untruncated) tool output.
+        # event payload + every (untruncated) tool call and output.
         original_tokens = 0
         for ev in events:
             if getattr(ev, "event_type", None) == "agent_spawned":
@@ -215,16 +343,17 @@ def clean_trajectory(
                 original_tokens += _count_tokens(json.dumps(snap, ensure_ascii=False, default=str))
             else:
                 original_tokens += _count_tokens(_event_text(getattr(ev, "data", None) or {}))
-        for chunk in log_chunks:
-            original_tokens += _count_tokens(getattr(chunk, "content", "") or "")
+        for call in calls:
+            original_tokens += _count_tokens(call.get("content", "") or "")
+            original_tokens += _count_tokens(render_arguments(call.get("arguments")))
 
         events_dropped = sum(
             1 for ev in events if _event_step(ev) is None
         )
 
         raw_steps = [s for s in (_event_step(ev) for ev in events) if s is not None]
-        for i, chunk in enumerate(log_chunks):
-            raw_steps.append(_chunk_step(chunk, order=i))
+        for i, call in enumerate(calls):
+            raw_steps.append(_chunk_step(call, order=i))
 
         # Chronological merge: dated items ascending, undated (archive) last in
         # their original order (stable sort).
@@ -232,13 +361,21 @@ def clean_trajectory(
 
         steps: list[dict] = []
         steps_truncated = 0
+        steps_args_truncated = 0
         for seq, s in enumerate(raw_steps):
             content = s["content"]
             original = _count_tokens(content)
             truncated = False
             kept = original
 
-            if s["kind"] == "tool" and original > cap:
+            arguments, args_truncated = _truncate_arguments(s.get("arguments"), args_cap)
+            # The agent may already have clipped an oversized value in transit; that
+            # truncation is a fact about this step whether or not the cap fires here.
+            args_truncated = bool(args_truncated or s.get("arguments_truncated"))
+            if args_truncated:
+                steps_args_truncated += 1
+
+            if s["kind"] == "tool" and cap and original > cap:
                 is_error = bool(_ERROR_RE.search(content)) or task_failed
                 if config.keep_tail_on_error and is_error:
                     pass  # keep full content — debugging the ignored tail
@@ -254,6 +391,8 @@ def clean_trajectory(
                     "seq": seq,
                     "kind": s["kind"],
                     "tool_name": s["tool_name"],
+                    "arguments": arguments,
+                    "arguments_truncated": args_truncated,
                     "content": content,
                     "truncated": truncated,
                     "original_tokens": original,
@@ -268,7 +407,8 @@ def clean_trajectory(
         }
 
         cleaned_tokens = _count_tokens(
-            _event_text(task_block) + "\n".join(s["content"] for s in steps)
+            _event_text(task_block)
+            + "\n".join(render_arguments(s["arguments"]) + s["content"] for s in steps)
         )
         savings = original_tokens - cleaned_tokens
         savings_pct = round(savings / original_tokens * 100, 1) if original_tokens else 0.0
@@ -284,10 +424,12 @@ def clean_trajectory(
                 "savings_pct": savings_pct,
                 "steps_total": len(steps),
                 "steps_truncated": steps_truncated,
+                "steps_args_truncated": steps_args_truncated,
                 "events_dropped": events_dropped,
             },
             "config": {
                 "tool_output_token_cap": cap,
+                "tool_args_token_cap": args_cap,
                 "keep_tail_on_error": config.keep_tail_on_error,
             },
             "generated_at": datetime.utcnow().isoformat(),
@@ -305,9 +447,14 @@ def clean_trajectory(
                 "savings_pct": 0.0,
                 "steps_total": 0,
                 "steps_truncated": 0,
+                "steps_args_truncated": 0,
                 "events_dropped": 0,
             },
-            "config": {"tool_output_token_cap": cap, "keep_tail_on_error": config.keep_tail_on_error},
+            "config": {
+                "tool_output_token_cap": cap,
+                "tool_args_token_cap": args_cap,
+                "keep_tail_on_error": config.keep_tail_on_error,
+            },
             "generated_at": datetime.utcnow().isoformat(),
             "error": str(e),
         }
@@ -316,8 +463,9 @@ def clean_trajectory(
 async def _load_log_chunks(db: AsyncSession, task: Task) -> list:
     """Load a task's log chunks from Postgres, or the MinIO archive after
     compaction (mirrors api/agent_logs.list_log_chunks). The JSON-lines archive
-    preserves `tool_name`; legacy plain-text archives lose it (degrade gracefully).
-    `created_at` is always absent from the archive."""
+    preserves the tool call — name, arguments and part identity; legacy plain-text
+    archives lose them (degrade gracefully). `created_at` is always absent from the
+    archive."""
     if task.log_archive_s3_path:
         try:
             from app.storage.minio_client import decode_log_archive, read_log_archive
@@ -327,7 +475,17 @@ async def _load_log_chunks(db: AsyncSession, task: Task) -> list:
             logger.warning(f"reading log archive {task.log_archive_s3_path} failed: {e}")
             blob = ""
         return [
-            AgentLogChunk(task_id=task.id, chunk_seq=i, content=d["content"], tool_name=d.get("tool_name"))
+            AgentLogChunk(
+                task_id=task.id,
+                chunk_seq=i,
+                content=d["content"],
+                tool_name=d.get("tool_name"),
+                arguments=d.get("arguments"),
+                arguments_truncated=bool(d.get("arguments_truncated", False)),
+                tool_call_id=d.get("tool_call_id"),
+                part_index=d.get("part_index", 0) or 0,
+                part_total=d.get("part_total", 1) or 1,
+            )
             for i, d in enumerate(decode_log_archive(blob))
         ]
 

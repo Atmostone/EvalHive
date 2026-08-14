@@ -94,10 +94,31 @@ async def test_trace_empty_task_ok(auth_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_trace_rejects_out_of_range_cap(auth_client: AsyncClient):
+    """0 is «no truncation»; anything above it must still leave a readable trace.
+    A value in between is refused rather than silently clamped — a quietly
+    different trace is the failure this endpoint exists to make visible."""
     ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     tid, _ = await _make_task(ws)
     r = await auth_client.get(f"/api/quality/records/{tid}/trace?tool_output_token_cap=5")
     assert r.status_code == 422
+    r = await auth_client.get(f"/api/quality/records/{tid}/trace?tool_args_token_cap=5")
+    assert r.status_code == 422
+    r = await auth_client.get(f"/api/quality/records/{tid}/trace?tool_output_token_cap=-1")
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_trace_accepts_zero_cap_as_no_truncation(auth_client: AsyncClient):
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid, _ = await _make_task(ws)
+    r = await auth_client.get(
+        f"/api/quality/records/{tid}/trace"
+        "?tool_output_token_cap=0&tool_args_token_cap=0"
+    )
+    assert r.status_code == 200, r.text
+    config = r.json()["cleaned_trace"]["config"]
+    assert config["tool_output_token_cap"] == 0
+    assert config["tool_args_token_cap"] == 0
 
 
 @pytest.mark.asyncio
