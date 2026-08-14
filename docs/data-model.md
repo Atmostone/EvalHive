@@ -89,6 +89,9 @@ f3a4b5c6d7e8  annotation_sessions + annotations.session_id — the protocol a ra
 f5a6b7c8d9e0  unique annotations.session_id — one bundle vouches for one rating (SPA-85)
      ↓
 f8a9b0c1d2e3  blind_to_peers on annotation_sessions + annotations — independence of a rating (SPA-85)
+     ↓
+f9a0b1c2d3e4  agent_log_chunks.{arguments, arguments_truncated, tool_call_id, part_index, part_total} —
+              tool-call arguments and call identity (SPA-86)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -188,7 +191,7 @@ an expanded configuration matrix × `n_runs_per_cell`, driven by the
 | budget_limit_usd | NUMERIC(10,6) | NULL | hard cap; reached → remaining cells `skipped`, status `capped` |
 | max_parallel | INT | NULL | caps the tick's claim target (also bounded by `max_concurrent_agents`) |
 | n_toolathlon_lanes | INT | NULL | number of isolated Toolathlon PG lanes to run in parallel (SPA-69; migration `e9f0a1b2c3d4`). NULL/0 → serial (one Toolathlon cell at a time, since all cases share one mock postgres); >1 lets the scheduler claim up to that many Toolathlon cells at once, each pinned to its own `toolathlon_pg_lane_<i>` instance so preprocess re-seeding can't clobber another |
-| eval_config | JSONB | {} | `{trajectory: bool=true, failure_modes: bool=false}`; E-02 always runs |
+| eval_config | JSONB | {} | `{trajectory: bool=true, failure_modes: bool=false, trace?}`; E-02 always runs. `trace` (SPA-86) overrides the trim policy for this experiment's process judging: `{tool_output_token_cap, tool_args_token_cap, keep_tail_on_error, max_input_tokens}`, any cap `0` = no truncation. Absent → the workspace settings apply. Opt-in rather than default, because an untrimmed trace is a real bill at 200+ runs; unknown keys and negative caps are **rejected at create time**, since a typo here silently changes what every run was judged on |
 | accumulated_cost_usd | NUMERIC(10,6) | 0 | agent + judge spend, updated by the tick |
 | report | JSONB | NULL | cached assembled report (see `experiment_report.py`), written once terminal |
 | error | TEXT | NULL | |
@@ -393,9 +396,9 @@ placeholders filled by downstream eval features.
 | final_status | VARCHAR(50) | done / failed / awaiting_approval (reconciled by the backfill job) |
 | is_decomposition_root | bool | parent task with subtasks |
 | cost_usd | NUMERIC(10,6) | denormalized |
-| input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics |
+| input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics. `tool_call_count` counts **logical calls**, not log rows — the agent writes the call before running the tool and the result after, and a large output splits further, so a row-count double-counted every call. The grouping is the trace cleaner's `join_tool_call_parts`, imported rather than reimplemented, so this number and the judge's step list cannot drift. Read by the experiment report as `steps_mean` |
 | quality_profile | JSONB? | **slot E-02** (v3 adds `rubric_fingerprint` / `prompt_fingerprint` / `files_only` — the conditions the verdict was obtained under, SPA-85) |
-| trajectory_profile | JSONB? | **slot E-07** (v3 adds `prompt_fingerprint`) |
+| trajectory_profile | JSONB? | **slot E-07** (v3 adds `prompt_fingerprint`; v4 adds the `trim` policy the verdict was obtained under, SPA-86) |
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
 | capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
@@ -442,11 +445,30 @@ reuses the JSONB slot): `{schema_version, status: scored|skipped|error,
 axes: [{key, name, score 0-10, reason}] (efficiency, tool_selection,
 parameter_quality, error_recovery, goal_alignment, loop_detection),
 overall_score (mean), loop_detected, summary, judge_model, judge_input_tokens,
-judge_output_tokens, judge_cost_usd, input_capped, trace_stats, evaluated_at,
+judge_output_tokens, judge_cost_usd, input_capped, trim, trace_stats, evaluated_at,
 errors}`. The cleaned trace itself (E-06) stays transient
 (`GET /api/quality/records/{task_id}/trace`) and is not persisted — E-07 rebuilds
 it from the durable sources (`agent_events` + `agent_log_chunks`, or the MinIO log
 archive after compaction) at judge time.
+
+`trim` (SPA-86) records **what the judge was allowed to read**, because that is a
+condition of the verdict rather than an implementation detail — a score from an
+untrimmed trace and one from a trace whose middle was evicted answer different
+questions, and without this block they are silently comparable:
+`{mode: none|budget, max_input_tokens, capped, anything_removed, pre_trim_outputs_truncated,
+pre_trim_args_truncated, pre_trim_dropped_tokens, output_cap_applied,
+error_output_cap_applied, reasoning_cap_applied, outputs_shrunk, reasoning_shrunk, steps_omitted,
+omitted_signatures, hard_cut_tokens, tool_output_token_cap, tool_args_token_cap,
+keep_tail_on_error}`. `capped` is the **budget** stage alone; the cleaner's per-output
+caps run first, so `anything_removed` (either stage) is what «nothing was lost» must be
+read from — a run can fit the budget comfortably while the cleaner has already dropped
+thousands of tokens, and reporting that as untouched would make two runs with different
+evidence look identical. When a budget applies it is spent by **value**, not by
+position: tool outputs shrink first (error outputs last), then reasoning blocks,
+then whole middle steps — whose gap marker now names the tool signatures that went
+with them — and only then a hard tail cut, which marks itself in the text the judge
+reads. The tool call and its arguments, step ordering, and the head and tail of the
+trajectory are never trimmed. `mode: none` means no budget was applied at all.
 
 The `trajectory_evidence_profile` slot is filled by the Evidence Bank Judge (E-08,
 TRACE) — `POST /api/quality/records/{task_id}/evaluate-trajectory-evidence`, building
@@ -486,7 +508,7 @@ building the record on demand if absent (added by migration `d5e6f7a8b9c0`). It 
 applies to tasks with a `capability_spec` (`{required_tools[], category?, match?}`).
 Glass-Box matching (reusing E-09's `extract_tool_sequence`) checks whether the
 required tools were actually called — sourced from the cleaned trace **unioned with
-the durable E-01 blob** (`execution.tool_calls`) and matched prefix-aware (`web_search`
+the durable E-01 blob** (`execution.tool_calls` — one entry per logical call, carrying `tool_name` **and** the frozen `arguments`) and matched prefix-aware (`web_search`
 ↔ `web__web_search`). The log archive now preserves `tool_name` (JSON-lines), so the
 cleaned trace keeps tool steps named post-compaction; the blob union stays as
 defense-in-depth (and for legacy plain-text archives, which lose it). Outcome
@@ -1024,11 +1046,31 @@ Append-only stream of full agent stdout/stderr per tool call. Replaces the 500-c
 | task_id | UUID FK→tasks.id ON DELETE CASCADE | |
 | workspace_id | UUID FK→workspaces.id ON DELETE CASCADE | |
 | chunk_seq | int | per-task monotonically increasing, UNIQUE `(task_id, chunk_seq)` |
-| content | TEXT | ≤256 KB per row (Pydantic-enforced) |
+| content | TEXT | ≤256 KB per row (Pydantic-enforced) — the tool's **result** |
 | tool_name | VARCHAR(255) NULL | bash / file_read / mcp tool name |
+| arguments | JSONB NULL | the call's **parameters** (SPA-86). NULL = never recorded, which is not the same as a call that took none (`{}`) |
+| arguments_truncated | bool | a long value was shortened in transit or at ingest; keys are never dropped |
+| tool_call_id | VARCHAR(128) NULL | the provider's call id, shared by every part of one split output |
+| part_index / part_total | int | position within that split; defaults `0` / `1` describe a single-part output |
 | created_at | TIMESTAMP | |
 
-Indexes: `(task_id, chunk_seq)`, `workspace_id`. After event=completed/failed/aborted the orchestrator serializes rows → MinIO blob `s3://spawnhive/logs/<task_id>.log` (**JSON-lines, one `{tool_name, content}` per chunk** — `tool_name` is preserved so the cleaned trace E-06 / matcher E-09 stay tool-aware post-compaction; `encode_log_archive`/`decode_log_archive` in `minio_client`, legacy `\n␞\n` plain-text archives still decode with `tool_name=None`), sets `tasks.log_archive_s3_path`, and DELETEs all chunks (best-effort, atomic).
+Before SPA-86 a chunk carried the tool's name and its output and nothing else: the
+agent parsed the arguments, called the tool with them and discarded them. The process
+judge's `parameter_quality` axis was therefore scored without its subject. `arguments`
+is capped twice on the way in — agent-side as a transport guard, then again at ingest,
+because «the client promised» is not a size limit — and both caps shorten long string
+*values* while keeping every key, since which parameters were passed is the signal.
+
+The call is written **before** the tool runs (part 0, empty content) and the result
+follows as parts 1..N under the same `tool_call_id`. Recording only after a result
+exists loses the call entirely whenever there is no result — a tool that hangs until
+the run is reaped, a container that dies mid-call, a builtin that raises — which are
+the trajectories a process judge most needs to see. The cleaner re-joins consecutive
+parts into one step, so one call is not read as N; a gap in the part sequence is
+**marked in place** rather than spliced over, and a call that never produced a part
+≥ 1 is reported as having no result.
+
+Indexes: `(task_id, chunk_seq)`, `workspace_id`. After event=completed/failed/aborted the orchestrator serializes rows → MinIO blob `s3://spawnhive/logs/<task_id>.log` (**JSON-lines, one `{tool_name, content, arguments, arguments_truncated, tool_call_id, part_index, part_total}` per chunk** — the call is preserved so the cleaned trace E-06 / matcher E-09 stay tool-aware post-compaction; `encode_log_archive`/`decode_log_archive` in `minio_client`, legacy `\n␞\n` plain-text archives still decode with `tool_name=None` and no arguments), sets `tasks.log_archive_s3_path`, and DELETEs all chunks (best-effort, atomic).
 
 ### agent_log_deliveries (Foundations Этап 1)
 

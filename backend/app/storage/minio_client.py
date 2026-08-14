@@ -179,28 +179,53 @@ _LEGACY_LOG_SEP = "\n␞\n"
 
 
 def encode_log_archive(chunks) -> bytes:
-    """Serialize agent log chunks to the archive blob, **preserving `tool_name`**.
+    """Serialize agent log chunks to the archive blob, **preserving the tool call**.
 
-    JSON-lines, one object per chunk (`{"tool_name", "content"}`) — so the cleaned
-    trace (E-06) and trajectory matcher (E-09) keep the tool name after compaction,
-    instead of going blind. `json.dumps` escapes newlines, so each chunk is one line."""
+    JSON-lines, one object per chunk — so the cleaned trace (E-06) and trajectory
+    matcher (E-09) keep the tool name, and now its arguments and call identity
+    (SPA-86), after compaction instead of going blind. `json.dumps` escapes
+    newlines, so each chunk is one line."""
     import json
 
     lines = [
         json.dumps(
-            {"tool_name": getattr(c, "tool_name", None), "content": getattr(c, "content", "") or ""},
+            {
+                "tool_name": getattr(c, "tool_name", None),
+                "content": getattr(c, "content", "") or "",
+                "arguments": getattr(c, "arguments", None),
+                "arguments_truncated": bool(getattr(c, "arguments_truncated", False)),
+                "tool_call_id": getattr(c, "tool_call_id", None),
+                "part_index": getattr(c, "part_index", 0) or 0,
+                "part_total": getattr(c, "part_total", 1) or 1,
+            },
             ensure_ascii=False,
+            default=str,
         )
         for c in chunks
     ]
     return "\n".join(lines).encode("utf-8")
 
 
-def decode_log_archive(blob: str) -> list[dict]:
-    """Decode an archive blob into ``[{content, tool_name}]``.
+def _decoded_chunk(o: dict) -> dict:
+    """One archived chunk in the shape the cleaner expects. Archives written before
+    SPA-86 carry no call fields; the defaults describe exactly what those rows are —
+    a single-part output with no recorded arguments."""
+    return {
+        "content": o.get("content", ""),
+        "tool_name": o.get("tool_name"),
+        "arguments": o.get("arguments"),
+        "arguments_truncated": bool(o.get("arguments_truncated", False)),
+        "tool_call_id": o.get("tool_call_id"),
+        "part_index": o.get("part_index", 0) or 0,
+        "part_total": o.get("part_total", 1) or 1,
+    }
 
-    Handles the JSON-lines format (with `tool_name`) and the legacy `\\n␞\\n`-joined
-    plain-text format (tool_name lost → ``None``), detected from the first line."""
+
+def decode_log_archive(blob: str) -> list[dict]:
+    """Decode an archive blob into ``[{content, tool_name, arguments, …}]``.
+
+    Handles the JSON-lines format and the legacy `\\n␞\\n`-joined plain-text format
+    (tool_name lost → ``None``), detected from the first line."""
     import json
 
     if not blob:
@@ -220,13 +245,12 @@ def decode_log_archive(blob: str) -> list[dict]:
             if not line:
                 continue
             try:
-                o = json.loads(line)
-                out.append({"content": o.get("content", ""), "tool_name": o.get("tool_name")})
+                out.append(_decoded_chunk(json.loads(line)))
             except Exception:
-                out.append({"content": line, "tool_name": None})
+                out.append(_decoded_chunk({"content": line}))
         return out
     # legacy plain-text format
-    return [{"content": c, "tool_name": None} for c in blob.split(_LEGACY_LOG_SEP)]
+    return [_decoded_chunk({"content": c}) for c in blob.split(_LEGACY_LOG_SEP)]
 
 
 def upload_quality_record(workspace_id: str, task_id: str, content: bytes) -> str:

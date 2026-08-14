@@ -213,3 +213,49 @@ async def test_retention_prunes_old(db_session):
             await s.execute(select(QualityRecord).where(QualityRecord.task_id == tid))
         ).scalar_one_or_none()
         assert rec is None
+
+
+@pytest.mark.asyncio
+async def test_tool_call_count_counts_calls_not_log_rows(db_session):
+    """A row is a transport artefact — the agent writes the call before running the
+    tool, the result after, and a large output splits further. Counting rows made a
+    single call count two or more times, and `tool_call_count` feeds `steps_mean`
+    in the experiment report (SPA-86 review)."""
+    from app.models.agent_log import AgentLogChunk
+
+    task = Task(
+        title="calls", status=TaskStatus.DONE.value,
+        workspace_id=DEFAULT_WORKSPACE_ID, model_used="m",
+    )
+    db_session.add(task)
+    await db_session.flush()
+    await _add_spawn_event(db_session, task)
+
+    # call A: call record + a single-part result. call B: call record + 3 parts.
+    rows = [
+        ("file_write", "cA", 0, 1, {"path": "a.md"}),
+        ("file_write", "cA", 1, 2, {"path": "a.md"}),
+        ("bash", "cB", 0, 1, {"command": "cat big"}),
+        ("bash", "cB", 1, 4, {"command": "cat big"}),
+        ("bash", "cB", 2, 4, {"command": "cat big"}),
+        ("bash", "cB", 3, 4, {"command": "cat big"}),
+    ]
+    for seq, (tool, call_id, part_index, part_total, args) in enumerate(rows):
+        db_session.add(AgentLogChunk(
+            task_id=task.id, workspace_id=task.workspace_id, chunk_seq=seq,
+            content=f"chunk-{seq}", tool_name=tool, tool_call_id=call_id,
+            part_index=part_index, part_total=part_total, arguments=args,
+        ))
+    await db_session.commit()
+
+    record = await build_quality_record(db_session, task)
+    assert record is not None
+    assert record.tool_call_count == 2, "6 log rows are 2 tool calls"
+
+    blob = read_quality_record(record.record_s3_path)
+    calls = json.loads(blob.decode())["execution"]["tool_calls"]
+    assert [c["tool_name"] for c in calls] == ["file_write", "bash"]
+    # The parameters are frozen with the call — `parameter_quality` cannot be
+    # re-examined later from a blob that only knows the tool's name.
+    assert calls[0]["arguments"] == {"path": "a.md"}
+    assert calls[1]["arguments"] == {"command": "cat big"}

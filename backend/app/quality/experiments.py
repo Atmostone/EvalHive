@@ -502,6 +502,8 @@ async def create_experiment(
     if not name:
         raise ValueError("experiment name is required")
 
+    _validate_trace_config(payload.get("eval_config"))
+
     configs = expand_matrix(payload.get("configurations"), payload.get("axes"))
     if exclude_fingerprints:
         # Clone path: a configuration retired in the source must not come back.
@@ -1268,6 +1270,76 @@ def _run_checker(case: dict | None, eval_config: dict | None) -> bool:
     return _external_eval(case) is not None and not _judge_mode(eval_config)
 
 
+_TRACE_CONFIG_KEYS = frozenset(
+    {"tool_output_token_cap", "tool_args_token_cap", "keep_tail_on_error", "max_input_tokens"}
+)
+
+
+def _validate_trace_config(eval_config: dict | None) -> None:
+    """Reject a malformed ``eval_config.trace`` at create time.
+
+    A typo here fails silently and quietly changes what every run in the
+    experiment was judged on — the exact class of error this block exists to
+    prevent. Better a 400 than a corpus whose conditions differ from its label."""
+    block = (eval_config or {}).get("trace")
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError("eval_config.trace must be an object")
+    unknown = sorted(set(block) - _TRACE_CONFIG_KEYS)
+    if unknown:
+        raise ValueError(
+            f"unknown eval_config.trace key(s): {', '.join(unknown)} "
+            f"(known: {', '.join(sorted(_TRACE_CONFIG_KEYS))})"
+        )
+    for key in ("tool_output_token_cap", "tool_args_token_cap", "max_input_tokens"):
+        if key not in block:
+            continue
+        try:
+            value = int(block[key])
+        except (TypeError, ValueError):
+            raise ValueError(f"eval_config.trace.{key} must be an integer")
+        if value < 0:
+            raise ValueError(f"eval_config.trace.{key} must be >= 0 (0 disables trimming)")
+
+
+def _trace_settings(eval_config: dict | None) -> tuple[object, int | None]:
+    """Resolve ``eval_config.trace`` into (TraceCleanerConfig, max_input_tokens).
+
+    An untrimmed trace is a real bill at 200+ runs, so it is opt-in per experiment
+    rather than a default: absent the block, this returns (None, None) and the
+    judge keeps reading the workspace settings. Any cap set to 0 means «do not
+    truncate» (SPA-86)."""
+    block = (eval_config or {}).get("trace")
+    if not isinstance(block, dict) or not block:
+        return None, None
+
+    from app.quality.trace_cleaner import (
+        DEFAULT_TOOL_ARGS_TOKEN_CAP,
+        DEFAULT_TOOL_OUTPUT_TOKEN_CAP,
+        TraceCleanerConfig,
+    )
+
+    def _cap(key: str, default: int) -> int:
+        try:
+            return max(0, int(block[key])) if key in block else default
+        except (TypeError, ValueError):
+            return default
+
+    config = TraceCleanerConfig(
+        tool_output_token_cap=_cap("tool_output_token_cap", DEFAULT_TOOL_OUTPUT_TOKEN_CAP),
+        tool_args_token_cap=_cap("tool_args_token_cap", DEFAULT_TOOL_ARGS_TOKEN_CAP),
+        keep_tail_on_error=bool(block.get("keep_tail_on_error", False)),
+    )
+    max_input_tokens = None
+    if "max_input_tokens" in block:
+        try:
+            max_input_tokens = max(0, int(block["max_input_tokens"]))
+        except (TypeError, ValueError):
+            max_input_tokens = None
+    return config, max_input_tokens
+
+
 def _requires_toolathlon_pg(case: dict | None) -> bool:
     env = (case or {}).get("environment") or {}
     return "toolathlon_pg" in (env.get("required_services") or [])
@@ -1510,8 +1582,15 @@ async def _evaluate_child(
         and (eval_config or {}).get("trajectory", True)
         and rec.trajectory_profile is None
     ):
+        trace_config, trace_max_input = _trace_settings(eval_config)
         try:
-            await evaluate_task_trajectory(db, task, commit=True)
+            await evaluate_task_trajectory(
+                db,
+                task,
+                commit=True,
+                trace_config=trace_config,
+                max_input_tokens=trace_max_input,
+            )
         except Exception as e:
             await db.rollback()
             logger.warning(f"experiment: trajectory eval failed for {task.id}: {e}")

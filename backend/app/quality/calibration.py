@@ -48,7 +48,7 @@ from app.plugins.llm import get_llm_provider
 from app.quality.capability import DEFAULT_OUTCOME_THRESHOLD, _outcome_from_profile
 from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_response
 from app.quality.trace_cleaner import _count_tokens, build_cleaned_trace
-from app.quality.trajectory import _fit_trace_to_budget
+from app.quality.trajectory import fit_trace_to_budget
 from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,8 @@ def _build_probe_input(task: Task, cleaned_trace: dict, max_input_tokens: int) -
 
     if cleaned_trace.get("steps") or []:
         remaining = max(200, max_input_tokens - _count_tokens(head_block))
-        trace_text, input_capped = _fit_trace_to_budget(cleaned_trace, remaining)
+        trace_text, _trim = fit_trace_to_budget(cleaned_trace, remaining)
+        input_capped = bool(_trim["capped"])
     else:
         trace_text, input_capped = "(no recorded trajectory steps)", False
     return head_block + trace_text, input_capped

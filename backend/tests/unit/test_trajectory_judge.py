@@ -17,10 +17,10 @@ from app.quality.trace_cleaner import _count_tokens
 from app.quality.trajectory import (
     AXES,
     _extract_tool_args,
-    _fit_trace_to_budget,
     _judge_trajectory,
     _loads_lenient,
     _serialize_trace,
+    fit_trace_to_budget,
 )
 
 
@@ -104,19 +104,106 @@ def test_serialize_contains_task_and_steps():
     assert "Build X" in text and "web_search" in text and "[0]" in text
 
 
+def test_serialize_renders_tool_call_arguments():
+    """The call, not just its name and result — `parameter_quality` cannot be
+    scored on evidence that contains no parameters (SPA-86)."""
+    steps = [
+        {
+            "seq": 0,
+            "kind": "tool",
+            "tool_name": "write_file",
+            "arguments": {"path": "out/report.md", "content": "hello"},
+            "content": "ok",
+            "truncated": False,
+        }
+    ]
+    text = _serialize_trace(_trace(steps))
+    assert "out/report.md" in text and "args=" in text
+
+
+def test_serialize_flags_truncated_arguments():
+    steps = [
+        {
+            "seq": 0,
+            "kind": "tool",
+            "tool_name": "write_file",
+            "arguments": {"path": "a", "content": "x…[truncated 900 chars]…"},
+            "arguments_truncated": True,
+            "content": "ok",
+            "truncated": False,
+        }
+    ]
+    assert "[args truncated]" in _serialize_trace(_trace(steps))
+
+
 def test_fit_within_budget_not_capped():
-    text, capped = _fit_trace_to_budget(_trace(), 10_000)
-    assert capped is False and "Build X" in text
+    text, trim = fit_trace_to_budget(_trace(), 10_000)
+    assert trim["capped"] is False and trim["mode"] == "budget" and "Build X" in text
 
 
-def test_fit_over_budget_drops_middle_steps():
+def test_fit_with_no_budget_trims_nothing():
+    """`max_input_tokens = 0` is the off sentinel: a 1M-context judge can be asked
+    to read the whole trajectory, and the profile has to say that it did."""
+    big = [
+        {"seq": i, "kind": "tool", "tool_name": "t", "content": "word " * 500, "truncated": False}
+        for i in range(20)
+    ]
+    text, trim = fit_trace_to_budget(_trace(big), 0)
+    assert trim["mode"] == "none" and trim["capped"] is False
+    assert trim["steps_omitted"] == 0 and trim["hard_cut_tokens"] == 0
+    assert _count_tokens(text) > 5_000  # nothing was removed
+
+
+def test_fit_spends_tool_outputs_before_dropping_steps():
+    """Order of sacrifice: an output is cheaper than a whole step. A budget that
+    can be met by shrinking outputs must not evict steps to get there."""
+    big = [
+        {"seq": i, "kind": "tool", "tool_name": f"t{i}", "content": "word " * 400, "truncated": False}
+        for i in range(6)
+    ]
+    text, trim = fit_trace_to_budget(_trace(big), 900)
+    assert trim["capped"] is True
+    assert trim["outputs_shrunk"] > 0
+    assert trim["steps_omitted"] == 0
+    # Every call survives, which is the point — the calls are the evidence.
+    for i in range(6):
+        assert f"t{i}" in text
+
+
+def test_fit_shrinks_reasoning_only_after_outputs():
+    steps = [
+        {"seq": 0, "kind": "reasoning", "tool_name": None, "content": "think " * 400, "truncated": False},
+        {"seq": 1, "kind": "tool", "tool_name": "t", "content": "word " * 400, "truncated": False},
+    ]
+    _text, trim = fit_trace_to_budget(_trace(steps), 300)
+    assert trim["outputs_shrunk"] > 0
+    assert trim["reasoning_shrunk"] > 0
+    assert trim["output_cap_applied"] is not None
+
+
+def test_fit_over_budget_drops_middle_steps_with_signatures():
     big = [
         {"seq": i, "kind": "tool", "tool_name": "t", "content": "word " * 200, "truncated": False}
         for i in range(20)
     ]
-    text, capped = _fit_trace_to_budget(_trace(big), 200)
-    assert capped is True
+    text, trim = fit_trace_to_budget(_trace(big), 200)
+    assert trim["capped"] is True
     assert _count_tokens(text) <= 200
+    assert trim["steps_omitted"] > 0
+    # The judge is told WHAT went, not merely how much (canonical plan E4).
+    assert "t×" in trim["omitted_signatures"]
+
+
+def test_hard_cut_is_marked_not_silent():
+    """The last resort used to cut the text and only set a flag the judge never
+    sees. Now the text says so where the judge reads it."""
+    steps = [
+        {"seq": 0, "kind": "tool", "tool_name": "t", "content": "word " * 5000, "truncated": False},
+        {"seq": 1, "kind": "tool", "tool_name": "t", "content": "word " * 5000, "truncated": False},
+    ]
+    text, trim = fit_trace_to_budget(_trace(steps), 120)
+    assert trim["hard_cut_tokens"] > 0
+    assert "hard-cut" in text
 
 
 # --- judging ----------------------------------------------------------------
@@ -300,3 +387,115 @@ async def test_judge_retries_and_recovers_from_transient_bad_json(monkeypatch):
     out = await _judge_trajectory(_trace(), _llm(), max_input_tokens=10_000)
     assert out["status"] == "scored"
     assert prov.calls == 2  # first attempt failed to parse, retry succeeded
+
+
+# --- the trim must own the cleaner's losses too (SPA-86 review) --------------
+
+
+def _capped_trace():
+    """A trace the CLEANER already truncated, small enough to fit any budget."""
+    return {
+        "task": {"id": "t", "title": "T", "description": "D"},
+        "steps": [
+            {"seq": 0, "kind": "tool", "tool_name": "bash", "content": "short",
+             "truncated": True, "original_tokens": 3000, "kept_tokens": 600},
+        ],
+        "stats": {"steps_truncated": 1, "steps_args_truncated": 1},
+    }
+
+
+def test_trim_reports_what_the_cleaner_removed_before_the_budget():
+    """A run whose outputs were capped at 600 tokens fits the budget easily — and
+    used to report «nothing removed», hiding thousands of lost tokens and making
+    two runs with different evidence look identically untouched."""
+    _text, trim = fit_trace_to_budget(_capped_trace(), 12_000)
+    assert trim["capped"] is False           # the budget itself removed nothing
+    assert trim["anything_removed"] is True  # …but something was removed
+    assert trim["pre_trim_outputs_truncated"] == 1
+    assert trim["pre_trim_args_truncated"] == 1
+    assert trim["pre_trim_dropped_tokens"] == 2400
+
+
+def test_untouched_trace_reports_nothing_removed():
+    _text, trim = fit_trace_to_budget(_trace(), 12_000)
+    assert trim["anything_removed"] is False
+    assert trim["pre_trim_dropped_tokens"] == 0
+
+
+def test_cleaner_losses_are_reported_even_with_no_budget():
+    _text, trim = fit_trace_to_budget(_capped_trace(), 0)
+    assert trim["mode"] == "none"
+    assert trim["anything_removed"] is True
+    assert trim["pre_trim_dropped_tokens"] == 2400
+
+
+def test_serializer_flags_a_call_with_no_result():
+    steps = [{"seq": 0, "kind": "tool", "tool_name": "bash", "arguments": {"c": "x"},
+              "result_missing": True, "content": "…[no result recorded…]…", "truncated": False}]
+    assert "[no result recorded]" in _serialize_trace(_trace(steps))
+
+
+def test_serializer_flags_missing_output_parts():
+    steps = [{"seq": 0, "kind": "tool", "tool_name": "bash", "arguments": {"c": "x"},
+              "parts_missing": 2, "content": "a…b", "truncated": False}]
+    assert "[2 output part(s) missing]" in _serialize_trace(_trace(steps))
+
+
+def test_outputs_shrunk_counts_both_passes(_=None):
+    """The tally used to be overwritten: the error pass reported only what IT
+    shrank, so a trace where two non-error outputs had already been cut reported
+    `outputs_shrunk: 1`. The audit is the point of the block — it has to add up."""
+    def s(i, content):
+        return {"seq": i, "kind": "tool", "tool_name": "t", "arguments": {"i": i},
+                "content": content, "truncated": False}
+    steps = [s(0, "word " * 900), s(1, "word " * 900), s(2, "ERROR: traceback " + "x " * 900)]
+    _text, trim = fit_trace_to_budget(_trace(steps), 400)
+    assert trim["outputs_shrunk"] == 3
+
+
+def test_error_output_is_still_spared_when_the_budget_allows():
+    def s(i, content):
+        return {"seq": i, "kind": "tool", "tool_name": "t", "arguments": {"i": i},
+                "content": content, "truncated": False}
+    steps = [s(0, "word " * 3000), s(1, "ERROR: traceback short")]
+    text, trim = fit_trace_to_budget(_trace(steps), 800)
+    assert "traceback short" in text          # the error survived whole
+    assert trim["outputs_shrunk"] == 1        # only the ordinary output was cut
+
+
+def _mixed(normal_words, error_words):
+    def s(i, content):
+        return {"seq": i, "kind": "tool", "tool_name": "t", "arguments": {"i": i},
+                "content": content, "truncated": False}
+    return [s(0, "word " * normal_words),
+            s(1, "ERROR: traceback " + "x " * error_words + " ERRTAIL")]
+
+
+def test_a_big_error_output_is_still_sacrificed_after_a_small_ordinary_one():
+    """Both passes used to halve from the GLOBAL maximum. With a small ordinary
+    output beside a huge error one, the first pass began above anything it was
+    allowed to cut, its first halving changed nothing, and the «stopped buying
+    anything» guard exited it — so the error was sacrificed first, inverting the
+    whole order."""
+    _text, trim = fit_trace_to_budget(_trace(_mixed(750, 7500)), 900)
+    assert trim["outputs_shrunk"] == 2
+    # The ordinary output is driven to the floor; the error is cut later and less.
+    assert trim["output_cap_applied"] == 50
+    assert trim["error_output_cap_applied"] > trim["output_cap_applied"]
+
+
+def test_a_small_error_output_is_shrunk_before_any_hard_cut():
+    """The mirror case: the error pass began above the error's own size, exited
+    immediately, and the trace was hard-cut with shrinkable evidence still on the
+    table."""
+    _text, trim = fit_trace_to_budget(_trace(_mixed(7500, 750)), 300)
+    assert trim["outputs_shrunk"] == 2
+    assert trim["error_output_cap_applied"] is not None
+    assert trim["hard_cut_tokens"] == 0
+    assert trim["steps_omitted"] == 0
+
+
+def test_error_output_untouched_when_the_ordinary_one_suffices():
+    text, trim = fit_trace_to_budget(_trace(_mixed(7500, 3)), 800)
+    assert trim["error_output_cap_applied"] is None
+    assert "ERRTAIL" in text

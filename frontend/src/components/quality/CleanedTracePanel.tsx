@@ -21,10 +21,18 @@ interface Props {
 export default function CleanedTracePanel({ taskId }: Props) {
   const [open, setOpen] = useState(false)
   const [keepTail, setKeepTail] = useState(false)
+  // 0 is the «off» sentinel the backend understands (SPA-86): with a 1M-context
+  // judge, reading the whole trajectory is a legitimate request, and the only way
+  // to see what the caps are actually costing is to be able to turn them off.
+  const [noTrim, setNoTrim] = useState(false)
 
   const { data, isFetching, isError } = useQuery({
-    queryKey: ['cleaned-trace', taskId, keepTail],
-    queryFn: () => qualityApi.getCleanedTrace(taskId, { keep_tail_on_error: keepTail }),
+    queryKey: ['cleaned-trace', taskId, keepTail, noTrim],
+    queryFn: () =>
+      qualityApi.getCleanedTrace(taskId, {
+        keep_tail_on_error: keepTail,
+        ...(noTrim ? { tool_output_token_cap: 0, tool_args_token_cap: 0 } : {}),
+      }),
     enabled: open,
     retry: false,
   })
@@ -72,14 +80,22 @@ export default function CleanedTracePanel({ taskId }: Props) {
               −{trace.stats.savings_pct}%
             </span>
             <span className="text-gray-400">
-              {trace.stats.steps_total} steps · {trace.stats.steps_truncated} truncated · {trace.stats.events_dropped} dropped
+              {trace.stats.steps_total} steps · {trace.stats.steps_truncated} truncated
+              {trace.stats.steps_args_truncated ? ` · ${trace.stats.steps_args_truncated} args truncated` : ''} ·{' '}
+              {trace.stats.events_dropped} dropped
             </span>
           </div>
 
-          <label className="flex items-center gap-2 text-xs text-gray-600">
-            <input type="checkbox" checked={keepTail} onChange={(e) => setKeepTail(e.target.checked)} />
-            keep tail on error (don't truncate failed steps)
-          </label>
+          <div className="space-y-1">
+            <label className="flex items-center gap-2 text-xs text-gray-600">
+              <input type="checkbox" checked={keepTail} onChange={(e) => setKeepTail(e.target.checked)} />
+              keep tail on error (don't truncate failed steps)
+            </label>
+            <label className="flex items-center gap-2 text-xs text-gray-600">
+              <input type="checkbox" checked={noTrim} onChange={(e) => setNoTrim(e.target.checked)} />
+              no truncation — show the trace in full (outputs and arguments uncapped)
+            </label>
+          </div>
 
           {/* Steps */}
           {trace.steps.length === 0 ? (
@@ -92,12 +108,46 @@ export default function CleanedTracePanel({ taskId }: Props) {
                     <span className="text-gray-400">#{s.seq}</span>
                     <span className={cn('px-1.5 py-0.5 rounded', KIND_STYLE[s.kind])}>{s.kind}</span>
                     {s.tool_name && <span className="text-gray-600 font-mono">{s.tool_name}</span>}
+                    {s.arguments_truncated && (
+                      <span
+                        className="text-amber-600"
+                        title="A long argument value was shortened. Every parameter the agent passed is still listed — only values shrink, keys are never dropped."
+                      >
+                        args truncated
+                      </span>
+                    )}
+                    {s.result_missing && (
+                      <span
+                        className="text-red-600"
+                        title="The call was recorded before the tool ran, but no result ever arrived — the tool hung, crashed, or raised. The call itself is still here, which is the point of recording it first."
+                      >
+                        no result
+                      </span>
+                    )}
+                    {!!s.parts_missing && (
+                      <span
+                        className="text-red-600"
+                        title="Part of this tool's output never reached the backend. The gap is marked in the text rather than spliced over, which would fabricate a contiguous output that never existed."
+                      >
+                        {s.parts_missing} part(s) missing
+                      </span>
+                    )}
                     {s.truncated && (
                       <span className="text-amber-600">
                         {s.kept_tokens}/{s.original_tokens} tok
                       </span>
                     )}
                   </div>
+                  {/* The CALL, above its result — `parameter_quality` and
+                      `tool_selection` are questions about this half of the step,
+                      and until SPA-86 it was not recorded at all. */}
+                  {s.tool_name && (
+                    <pre className="whitespace-pre-wrap break-words bg-blue-50/60 border border-blue-100 rounded p-2 mb-1 text-blue-900 font-mono">
+                      {s.arguments
+                        ? JSON.stringify(s.arguments, null, 2)
+                        : '(no arguments recorded for this call)'}
+                    </pre>
+                  )}
                   <pre className="whitespace-pre-wrap break-words bg-white border rounded p-2 text-gray-700 font-mono">
                     {s.content || '∅'}
                   </pre>

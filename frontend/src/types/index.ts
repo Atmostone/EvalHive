@@ -314,6 +314,14 @@ export interface CleanedTraceStep {
   seq: number
   kind: CleanedTraceStepKind
   tool_name?: string | null
+  /** The call's arguments (SPA-86). `null` means they were never recorded — not
+   *  that the call took none, which is `{}`. */
+  arguments?: Record<string, unknown> | null
+  arguments_truncated?: boolean
+  /** The call was recorded but no result ever arrived (hang / crash / raise). */
+  result_missing?: boolean
+  /** Output parts that never reached the backend; the gap is marked, not spliced. */
+  parts_missing?: number
   content: string
   truncated: boolean
   original_tokens: number
@@ -327,6 +335,9 @@ export interface CleanedTraceStats {
   savings_pct: number
   steps_total: number
   steps_truncated: number
+  steps_args_truncated?: number
+  steps_result_missing?: number
+  steps_parts_missing?: number
   events_dropped: number
 }
 
@@ -335,9 +346,41 @@ export interface CleanedTrace {
   task: { id: string; title?: string | null; description?: string | null }
   steps: CleanedTraceStep[]
   stats: CleanedTraceStats
-  config: { tool_output_token_cap: number; keep_tail_on_error: boolean }
+  /** Either cap is 0 when truncation is off entirely. */
+  config: {
+    tool_output_token_cap: number
+    tool_args_token_cap?: number
+    keep_tail_on_error: boolean
+  }
   generated_at: string
   error?: string
+}
+
+/** What the judge was allowed to read, and what fitting the budget cost (SPA-86).
+ *  An E-07 score from an untrimmed run and one from a trimmed run answer different
+ *  questions; without this they are silently comparable. */
+export interface TrajectoryTrim {
+  mode: 'none' | 'budget'
+  max_input_tokens: number | null
+  /** The BUDGET removed something. Not the whole story — the cleaner's per-output
+   *  caps run first, so read `anything_removed` before claiming nothing was lost. */
+  capped: boolean
+  anything_removed?: boolean
+  pre_trim_outputs_truncated?: number
+  pre_trim_args_truncated?: number
+  pre_trim_dropped_tokens?: number
+  output_cap_applied?: number | null
+  /** Error-looking outputs get their own cap and are given up last. */
+  error_output_cap_applied?: number | null
+  reasoning_cap_applied?: number | null
+  outputs_shrunk?: number
+  reasoning_shrunk?: number
+  steps_omitted?: number
+  omitted_signatures?: string
+  hard_cut_tokens?: number
+  tool_output_token_cap?: number
+  tool_args_token_cap?: number
+  keep_tail_on_error?: boolean
 }
 
 // 6-axis Trajectory Judge (E-07): scores HOW the agent reached its result.
@@ -362,10 +405,13 @@ export interface TrajectoryProfile {
   judge_output_tokens: number
   judge_cost_usd: number
   input_capped: boolean
+  trim?: TrajectoryTrim
   trace_stats: {
     original_tokens: number | null
     cleaned_tokens: number | null
     steps_total: number | null
+    steps_truncated?: number | null
+    steps_args_truncated?: number | null
   }
   evaluated_at: string
   errors: { error: string }[]

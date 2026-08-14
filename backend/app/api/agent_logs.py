@@ -36,6 +36,11 @@ def _chunk_to_dict(c: AgentLogChunk) -> dict:
         "chunk_seq": c.chunk_seq,
         "content": c.content,
         "tool_name": c.tool_name,
+        "arguments": c.arguments,
+        "arguments_truncated": c.arguments_truncated,
+        "tool_call_id": c.tool_call_id,
+        "part_index": c.part_index,
+        "part_total": c.part_total,
         "created_at": c.created_at.isoformat() if c.created_at else None,
     }
 
@@ -91,6 +96,11 @@ async def ingest_log_chunk(
         chunk_seq=chunk_seq,
         content=body.content,
         tool_name=body.tool_name,
+        arguments=body.arguments,
+        arguments_truncated=body.arguments_truncated,
+        tool_call_id=body.tool_call_id,
+        part_index=body.part_index,
+        part_total=body.part_total,
     )
     db.add(chunk)
     try:
@@ -150,7 +160,11 @@ async def list_log_chunks(
             "archive_path": task.log_archive_s3_path,
             "chunks": [
                 {"id": None, "chunk_seq": from_seq + i, "content": d["content"],
-                 "tool_name": d.get("tool_name"), "created_at": None}
+                 "tool_name": d.get("tool_name"), "arguments": d.get("arguments"),
+                 "arguments_truncated": d.get("arguments_truncated", False),
+                 "tool_call_id": d.get("tool_call_id"),
+                 "part_index": d.get("part_index", 0), "part_total": d.get("part_total", 1),
+                 "created_at": None}
                 for i, d in enumerate(sliced)
             ],
         }
@@ -175,6 +189,11 @@ async def list_log_chunks(
                 "chunk_seq": c.chunk_seq,
                 "content": c.content,
                 "tool_name": c.tool_name,
+                "arguments": c.arguments,
+                "arguments_truncated": c.arguments_truncated,
+                "tool_call_id": c.tool_call_id,
+                "part_index": c.part_index,
+                "part_total": c.part_total,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
             }
             for c in chunks

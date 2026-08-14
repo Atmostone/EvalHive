@@ -273,3 +273,66 @@ async def test_workspace_scoping_and_roles(client: AsyncClient, db_session):
     assert r.status_code == 404
     r = await client.post(f"/api/experiments/{exp_id}/run", headers=headers_b)
     assert r.status_code in (403, 404)
+
+
+# --- eval_config.trace: the trim policy is per experiment (SPA-86) ------------
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_a_trace_trim_block(auth_client: AsyncClient, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="trace cfg ok")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(
+            tpl.id,
+            name="trace-cfg-ok",
+            eval_config={
+                "trace": {
+                    "tool_output_token_cap": 0,
+                    "tool_args_token_cap": 0,
+                    "max_input_tokens": 0,
+                    "keep_tail_on_error": True,
+                }
+            },
+        ),
+    )
+    assert r.status_code == 201, r.text
+    detail = (await auth_client.get(f"/api/experiments/{r.json()['id']}")).json()
+    assert detail["eval_config"]["trace"]["max_input_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_misspelled_trace_key(auth_client: AsyncClient, db_session):
+    """A typo here fails silently and quietly changes what every run in the
+    experiment was judged on — better a 400 than a corpus mislabelled."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="trace cfg typo")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(
+            tpl.id,
+            name="trace-cfg-typo",
+            eval_config={"trace": {"max_input_token": 0}},  # missing the plural
+        ),
+    )
+    assert r.status_code == 400, r.text
+    assert "max_input_token" in r.text
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_negative_trace_cap(auth_client: AsyncClient, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="trace cfg negative")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(
+            tpl.id,
+            name="trace-cfg-negative",
+            eval_config={"trace": {"tool_output_token_cap": -5}},
+        ),
+    )
+    assert r.status_code == 400, r.text

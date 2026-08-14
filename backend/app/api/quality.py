@@ -28,9 +28,9 @@ from app.models.perturbation_run import PerturbationRun
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality.trace_cleaner import (
+    DEFAULT_TOOL_ARGS_TOKEN_CAP,
     DEFAULT_TOOL_OUTPUT_TOKEN_CAP,
     TOKEN_CAP_MAX,
-    TOKEN_CAP_MIN,
 )
 
 router = APIRouter(prefix="/api/quality", tags=["quality"])
@@ -983,21 +983,41 @@ async def get_review_context(
 async def get_cleaned_trace(
     task_id: str,
     tool_output_token_cap: int = Query(
-        DEFAULT_TOOL_OUTPUT_TOKEN_CAP, ge=TOKEN_CAP_MIN, le=TOKEN_CAP_MAX
+        DEFAULT_TOOL_OUTPUT_TOKEN_CAP, ge=0, le=TOKEN_CAP_MAX,
+        description="Truncate tool outputs past this many tokens. 0 = no truncation.",
+    ),
+    tool_args_token_cap: int = Query(
+        DEFAULT_TOOL_ARGS_TOKEN_CAP, ge=0, le=TOKEN_CAP_MAX,
+        description="The same, for the call's arguments. 0 = no truncation.",
     ),
     keep_tail_on_error: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     """Cleaned, judge-ready trajectory (E-06): the input the trajectory judge
-    (E-07) will consume. Drops the system snapshot and noise events, truncates
-    long tool outputs, reports token savings. Read-only; computed on demand,
+    (E-07) will consume. Drops the system snapshot and noise events, carries each
+    tool call's arguments, truncates long outputs, reports token savings. Either
+    cap accepts 0 to disable truncation entirely. Read-only; computed on demand,
     not persisted."""
-    from app.quality.trace_cleaner import TraceCleanerConfig, build_cleaned_trace
+    from app.quality.trace_cleaner import TOKEN_CAP_MIN, TraceCleanerConfig, build_cleaned_trace
+
+    # 0 is «off»; anything above it has to be a cap that leaves something readable.
+    # A value in between would be silently clamped, and a silently different trace
+    # is the whole failure mode this endpoint exists to make visible.
+    for name, value in (
+        ("tool_output_token_cap", tool_output_token_cap),
+        ("tool_args_token_cap", tool_args_token_cap),
+    ):
+        if 0 < value < TOKEN_CAP_MIN:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name} must be 0 (no truncation) or at least {TOKEN_CAP_MIN}",
+            )
 
     task = await _get_owned_task(db, task_id, workspace)
     config = TraceCleanerConfig(
         tool_output_token_cap=tool_output_token_cap,
+        tool_args_token_cap=tool_args_token_cap,
         keep_tail_on_error=keep_tail_on_error,
     )
     trace = await build_cleaned_trace(db, task, config=config)

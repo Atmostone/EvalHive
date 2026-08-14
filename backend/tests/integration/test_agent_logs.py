@@ -372,3 +372,100 @@ async def test_log_compaction_on_completed_event(
     assert body_json["archive_path"].endswith(".log")
     contents = [c["content"] for c in body_json["chunks"]]
     assert contents == ["alpha", "beta", "gamma"]
+
+
+# --- tool-call arguments (SPA-86) -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_log_ingest_records_the_call_not_just_its_name(
+    auth_client: AsyncClient, db_session
+):
+    task_id, plain = await _make_task_with_token(auth_client, db_session)
+    headers = {"Authorization": f"Bearer {plain}"}
+
+    r = await auth_client.post(
+        f"/api/v1/agent-log/{task_id}",
+        headers=headers,
+        json={
+            "chunk_seq": 0,
+            "content": "written",
+            "tool_name": "write_file",
+            "arguments": {"path": "out/report.md", "mode": "overwrite"},
+            "tool_call_id": "call_abc",
+            "part_index": 0,
+            "part_total": 1,
+            "idempotency_key": "args-1",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    chunk = (
+        await db_session.execute(
+            select(AgentLogChunk).where(AgentLogChunk.task_id == task_id)
+        )
+    ).scalar_one()
+    assert chunk.arguments == {"path": "out/report.md", "mode": "overwrite"}
+    assert chunk.tool_call_id == "call_abc"
+    assert chunk.arguments_truncated is False
+
+    body = (await auth_client.get(f"/api/tasks/{task_id}/log")).json()
+    assert body["chunks"][0]["arguments"] == {"path": "out/report.md", "mode": "overwrite"}
+    assert body["chunks"][0]["tool_call_id"] == "call_abc"
+
+
+@pytest.mark.asyncio
+async def test_log_ingest_clips_oversized_arguments_server_side(
+    auth_client: AsyncClient, db_session
+):
+    """The agent already clips in transit, but «the client promised» is not a size
+    limit — a buggy agent must not be able to store a megabyte parameter."""
+    task_id, plain = await _make_task_with_token(auth_client, db_session)
+    headers = {"Authorization": f"Bearer {plain}"}
+
+    r = await auth_client.post(
+        f"/api/v1/agent-log/{task_id}",
+        headers=headers,
+        json={
+            "chunk_seq": 0,
+            "content": "ok",
+            "tool_name": "write_file",
+            "arguments": {"path": "big.csv", "content": "x" * 200_000},
+            "idempotency_key": "args-big",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+    chunk = (
+        await db_session.execute(
+            select(AgentLogChunk).where(AgentLogChunk.task_id == task_id)
+        )
+    ).scalar_one()
+    assert chunk.arguments_truncated is True
+    # The value shrank; the keys did not — which parameters were passed is the signal.
+    assert set(chunk.arguments) == {"path", "content"}
+    assert chunk.arguments["path"] == "big.csv"
+    assert len(chunk.arguments["content"]) < 200_000
+
+
+@pytest.mark.asyncio
+async def test_log_chunks_without_arguments_still_ingest(
+    auth_client: AsyncClient, db_session
+):
+    """Not every chunk comes from a tool call, and an absent argument set is
+    recorded as absent rather than invented."""
+    task_id, plain = await _make_task_with_token(auth_client, db_session)
+    headers = {"Authorization": f"Bearer {plain}"}
+    r = await auth_client.post(
+        f"/api/v1/agent-log/{task_id}",
+        headers=headers,
+        json={"chunk_seq": 0, "content": "plain", "idempotency_key": "no-args"},
+    )
+    assert r.status_code == 200
+    chunk = (
+        await db_session.execute(
+            select(AgentLogChunk).where(AgentLogChunk.task_id == task_id)
+        )
+    ).scalar_one()
+    assert chunk.arguments is None
+    assert chunk.part_index == 0 and chunk.part_total == 1

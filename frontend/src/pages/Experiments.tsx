@@ -106,6 +106,9 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
   // judge be the evaluator — turns a verifiable bench into an open-result one so
   // the outcome×trajectory view works where there is no oracle. (SPA-56/E-25)
   const [evalMode, setEvalMode] = useState<'checker' | 'judge'>('checker')
+  // Untrimmed process-judge input (SPA-86). Opt-in, not the default: at 200+
+  // runs an untrimmed trace is a real bill, so the caller has to ask for it.
+  const [fullTrace, setFullTrace] = useState(false)
   const [submitError, setSubmitError] = useState('')
 
   const { data: templates = [] } = useQuery({ queryKey: ['templates'], queryFn: templatesApi.list })
@@ -157,9 +160,21 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
       budget_limit_usd: budget !== '' ? Number(budget) : null,
       max_parallel: maxParallel !== '' ? Number(maxParallel) : null,
       n_toolathlon_lanes: lanes !== '' ? Number(lanes) : null,
-      eval_config: { eval_mode: evalMode },
+      eval_config: {
+        eval_mode: evalMode,
+        // 0 is the «off» sentinel the backend reads as «do not truncate».
+        ...(fullTrace
+          ? {
+              trace: {
+                tool_output_token_cap: 0,
+                tool_args_token_cap: 0,
+                max_input_tokens: 0,
+              },
+            }
+          : {}),
+      },
     }),
-    [name, description, dataset, configMode, configs, axes, nRuns, budget, maxParallel, lanes, evalMode],
+    [name, description, dataset, configMode, configs, axes, nRuns, budget, maxParallel, lanes, evalMode, fullTrace],
   )
 
   const datasetReady =
@@ -528,6 +543,19 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
               {evalMode === 'checker'
                 ? 'Cases with an executable checker (e.g. Toolathlon) are graded by ground truth; the outcome judge is skipped there.'
                 : 'Skip the executable checker — the outcome judge becomes the evaluator (open-result mode). Use to exercise the judge + outcome×trajectory view where there is no oracle. Preprocess still seeds the environment.'}
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Trace given to the process judge</label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" checked={fullTrace} onChange={(e) => setFullTrace(e.target.checked)} />
+              No trimming — judge the full trajectory
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              {fullTrace
+                ? 'Every tool output, argument and step reaches the process judge untouched. Honest, and the only way to ask whether the low process-judge agreement was a property of the trimmed trace — but each run costs materially more input tokens.'
+                : 'Defaults: tool outputs capped at 600 tokens, arguments at 400, and the whole trace fitted to the judge budget by shrinking outputs first, then reasoning, then dropping middle steps. Every omission is marked, and the policy is recorded in each run’s trajectory profile.'}
             </p>
           </div>
 
