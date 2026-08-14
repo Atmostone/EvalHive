@@ -318,10 +318,16 @@ export const qualityApi = {
     request<ReviewContext>(`/quality/records/${taskId}/review`),
   getCleanedTrace: (
     taskId: string,
-    params?: { tool_output_token_cap?: number; keep_tail_on_error?: boolean },
+    params?: {
+      /** 0 = no truncation at all (SPA-86). */
+      tool_output_token_cap?: number
+      tool_args_token_cap?: number
+      keep_tail_on_error?: boolean
+    },
   ) => {
     const q = new URLSearchParams()
     if (params?.tool_output_token_cap != null) q.set('tool_output_token_cap', String(params.tool_output_token_cap))
+    if (params?.tool_args_token_cap != null) q.set('tool_args_token_cap', String(params.tool_args_token_cap))
     if (params?.keep_tail_on_error) q.set('keep_tail_on_error', 'true')
     const qs = q.toString()
     return request<{ task_id: string; cleaned_trace: CleanedTrace }>(

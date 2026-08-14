@@ -9,9 +9,9 @@ import {
   ResponsiveContainer,
   Tooltip,
 } from 'recharts'
-import { Route, RefreshCw, AlertCircle } from 'lucide-react'
+import { Route, RefreshCw, AlertCircle, Scissors } from 'lucide-react'
 import { qualityApi } from '@/api/client'
-import type { TrajectoryProfile } from '@/types'
+import type { TrajectoryProfile, TrajectoryTrim } from '@/types'
 import { cn } from '@/lib/utils'
 
 /** 6-axis Trajectory Judge (E-07): scores HOW the agent reached its result
@@ -155,12 +155,74 @@ function ProfileView({ profile }: { profile: TrajectoryProfile }) {
         <span>
           {profile.judge_input_tokens.toLocaleString()} in · {profile.judge_output_tokens.toLocaleString()} out
         </span>
-        {profile.input_capped && (
+        {profile.input_capped && !profile.trim && (
           <span className="text-amber-600" title="cleaned trace was trimmed to fit the judge token budget">
             input capped
           </span>
         )}
       </div>
+
+      <TrimPolicy trim={profile.trim} />
     </>
+  )
+}
+
+/** What the judge was allowed to read (SPA-86). The trim is a condition of the
+ *  verdict, not an implementation detail: a score from an untrimmed trace and one
+ *  from a trace whose middle was evicted answer different questions, and without
+ *  this line they look identical on screen. */
+function TrimPolicy({ trim }: { trim?: TrajectoryTrim }) {
+  if (!trim) return null
+
+  if (trim.mode === 'none') {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-green-700 border-t pt-2">
+        <Scissors className="h-3 w-3 shrink-0" />
+        <span>
+          <span className="font-medium">No trimming.</span> The judge read the whole trajectory.
+        </span>
+      </div>
+    )
+  }
+
+  if (!trim.capped) {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-gray-500 border-t pt-2">
+        <Scissors className="h-3 w-3 shrink-0" />
+        <span>
+          Fit the {trim.max_input_tokens?.toLocaleString()}-token budget with nothing removed.
+        </span>
+      </div>
+    )
+  }
+
+  // Ordered as the trim itself spends the budget: cheapest evidence first.
+  const losses: string[] = []
+  if (trim.outputs_shrunk)
+    losses.push(
+      `${trim.outputs_shrunk} tool output(s) shrunk to ${trim.output_cap_applied?.toLocaleString()} tok`,
+    )
+  if (trim.reasoning_shrunk)
+    losses.push(
+      `${trim.reasoning_shrunk} reasoning block(s) shrunk to ${trim.reasoning_cap_applied?.toLocaleString()} tok`,
+    )
+  if (trim.steps_omitted)
+    losses.push(
+      `${trim.steps_omitted} middle step(s) dropped${
+        trim.omitted_signatures ? ` (${trim.omitted_signatures})` : ''
+      }`,
+    )
+  if (trim.hard_cut_tokens)
+    losses.push(`${trim.hard_cut_tokens.toLocaleString()} tok hard-cut from the tail`)
+
+  return (
+    <div className="flex items-start gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+      <Scissors className="h-3 w-3 shrink-0 mt-0.5" />
+      <span>
+        <span className="font-medium">Trimmed to {trim.max_input_tokens?.toLocaleString()} tokens.</span>{' '}
+        {losses.length ? losses.join('; ') : 'nothing recorded'}. Tool calls and their
+        arguments were kept.
+      </span>
+    </div>
   )
 }
