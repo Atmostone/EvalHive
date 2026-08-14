@@ -327,7 +327,8 @@ async def run_bias_report(
             rated = [
                 p
                 for p in task_pairs
-                if p.get("dimension_key") in judge_dims
+                if p.get("dimension_key") is not None
+                and p.get("dimension_key") in judge_dims
                 and p.get("human_score") is not None
             ]
             if not rated:

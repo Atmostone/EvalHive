@@ -15,6 +15,7 @@ from app.models.rubric import Rubric
 from app.models.task import Task, TaskStatus
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.quality import judge as judge_mod
+from app.quality.judge import PROFILE_SCHEMA_VERSION
 from app.quality import reference as ref
 
 pytestmark = pytest.mark.asyncio
@@ -209,4 +210,4 @@ async def test_reference_dim_skipped_without_reference(db_session, default_model
     rec = (
         await db_session.execute(select(QualityRecord).where(QualityRecord.task_id == task.id))
     ).scalar_one()
-    assert rec.quality_profile["schema_version"] == 2
+    assert rec.quality_profile["schema_version"] == PROFILE_SCHEMA_VERSION

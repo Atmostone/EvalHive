@@ -272,32 +272,40 @@ export const rubricsApi = {
 }
 
 export const qualityApi = {
-  getProfile: (taskId: string) =>
+  // `blind` is not a display preference — the server strips the judge's scores
+  // before sending and records sighted reads, so the annotation's blind flag is
+  // derived from how it was fetched (SPA-85).
+  getProfile: (taskId: string, blind = false) =>
     request<{ task_id: string; quality_profile: QualityProfile | null }>(
-      `/quality/records/${taskId}/profile`,
+      `/quality/records/${taskId}/profile${blind ? '?blind=true' : ''}`,
     ),
   evaluate: (taskId: string) =>
     request<{ task_id: string; quality_profile: QualityProfile | null; skipped: boolean; detail?: string }>(
       `/quality/records/${taskId}/evaluate`,
       { method: 'POST' },
     ),
-  getFeedback: (taskId: string) =>
+  getFeedback: (taskId: string, blind = false) =>
     request<{ task_id: string; human_feedback: HumanFeedback | null }>(
-      `/quality/records/${taskId}/feedback`,
+      `/quality/records/${taskId}/feedback${blind ? '?blind=true' : ''}`,
     ),
   saveFeedback: (taskId: string, body: HumanFeedbackInput) =>
     request<{ task_id: string; human_feedback: HumanFeedback }>(
       `/quality/records/${taskId}/feedback`,
       { method: 'PUT', body: JSON.stringify(body) },
     ),
-  getAnnotations: (taskId: string) =>
+  getAnnotations: (taskId: string, blind = false) =>
     request<{ task_id: string; annotations: Annotation[] }>(
-      `/quality/records/${taskId}/annotations`,
+      `/quality/records/${taskId}/annotations${blind ? '?blind=true' : ''}`,
     ),
-  getCalibrationQueue: (params?: { status?: 'pending' | 'done' | 'all'; limit?: number }) => {
+  getCalibrationQueue: (params?: {
+    status?: 'pending' | 'done' | 'all'
+    limit?: number
+    blind?: boolean
+  }) => {
     const q = new URLSearchParams()
     if (params?.status) q.set('status', params.status)
     if (params?.limit != null) q.set('limit', String(params.limit))
+    if (params?.blind) q.set('blind', 'true')
     const s = q.toString()
     return request<CalibrationQueue>(`/quality/calibration/queue${s ? `?${s}` : ''}`)
   },
@@ -315,9 +323,9 @@ export const qualityApi = {
       `/quality/records/${taskId}/trace${qs ? `?${qs}` : ''}`,
     )
   },
-  getTrajectoryProfile: (taskId: string) =>
+  getTrajectoryProfile: (taskId: string, blind = false) =>
     request<{ task_id: string; trajectory_profile: TrajectoryProfile | null }>(
-      `/quality/records/${taskId}/trajectory`,
+      `/quality/records/${taskId}/trajectory${blind ? '?blind=true' : ''}`,
     ),
   getExternalCheckerLogs: (taskId: string) =>
     request<ExternalCheckerLogs>(`/quality/records/${taskId}/external-checker`),

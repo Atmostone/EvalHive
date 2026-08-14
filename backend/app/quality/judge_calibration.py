@@ -56,6 +56,44 @@ DEFAULT_MIN_KAPPA = 0.6
 # --------------------------------------------------------------------------- #
 # Raw judge-vs-human pairs (shared with the GET /calibration export)
 # --------------------------------------------------------------------------- #
+def _pair_row(
+    ann: Annotation,
+    *,
+    gate_passed,
+    judge_source: str,
+    dimension_key=None,
+    dimension_name=None,
+    judge_score=None,
+    human_score=None,
+    band=None,
+    judge_reasoning=None,
+    human_comment=None,
+) -> dict:
+    """One exported pair. ``dimension_key`` is ``None`` for a verdict-only rating,
+    which carries no per-dimension scores but is still a rating by a person."""
+    return {
+        "task_id": str(ann.task_id),
+        "annotation_id": str(ann.id),
+        "annotator_type": ann.annotator_type,
+        "annotator_id": str(ann.annotator_id) if ann.annotator_id else None,
+        "protocol_version": ann.protocol_version,
+        "blind_to_model": ann.blind_to_model,
+        "blind_to_judge": ann.blind_to_judge,
+        "dimension_key": dimension_key,
+        "dimension_name": dimension_name,
+        "judge_score": judge_score,
+        "judge_source": judge_source,
+        "human_score": human_score,
+        "band": band,
+        "judge_reasoning": judge_reasoning,
+        "human_comment": human_comment,
+        "verdict": ann.verdict,
+        "judge_gate_passed": gate_passed,
+        "submitted_by": ann.annotator_label,
+        "submitted_at": ann.created_at.isoformat() if ann.created_at else None,
+    }
+
+
 async def collect_judge_human_pairs(
     db: AsyncSession,
     workspace_id,
@@ -79,9 +117,12 @@ async def collect_judge_human_pairs(
     inter-annotator agreement is computed over.
 
     The judge's side comes from the observation frozen into the annotation, so
-    re-running a judge cannot move a past pair; ``judge_source`` says whether
-    that held (``frozen``) or the row had to fall back to the live profile
-    (``live`` — only reachable for pre-ledger ``legacy`` rows)."""
+    re-running a judge cannot move a past pair. ``judge_source`` says which:
+    ``frozen`` (a score was recorded at annotation time), ``unscored`` (the judge
+    had NOT scored that axis when the human rated it — the absence is frozen too,
+    and a later judge run must not fill it in), or ``live`` (re-read from the
+    current profile — reachable only for pre-ledger ``legacy`` rows, which froze
+    nothing and never can)."""
     superseded = select(Annotation.supersedes_id).where(
         Annotation.supersedes_id.isnot(None)
     )
@@ -107,19 +148,43 @@ async def collect_judge_human_pairs(
 
     out: list[dict] = []
     for ann, record in rows:
+        # Only a pre-ledger row may be completed from a live profile. For every
+        # annotation that froze its own observation, a judge score that was
+        # ABSENT at annotation time stays absent: letting a later judge run fill
+        # the gap is exactly the retroactive change the ledger exists to prevent
+        # (the axis was not scored when the human rated it, so there is no pair).
+        legacy = ann.annotator_type == "legacy"
         frozen_scores = observed_scores(ann.judge_observation)
         frozen_reasoning = observed_reasoning(ann.judge_observation)
-        # Live profiles, consulted only where the annotation froze nothing.
         profile = record.quality_profile or {}
-        live = {d.get("key"): d for d in (profile.get("dimensions") or [])}
-        # Process/trajectory (E-07) axes are calibratable judge dimensions too.
-        for a in (record.trajectory_profile or {}).get("axes") or []:
-            live.setdefault(a.get("key"), a)
+        live: dict = {}
+        if legacy:
+            live = {d.get("key"): d for d in (profile.get("dimensions") or [])}
+            # Process/trajectory (E-07) axes are calibratable judge dimensions too.
+            for a in (record.trajectory_profile or {}).get("axes") or []:
+                live.setdefault(a.get("key"), a)
         gate_passed = (ann.judge_observation or {}).get("outcome", {}).get("gate_passed")
+        gate_source = "frozen"
         if gate_passed is None:
-            gate_passed = (profile.get("gate") or {}).get("passed")
+            if legacy:
+                gate_passed = (profile.get("gate") or {}).get("passed")
+                gate_source = "live"
+            else:
+                gate_source = "unscored"
 
-        for d in ann.dimensions or []:
+        if not (ann.dimensions or []):
+            # A verdict-only rating (the form allows one, and on a verifiable
+            # bench it is the whole human signal). Emitting nothing would drop the
+            # annotation out of n_humans, n_annotations AND the verdict agreement
+            # it exists to feed, so it gets one dimension-less row: the
+            # per-dimension grouping skips it, everything keyed on the annotator
+            # counts it.
+            out.append(
+                _pair_row(ann, gate_passed=gate_passed, judge_source=gate_source)
+            )
+            continue
+
+        for d in ann.dimensions:
             key = d.get("key")
             judge_score = frozen_scores.get(key)
             if judge_score is None:
@@ -127,31 +192,26 @@ async def collect_judge_human_pairs(
                 judge_score = d.get("judge_score")
             judge_source = "frozen"
             if judge_score is None:
-                judge_score = (live.get(key) or {}).get("score")
-                judge_source = "live"
+                if legacy:
+                    judge_score = (live.get(key) or {}).get("score")
+                    judge_source = "live"
+                else:
+                    judge_source = "unscored"
             out.append(
-                {
-                    "task_id": str(ann.task_id),
-                    "annotation_id": str(ann.id),
-                    "annotator_type": ann.annotator_type,
-                    "annotator_id": str(ann.annotator_id) if ann.annotator_id else None,
-                    "protocol_version": ann.protocol_version,
-                    "blind_to_model": ann.blind_to_model,
-                    "blind_to_judge": ann.blind_to_judge,
-                    "dimension_key": key,
-                    "dimension_name": d.get("name"),
-                    "judge_score": judge_score,
-                    "judge_source": judge_source,
-                    "human_score": d.get("score"),
-                    "band": d.get("band"),
-                    "judge_reasoning": frozen_reasoning.get(key)
-                    or (live.get(key) or {}).get("reasoning"),
-                    "human_comment": d.get("comment"),
-                    "verdict": ann.verdict,
-                    "judge_gate_passed": gate_passed,
-                    "submitted_by": ann.annotator_label,
-                    "submitted_at": ann.created_at.isoformat() if ann.created_at else None,
-                }
+                _pair_row(
+                    ann,
+                    gate_passed=gate_passed,
+                    judge_source=judge_source,
+                    dimension_key=key,
+                    dimension_name=d.get("name"),
+                    judge_score=judge_score,
+                    human_score=d.get("score"),
+                    band=d.get("band"),
+                    judge_reasoning=(
+                        frozen_reasoning.get(key) or (live.get(key) or {}).get("reasoning")
+                    ),
+                    human_comment=d.get("comment"),
+                )
             )
     return out
 
@@ -362,11 +422,11 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
         }
     )
     n_annotators = len({k for p in pairs if (k := _annotator_key(p))})
-    # Share of pairs whose judge side came from the observation frozen into the
-    # annotation. Below 1.0 means some pair was rebuilt from a live profile and
-    # can still move under a re-judge.
-    frozen = sum(1 for p in pairs if p.get("judge_source") == "frozen")
-    judge_frozen_pct = round(frozen / len(pairs), 4) if pairs else None
+    # Share of pairs whose judge side cannot move under a re-judge — either a
+    # score was frozen onto the annotation or its absence was. Below 1.0 means
+    # some pair is still being rebuilt from a live profile (`legacy` rows only).
+    fixed = sum(1 for p in pairs if p.get("judge_source") != "live")
+    judge_frozen_pct = round(fixed / len(pairs), 4) if pairs else None
 
     return {
         "threshold_kappa": threshold_kappa,

@@ -294,14 +294,35 @@ correlations) → **E-17**.
   unordered annotator pair on runs rated more than once). It answers a different
   question from judge↔human κ — how reproducible the human gold itself is — and it
   bounds what the judge can be asked to match. **A judge that cannot move** —
-  `judge_observation` freezes the evaluator model, rubric, per-key scores and the
-  gate verdict at annotation time, so re-running a judge can no longer rewrite a
-  past calibration; `judge_source` on each exported pair says `frozen` or `live`.
-  The protocol is recorded rather than remembered (`protocol_version`,
-  `blind_to_model`, `blind_to_judge`), and the form's blind mode both hides the
-  judge's scores and clears every seeded value, so the flag describes what actually
-  happened. The write is `owner/admin`; the read is not, so annotation stays
-  visible to anyone who can see the task.
+  `judge_observation` freezes the evaluator model, the rubric and prompt
+  fingerprints, the E-18 mitigation flags, whether the judge saw the agent's
+  self-report (`files_only`), the per-key scores and the gate verdict, all as of
+  annotation time. An **absence** is frozen too: an axis the judge had not scored
+  when the human rated it stays unpaired forever, because letting a later judge
+  run fill the gap is the same retroactive change by another route. `judge_source`
+  on each exported pair says which: `frozen`, `unscored`, or `live` — and `live`
+  is reachable only for pre-ledger `legacy` rows, which froze nothing and never
+  can. A **verdict-only** rating (no per-dimension scores) yields one
+  dimension-less pair rather than disappearing from the population it feeds.
+  The write is `owner/admin`; the read is not, so annotation stays visible to
+  anyone who can see the task.
+
+- **The blind protocol is enforced, not asserted (SPA-85).** A blindness flag the
+  client sets is worth nothing: the UI could show the judge's scores, let the
+  annotator read them, and still submit `blind_to_judge: true`. So the client does
+  not get to set it. The annotation surface chooses its protocol **before** it
+  fetches anything; under `blind` the API strips judge scores from the profile,
+  the trajectory, the stored feedback and the ledger, and withholds `model_used`
+  and `weighted_score` from the calibration queue — the queue being the first
+  thing an annotator sees. Every *sighted* read of a judge score is recorded
+  against (user, task) in Redis (`app/quality/blind.py`), and the write derives
+  the stored flag from that ledger, failing safe to «revealed» when it cannot be
+  read. So the flag states a fact about what the server served, the choice
+  necessarily precedes the rating, and it cannot be taken back. Scope, stated
+  plainly: only blindness to the **judge** is certified. `model_used` is served by
+  surfaces outside annotation (task detail, the data lake, analytics, experiment
+  results), so `blind_to_model` is never derived from the UI — it is declarable
+  only by a scripted annotator that owns its own protocol.
 
 ### Trace cleaner (E-06)
 
@@ -680,9 +701,11 @@ call** — pure agreement statistics over already-stored scores.
   enters a judge-vs-human comparison) — the single source of truth for **both**
   the `GET /api/quality/calibration` export and the E-17 report (DRY). Each row carries
   the judge score (from the observation frozen onto the annotation, falling back to the
-  dimension's own stored `judge_score`, and only then to the live profile — flagged as
-  `judge_source: live`), the human score/band, the `verdict`, `judge_gate_passed`
-  (frozen too), and the annotator's identity, type and protocol.
+  dimension's own stored `judge_score`; the live profile is consulted **only** for
+  `legacy` rows, and a non-legacy annotation whose observation holds no score for that
+  axis stays `judge_source: unscored` with no pair), the human score/band, the
+  `verdict`, `judge_gate_passed` (frozen too), and the annotator's identity, type and
+  protocol. A verdict-only annotation contributes one row with `dimension_key: None`.
 - **Report** (`_compute_report`). Per dimension: `n`, `pearson`, `spearman`,
   `cohen_kappa` (on bands), `mean_bias`, and `reliable` = band κ ≥
   `judge_calibration_min_kappa` (default 0.6, a workspace setting). An **overall

@@ -15,6 +15,7 @@ from app.models.provider import LLMModel, Provider
 from app.models.task import Task, TaskStatus
 from app.models.workspace import Workspace
 from app.quality import objective as obj
+from app.quality.judge import PROFILE_SCHEMA_VERSION
 
 CLEAN = b"x = 1\n"
 
@@ -92,7 +93,7 @@ async def test_evaluate_objective_dimension_scored(auth_client: AsyncClient, mon
     assert dim["evaluator"] == "objective" and dim["probe"] == "lint"
     assert dim["status"] == "scored" and dim["score"] == 10 and dim["passed"] is True
     assert profile["gate"]["passed"] is True
-    assert profile["schema_version"] == 2
+    assert profile["schema_version"] == PROFILE_SCHEMA_VERSION
 
 
 @pytest.mark.asyncio

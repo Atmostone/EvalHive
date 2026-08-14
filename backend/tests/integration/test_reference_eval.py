@@ -14,6 +14,7 @@ from app import database
 from app.models.provider import LLMModel, Provider
 from app.models.task import Task, TaskStatus
 from app.models.workspace import Workspace
+from app.quality.judge import PROFILE_SCHEMA_VERSION
 
 
 async def _seed_judge_model(s, workspace_id):
@@ -105,7 +106,7 @@ async def test_evaluate_reference_dimension_scored(auth_client: AsyncClient):
     assert dim["evaluator"] == "reference" and dim["reference_mode"] == "exact"
     assert dim["status"] == "scored" and dim["score"] == 10 and dim["passed"] is True
     assert profile["gate"]["passed"] is True
-    assert profile["schema_version"] == 2
+    assert profile["schema_version"] == PROFILE_SCHEMA_VERSION
 
 
 @pytest.mark.asyncio

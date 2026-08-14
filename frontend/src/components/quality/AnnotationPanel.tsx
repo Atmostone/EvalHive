@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Download, EyeOff, Users } from 'lucide-react'
 import { format } from 'date-fns'
@@ -14,6 +15,7 @@ export default function AnnotationPanel({
   taskId,
   profile: profileProp,
   verifiable = false,
+  blind: blindProp = false,
   onSaved,
 }: {
   taskId: string
@@ -22,11 +24,18 @@ export default function AnnotationPanel({
    *  top-level "rate the process only" banner so the annotator knows there is no
    *  human outcome rating here. (SPA-74) */
   verifiable?: boolean
+  /** Blind protocol (SPA-85). Captured once, on mount: the choice has to precede
+   *  the fetch, and flipping it afterwards would mean the annotator had already
+   *  been shown what they claim not to have seen. The server enforces the rest —
+   *  it strips the judge's scores and derives the stored flag from what it
+   *  actually served, so this prop cannot manufacture a blind annotation. */
+  blind?: boolean
   onSaved?: () => void
 }) {
+  const [blind] = useState(blindProp)
   const profileQuery = useQuery({
-    queryKey: ['quality-profile', taskId],
-    queryFn: () => qualityApi.getProfile(taskId),
+    queryKey: ['quality-profile', taskId, blind],
+    queryFn: () => qualityApi.getProfile(taskId, blind),
     enabled: profileProp == null,
   })
   const reviewQuery = useQuery({
@@ -34,16 +43,16 @@ export default function AnnotationPanel({
     queryFn: () => qualityApi.getReview(taskId),
   })
   const feedbackQuery = useQuery({
-    queryKey: ['human-feedback', taskId],
-    queryFn: () => qualityApi.getFeedback(taskId),
+    queryKey: ['human-feedback', taskId, blind],
+    queryFn: () => qualityApi.getFeedback(taskId, blind),
   })
   const trajectoryQuery = useQuery({
-    queryKey: ['trajectory-profile', taskId],
-    queryFn: () => qualityApi.getTrajectoryProfile(taskId),
+    queryKey: ['trajectory-profile', taskId, blind],
+    queryFn: () => qualityApi.getTrajectoryProfile(taskId, blind),
   })
   const annotationsQuery = useQuery({
-    queryKey: ['annotations', taskId],
-    queryFn: () => qualityApi.getAnnotations(taskId),
+    queryKey: ['annotations', taskId, blind],
+    queryFn: () => qualityApi.getAnnotations(taskId, blind),
   })
 
   const profile = profileProp ?? profileQuery.data?.quality_profile ?? null
@@ -62,6 +71,16 @@ export default function AnnotationPanel({
         <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
           Verifiable bench — the executable checker is the outcome ground truth (the outcome judge is off). Rate the{' '}
           <span className="font-medium">process (trajectory)</span> only; there's no human outcome rating here.
+        </div>
+      )}
+      {blind && (
+        <div className="flex items-start gap-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
+          <EyeOff className="h-4 w-4 shrink-0 mt-px" />
+          <span>
+            <span className="font-medium">Blind protocol.</span> The judge's scores were never
+            sent to this page, so your rating is independent of them. Leaving blind mode
+            reveals them — and any rating you make afterwards is recorded as sighted.
+          </span>
         </div>
       )}
       {review && (
@@ -94,6 +113,7 @@ export default function AnnotationPanel({
         profile={profile}
         trajectoryProfile={trajectoryQuery.data?.trajectory_profile ?? null}
         existing={feedbackQuery.data?.human_feedback ?? null}
+        blind={blind}
         defaultOpen
         onSaved={onSaved}
       />

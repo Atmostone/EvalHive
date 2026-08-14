@@ -102,8 +102,9 @@ class HumanFeedbackBody(BaseModel):
     # scripted annotators and carry a label instead of a user id.
     annotator_type: Literal["human", "llm_judge", "synthetic"] = "human"
     annotator_label: Optional[str] = Field(default=None, max_length=255)
-    # The protocol as it actually was, not as intended: set by the UI when the
-    # annotator rated without seeing the model / the judge's scores.
+    # Declarable ONLY by a scripted annotator, which owns its own protocol. For a
+    # human rating these are ignored and derived server-side from what the caller
+    # was actually served — a client-asserted blind flag would be worth nothing.
     blind_to_model: bool = False
     blind_to_judge: bool = False
 
@@ -239,9 +240,18 @@ async def _get_owned_task(db: AsyncSession, task_id: str, workspace: Workspace) 
 @router.get("/records/{task_id}/profile")
 async def get_profile(
     task_id: str,
+    blind: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    """The outcome profile (E-02). ``blind=true`` returns the dimension keys and
+    names with every score, reasoning and gate stripped — the blind annotation
+    protocol is enforced here rather than by the client hiding what it fetched.
+    A sighted read is recorded, so a later annotation cannot claim to be blind."""
+    from app.quality.blind import mark_judge_revealed
+    from app.quality.feedback import blind_quality_profile
+
     rec = (
         await db.execute(
             select(QualityRecord).where(
@@ -252,6 +262,10 @@ async def get_profile(
     ).scalar_one_or_none()
     if rec is None:
         raise HTTPException(status_code=404, detail="quality record not found")
+    if blind:
+        return {"task_id": task_id, "quality_profile": blind_quality_profile(rec.quality_profile)}
+    if rec.quality_profile:
+        await mark_judge_revealed(user.id, [rec.task_id])
     return {"task_id": task_id, "quality_profile": rec.quality_profile}
 
 
@@ -280,10 +294,17 @@ async def evaluate_record(
 @router.get("/records/{task_id}/trajectory")
 async def get_trajectory(
     task_id: str,
+    blind: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """Read the 6-axis trajectory profile (E-07), or null if not yet judged."""
+    """Read the 6-axis trajectory profile (E-07), or null if not yet judged.
+    ``blind=true`` strips every axis score, reason and summary (SPA-85); a
+    sighted read is recorded against the blind claim."""
+    from app.quality.blind import mark_judge_revealed
+    from app.quality.feedback import blind_trajectory_profile
+
     rec = (
         await db.execute(
             select(QualityRecord).where(
@@ -294,6 +315,13 @@ async def get_trajectory(
     ).scalar_one_or_none()
     if rec is None:
         raise HTTPException(status_code=404, detail="quality record not found")
+    if blind:
+        return {
+            "task_id": task_id,
+            "trajectory_profile": blind_trajectory_profile(rec.trajectory_profile),
+        }
+    if rec.trajectory_profile:
+        await mark_judge_revealed(user.id, [rec.task_id])
     return {"task_id": task_id, "trajectory_profile": rec.trajectory_profile}
 
 
@@ -738,34 +766,55 @@ async def calibration_aggregate(
 @router.get("/records/{task_id}/feedback")
 async def get_feedback(
     task_id: str,
+    blind: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """The latest human rating (E-05) for a task, or null if none submitted yet.
 
     Readable by any workspace member — annotation stays visible to everyone who
-    can see the task. Only the *write* is role-gated (SPA-85)."""
-    from app.quality.feedback import get_human_feedback
+    can see the task. Only the *write* is role-gated (SPA-85). ``blind=true``
+    strips the paired judge scores, so re-opening your own previous rating is not
+    a way around the blind protocol."""
+    from app.quality.blind import mark_judge_revealed
+    from app.quality.feedback import blind_human_feedback, get_human_feedback
 
     task = await _get_owned_task(db, task_id, workspace)
-    return {"task_id": task_id, "human_feedback": await get_human_feedback(db, task)}
+    feedback = await get_human_feedback(db, task)
+    if blind:
+        return {"task_id": task_id, "human_feedback": blind_human_feedback(feedback)}
+    if any(
+        d.get("judge_score") is not None for d in (feedback or {}).get("dimensions") or []
+    ):
+        await mark_judge_revealed(user.id, [task.id])
+    return {"task_id": task_id, "human_feedback": feedback}
 
 
 @router.get("/records/{task_id}/annotations")
 async def get_annotations(
     task_id: str,
+    blind: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """The append-only annotation ledger for a task, oldest first (SPA-85).
 
     Every rating this run has ever carried, with its annotator, protocol and the
     judge observation frozen at that moment. `human_feedback` above is the
-    materialised latest human row of this list."""
-    from app.quality.feedback import list_annotations
+    materialised latest human row of this list. ``blind=true`` strips the frozen
+    observations and the paired judge scores."""
+    from app.quality.blind import mark_judge_revealed
+    from app.quality.feedback import blind_annotation, list_annotations
 
     task = await _get_owned_task(db, task_id, workspace)
-    return {"task_id": task_id, "annotations": await list_annotations(db, task)}
+    rows = await list_annotations(db, task)
+    if blind:
+        return {"task_id": task_id, "annotations": [blind_annotation(r) for r in rows]}
+    if any(r.get("judge_observation") for r in rows):
+        await mark_judge_revealed(user.id, [task.id])
+    return {"task_id": task_id, "annotations": rows}
 
 
 @router.put("/records/{task_id}/feedback")
@@ -784,11 +833,21 @@ async def put_feedback(
     than the record's, so a second annotator's rating stays intact and the two
     can be compared. Role-gated: calibration data is what the reliability claims
     rest on, and any member could previously overwrite it."""
+    from app.quality.blind import judge_was_revealed
     from app.quality.feedback import save_annotation
 
     task = await _get_owned_task(db, task_id, workspace)
     payload = body.model_dump()
     human = body.annotator_type == "human"
+    if human:
+        # Derived, not asserted: blind means this caller was never served the
+        # judge's opinion on this run. Blindness to the model is not certified
+        # from the UI at all — `model_used` is served by surfaces outside
+        # annotation, so the claim could not be stood behind (see quality/blind.py).
+        blind_to_judge = not await judge_was_revealed(user.id, task.id)
+        blind_to_model = False
+    else:
+        blind_to_judge, blind_to_model = body.blind_to_judge, body.blind_to_model
     feedback = await save_annotation(
         db,
         task,
@@ -798,8 +857,8 @@ async def put_feedback(
         # counting it as a person is exactly the confusion this replaces.
         annotator_id=user.id if human else None,
         annotator_label=(user.email if human else body.annotator_label) or user.email,
-        blind_to_model=body.blind_to_model,
-        blind_to_judge=body.blind_to_judge,
+        blind_to_model=blind_to_model,
+        blind_to_judge=blind_to_judge,
     )
     return {"task_id": task_id, "human_feedback": feedback}
 
@@ -897,13 +956,19 @@ async def calibration_export(
 async def calibration_queue(
     status: Literal["pending", "done", "all"] = Query("pending"),
     limit: int = Query(300, ge=1, le=1000),
+    blind: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Records eligible for human annotation (E-17 calibration): those carrying a
     judge profile. ``status=pending`` (default) returns only the ones still
     missing human feedback. Includes ``origin='experiment'`` tasks, which the
-    task board hides — this is the only UI path to annotate them."""
+    task board hides — this is the only UI path to annotate them.
+
+    ``blind=true`` withholds `model_used` and `weighted_score` (SPA-85): the queue
+    is the first thing an annotator sees, so leaving the model and the judge's
+    verdict on the row would break the blind before any task is even opened."""
     rows = (
         await db.execute(
             select(QualityRecord, Task.title, Task.origin)
@@ -932,9 +997,9 @@ async def calibration_queue(
                 "title": title,
                 "origin": origin,
                 "template_name": rec.template_name,
-                "model_used": rec.model_used,
+                "model_used": None if blind else rec.model_used,
                 "benchmark_suite": rec.benchmark_suite,
-                "weighted_score": profile.get("weighted_score"),
+                "weighted_score": None if blind else profile.get("weighted_score"),
                 "n_dimensions": sum(
                     1 for d in (profile.get("dimensions") or []) if d.get("status") == "scored"
                 ),
@@ -944,6 +1009,15 @@ async def calibration_queue(
         )
         if len(items) >= limit:
             break
+    if not blind:
+        # A sighted queue row carries the judge's weighted score, so browsing it
+        # is being shown the judge — recorded against any later blind claim.
+        from app.quality.blind import mark_judge_revealed
+
+        await mark_judge_revealed(
+            user.id,
+            [i["task_id"] for i in items if i["weighted_score"] is not None],
+        )
     return {"total": total, "done": done, "pending": total - done, "items": items}
 
 

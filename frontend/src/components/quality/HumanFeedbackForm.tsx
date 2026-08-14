@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { qualityApi } from '@/api/client'
-import { MessageSquarePlus, Check, Eye, EyeOff } from 'lucide-react'
+import { MessageSquarePlus, Check, EyeOff } from 'lucide-react'
 import type { QualityProfile, TrajectoryProfile, HumanFeedback, FeedbackBand, FeedbackVerdict } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -52,13 +52,18 @@ interface Props {
   profile: QualityProfile | null
   trajectoryProfile?: TrajectoryProfile | null
   existing: HumanFeedback | null
+  /** Blind protocol (SPA-85) — decided by the annotation surface *before* it
+   *  fetched anything, and not flippable here. Under blind the profiles arrive
+   *  already stripped by the server, so this only changes the copy: it must not
+   *  advertise an absent judge score as «the judge did not score this». */
+  blind?: boolean
   /** Start expanded (e.g. the calibration queue, where the form is the whole point). */
   defaultOpen?: boolean
   /** Called after a successful submit, for callers that track annotation progress. */
   onSaved?: () => void
 }
 
-export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, existing, defaultOpen = false, onSaved }: Props) {
+export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, existing, blind = false, defaultOpen = false, onSaved }: Props) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(defaultOpen)
 
@@ -101,17 +106,6 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
     ),
   )
   const [overall, setOverall] = useState(existing?.overall_comment ?? '')
-  // Blind protocol (SPA-85). Off by default, because that is what the form has
-  // always done — it shows the judge's score and seeds from it, so an annotator
-  // anchors on the number they are supposed to be independent of. Turning it on
-  // hides the judge here AND clears every score, so the rating starts from
-  // nothing; the submitted annotation records which of the two happened.
-  const [blind, setBlind] = useState(false)
-  const toggleBlind = () => {
-    const next = !blind
-    setBlind(next)
-    if (next) setScores(Object.fromEntries(dims.map((d) => [d.key, null])))
-  }
   // Overall approve/reject verdict — the human's binary judgment of the run. This is
   // the signal the checker↔human agreement (and the human heatmap verdict column)
   // are built from; without it that calibration has no human side.
@@ -132,10 +126,9 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
             score: scores[d.key] as number,
             comment: comments[d.key]?.trim() || null,
           })),
-        // Recorded as it actually was, not as intended. The form can only
-        // vouch for the judge's scores — the model identity is shown elsewhere
-        // on the page, so it is never claimed here.
-        blind_to_judge: blind,
+        // No blindness flag is sent: the server derives it from what it actually
+        // served this user for this run (SPA-85). A client-asserted flag would be
+        // worth nothing, and sending one would only invite it to be trusted.
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['human-feedback', taskId] })
@@ -160,39 +153,18 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
   return (
     <div className="mt-2 border rounded-lg p-3 bg-gray-50 space-y-3">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-gray-700">Your feedback</h4>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={toggleBlind}
-            title={
-              blind
-                ? 'Blind: the judge’s scores are hidden and nothing was seeded from them. Recorded on the annotation.'
-                : 'Rate without seeing the judge’s scores. Turning this on clears every score, so your rating cannot start from the judge’s.'
-            }
-            className={cn(
-              'flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors',
-              blind
-                ? 'bg-indigo-600 text-white border-indigo-600'
-                : 'bg-white text-gray-500 border-gray-300 hover:bg-gray-50',
-            )}
-          >
-            {blind ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-            blind to judge
-          </button>
-          <button onClick={() => setOpen(false)} className="text-xs text-gray-400 hover:underline">
-            cancel
-          </button>
-        </div>
+        <h4 className="text-sm font-medium text-gray-700 flex items-center gap-2">
+          Your feedback
+          {blind && (
+            <span className="flex items-center gap-1 text-xs font-normal px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
+              <EyeOff className="h-3 w-3" /> blind
+            </span>
+          )}
+        </h4>
+        <button onClick={() => setOpen(false)} className="text-xs text-gray-400 hover:underline">
+          cancel
+        </button>
       </div>
-
-      {blind && (
-        <p className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">
-          Blind protocol — judge scores are hidden here and none were used to seed your
-          ratings. The judge's side is still frozen onto your annotation for calibration;
-          the model identity may remain visible elsewhere on this page.
-        </p>
-      )}
 
       {verifiable && (
         <p className="text-xs text-gray-500 bg-white border rounded-lg px-3 py-2">
@@ -212,6 +184,9 @@ export default function HumanFeedbackForm({ taskId, profile, trajectoryProfile, 
             const score = scores[d.key]
             const rated = score != null
             const b = rated ? band(score) : null
+            // Under blind the judge score is absent because the server withheld
+            // it, not because the judge skipped the dimension — saying otherwise
+            // would be a false statement about the run.
             const note = blind ? null : judgeNote(d.judgeScore, d.status)
             return (
               <div key={d.key} className="space-y-1">

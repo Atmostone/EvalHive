@@ -324,21 +324,188 @@ async def test_machine_annotation_is_kept_out_of_the_human_population(auth_clien
 
 
 @pytest.mark.asyncio
-async def test_blind_protocol_is_recorded(auth_client: AsyncClient):
+async def test_blind_is_derived_from_what_the_server_served(auth_client: AsyncClient):
+    """A client-asserted blind flag is worth nothing, so the client does not get
+    to assert one: blindness is derived from whether this caller was ever served
+    the judge's opinion on this run (SPA-85)."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+
+    # fetch blind → the judge's scores never reach the page
+    r = await auth_client.get(f"/api/quality/records/{tid}/profile?blind=true")
+    assert r.status_code == 200, r.text
+    blinded = r.json()["quality_profile"]
+    assert blinded["blinded"] is True and blinded["gate"] is None
+    assert blinded["dimensions"] == [
+        {"key": "correctness", "name": "Correctness", "status": None}
+    ]
+    r = await auth_client.get(f"/api/quality/records/{tid}/trajectory?blind=true")
+    assert all(a.get("score") is None for a in r.json()["trajectory_profile"]["axes"])
+
+    # ...and asking to be recorded as sighted does not make it so
+    r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "blind_to_judge": False,
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+    })
+    assert r.status_code == 200, r.text
+    row = (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"][0]
+    assert row["blind_to_judge"] is True
+    # blindness to the model is never certified from the UI — `model_used` is
+    # served by surfaces outside annotation, so the claim is not made
+    assert row["blind_to_model"] is False
+    # the judge is still frozen onto the row: blindness is about what the
+    # annotator saw, not about what we record
+    assert row["judge_observation"]["outcome"]["scores"] == {"correctness": 8}
+
+
+@pytest.mark.asyncio
+async def test_seeing_the_judge_forfeits_the_blind_claim(auth_client: AsyncClient):
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+
+    # a sighted read of the profile is recorded against the caller
+    assert (await auth_client.get(f"/api/quality/records/{tid}/profile")).status_code == 200
+
+    r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "blind_to_judge": True,   # asserted, and refused
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+    })
+    assert r.status_code == 200, r.text
+    row = (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"][0]
+    assert row["blind_to_judge"] is False
+
+
+@pytest.mark.asyncio
+async def test_blind_queue_withholds_model_and_judge_score(auth_client: AsyncClient):
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    async with database.async_session() as s:
+        rec = (await s.execute(
+            select(QualityRecord).where(QualityRecord.task_id == uuid.UUID(tid))
+        )).scalar_one()
+        rec.quality_profile = {**rec.quality_profile, "weighted_score": 8.0}
+        await s.commit()
+
+    r = await auth_client.get("/api/quality/calibration/queue?status=all&blind=true")
+    assert r.status_code == 200, r.text
+    item = next(i for i in r.json()["items"] if i["task_id"] == tid)
+    # the queue is the first thing an annotator sees; leaving these on the row
+    # would break the blind before any run is opened
+    assert item["model_used"] is None and item["weighted_score"] is None
+    assert item["title"]  # everything not judge-derived is still there
+
+    r = await auth_client.get("/api/quality/calibration/queue?status=all")
+    item = next(i for i in r.json()["items"] if i["task_id"] == tid)
+    assert item["model_used"] == "m" and item["weighted_score"] == 8.0
+
+
+@pytest.mark.asyncio
+async def test_a_later_judge_run_cannot_fill_an_absent_pair(auth_client: AsyncClient):
+    """The other half of «a re-judge cannot alter a past calibration»: an axis the
+    judge had NOT scored when the human rated it must stay unpaired, or the pair
+    materialises retroactively out of a profile written afterwards."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _make_task(ws)
+
+    # rated before any judge ran
+    r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 6}],
+    })
+    assert r.status_code == 200, r.text
+
+    async with database.async_session() as s:
+        rec = (await s.execute(
+            select(QualityRecord).where(QualityRecord.task_id == uuid.UUID(tid))
+        )).scalar_one()
+        rec.quality_profile = {
+            "judge_model": "judge-v1",
+            "dimensions": [{"key": "correctness", "name": "Correctness", "score": 10}],
+            "gate": {"passed": True},
+        }
+        await s.commit()
+
+    rows = [r for r in (await auth_client.get("/api/quality/calibration")).json()
+            if r["task_id"] == tid]
+    assert len(rows) == 1
+    assert rows[0]["judge_score"] is None
+    assert rows[0]["judge_source"] == "unscored"
+    assert rows[0]["judge_gate_passed"] is None
+
+
+@pytest.mark.asyncio
+async def test_verdict_only_annotation_stays_in_the_population(auth_client: AsyncClient):
+    """A rating with no per-dimension scores is still a rating by a person — it
+    used to vanish from n_humans, n_annotations and the verdict agreement it
+    exists to feed."""
     ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     tid = await _seed_judged_record(ws)
 
     r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
-        "blind_to_judge": True,
-        "blind_to_model": True,
-        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+        "verdict": "reject", "overall_comment": "wrong answer", "dimensions": [],
     })
     assert r.status_code == 200, r.text
-    row = (await auth_client.get(f"/api/quality/records/{tid}/annotations")).json()["annotations"][0]
-    assert row["blind_to_judge"] is True and row["blind_to_model"] is True
-    # the judge is still frozen for calibration — blindness is about what the
-    # annotator saw, not about what we record
-    assert row["judge_observation"]["outcome"]["scores"] == {"correctness": 8}
+
+    rows = [r for r in (await auth_client.get("/api/quality/calibration")).json()
+            if r["task_id"] == tid]
+    assert len(rows) == 1
+    assert rows[0]["dimension_key"] is None
+    assert rows[0]["verdict"] == "reject"
+    assert rows[0]["judge_gate_passed"] is True
+
+    r = await auth_client.post("/api/quality/judge-calibration/run")
+    metrics = r.json()["metrics"]
+    assert metrics["n_humans"] == 1
+    assert metrics["n_annotations"] == 1
+    assert metrics["overall"]["n"] == 1        # the verdict pair is there
+    assert metrics["n_dimensions"] == 0        # and it invents no dimension
+
+
+@pytest.mark.asyncio
+async def test_frozen_observation_records_the_conditions(auth_client: AsyncClient):
+    """Model, rubric id and name cannot prove the conditions: a rubric is editable
+    in place and the prompt changes with the E-18 mitigations."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    r = await auth_client.post("/api/quality/rubrics", json={
+        "name": "Exact", "is_default": True, "dimensions": [
+            {"key": "answer", "name": "Answer", "evaluator": "reference",
+             "reference_mode": "exact", "weight": 1.0, "threshold": 6, "critical": True},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    async with database.async_session() as s:
+        await _seed_judge_model(s, ws)
+    tid = await _make_task(ws, result_summary="Paris", reference_answer="paris")
+    assert (await auth_client.post(f"/api/quality/records/{tid}/evaluate")).status_code == 200
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "dimensions": [{"key": "answer", "name": "Answer", "score": 4}],
+    })).status_code == 200
+
+    outcome = (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"][0]["judge_observation"]["outcome"]
+    assert len(outcome["rubric_fingerprint"]) == 64
+    assert len(outcome["prompt_fingerprint"]) == 64
+    assert outcome["files_only"] is False
+
+    # editing the rubric in place keeps its id and changes the fingerprint, so a
+    # later verdict is distinguishable from this one
+    before = outcome["rubric_fingerprint"]
+    r = await auth_client.patch(f"/api/quality/rubrics/{outcome['rubric_id']}", json={
+        "dimensions": [
+            {"key": "answer", "name": "Answer", "evaluator": "reference",
+             "reference_mode": "exact", "weight": 1.0, "threshold": 9, "critical": True},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    tid2 = await _make_task(ws, result_summary="Paris", reference_answer="paris")
+    assert (await auth_client.post(f"/api/quality/records/{tid2}/evaluate")).status_code == 200
+    profile = (await auth_client.get(f"/api/quality/records/{tid2}/profile")).json()["quality_profile"]
+    assert profile["rubric_id"] == outcome["rubric_id"]
+    assert profile["rubric_fingerprint"] != before
 
 
 @pytest.mark.asyncio

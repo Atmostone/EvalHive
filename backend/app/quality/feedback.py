@@ -99,6 +99,14 @@ def freeze_judge_observation(record) -> dict:
             "judge_model": profile.get("judge_model"),
             "rubric_id": profile.get("rubric_id"),
             "rubric_name": profile.get("rubric_name"),
+            # An id and a name cannot prove the conditions — a rubric is editable
+            # in place and the prompt changes with the E-18 mitigations. These are
+            # null for profiles written before PROFILE_SCHEMA_VERSION 3, which is
+            # the honest answer for them.
+            "rubric_fingerprint": profile.get("rubric_fingerprint"),
+            "prompt_fingerprint": profile.get("prompt_fingerprint"),
+            "bias_mitigation": profile.get("bias_mitigation"),
+            "files_only": profile.get("files_only"),
             "schema_version": profile.get("schema_version"),
             "evaluated_at": profile.get("evaluated_at"),
             "gate_passed": (profile.get("gate") or {}).get("passed"),
@@ -117,6 +125,7 @@ def freeze_judge_observation(record) -> dict:
     if trajectory:
         out["trajectory"] = {
             "judge_model": trajectory.get("judge_model"),
+            "prompt_fingerprint": trajectory.get("prompt_fingerprint"),
             "schema_version": trajectory.get("schema_version"),
             "evaluated_at": trajectory.get("evaluated_at"),
             "scores": {
@@ -199,6 +208,73 @@ def build_human_feedback(
         "submitted_by": submitted_by,
         "submitted_at": datetime.utcnow().isoformat(),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Blind protocol — enforced server-side (SPA-85)
+# --------------------------------------------------------------------------- #
+# A blindness flag is worth nothing if the client could have seen the judge
+# anyway, so under `blind` the API never sends the judge's scores in the first
+# place. The dimension keys and names survive: the annotator has to know WHICH
+# axes to rate, only not what the judge said about them.
+def blind_quality_profile(profile: dict | None) -> dict | None:
+    """The outcome profile with every judge score, reasoning and gate removed."""
+    if not profile:
+        return profile
+    out = {
+        k: v
+        for k, v in profile.items()
+        if k not in ("dimensions", "gate", "weighted_score", "bias_mitigation")
+    }
+    out["weighted_score"] = None
+    out["gate"] = None
+    out["dimensions"] = [
+        {"key": d.get("key"), "name": d.get("name"), "status": d.get("status")}
+        for d in profile.get("dimensions") or []
+    ]
+    out["blinded"] = True
+    return out
+
+
+def blind_trajectory_profile(profile: dict | None) -> dict | None:
+    """The process profile with every axis score, reason and summary removed."""
+    if not profile:
+        return profile
+    out = {
+        k: v
+        for k, v in profile.items()
+        if k not in ("axes", "overall_score", "summary", "loop_detected", "loop_analysis")
+    }
+    out["overall_score"] = None
+    out["summary"] = ""
+    out["axes"] = [
+        {"key": a.get("key"), "name": a.get("name"), "status": a.get("status")}
+        for a in profile.get("axes") or []
+    ]
+    out["blinded"] = True
+    return out
+
+
+def blind_human_feedback(feedback: dict | None) -> dict | None:
+    """A stored rating with the paired judge scores removed — re-opening your own
+    previous annotation must not be a way around the blind."""
+    if not feedback:
+        return feedback
+    out = dict(feedback)
+    out["dimensions"] = [
+        {k: v for k, v in d.items() if k != "judge_score"}
+        for d in feedback.get("dimensions") or []
+    ]
+    out["blinded"] = True
+    return out
+
+
+def blind_annotation(row: dict) -> dict:
+    """A ledger row with the frozen judge observation and the paired judge scores
+    removed."""
+    out = blind_human_feedback(row) or {}
+    out["judge_observation"] = {}
+    return out
 
 
 def serialize_annotation(row: Annotation) -> dict:

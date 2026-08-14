@@ -15,6 +15,7 @@ dimension is recorded with ``status: "error"`` instead of raising.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -32,7 +33,10 @@ from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
 
-PROFILE_SCHEMA_VERSION = 2
+# v3: rubric_fingerprint + prompt_fingerprint — the conditions the verdict was
+# obtained under, so an edited rubric or prompt cannot be mistaken for the one
+# that produced a stored score (SPA-85).
+PROFILE_SCHEMA_VERSION = 3
 _MAX_SCALE = 10
 # Cap the result text handed to the judge to keep prompts bounded.
 _RESULT_CHAR_CAP = 8000
@@ -66,6 +70,56 @@ def _judge_system_prompt(mitigations: dict | None) -> str:
         if mitigations.get("score_clustering"):
             prompt += _MITIGATION_SCORE_CLUSTERING
     return prompt
+
+
+# The user message, as a template so it can be fingerprinted (SPA-85) without
+# reconstructing it from a call site. Only these three placeholders vary; the
+# dimension's own wording is rubric content and is fingerprinted separately.
+_JUDGE_USER_TEMPLATE = (
+    "Dimension: {name}\n"
+    "What it measures: {description}\n\n"
+    "If this dimension is inherently not applicable to THIS task (the thing "
+    "it measures does not exist here — e.g. output accuracy with no deliverable "
+    "to check, or presentation/prose quality on a numbers-only artifact), set "
+    "applicable=false and do not invent a score; the dimension will be excluded "
+    "from the aggregate rather than scored 0.\n\n"
+    "{context}"
+)
+
+
+_RUBRIC_FINGERPRINT_FIELDS = (
+    "key", "name", "description", "evaluator", "reference_mode", "probe",
+    "weight", "threshold", "critical",
+)
+
+
+def rubric_fingerprint(dimensions: list[dict] | None) -> str:
+    """Hash of the dimension definitions actually used for a verdict (SPA-85).
+
+    ``rubric_id`` is not enough: a rubric row can be edited in place, keeping its
+    id while changing what «score this dimension» meant. This is what lets a
+    stored score be attributed to the wording that produced it."""
+    canon = [
+        {f: d.get(f) for f in _RUBRIC_FINGERPRINT_FIELDS} for d in dimensions or []
+    ]
+    return hashlib.sha256(
+        json.dumps(canon, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def judge_prompt_fingerprint(mitigations: dict | None = None) -> str:
+    """Hash of everything the judge is asked, minus the task-specific content:
+    the system prompt (E-18 mitigations included, since they change it), the user
+    template and the tool schema."""
+    payload = {
+        "system": _judge_system_prompt(mitigations),
+        "user_template": _JUDGE_USER_TEMPLATE,
+        "tool": JUDGE_TOOL,
+        "max_scale": _MAX_SCALE,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
 
 
 JUDGE_TOOL = [
@@ -249,15 +303,10 @@ async def _judge_dimension(
         },
         {
             "role": "user",
-            "content": (
-                f"Dimension: {name}\n"
-                f"What it measures: {dim.get('description') or name}\n\n"
-                "If this dimension is inherently not applicable to THIS task (the thing "
-                "it measures does not exist here — e.g. output accuracy with no deliverable "
-                "to check, or presentation/prose quality on a numbers-only artifact), set "
-                "applicable=false and do not invent a score; the dimension will be excluded "
-                "from the aggregate rather than scored 0.\n\n"
-                f"{context}"
+            "content": _JUDGE_USER_TEMPLATE.format(
+                name=name,
+                description=dim.get("description") or name,
+                context=context,
             ),
         },
     ]
@@ -499,6 +548,14 @@ async def evaluate_task_quality(
         "schema_version": PROFILE_SCHEMA_VERSION,
         "rubric_id": str(rubric.id) if rubric.id is not None else None,
         "rubric_name": rubric.name,
+        # The conditions this verdict was obtained under. An id and a name cannot
+        # prove them: a rubric is editable in place and the prompt changes with
+        # the E-18 mitigations (SPA-85).
+        "rubric_fingerprint": rubric_fingerprint(list(rubric.dimensions or [])),
+        "prompt_fingerprint": judge_prompt_fingerprint(prompt_mit),
+        # Whether the judge saw the agent's own self-report or only its files —
+        # a protocol condition, not a task property.
+        "files_only": bool(files_only),
         "dimensions": out_dims,
         "weighted_score": weighted_score,
         "gate": {"passed": len(failed_critical) == 0, "failed_dimensions": failed_critical},

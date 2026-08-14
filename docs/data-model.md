@@ -388,8 +388,8 @@ placeholders filled by downstream eval features.
 | is_decomposition_root | bool | parent task with subtasks |
 | cost_usd | NUMERIC(10,6) | denormalized |
 | input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics |
-| quality_profile | JSONB? | **slot E-02** |
-| trajectory_profile | JSONB? | **slot E-07** |
+| quality_profile | JSONB? | **slot E-02** (v3 adds `rubric_fingerprint` / `prompt_fingerprint` / `files_only` — the conditions the verdict was obtained under, SPA-85) |
+| trajectory_profile | JSONB? | **slot E-07** (v3 adds `prompt_fingerprint`) |
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |
 | capability_profile | JSONB? | **slot E-13** (deterministic capability-isolation classification; added by migration `d5e6f7a8b9c0`) |
@@ -597,11 +597,19 @@ row is *current* unless some other row names it in `supersedes_id`; the
 calibration collector reads current rows only.
 
 **Frozen judge observation.** `{outcome: {judge_model, rubric_id, rubric_name,
+rubric_fingerprint, prompt_fingerprint, bias_mitigation, files_only,
 schema_version, evaluated_at, gate_passed, scores: {key: score}, reasoning: {key:
-text}}, trajectory: {judge_model, schema_version, evaluated_at, scores, reasoning}}`
-— captured from both judge profiles at annotation time. Without it a calibration
-pair is rebuilt from the *current* profile, so re-running a judge silently moves a
-past κ.
+text}}, trajectory: {judge_model, prompt_fingerprint, schema_version,
+evaluated_at, scores, reasoning}}` — captured from both judge profiles at
+annotation time. Without it a calibration pair is rebuilt from the *current*
+profile, so re-running a judge silently moves a past κ. The fingerprints exist
+because `rubric_id` and a model name cannot prove the conditions: a rubric row is
+editable in place and the judge prompt changes with the E-18 mitigations (both are
+written into the profiles themselves at `PROFILE_SCHEMA_VERSION` 3 /
+`TRAJECTORY_SCHEMA_VERSION` 3, so they are frozen for every reader, not just for
+annotations). An **absence is frozen too**: an axis the judge had not scored when
+the human rated it never acquires a pair, since letting a later judge run fill it
+in would be the same retroactive change.
 
 **annotator_type.** The distinction recorded is «a person decided» versus «a model
 decided unattended». What tools a person used while annotating is deliberately not
