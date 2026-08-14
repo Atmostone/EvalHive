@@ -370,20 +370,32 @@ into the compact input the trajectory judge (E-07) will consume. From the durabl
 sources (`agent_events` + `agent_log_chunks` + `tasks`) it builds a `CleanedTrace`:
 
 - **Keeps** the original task (title/description), per-step reasoning (from
-  `orchestrator_reasoning` / `agent_progress` / decision events) and tool
-  calls/outputs.
+  `orchestrator_reasoning` / `agent_progress` / decision events) and, for every tool
+  step, the **call** — name *and* `arguments` — alongside its result. Until SPA-86
+  the arguments were never recorded anywhere: the agent parsed them, called the tool
+  and discarded them, so `parameter_quality` was an axis scored without its subject.
+- **Joins** the parts of one split output. A result over the agent's transport cap
+  arrives as several rows sharing a `tool_call_id`; left alone each became its own
+  step, so one call read as three — separately truncated, separately counted by the
+  loop detector.
 - **Drops** the `agent_spawned` system snapshot (soul_md, memory, tool/mcp lists)
   and noise events (health pings, status churn, downstream eval events).
-- **Truncates** long tool outputs to a token cap + marker; `keep_tail_on_error`
-  keeps error steps whole (the bug is often in the ignored tail).
+- **Truncates** long tool outputs to a token cap + marker, and arguments to a cap of
+  their own (a file body can arrive as a parameter) — shortening long *values* while
+  keeping every key, because which parameters were passed is the signal.
+  `keep_tail_on_error` keeps error steps whole (the bug is often in the ignored
+  tail). **Either cap accepts `0` to disable truncation entirely** (SPA-86): with a
+  1M-context judge, reading the whole trajectory is a legitimate request, and a
+  value between `0` and the floor is refused rather than silently clamped.
 
 Steps are merged chronologically; token counts use `tiktoken` (char/4 fallback) to
 report savings. Log chunks load from Postgres, or the MinIO archive after
-compaction (where `tool_name` is lost — the cleaner degrades gracefully). It
+compaction (the JSON-lines archive preserves the call; legacy plain-text archives
+lose the tool name and the arguments — the cleaner degrades gracefully). It
 produces the judge's *input* only: it scores nothing and never writes
 `trajectory_profile` (E-07). Like the other evaluators it never raises (on failure
 returns a trace with an `error` field). Read-only preview, computed on demand and
-not persisted: `GET /api/quality/records/{task_id}/trace?tool_output_token_cap&keep_tail_on_error`.
+not persisted: `GET /api/quality/records/{task_id}/trace?tool_output_token_cap&tool_args_token_cap&keep_tail_on_error`.
 
 ### Trajectory judge (E-07)
 
@@ -397,9 +409,35 @@ axis.
 
 - **Model**: reuses E-02's resolver (`quality_judge` → `orchestrator`) — no separate
   judge slot.
-- **Cost cap**: the cleaned trace is trimmed to the `trajectory_judge_max_input_tokens`
-  setting (default 12000) before the call — middle steps are dropped first (the
-  outcome lives in the tail), `input_capped` flags it.
+- **Cost cap**: the cleaned trace is fitted to the `trajectory_judge_max_input_tokens`
+  setting (default 12000) before the call, or to a per-experiment override in
+  `eval_config.trace` — where `0` means no budget at all.
+
+#### The trim is a condition of the verdict, not an implementation detail (SPA-86)
+
+A budget has to be spent on something, and until SPA-86 it was spent by **position**:
+whole steps were evicted from the middle until the text fit, so an agent's reasoning
+and a 4 KB tool dump were equally expendable — and the middle is where loops live,
+which is part of why the SPA-75 counter and the judge disagreed (the counter reads the
+full cleaned trace, the judge read the fitted text; they were answering about different
+inputs). The budget is now spent by **value**:
+
+1. **tool outputs** shrink first, the effective cap halved and re-fitted until it
+   fits or hits a floor; error-looking outputs are given up last, extending the
+   cleaner's `keep_tail_on_error` preference;
+2. **reasoning blocks** shrink only once outputs are exhausted;
+3. **whole middle steps** are dropped third, and the gap marker now names the tool
+   signatures that went with them (`read_file×3, bash×2`) rather than only their count;
+4. a **hard tail cut** is the last resort — and it marks itself in the text the judge
+   reads, instead of setting a flag only the database ever saw.
+
+Never trimmed: the tool call and its arguments, step ordering, the head and tail of
+the trajectory. What actually happened is recorded in the profile's `trim` block —
+mode, effective caps, and what was shrunk or dropped per kind — because an E-07 score
+from an untrimmed run and one from a trimmed run answer different questions, and
+without that record they are silently comparable. `input_capped` survives as the
+summary bit. `fit_trace_to_budget` is shared with the hallucination (E-16), failure-mode
+(E-14) and calibration probes, so all four inherit the ordering.
 - Like the other evaluators it never raises: an LLM/parse failure is persisted as a
   profile with `status: "error"`. The result is written to the `trajectory_profile`
   slot next to E-02's `quality_profile`; it never touches the outcome slot.
@@ -422,6 +460,15 @@ trace — nothing is dropped before counting). Two structures:
 - **Stuck-repeat run** — the longest run of the identical tool call repeated back to back.
 - **Tandem tool cycles** — a repeating multi-step tool pattern of period 2–5 (e.g.
   `search → click → search → click`), found by a phase-aware global scan.
+
+An action's identity is the **call** — tool name plus normalized arguments (SPA-86).
+It used to be the tool name plus a hash of the **output**, which got both directions
+wrong: two different reads that both returned `file not found` counted as a repeat,
+while the same call issued twice counted as progress whenever its output differed.
+`arguments: null` means they were never recorded — not that the call took none (`{}`,
+and two such calls really are the same action) — so such a step is given an identity
+unique to its position and can never be counted as a repeat: this detector is a
+precision-oriented lower bound, and silence is not evidence.
 
 Thresholds: `_MIN_REPEAT_RUN = 3` / `_MIN_CYCLE_REPEATS = 3`; `loop_detected` fires when
 either crosses its threshold. `LOOP_SCHEMA_VERSION = 1`. It feeds the report's
