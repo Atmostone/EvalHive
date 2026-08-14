@@ -461,14 +461,18 @@ trace — nothing is dropped before counting). Two structures:
 - **Tandem tool cycles** — a repeating multi-step tool pattern of period 2–5 (e.g.
   `search → click → search → click`), found by a phase-aware global scan.
 
-An action's identity is the **call** — tool name plus normalized arguments (SPA-86).
+An action's identity is the **call** — tool name plus a hash of the full canonical
+arguments JSON, with only key order normalized (SPA-86).
 It used to be the tool name plus a hash of the **output**, which got both directions
 wrong: two different reads that both returned `file not found` counted as a repeat,
 while the same call issued twice counted as progress whenever its output differed.
 `arguments: null` means they were never recorded — not that the call took none (`{}`,
 and two such calls really are the same action) — so such a step is given an identity
 unique to its position and can never be counted as a repeat: this detector is a
-precision-oriented lower bound, and silence is not evidence.
+precision-oriented lower bound, and silence is not evidence. Nothing else about the
+arguments is normalized: case folding, whitespace collapsing and a length cap are
+prose transforms, and `README.md` / `readme.md`, two commands diverging at character
+5000, and two file bodies sharing a long prefix are all different calls.
 
 Thresholds: `_MIN_REPEAT_RUN = 3` / `_MIN_CYCLE_REPEATS = 3`; `loop_detected` fires when
 either crosses its threshold. `LOOP_SCHEMA_VERSION = 1`. It feeds the report's

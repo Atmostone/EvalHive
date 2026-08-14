@@ -455,10 +455,15 @@ archive after compaction) at judge time.
 condition of the verdict rather than an implementation detail — a score from an
 untrimmed trace and one from a trace whose middle was evicted answer different
 questions, and without this block they are silently comparable:
-`{mode: none|budget, max_input_tokens, capped, output_cap_applied,
+`{mode: none|budget, max_input_tokens, capped, anything_removed, pre_trim_outputs_truncated,
+pre_trim_args_truncated, pre_trim_dropped_tokens, output_cap_applied,
 reasoning_cap_applied, outputs_shrunk, reasoning_shrunk, steps_omitted,
 omitted_signatures, hard_cut_tokens, tool_output_token_cap, tool_args_token_cap,
-keep_tail_on_error}`. When a budget applies it is spent by **value**, not by
+keep_tail_on_error}`. `capped` is the **budget** stage alone; the cleaner's per-output
+caps run first, so `anything_removed` (either stage) is what «nothing was lost» must be
+read from — a run can fit the budget comfortably while the cleaner has already dropped
+thousands of tokens, and reporting that as untouched would make two runs with different
+evidence look identical. When a budget applies it is spent by **value**, not by
 position: tool outputs shrink first (error outputs last), then reasoning blocks,
 then whole middle steps — whose gap marker now names the tool signatures that went
 with them — and only then a hard tail cut, which marks itself in the text the judge
@@ -1056,10 +1061,14 @@ is capped twice on the way in — agent-side as a transport guard, then again at
 because «the client promised» is not a size limit — and both caps shorten long string
 *values* while keeping every key, since which parameters were passed is the signal.
 
-An output over the agent's transport cap is split across several rows sharing a
-`tool_call_id`; the cleaner re-joins consecutive parts into one step, so one call is
-no longer read as N (each separately truncated, each separately counted by the loop
-detector).
+The call is written **before** the tool runs (part 0, empty content) and the result
+follows as parts 1..N under the same `tool_call_id`. Recording only after a result
+exists loses the call entirely whenever there is no result — a tool that hangs until
+the run is reaped, a container that dies mid-call, a builtin that raises — which are
+the trajectories a process judge most needs to see. The cleaner re-joins consecutive
+parts into one step, so one call is not read as N; a gap in the part sequence is
+**marked in place** rather than spliced over, and a call that never produced a part
+≥ 1 is reported as having no result.
 
 Indexes: `(task_id, chunk_seq)`, `workspace_id`. After event=completed/failed/aborted the orchestrator serializes rows → MinIO blob `s3://spawnhive/logs/<task_id>.log` (**JSON-lines, one `{tool_name, content, arguments, arguments_truncated, tool_call_id, part_index, part_total}` per chunk** — the call is preserved so the cleaned trace E-06 / matcher E-09 stay tool-aware post-compaction; `encode_log_archive`/`decode_log_archive` in `minio_client`, legacy `\n␞\n` plain-text archives still decode with `tool_name=None` and no arguments), sets `tasks.log_archive_s3_path`, and DELETEs all chunks (best-effort, atomic).
 
