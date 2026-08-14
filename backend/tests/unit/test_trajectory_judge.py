@@ -387,3 +387,55 @@ async def test_judge_retries_and_recovers_from_transient_bad_json(monkeypatch):
     out = await _judge_trajectory(_trace(), _llm(), max_input_tokens=10_000)
     assert out["status"] == "scored"
     assert prov.calls == 2  # first attempt failed to parse, retry succeeded
+
+
+# --- the trim must own the cleaner's losses too (SPA-86 review) --------------
+
+
+def _capped_trace():
+    """A trace the CLEANER already truncated, small enough to fit any budget."""
+    return {
+        "task": {"id": "t", "title": "T", "description": "D"},
+        "steps": [
+            {"seq": 0, "kind": "tool", "tool_name": "bash", "content": "short",
+             "truncated": True, "original_tokens": 3000, "kept_tokens": 600},
+        ],
+        "stats": {"steps_truncated": 1, "steps_args_truncated": 1},
+    }
+
+
+def test_trim_reports_what_the_cleaner_removed_before_the_budget():
+    """A run whose outputs were capped at 600 tokens fits the budget easily — and
+    used to report «nothing removed», hiding thousands of lost tokens and making
+    two runs with different evidence look identically untouched."""
+    _text, trim = fit_trace_to_budget(_capped_trace(), 12_000)
+    assert trim["capped"] is False           # the budget itself removed nothing
+    assert trim["anything_removed"] is True  # …but something was removed
+    assert trim["pre_trim_outputs_truncated"] == 1
+    assert trim["pre_trim_args_truncated"] == 1
+    assert trim["pre_trim_dropped_tokens"] == 2400
+
+
+def test_untouched_trace_reports_nothing_removed():
+    _text, trim = fit_trace_to_budget(_trace(), 12_000)
+    assert trim["anything_removed"] is False
+    assert trim["pre_trim_dropped_tokens"] == 0
+
+
+def test_cleaner_losses_are_reported_even_with_no_budget():
+    _text, trim = fit_trace_to_budget(_capped_trace(), 0)
+    assert trim["mode"] == "none"
+    assert trim["anything_removed"] is True
+    assert trim["pre_trim_dropped_tokens"] == 2400
+
+
+def test_serializer_flags_a_call_with_no_result():
+    steps = [{"seq": 0, "kind": "tool", "tool_name": "bash", "arguments": {"c": "x"},
+              "result_missing": True, "content": "…[no result recorded…]…", "truncated": False}]
+    assert "[no result recorded]" in _serialize_trace(_trace(steps))
+
+
+def test_serializer_flags_missing_output_parts():
+    steps = [{"seq": 0, "kind": "tool", "tool_name": "bash", "arguments": {"c": "x"},
+              "parts_missing": 2, "content": "a…b", "truncated": False}]
+    assert "[2 output part(s) missing]" in _serialize_trace(_trace(steps))

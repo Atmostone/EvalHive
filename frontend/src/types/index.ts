@@ -318,6 +318,10 @@ export interface CleanedTraceStep {
    *  that the call took none, which is `{}`. */
   arguments?: Record<string, unknown> | null
   arguments_truncated?: boolean
+  /** The call was recorded but no result ever arrived (hang / crash / raise). */
+  result_missing?: boolean
+  /** Output parts that never reached the backend; the gap is marked, not spliced. */
+  parts_missing?: number
   content: string
   truncated: boolean
   original_tokens: number
@@ -332,6 +336,8 @@ export interface CleanedTraceStats {
   steps_total: number
   steps_truncated: number
   steps_args_truncated?: number
+  steps_result_missing?: number
+  steps_parts_missing?: number
   events_dropped: number
 }
 
@@ -356,7 +362,13 @@ export interface CleanedTrace {
 export interface TrajectoryTrim {
   mode: 'none' | 'budget'
   max_input_tokens: number | null
+  /** The BUDGET removed something. Not the whole story — the cleaner's per-output
+   *  caps run first, so read `anything_removed` before claiming nothing was lost. */
   capped: boolean
+  anything_removed?: boolean
+  pre_trim_outputs_truncated?: number
+  pre_trim_args_truncated?: number
+  pre_trim_dropped_tokens?: number
   output_cap_applied?: number | null
   reasoning_cap_applied?: number | null
   outputs_shrunk?: number

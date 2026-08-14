@@ -20,9 +20,9 @@ be the floor the LLM axis is measured against.
 Two complementary structural signals over the agent's tool-call sequence:
 
 1. **Exact stuck-repeat** — the longest run of *consecutive identical actions*
-   (same tool_name AND same normalized arguments), e.g. the same failing call
-   retried verbatim. Argument-aware, so genuine progress (same tool, different
-   parameters) is not flagged.
+   (same tool_name AND byte-identical arguments up to key order), e.g. the same
+   failing call retried verbatim. Argument-aware, so genuine progress (same tool,
+   different parameters) is not flagged.
 2. **Tandem tool cycles** — a contiguous repeated n-gram over the tool-name
    sequence with period ≥ 2, e.g. ``search → click → search → click → search →
    click``. Found by a phase-aware global scan (every (period, start)), so a
@@ -38,7 +38,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -55,27 +54,35 @@ _MIN_CYCLE_PERIOD = 2
 _MAX_CYCLE_PERIOD = 5
 _MIN_CYCLE_RECORD_REPEATS = 2
 _MAX_CYCLES_KEPT = 5
-# Normalized content is hashed (not stored); cap the length we hash for cost.
-_CONTENT_HASH_CHARS = 4000
-
-_WS_RE = re.compile(r"\s+")
 
 
-def _norm(text: str | None) -> str:
-    """Whitespace-collapsed, lower-cased content for repeat identity. Robust to
-    trivial formatting diffs; two verbatim-identical tool outputs hash equal."""
-    return _WS_RE.sub(" ", (text or "").strip().lower())[:_CONTENT_HASH_CHARS]
+def _canonical_arguments(arguments: dict) -> str:
+    """Byte-exact canonical rendering of a call's arguments.
+
+    Only key ORDER is normalized — `{a,b}` and `{b,a}` are one call. Nothing else
+    is: no case folding, no whitespace collapsing, no length cap. Those are
+    normalizations for prose, and arguments are not prose — `README.md` and
+    `readme.md` are different files, two shell commands that diverge at character
+    5000 are different commands, and two file bodies that share a long prefix are
+    different writes. Folding any of them together manufactures a loop that never
+    happened, in a detector whose whole value is being right when it fires.
+    """
+    try:
+        return json.dumps(
+            arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
+        )
+    except Exception:
+        return repr(arguments)
 
 
 def _action_key(tool_name: str, arguments: dict | None, index: int) -> str:
-    """Identity of an action = tool name + a hash of its normalized arguments.
+    """Identity of an action = tool name + a hash of its canonical arguments.
 
     An action is the **call**, not the result (SPA-86). Keying on the output — as
     this did before arguments were recorded — gets both directions wrong: two
     different calls that happen to return the same ``file not found`` counted as a
     repeat, while the same call issued twice counted as progress whenever its
-    output differed. Arguments are sorted, so key order cannot make one call look
-    like two.
+    output differed.
 
     ``arguments is None`` means they were never recorded, which is not the same as
     a call that took none (``{}``, and two such calls really are the same action).
@@ -85,11 +92,11 @@ def _action_key(tool_name: str, arguments: dict | None, index: int) -> str:
     """
     if arguments is None:
         return f"{tool_name} @{index}"
-    try:
-        rendered = json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
-    except Exception:
-        rendered = str(arguments)
-    h = hashlib.sha1(_norm(rendered).encode("utf-8", "replace")).hexdigest()[:16]
+    # sha256 over the FULL rendering: the hash is what bounds the cost, so there is
+    # no reason to truncate the input to it and collide distinct calls.
+    h = hashlib.sha256(
+        _canonical_arguments(arguments).encode("utf-8", "replace")
+    ).hexdigest()[:32]
     return f"{tool_name} {h}"
 
 

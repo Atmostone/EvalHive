@@ -321,6 +321,25 @@ def _clip_arguments(args: dict) -> tuple[dict, bool]:
     return out, True
 
 
+async def _send_tool_call(
+    tool_name: str, arguments: dict, tool_call_id: str, seq_iter: list[int]
+) -> None:
+    """Record the CALL, before the tool runs.
+
+    Recording only after a result exists loses the call entirely whenever there
+    is no result: a tool that hangs until the run is reaped, a container that
+    dies mid-call, or a builtin that raises (``file_write`` indexes
+    ``arguments["path"]`` unguarded). Those are precisely the trajectories a
+    process judge most needs to see, and they were the ones going blank.
+
+    This is part 0 with empty content; the result arrives as parts 1..N under the
+    same `tool_call_id` and the cleaner joins them into one step.
+    """
+    await _send_log_chunk(
+        "", tool_name, seq_iter, arguments=arguments, tool_call_id=tool_call_id
+    )
+
+
 async def _send_log_chunk(
     content: str,
     tool_name: str | None,
@@ -328,6 +347,7 @@ async def _send_log_chunk(
     *,
     arguments: dict | None = None,
     tool_call_id: str | None = None,
+    part_offset: int = 0,
 ) -> None:
     """POST /api/v1/agent-log/{task_id} — full-output streaming.
 
@@ -336,6 +356,8 @@ async def _send_log_chunk(
     into multiple consecutive chunks so each POST stays under the backend cap;
     `tool_call_id` + `part_index` let the trace cleaner re-join those parts into
     the one call they came from, instead of reading them as N separate steps.
+    `part_offset` shifts the numbering past the call record written before the
+    tool ran, so the cleaner can tell a missing part from a missing result.
 
     The arguments ride on EVERY part on purpose: parts are rare, and a dropped
     first POST must not cost the call its identity.
@@ -357,7 +379,8 @@ async def _send_log_chunk(
     url = f"{base_url}/api/v1/agent-log/{task_id}"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for part_index, piece in enumerate(pieces):
+            for i, piece in enumerate(pieces):
+                part_index = part_offset + i
                 payload = {
                     "chunk_seq": seq_iter[0],
                     "content": piece,
@@ -366,7 +389,7 @@ async def _send_log_chunk(
                     "arguments_truncated": args_truncated,
                     "tool_call_id": tool_call_id,
                     "part_index": part_index,
-                    "part_total": len(pieces),
+                    "part_total": part_offset + len(pieces),
                     "idempotency_key": uuid.uuid4().hex,
                 }
                 seq_iter[0] += 1
@@ -618,12 +641,31 @@ async def run_agent() -> dict:
                     control_state["current_step"] = f"tool:{fn.name}"
                     logger.info(f"[{task_id}] Tool call: {fn.name}({json.dumps(args)[:200]})")
 
-                    if fn.name in mcp_routing:
-                        session, original = mcp_routing[fn.name]
-                        result = await _call_mcp_tool(session, original, args)
-                    else:
-                        # Built-in tools are sync; offload bash subprocess to a thread
-                        result = await asyncio.to_thread(execute_builtin_tool, fn.name, args)
+                    # Record the call BEFORE running it: a hang, a killed container
+                    # or a raising builtin otherwise erases the call from the trace
+                    # entirely — exactly the runs the process judge needs to see.
+                    await _send_tool_call(fn.name, args, tool_call.id, log_chunk_seq)
+
+                    try:
+                        if fn.name in mcp_routing:
+                            session, original = mcp_routing[fn.name]
+                            result = await _call_mcp_tool(session, original, args)
+                        else:
+                            # Built-in tools are sync; offload bash subprocess to a thread
+                            result = await asyncio.to_thread(execute_builtin_tool, fn.name, args)
+                    except Exception as e:
+                        # Record what the call did before letting it end the run. The
+                        # outcome is deliberately unchanged — the exception still
+                        # propagates — so this only fixes the trace, not the verdict.
+                        await _send_log_chunk(
+                            f"ERROR: tool raised {type(e).__name__}: {e}",
+                            fn.name,
+                            log_chunk_seq,
+                            arguments=args,
+                            tool_call_id=tool_call.id,
+                            part_offset=1,
+                        )
+                        raise
 
                     # Perturbation injection: poison the first tool response only.
                     if tool_injection and not injection_done:
@@ -644,6 +686,7 @@ async def run_agent() -> dict:
                         log_chunk_seq,
                         arguments=args,
                         tool_call_id=tool_call.id,
+                        part_offset=1,  # part 0 is the call record written above
                     )
 
                     now = time.monotonic()

@@ -196,6 +196,8 @@ def _event_step(ev) -> dict | None:
         "tool_name": None,
         "arguments": None,
         "arguments_truncated": False,
+        "parts_missing": 0,
+        "result_missing": False,
         "content": text,
         "_ts": _ts(getattr(ev, "created_at", None)),
         "_order": 0,
@@ -268,14 +270,22 @@ def _join_tool_call_parts(log_chunks) -> list[dict]:
     truncated, separately counted by the loop detector — so one call reads as three.
     Only *consecutive* rows are merged: a provider that reuses ids across turns must
     not fuse two genuinely different calls. Rows with no call id (pre-SPA-86 rows,
-    legacy archives) keep one step per chunk."""
+    legacy archives) keep one step per chunk.
+
+    Parts can go missing — the agent suppresses failed POSTs — and a gap must not be
+    spliced over silently: joining part 0 to part 2 fabricates a contiguous output
+    that never existed. Every gap is marked, and a call whose result never arrived
+    (part 0 alone: the tool hung, raised, or the container died) says so."""
     joined: list[dict] = []
     for chunk in log_chunks:
         call_id = _chunk_attr(chunk, "tool_call_id")
         content = _chunk_attr(chunk, "content", "") or ""
+        part_index = _chunk_attr(chunk, "part_index", 0)
+        part_total = _chunk_attr(chunk, "part_total", 1)
         prev = joined[-1] if joined else None
         if call_id and prev is not None and prev["tool_call_id"] == call_id:
-            prev["parts"].append((_chunk_attr(chunk, "part_index", 0), content))
+            prev["parts"].append((part_index, content))
+            prev["part_total"] = max(prev["part_total"], part_total)
             if prev["arguments"] is None:
                 prev["arguments"] = _chunk_attr(chunk, "arguments")
             prev["arguments_truncated"] = prev["arguments_truncated"] or bool(
@@ -289,12 +299,41 @@ def _join_tool_call_parts(log_chunks) -> list[dict]:
                 "arguments": _chunk_attr(chunk, "arguments"),
                 "arguments_truncated": bool(_chunk_attr(chunk, "arguments_truncated", False)),
                 "created_at": _chunk_attr(chunk, "created_at"),
-                "parts": [(_chunk_attr(chunk, "part_index", 0), content)],
+                "part_total": part_total,
+                "parts": [(part_index, content)],
             }
         )
+
     for entry in joined:
-        entry["content"] = "".join(c for _, c in sorted(entry["parts"], key=lambda p: p[0]))
-        del entry["parts"]
+        parts = sorted(entry.pop("parts"), key=lambda p: p[0])
+        seen = {i for i, _ in parts}
+        expected = max(entry["part_total"], max(seen) + 1)
+        pieces: list[str] = []
+        gaps = 0
+        for i in range(expected):
+            if i in seen:
+                pieces.extend(c for j, c in parts if j == i)
+            else:
+                gaps += 1
+                pieces.append(f"\n…[part {i} of this tool output was not recorded]…\n")
+        entry["content"] = "".join(pieces)
+        entry["parts_missing"] = gaps
+        # Part 0 is the call record the agent writes before running the tool, and a
+        # result always bumps `part_total` past 1. So «recorded a call, never a
+        # result» is exactly: nothing carries content and no row ever announced a
+        # second part. Stated this way it needs no format flag — a pre-SPA-86 row,
+        # which put the result itself in part 0, has content and is unaffected.
+        entry["result_missing"] = (
+            bool(entry["tool_call_id"])
+            and entry["part_total"] <= 1
+            and not any(c.strip() for _, c in parts)
+        )
+        if entry["result_missing"]:
+            entry["content"] = (
+                "…[no result recorded for this call — the tool did not return "
+                "(hang, crash, or an unreported error)]…"
+            )
+        del entry["part_total"]
     return joined
 
 
@@ -305,6 +344,8 @@ def _chunk_step(chunk: dict, order: int) -> dict:
         "tool_name": chunk.get("tool_name"),
         "arguments": chunk.get("arguments"),
         "arguments_truncated": bool(chunk.get("arguments_truncated")),
+        "parts_missing": int(chunk.get("parts_missing") or 0),
+        "result_missing": bool(chunk.get("result_missing")),
         "content": chunk.get("content", "") or "",
         "_ts": _ts(chunk.get("created_at")),
         "_order": order,
@@ -362,11 +403,16 @@ def clean_trajectory(
         steps: list[dict] = []
         steps_truncated = 0
         steps_args_truncated = 0
+        steps_result_missing = 0
+        steps_parts_missing = 0
         for seq, s in enumerate(raw_steps):
             content = s["content"]
             original = _count_tokens(content)
             truncated = False
             kept = original
+
+            steps_result_missing += int(bool(s.get("result_missing")))
+            steps_parts_missing += int(s.get("parts_missing") or 0)
 
             arguments, args_truncated = _truncate_arguments(s.get("arguments"), args_cap)
             # The agent may already have clipped an oversized value in transit; that
@@ -393,6 +439,8 @@ def clean_trajectory(
                     "tool_name": s["tool_name"],
                     "arguments": arguments,
                     "arguments_truncated": args_truncated,
+                    "parts_missing": int(s.get("parts_missing") or 0),
+                    "result_missing": bool(s.get("result_missing")),
                     "content": content,
                     "truncated": truncated,
                     "original_tokens": original,
@@ -425,6 +473,8 @@ def clean_trajectory(
                 "steps_total": len(steps),
                 "steps_truncated": steps_truncated,
                 "steps_args_truncated": steps_args_truncated,
+                "steps_result_missing": steps_result_missing,
+                "steps_parts_missing": steps_parts_missing,
                 "events_dropped": events_dropped,
             },
             "config": {
@@ -448,6 +498,8 @@ def clean_trajectory(
                 "steps_total": 0,
                 "steps_truncated": 0,
                 "steps_args_truncated": 0,
+                "steps_result_missing": 0,
+                "steps_parts_missing": 0,
                 "events_dropped": 0,
             },
             "config": {

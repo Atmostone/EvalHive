@@ -116,6 +116,22 @@ export default function CleanedTracePanel({ taskId }: Props) {
                         args truncated
                       </span>
                     )}
+                    {s.result_missing && (
+                      <span
+                        className="text-red-600"
+                        title="The call was recorded before the tool ran, but no result ever arrived — the tool hung, crashed, or raised. The call itself is still here, which is the point of recording it first."
+                      >
+                        no result
+                      </span>
+                    )}
+                    {!!s.parts_missing && (
+                      <span
+                        className="text-red-600"
+                        title="Part of this tool's output never reached the backend. The gap is marked in the text rather than spliced over, which would fabricate a contiguous output that never existed."
+                      >
+                        {s.parts_missing} part(s) missing
+                      </span>
+                    )}
                     {s.truncated && (
                       <span className="text-amber-600">
                         {s.kept_tokens}/{s.original_tokens} tok

@@ -302,3 +302,68 @@ def test_non_consecutive_reuse_of_a_call_id_is_not_merged():
 def test_chunks_without_a_call_id_keep_one_step_each():
     trace = clean_trajectory(_task(), [], [_chunk("a"), _chunk("b")])
     assert trace["stats"]["steps_total"] == 2
+
+
+# --- gaps are marked, never spliced over (SPA-86 review) ---------------------
+
+
+def test_missing_output_part_is_marked_not_spliced():
+    """Part 1 never reached the backend (the agent suppresses failed POSTs).
+    Joining 0 to 2 would fabricate a contiguous output that never existed."""
+    chunks = [
+        _chunk("AAA", seq=0, tool_call_id="c", part_index=0, part_total=3),
+        _chunk("CCC", seq=1, tool_call_id="c", part_index=2, part_total=3),
+    ]
+    trace = clean_trajectory(_task(), [], chunks, config=TraceCleanerConfig(tool_output_token_cap=0))
+    step = trace["steps"][0]
+    assert step["parts_missing"] == 1
+    assert "part 1" in step["content"] and "not recorded" in step["content"]
+    assert step["content"].startswith("AAA")
+    assert step["content"].endswith("CCC")
+    assert trace["stats"]["steps_parts_missing"] == 1
+
+
+def test_call_with_no_result_is_reported_as_such():
+    """The agent records the call BEFORE running the tool, so a hang or a raising
+    builtin leaves part 0 alone. The call must survive and say it has no result."""
+    chunks = [_chunk("", seq=0, tool_call_id="c", part_index=0, part_total=1,
+                     arguments={"path": "a.txt"})]
+    trace = clean_trajectory(_task(), [], chunks)
+    step = trace["steps"][0]
+    assert step["result_missing"] is True
+    assert step["arguments"] == {"path": "a.txt"}
+    assert "no result recorded" in step["content"]
+    assert trace["stats"]["steps_result_missing"] == 1
+
+
+def test_call_plus_result_is_one_complete_step():
+    chunks = [
+        _chunk("", seq=0, tool_call_id="c", part_index=0, part_total=1, arguments={"p": 1}),
+        _chunk("done", seq=1, tool_call_id="c", part_index=1, part_total=2, arguments={"p": 1}),
+    ]
+    trace = clean_trajectory(_task(), [], chunks)
+    step = trace["steps"][0]
+    assert trace["stats"]["steps_total"] == 1
+    assert step["result_missing"] is False
+    assert step["parts_missing"] == 0
+    assert step["content"] == "done"
+
+
+def test_a_tool_returning_empty_output_is_not_a_missing_result():
+    """An empty result is a result: the row that carries it announces part_total 2,
+    which is what distinguishes it from a call that never returned."""
+    chunks = [
+        _chunk("", seq=0, tool_call_id="c", part_index=0, part_total=1, arguments={"p": 1}),
+        _chunk("", seq=1, tool_call_id="c", part_index=1, part_total=2, arguments={"p": 1}),
+    ]
+    trace = clean_trajectory(_task(), [], chunks)
+    assert trace["steps"][0]["result_missing"] is False
+
+
+def test_legacy_single_chunk_with_a_call_id_is_untouched():
+    """Pre-review rows put the result itself in part 0; they must not be read as
+    results that went missing."""
+    chunks = [_chunk("output", seq=0, tool_call_id="c", part_index=0, part_total=1)]
+    trace = clean_trajectory(_task(), [], chunks)
+    assert trace["steps"][0]["result_missing"] is False
+    assert trace["steps"][0]["content"] == "output"

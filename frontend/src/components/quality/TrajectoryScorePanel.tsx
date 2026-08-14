@@ -180,12 +180,33 @@ function ProfileView({ profile }: { profile: TrajectoryProfile }) {
 function TrimPolicy({ trim }: { trim?: TrajectoryTrim }) {
   if (!trim) return null
 
+  // What the cleaner's per-output/argument caps removed before the budget was even
+  // considered. A run can lose thousands of tokens here and still fit the budget —
+  // reporting that as "nothing removed" is the exact failure this block prevents.
+  const pre: string[] = []
+  if (trim.pre_trim_outputs_truncated)
+    pre.push(
+      `${trim.pre_trim_outputs_truncated} tool output(s) capped by the cleaner` +
+        (trim.pre_trim_dropped_tokens
+          ? ` (−${trim.pre_trim_dropped_tokens.toLocaleString()} tok)`
+          : ''),
+    )
+  if (trim.pre_trim_args_truncated)
+    pre.push(`${trim.pre_trim_args_truncated} argument set(s) shortened`)
+  const preLine = pre.length ? ` Before the budget: ${pre.join('; ')}.` : ''
+
   if (trim.mode === 'none') {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-green-700 border-t pt-2">
-        <Scissors className="h-3 w-3 shrink-0" />
+      <div
+        className={cn(
+          'flex items-start gap-1.5 text-xs border-t pt-2',
+          pre.length ? 'text-amber-700' : 'text-green-700',
+        )}
+      >
+        <Scissors className="h-3 w-3 shrink-0 mt-0.5" />
         <span>
-          <span className="font-medium">No trimming.</span> The judge read the whole trajectory.
+          <span className="font-medium">No budget trimming.</span> The judge read every step.
+          {preLine}
         </span>
       </div>
     )
@@ -193,10 +214,16 @@ function TrimPolicy({ trim }: { trim?: TrajectoryTrim }) {
 
   if (!trim.capped) {
     return (
-      <div className="flex items-center gap-1.5 text-xs text-gray-500 border-t pt-2">
-        <Scissors className="h-3 w-3 shrink-0" />
+      <div
+        className={cn(
+          'flex items-start gap-1.5 text-xs border-t pt-2',
+          pre.length ? 'text-amber-700' : 'text-gray-500',
+        )}
+      >
+        <Scissors className="h-3 w-3 shrink-0 mt-0.5" />
         <span>
-          Fit the {trim.max_input_tokens?.toLocaleString()}-token budget with nothing removed.
+          Fit the {trim.max_input_tokens?.toLocaleString()}-token budget without dropping a step.
+          {preLine || ' Nothing was removed at any stage.'}
         </span>
       </div>
     )
@@ -227,7 +254,7 @@ function TrimPolicy({ trim }: { trim?: TrajectoryTrim }) {
       <span>
         <span className="font-medium">Trimmed to {trim.max_input_tokens?.toLocaleString()} tokens.</span>{' '}
         {losses.length ? losses.join('; ') : 'nothing recorded'}. Tool calls and their
-        arguments were kept.
+        arguments were kept.{preLine}
       </span>
     </div>
   )

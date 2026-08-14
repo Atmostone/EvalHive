@@ -251,6 +251,10 @@ def _serialize_trace(cleaned_trace: dict, steps: list[dict] | None = None) -> st
         args = f" args={rendered_args}" if rendered_args else ""
         if s.get("arguments_truncated"):
             args += " [args truncated]"
+        if s.get("result_missing"):
+            args += " [no result recorded]"
+        if s.get("parts_missing"):
+            args += f" [{s['parts_missing']} output part(s) missing]"
         content = (s.get("content") or "").strip()
         lines.append(f"[{s.get('seq')}] {label}{trunc}{args}: {content}")
     return "\n".join(lines)
@@ -336,10 +340,26 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
     `max_input_tokens <= 0` means no budget at all. Returns (text, trim_report).
     """
     steps = list(cleaned_trace.get("steps") or [])
+    stats = cleaned_trace.get("stats") or {}
+    # What the CLEANER already removed, before this function saw the trace. Without
+    # it a run whose outputs were capped at 600 tokens reports «nothing removed»
+    # merely because what survived happened to fit the budget — and two runs that
+    # lost different amounts of evidence look identically untouched, which is the
+    # one comparison this block exists to make possible.
+    pre = {
+        "pre_trim_outputs_truncated": int(stats.get("steps_truncated") or 0),
+        "pre_trim_args_truncated": int(stats.get("steps_args_truncated") or 0),
+        "pre_trim_dropped_tokens": sum(
+            max(0, (s.get("original_tokens") or 0) - (s.get("kept_tokens") or 0))
+            for s in steps
+            if s.get("truncated")
+        ),
+    }
     report: dict = {
         "mode": "budget",
         "max_input_tokens": max_input_tokens,
         "capped": False,
+        **pre,
         "output_cap_applied": None,
         "reasoning_cap_applied": None,
         "outputs_shrunk": 0,
@@ -348,6 +368,12 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
         "omitted_signatures": "",
         "hard_cut_tokens": 0,
     }
+    # True when ANY stage removed something — the cleaner's per-output cap counts,
+    # not just the budget fit. `capped` keeps its old meaning (the budget bit) so
+    # existing readers of `input_capped` are unchanged.
+    report["anything_removed"] = bool(
+        pre["pre_trim_outputs_truncated"] or pre["pre_trim_args_truncated"]
+    )
 
     if not max_input_tokens or max_input_tokens <= 0:
         report["mode"] = "none"
@@ -359,6 +385,7 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
         return text, report
 
     report["capped"] = True
+    report["anything_removed"] = True
 
     # 1) Tool outputs, halved until they fit or hit the floor. Two passes: the
     #    first spares error outputs, the second gives them up too.

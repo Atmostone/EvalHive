@@ -125,10 +125,19 @@ def test_two_iterations_of_a_cycle_is_not_yet_flagged():
     assert out["loop_detected"] is False  # 2 < _MIN_CYCLE_REPEATS
 
 
-def test_normalization_ignores_whitespace_and_case():
+def test_arguments_are_compared_verbatim_not_normalized():
+    """Deliberately inverted (SPA-86 review): whitespace/case normalization is a
+    prose transform, and arguments are not prose. Two queries that differ only in
+    case are two different queries — folding them together fabricates a loop."""
     steps = [_tool("t", {"q": "Same  Query"}), _tool("t", {"q": "same query"})]
     out = detect_loops(steps)
-    # normalized identical → counts as a consecutive identical repeat
+    assert out["max_repeat_run"] == 1
+    assert out["repeated_action_ratio"] == 0.0
+
+
+def test_byte_identical_arguments_still_repeat():
+    steps = [_tool("t", {"q": "same query"}), _tool("t", {"q": "same query"})]
+    out = detect_loops(steps)
     assert out["max_repeat_run"] == 2
     assert out["repeated_action_ratio"] == 0.5
 
@@ -209,3 +218,41 @@ def test_argument_key_order_does_not_split_one_action_in_two():
     out = detect_loops(steps)
     assert out["max_repeat_run"] == 3
     assert out["loop_detected"] is True
+
+
+# --- argument identity is byte-exact, not normalized prose --------------------
+
+
+def test_case_differences_in_arguments_are_not_a_repeat():
+    """`README.md` and `readme.md` are different files. Case-folding arguments —
+    a normalization meant for prose output — invented a loop out of two reads."""
+    out = detect_loops([_tool("read_file", {"path": "README.md"}),
+                        _tool("read_file", {"path": "readme.md"})])
+    assert out["max_repeat_run"] == 1
+    assert out["loop_detected"] is False
+
+
+def test_arguments_differing_past_the_old_hash_cap_are_not_a_repeat():
+    """Identity used to hash only the first 4000 normalized characters, so two
+    long commands that diverge later collided into one action."""
+    prefix = "a" * 5000
+    steps = [_tool("bash", {"command": f"echo {prefix} > {name}"})
+             for name in ("one", "two", "three")]
+    out = detect_loops(steps)
+    assert out["max_repeat_run"] == 1
+    assert out["loop_detected"] is False
+
+
+def test_long_file_bodies_sharing_a_prefix_are_distinct_writes():
+    steps = [_tool("file_write", {"path": "out.txt", "content": "A" * 5000 + f"-{i}"})
+             for i in range(3)]
+    out = detect_loops(steps)
+    assert out["max_repeat_run"] == 1
+    assert out["loop_detected"] is False
+
+
+def test_whitespace_in_arguments_is_significant():
+    """Collapsing whitespace is right for prose and wrong for a shell command."""
+    out = detect_loops([_tool("bash", {"command": "run  a"}),
+                        _tool("bash", {"command": "run a"})])
+    assert out["max_repeat_run"] == 1
