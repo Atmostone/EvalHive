@@ -89,11 +89,17 @@ export default function TrajectoryScorePanel({ taskId }: Props) {
 
 function ProfileView({ profile }: { profile: TrajectoryProfile }) {
   if (profile.status === 'error') {
+    // The trim still happened — the judge read a trimmed input and then failed —
+    // so what it was given stays on screen. Hiding it here would make a failed
+    // attempt look like it had no conditions.
     return (
-      <div className="flex items-start gap-2 text-xs text-red-600">
-        <AlertCircle className="h-4 w-4 shrink-0" />
-        <span>Judge error: {profile.errors[0]?.error ?? 'unknown'}</span>
-      </div>
+      <>
+        <div className="flex items-start gap-2 text-xs text-red-600">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>Judge error: {profile.errors[0]?.error ?? 'unknown'}</span>
+        </div>
+        <TrimPolicy trim={profile.trim} />
+      </>
     )
   }
 
