@@ -7,8 +7,9 @@ calibration found that axis the most miscalibrated (judge mean 4.38 vs human
 actual repetition structurally over the full, untrimmed step LIST (no step is
 dropped before counting — unlike the judge, which scores the budget-trimmed
 trace; note each step's *content* may already be output-capped by E-06, which
-does not affect duplicate detection). The report shows the counted loop rate
-next to the judge's opinion and uses the counted signal to anchor the LLM axis.
+does not affect duplicate detection — identity is taken from the call, not the
+output). The report shows the counted loop rate next to the judge's opinion and
+uses the counted signal to anchor the LLM axis.
 
 This is a **precision-oriented structural lower bound over tool-calls**, not a
 universal loop oracle: it counts only tool actions (reasoning loops are out of
@@ -19,9 +20,9 @@ be the floor the LLM axis is measured against.
 Two complementary structural signals over the agent's tool-call sequence:
 
 1. **Exact stuck-repeat** — the longest run of *consecutive identical actions*
-   (same tool_name AND same normalized content), e.g. the same failing call
-   retried verbatim. Content-aware, so genuine progress (same tool, different
-   content) is not flagged.
+   (same tool_name AND same normalized arguments), e.g. the same failing call
+   retried verbatim. Argument-aware, so genuine progress (same tool, different
+   parameters) is not flagged.
 2. **Tandem tool cycles** — a contiguous repeated n-gram over the tool-name
    sequence with period ≥ 2, e.g. ``search → click → search → click → search →
    click``. Found by a phase-aware global scan (every (period, start)), so a
@@ -35,6 +36,7 @@ no-loop result. Stores only hashes/short tool names, never raw content.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 
@@ -65,9 +67,29 @@ def _norm(text: str | None) -> str:
     return _WS_RE.sub(" ", (text or "").strip().lower())[:_CONTENT_HASH_CHARS]
 
 
-def _action_key(tool_name: str, content: str | None) -> str:
-    """Identity of an action = tool name + a hash of its normalized content."""
-    h = hashlib.sha1(_norm(content).encode("utf-8", "replace")).hexdigest()[:16]
+def _action_key(tool_name: str, arguments: dict | None, index: int) -> str:
+    """Identity of an action = tool name + a hash of its normalized arguments.
+
+    An action is the **call**, not the result (SPA-86). Keying on the output — as
+    this did before arguments were recorded — gets both directions wrong: two
+    different calls that happen to return the same ``file not found`` counted as a
+    repeat, while the same call issued twice counted as progress whenever its
+    output differed. Arguments are sorted, so key order cannot make one call look
+    like two.
+
+    ``arguments is None`` means they were never recorded, which is not the same as
+    a call that took none (``{}``, and two such calls really are the same action).
+    Nothing establishes that two unrecorded calls were alike, and this detector is
+    a precision-oriented lower bound — so such a step is given an identity unique
+    to its position and can never be counted as a repeat. Silence is not evidence.
+    """
+    if arguments is None:
+        return f"{tool_name} @{index}"
+    try:
+        rendered = json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        rendered = str(arguments)
+    h = hashlib.sha1(_norm(rendered).encode("utf-8", "replace")).hexdigest()[:16]
     return f"{tool_name} {h}"
 
 
@@ -175,7 +197,8 @@ def detect_loops(steps: list[dict] | None) -> dict:
 
         tool_seq = [str(s.get("tool_name")) for s in tool_steps]
         action_keys = [
-            _action_key(str(s.get("tool_name")), s.get("content")) for s in tool_steps
+            _action_key(str(s.get("tool_name")), s.get("arguments"), i)
+            for i, s in enumerate(tool_steps)
         ]
 
         # 1) longest run of consecutive IDENTICAL actions (tool + content).
