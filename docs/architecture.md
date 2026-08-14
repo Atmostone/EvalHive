@@ -333,7 +333,25 @@ correlations) → **E-17**.
   that was served no judge scores». It does **not** mean the person never saw the
   judge — that is not a property this system can establish, and it is not the
   property the protocol needs. `annotations.session_id` keeps the evidence
-  attached to the row.
+  attached to the row, under a unique index so the database, not a
+  read-then-write, decides single-use; the claim takes `SELECT … FOR UPDATE` on
+  the session. A retry whose session already produced a rating gets that rating
+  back; a session that is unknown, someone else's, for another run or already
+  used is a **409** — silently recording a sighted rating for a caller who asked
+  for a blind one is the failure this whole design removes.
+
+- **Annotators do not see each other until they have rated (SPA-85).** The
+  session serves **this** annotator's own current rating as `human_feedback` —
+  never the materialised `quality_records.human_feedback`, which holds whoever
+  rated last. Serving the slot handed the second annotator the first one's
+  scores, comments and verdict as the initial state of their form, so the two
+  ratings were not independent and the κ between them measured agreement with a
+  pre-filled value rather than between people. Other annotators' ledger rows are
+  served with their scores, verdict and comments removed (`redacted: true`) until
+  this annotator has rated; who rated, when and under which protocol stay
+  visible, because provenance is not an anchor. Once they have rated, the rest of
+  the ledger is shown in full — at that point it is useful and can no longer
+  influence anything.
 
 ### Trace cleaner (E-06)
 

@@ -85,6 +85,8 @@ f1a2b3c4d5e6  experiment_runs/experiment_attempts condition_fingerprint + core_c
 f2a3b4c5d6e7  annotations — append-only annotation ledger, legacy backfill from quality_records.human_feedback (SPA-85)
      ↓
 f3a4b5c6d7e8  annotation_sessions + annotations.session_id — the protocol a rating was collected under (SPA-85)
+     ↓
+f5a6b7c8d9e0  unique annotations.session_id — one bundle vouches for one rating (SPA-85)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -582,7 +584,7 @@ Append-only: **one rating of one run by one annotator**. Added by migration
 | dimensions | JSONB | same element shape as the `human_feedback` slot's `dimensions[]` |
 | judge_observation | JSONB? | the judge's side frozen at annotation time (see below) |
 | supersedes_id | UUID? | FK `annotations.id`, **unique** — the lineage is a chain, never a fork |
-| session_id | UUID? | FK `annotation_sessions.id` — the session that produced this rating, i.e. the evidence behind the blindness flags |
+| session_id | UUID? | FK `annotation_sessions.id`, **unique** — the session that produced this rating (the evidence behind the blindness flags), and the database-level guarantee that one bundle vouches for one rating |
 | created_at | TIMESTAMP | |
 
 Indexes: `quality_record_id`, `task_id`, `(workspace_id, annotator_type)`,
@@ -654,6 +656,15 @@ flags come from this row, and the session is consumed. `blind_to_judge` therefor
 means «this rating was produced through a session that was served no judge
 scores» — a fact about what was served, not a claim about the annotator's whole
 browsing history.
+
+The bundle also serves **the caller's own** current rating rather than the
+materialised `quality_records.human_feedback` slot, and redacts other annotators'
+scores/verdicts/comments until the caller has rated: two ratings seeded from each
+other are not independent, and the inter-annotator κ over them measures nothing.
+
+Single-use is enforced by the unique index on `annotations.session_id` together
+with a `SELECT … FOR UPDATE` on the session row, so two concurrent submissions
+cannot both consume one bundle.
 
 ### rubrics (E-02)
 

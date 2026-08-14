@@ -234,6 +234,11 @@ export interface Annotation {
    *  flags. Null for machine annotators and pre-session rows. */
   session_id: string | null
   created_at: string | null
+  /** Another annotator's row, served with their scores, verdict and comments
+   *  removed because you have not rated this run yet (SPA-85). Reading them
+   *  would make your rating dependent on theirs, and the agreement computed
+   *  over the result would measure nothing. */
+  redacted?: boolean
 }
 
 /** One annotation session's whole payload (SPA-85): the protocol declared before

@@ -89,7 +89,11 @@ class Annotation(Base):
         Index("idx_annotations_task", "task_id"),
         Index("idx_annotations_workspace_type", "workspace_id", "annotator_type"),
         Index("idx_annotations_annotator", "annotator_id"),
-        Index("idx_annotations_session", "session_id"),
+        # One rating per session, enforced by the database rather than by a
+        # read-then-write: two concurrent submissions must not both consume the
+        # same bundle, and a retry has to find the row instead of writing a
+        # second one under a different protocol.
+        UniqueConstraint("session_id", name="uq_annotations_session"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

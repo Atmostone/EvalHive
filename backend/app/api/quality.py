@@ -803,9 +803,10 @@ async def start_annotation_session(
     version of that claim would read as a guarantee while being false."""
     from app.quality.feedback import (
         annotation_bundle,
-        get_human_feedback,
+        feedback_from_annotation,
         list_annotations,
         open_annotation_session,
+        own_annotation,
     )
 
     task = await _get_owned_task(db, task_id, workspace)
@@ -817,12 +818,18 @@ async def start_annotation_session(
     session = await open_annotation_session(
         db, task, user_id=user.id, blind=body.blind, commit=False
     )
+    # This annotator's own rating — never the materialised `human_feedback`
+    # slot, which holds whoever rated last. Serving the slot would hand a second
+    # annotator the first one's scores to edit, and inter-annotator κ over that
+    # measures agreement with a pre-filled form.
+    mine = await own_annotation(db, task, user.id)
     bundle = annotation_bundle(
         review=await _review_context(db, task),
         quality_profile=rec.quality_profile if rec is not None else None,
         trajectory_profile=rec.trajectory_profile if rec is not None else None,
-        human_feedback=await get_human_feedback(db, task),
+        own_feedback=feedback_from_annotation(mine) if mine is not None else None,
         annotations=await list_annotations(db, task),
+        annotator_id=user.id,
         model_used=(rec.model_used if rec is not None else None) or task.model_used,
         blind=body.blind,
     )
@@ -855,22 +862,42 @@ async def put_feedback(
     than the record's, so a second annotator's rating stays intact and the two
     can be compared. Role-gated: calibration data is what the reliability claims
     rest on, and any member could previously overwrite it."""
-    from app.quality.feedback import claim_annotation_session, save_annotation
+    from app.quality.feedback import (
+        annotation_for_session,
+        claim_annotation_session,
+        feedback_from_annotation,
+        save_annotation,
+    )
 
     task = await _get_owned_task(db, task_id, workspace)
     payload = body.model_dump()
     human = body.annotator_type == "human"
     # The protocol comes from the session that served this annotator their
-    # bundle — never from the body, which cannot be verified. No session means
-    # no claim: the rating is recorded as sighted. A machine annotator has no
-    # session and declares its own protocol.
-    session = (
-        await claim_annotation_session(
+    # bundle — never from the body, which cannot be verified. Omitting the
+    # session means making no claim: the rating is recorded as sighted. A machine
+    # annotator has no session and declares its own protocol.
+    session = None
+    if human and body.session_id:
+        # A retry after a lost response must find its own rating, not write a
+        # second one — and certainly not write it under a silently different
+        # protocol, which is what quietly falling back to sighted used to do.
+        existing = await annotation_for_session(db, body.session_id)
+        if existing is not None:
+            return {
+                "task_id": task_id,
+                "human_feedback": feedback_from_annotation(existing),
+            }
+        session = await claim_annotation_session(
             db, body.session_id, task_id=task.id, user_id=user.id
         )
-        if human
-        else None
-    )
+        if session is None:
+            # Unknown, someone else's, for another run, or already consumed.
+            # Downgrading to sighted would record a protocol the caller did not
+            # ask for, so this is a conflict, not a default.
+            raise HTTPException(
+                status_code=409,
+                detail="annotation session is unknown, not yours, or already used",
+            )
     feedback = await save_annotation(
         db,
         task,

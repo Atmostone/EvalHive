@@ -316,17 +316,40 @@ async def open_annotation_session(
     return session
 
 
+async def annotation_for_session(db: AsyncSession, session_id) -> Annotation | None:
+    """The rating already written against this session, if any.
+
+    A retry after a lost response must find its own row rather than write a
+    second one — and, before the unique index existed, silently write it under a
+    different protocol."""
+    if not session_id:
+        return None
+    return (
+        await db.execute(
+            select(Annotation).where(Annotation.session_id == session_id)
+        )
+    ).scalar_one_or_none()
+
+
 async def claim_annotation_session(
     db: AsyncSession, session_id, *, task_id, user_id
 ) -> AnnotationSession | None:
     """The unconsumed session this rating is being submitted against, or ``None``.
 
-    Checked against the caller and the task so a session cannot vouch for someone
-    else's rating or for a different run, and single-use so one blind bundle
-    cannot vouch for ratings made long after it was served."""
+    Locks the row: «single-use» has to be decided by the database, not by a
+    read-then-write, or two concurrent submissions both see an unconsumed session
+    and one blind bundle vouches for two ratings. Checked against the caller and
+    the task so a session cannot vouch for someone else's rating or another run.
+    """
     if not session_id:
         return None
-    session = await db.get(AnnotationSession, session_id)
+    session = (
+        await db.execute(
+            select(AnnotationSession)
+            .where(AnnotationSession.id == session_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
     if session is None or session.consumed_at is not None:
         return None
     if session.task_id != task_id or session.user_id != user_id:
@@ -334,13 +357,33 @@ async def claim_annotation_session(
     return session
 
 
+def peer_redacted_annotation(row: dict) -> dict:
+    """Another annotator's ledger row with their opinion removed.
+
+    Who rated, when, and under which protocol stay: that is provenance, and the
+    «two people rated this» count has to remain visible. Their scores, verdict
+    and comments do not — an annotator who can read them is not producing an
+    independent rating, and inter-annotator agreement over anchored ratings
+    measures nothing."""
+    out = dict(row)
+    out["dimensions"] = [
+        {"key": d.get("key"), "name": d.get("name")} for d in row.get("dimensions") or []
+    ]
+    out["verdict"] = None
+    out["overall_comment"] = None
+    out["judge_observation"] = {}
+    out["redacted"] = True
+    return out
+
+
 def annotation_bundle(
     *,
     review: dict,
     quality_profile: dict | None,
     trajectory_profile: dict | None,
-    human_feedback: dict | None,
+    own_feedback: dict | None,
     annotations: list[dict],
+    annotator_id,
     model_used: str | None,
     blind: bool,
 ) -> dict:
@@ -348,22 +391,41 @@ def annotation_bundle(
 
     One endpoint rather than five means the protocol cannot be half-applied — a
     blind session physically cannot receive a judge score, because the same
-    branch builds every part of what it is given."""
+    branch builds every part of what it is given.
+
+    ``own_feedback`` is **this** annotator's own latest rating, never the
+    materialised `human_feedback` slot: that slot holds whoever rated last, so
+    serving it would hand the second annotator the first one's scores to edit,
+    and the κ computed over the result would be measuring agreement with a
+    pre-filled form. For the same reason other annotators' rows are redacted
+    until this annotator has rated — after that they are useful and no longer
+    influence anything.
+    """
+    rated = any(
+        r.get("annotator_id") and str(r["annotator_id"]) == str(annotator_id)
+        for r in annotations
+    )
+    rows = [
+        r
+        if rated or (r.get("annotator_id") and str(r["annotator_id"]) == str(annotator_id))
+        else peer_redacted_annotation(r)
+        for r in annotations
+    ]
     if not blind:
         return {
             "review": review,
             "quality_profile": quality_profile,
             "trajectory_profile": trajectory_profile,
-            "human_feedback": human_feedback,
-            "annotations": annotations,
+            "human_feedback": own_feedback,
+            "annotations": rows,
             "model_used": model_used,
         }
     return {
         "review": review,
         "quality_profile": blind_quality_profile(quality_profile),
         "trajectory_profile": blind_trajectory_profile(trajectory_profile),
-        "human_feedback": blind_human_feedback(human_feedback),
-        "annotations": [blind_annotation(r) for r in annotations],
+        "human_feedback": blind_human_feedback(own_feedback),
+        "annotations": [blind_annotation(r) for r in rows],
         "model_used": None,
     }
 
@@ -404,6 +466,40 @@ async def get_human_feedback(db: AsyncSession, task: Task) -> dict | None:
     """The materialised latest human rating for a task, or ``None``."""
     record = await _record_for(db, task)
     return record.human_feedback if record is not None else None
+
+
+def feedback_from_annotation(row: Annotation) -> dict:
+    """A stored rating back in the ``human_feedback`` shape — what this annotator
+    submitted, for their own form to reopen and for an idempotent retry."""
+    return {
+        "schema_version": FEEDBACK_SCHEMA_VERSION,
+        "verdict": row.verdict,
+        "overall_comment": row.overall_comment,
+        "dimensions": row.dimensions or [],
+        "submitted_by": row.annotator_label,
+        "submitted_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+async def own_annotation(db: AsyncSession, task: Task, annotator_id) -> Annotation | None:
+    """This annotator's current (not superseded) rating of this run, if any."""
+    if annotator_id is None:
+        return None
+    superseded = select(Annotation.supersedes_id).where(
+        Annotation.supersedes_id.isnot(None)
+    )
+    return (
+        await db.execute(
+            select(Annotation)
+            .where(
+                Annotation.task_id == task.id,
+                Annotation.annotator_id == annotator_id,
+                Annotation.id.notin_(superseded),
+            )
+            .order_by(Annotation.created_at.desc(), Annotation.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
 
 
 async def list_annotations(db: AsyncSession, task: Task) -> list[dict]:
@@ -487,8 +583,7 @@ async def save_annotation(
         previous.order_by(Annotation.created_at.desc(), Annotation.id.desc()).limit(1)
     )
 
-    db.add(
-        Annotation(
+    annotation = Annotation(
             quality_record_id=record.id,
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -504,8 +599,14 @@ async def save_annotation(
             judge_observation=observation,
             supersedes_id=supersedes_id,
             session_id=session.id if session is not None else None,
-        )
     )
+    db.add(annotation)
+    await db.flush()
+    # The row's own timestamp is the authority. Without this the response and a
+    # later read of the same rating disagree about when it happened — including
+    # an idempotent retry, which rebuilds its answer from the row.
+    if annotation.created_at is not None:
+        feedback["submitted_at"] = annotation.created_at.isoformat()
     if annotator_type in HUMAN_TYPES:
         record.human_feedback = feedback
 

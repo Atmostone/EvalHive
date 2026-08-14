@@ -134,6 +134,9 @@ function AnnotationLedger({ rows }: { rows: Annotation[] }) {
   const superseded = new Set(rows.map((r) => r.supersedes_id).filter(Boolean) as string[])
   const current = rows.filter((r) => !superseded.has(r.id))
   const people = new Set(current.filter((r) => r.annotator_type === 'human').map((r) => r.annotator_id))
+  // Who rated stays visible even when what they said does not — that count is
+  // provenance, not an anchor.
+  const hidden = current.some((r) => r.redacted)
 
   return (
     <div>
@@ -142,6 +145,7 @@ function AnnotationLedger({ rows }: { rows: Annotation[] }) {
         Annotations · {current.length} current
         {rows.length > current.length && ` (${rows.length - current.length} superseded)`}
         {people.size > 1 && ` · ${people.size} people`}
+        {hidden && ' · others hidden until you rate'}
       </div>
       <div className="border rounded-lg bg-white divide-y">
         {rows.map((r) => {
@@ -166,6 +170,14 @@ function AnnotationLedger({ rows }: { rows: Annotation[] }) {
               {r.verdict && (
                 <span className={r.verdict === 'approve' ? 'text-green-600' : 'text-red-600'}>
                   {r.verdict}
+                </span>
+              )}
+              {r.redacted && (
+                <span
+                  className="text-gray-400 italic"
+                  title="Hidden until you have rated this run: reading another annotator's scores would make yours dependent on theirs, and the agreement between you would measure nothing."
+                >
+                  hidden until you rate
                 </span>
               )}
               <span className="text-gray-400">{r.dimensions.length} dims</span>

@@ -10,13 +10,16 @@ never displaces the human slot, the judge's side is frozen so a re-judge cannot
 move a past pair, and the write is role-gated while the read is not.
 """
 
+import json
 import uuid
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app import database
+from app.models.annotation import Annotation
 from app.models.provider import LLMModel, Provider
 from app.models.quality_record import QualityRecord
 from app.models.task import Task, TaskStatus
@@ -423,24 +426,31 @@ async def test_no_session_means_no_claim(auth_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_a_session_vouches_for_one_rating_only(auth_client: AsyncClient):
     """Single-use: otherwise one blind bundle could vouch for ratings made much
-    later, after the annotator had looked at the judge somewhere else."""
+    later, after the annotator had looked at the judge somewhere else. Rating
+    again means opening a new session, which states its own protocol."""
     ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     tid = await _seed_judged_record(ws)
     blind = (await auth_client.post(
         f"/api/quality/records/{tid}/annotation-session", json={"blind": True}
     )).json()
-    body = {
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
         "session_id": blind["session_id"],
         "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
-    }
-    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json=body)).status_code == 200
-    # the same session again — accepted as a rating, but no longer blind
-    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json=body)).status_code == 200
+    })).status_code == 200
+
+    sighted = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": False}
+    )).json()
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "session_id": sighted["session_id"],
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 7}],
+    })).status_code == 200
 
     rows = (await auth_client.get(
         f"/api/quality/records/{tid}/annotations"
     )).json()["annotations"]
     assert [r["blind_to_judge"] for r in rows] == [True, False]
+    assert rows[1]["supersedes_id"] == rows[0]["id"]
 
 
 @pytest.mark.asyncio
@@ -460,11 +470,158 @@ async def test_a_session_cannot_vouch_for_another_annotator(auth_client: AsyncCl
         },
         headers=other,
     )
-    assert r.status_code == 200, r.text
-    row = (await auth_client.get(
+    # 409 rather than a sighted rating: recording a protocol the caller did not
+    # ask for is the failure this design exists to remove
+    assert r.status_code == 409
+    assert (await auth_client.get(
         f"/api/quality/records/{tid}/annotations"
-    )).json()["annotations"][0]
-    assert row["blind_to_judge"] is False and row["session_id"] is None
+    )).json()["annotations"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_session_never_hands_you_another_annotators_rating(auth_client: AsyncClient):
+    """The independence κ is computed over. Serving the materialised
+    `human_feedback` slot would hand the second annotator the first one's scores
+    to edit, and agreement measured over that is agreement with a pre-filled
+    form."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    other = await _join_workspace(auth_client, ws, "admin")
+
+    # the first annotator rates
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "verdict": "approve", "overall_comment": "great work",
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 9,
+                        "comment": "spot on"}],
+    })).status_code == 200
+
+    # the second opens a session and is shown nothing of it
+    b = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": False},
+        headers=other,
+    )).json()
+    assert b["human_feedback"] is None                 # not the other's, and not "yours"
+    peer = b["annotations"][0]
+    assert peer["redacted"] is True
+    assert peer["verdict"] is None and peer["overall_comment"] is None
+    assert peer["dimensions"] == [{"key": "correctness", "name": "Correctness"}]
+    # provenance survives — «someone rated this» is not an anchor
+    assert peer["annotator_label"] and peer["created_at"]
+    assert "spot on" not in json.dumps(b) and "great work" not in json.dumps(b)
+
+    # after rating, the peer's opinion is useful and no longer influences anything
+    assert (await auth_client.put(
+        f"/api/quality/records/{tid}/feedback",
+        json={
+            "session_id": b["session_id"], "verdict": "reject",
+            "dimensions": [{"key": "correctness", "name": "Correctness", "score": 2}],
+        },
+        headers=other,
+    )).status_code == 200
+    b2 = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": False},
+        headers=other,
+    )).json()
+    assert [r.get("redacted") for r in b2["annotations"]] == [None, None]
+    assert b2["annotations"][0]["verdict"] == "approve"
+    # ...and reopening your own form shows YOUR rating, not the latest one
+    assert b2["human_feedback"]["verdict"] == "reject"
+    assert b2["human_feedback"]["dimensions"][0]["score"] == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_with_a_used_session_is_idempotent(auth_client: AsyncClient):
+    """A lost response must not become a second rating under a silently
+    different protocol."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    sid = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True}
+    )).json()["session_id"]
+    body = {
+        "session_id": sid,
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+    }
+    first = await auth_client.put(f"/api/quality/records/{tid}/feedback", json=body)
+    assert first.status_code == 200, first.text
+    again = await auth_client.put(f"/api/quality/records/{tid}/feedback", json=body)
+    assert again.status_code == 200, again.text
+    assert again.json()["human_feedback"] == first.json()["human_feedback"]
+
+    rows = (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"]
+    assert len(rows) == 1                       # no second row
+    assert rows[0]["blind_to_judge"] is True    # and the protocol did not change
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_session_is_a_conflict_not_a_downgrade(auth_client: AsyncClient):
+    """Silently recording a sighted rating for a caller who asked for a blind one
+    is the failure mode this replaces."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    other = await _join_workspace(auth_client, ws, "admin")
+    body = {"dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}]}
+
+    # unknown session
+    r = await auth_client.put(
+        f"/api/quality/records/{tid}/feedback",
+        json={**body, "session_id": str(uuid.uuid4())},
+    )
+    assert r.status_code == 409
+
+    # someone else's session
+    sid = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True},
+        headers=other,
+    )).json()["session_id"]
+    r = await auth_client.put(
+        f"/api/quality/records/{tid}/feedback", json={**body, "session_id": sid}
+    )
+    assert r.status_code == 409
+
+    # a session for a different run
+    tid2 = await _seed_judged_record(ws)
+    sid2 = (await auth_client.post(
+        f"/api/quality/records/{tid2}/annotation-session", json={"blind": True}
+    )).json()["session_id"]
+    r = await auth_client.put(
+        f"/api/quality/records/{tid}/feedback", json={**body, "session_id": sid2}
+    )
+    assert r.status_code == 409
+
+    assert (await auth_client.get(
+        f"/api/quality/records/{tid}/annotations"
+    )).json()["annotations"] == []
+
+
+@pytest.mark.asyncio
+async def test_one_session_cannot_produce_two_ratings(auth_client: AsyncClient):
+    """The database is the arbiter of single-use, not a read-then-write."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    sid = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True}
+    )).json()["session_id"]
+    assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "session_id": sid,
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 4}],
+    })).status_code == 200
+
+    # a genuinely different rating against the same session is not a retry
+    async with database.async_session() as s:
+        rows = (await s.execute(
+            select(Annotation).where(Annotation.task_id == uuid.UUID(tid))
+        )).scalars().all()
+        assert len(rows) == 1
+        s.add(Annotation(
+            quality_record_id=rows[0].quality_record_id, task_id=uuid.UUID(tid),
+            workspace_id=ws, annotator_type="human", annotator_label="x@y.z",
+            dimensions=[], session_id=uuid.UUID(sid),
+        ))
+        with pytest.raises(IntegrityError):
+            await s.commit()
 
 
 @pytest.mark.asyncio
