@@ -79,6 +79,7 @@ def _pair_row(
         "protocol_version": ann.protocol_version,
         "blind_to_model": ann.blind_to_model,
         "blind_to_judge": ann.blind_to_judge,
+        "blind_to_peers": ann.blind_to_peers,
         "dimension_key": dimension_key,
         "dimension_name": dimension_name,
         "judge_score": judge_score,
@@ -271,7 +272,13 @@ def _inter_annotator(pairs: list[dict], *, threshold_kappa: float) -> dict:
     The number a single overwritable feedback slot made impossible to compute:
     before the ledger a run could only ever carry one rating. It answers a
     different question from the judge-vs-human κ above — how reproducible the
-    human gold itself is — and it bounds what the judge can be asked to match."""
+    human gold itself is — and it bounds what the judge can be asked to match.
+
+    Computed **only** over ratings collected without sight of the other
+    annotators' (`blind_to_peers`). Two ratings seeded from each other agree by
+    construction, so including them would inflate exactly the number that is
+    supposed to say whether humans agree."""
+    pairs = [p for p in pairs if p.get("blind_to_peers")]
     by_dim: dict[str, dict[str, dict[str, str]]] = {}   # dim → task → annotator → band
     by_verdict: dict[str, dict[str, str]] = {}          # task → annotator → verdict
     names: dict[str, str] = {}

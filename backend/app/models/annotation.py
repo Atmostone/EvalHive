@@ -57,6 +57,12 @@ class AnnotationSession(Base):
     blind_to_model: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )
+    # Every session serves other annotators' ratings redacted, so this is always
+    # true for a session — recorded rather than inferred, so a later change of
+    # protocol cannot silently reinterpret old rows.
+    blind_to_peers: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     # Single-use: one bundle vouches for one rating. Without this, a blind bundle
     # could be opened once and then vouch for ratings made much later, after the
@@ -129,6 +135,12 @@ class Annotation(Base):
         Boolean, default=False, server_default="false"
     )
     blind_to_judge: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false"
+    )
+    # Whether this rating was collected without sight of the other annotators'.
+    # Inter-annotator agreement is computed only over ratings where it holds:
+    # two ratings seeded from each other agree by construction.
+    blind_to_peers: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"
     )
 

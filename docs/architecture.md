@@ -335,10 +335,12 @@ correlations) → **E-17**.
   property the protocol needs. `annotations.session_id` keeps the evidence
   attached to the row, under a unique index so the database, not a
   read-then-write, decides single-use; the claim takes `SELECT … FOR UPDATE` on
-  the session. A retry whose session already produced a rating gets that rating
-  back; a session that is unknown, someone else's, for another run or already
-  used is a **409** — silently recording a sighted rating for a caller who asked
-  for a blind one is the failure this whole design removes.
+  the session and checks caller, run **and** workspace *before* any rating is
+  looked up — resolving by session id alone would answer a replay of somebody
+  else's id with their feedback. A retry whose own session already produced a
+  rating gets that rating back; anything else is a **409** — silently recording a
+  sighted rating for a caller who asked for a blind one is the failure this whole
+  design removes.
 
 - **Annotators do not see each other until they have rated (SPA-85).** The
   session serves **this** annotator's own current rating as `human_feedback` —
@@ -346,12 +348,20 @@ correlations) → **E-17**.
   rated last. Serving the slot handed the second annotator the first one's
   scores, comments and verdict as the initial state of their form, so the two
   ratings were not independent and the κ between them measured agreement with a
-  pre-filled value rather than between people. Other annotators' ledger rows are
-  served with their scores, verdict and comments removed (`redacted: true`) until
-  this annotator has rated; who rated, when and under which protocol stay
-  visible, because provenance is not an anchor. Once they have rated, the rest of
-  the ledger is shown in full — at that point it is useful and can no longer
-  influence anything.
+  pre-filled value rather than between people.
+
+  Other annotators' ledger rows are served with their scores, verdict and
+  comments removed (`redacted: true`) — **always**, not «until you have rated».
+  Revealing them afterwards left re-annotation open: the collector takes each
+  annotator's *current* row, so an annotator who had seen their peers could rate
+  again and the dependent re-rating would silently replace the independent one.
+  Who rated, when and under which protocol stay visible, because provenance is
+  not an anchor. A session is for producing an independent rating; reading what
+  everyone thought is a different activity, served by `GET …/annotations` and the
+  calibration export. Each session-produced rating records `blind_to_peers`, and
+  **inter-annotator κ is computed only over ratings that carry it** — a rating
+  collected without a session makes no independence claim, so it cannot be paired
+  into a number that asserts one.
 
 ### Trace cleaner (E-06)
 

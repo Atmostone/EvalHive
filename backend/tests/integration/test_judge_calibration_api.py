@@ -113,6 +113,7 @@ async def _seed_records(ws):
                 quality_record_id=record.id, task_id=t.id, workspace_id=ws,
                 annotator_type="human", annotator_id=annotators[i % 2],
                 annotator_label=_SUBMITTERS[i % 2], verdict=verdict,
+                blind_to_peers=True,
                 dimensions=_dims(ch, th),
                 judge_observation={
                     "outcome": {
@@ -274,6 +275,9 @@ async def _seed_paired_records(ws):
                     quality_record_id=record.id, task_id=t.id, workspace_id=ws,
                     annotator_type="human", annotator_id=annotators[who],
                     annotator_label=_SUBMITTERS[who], verdict=verdict,
+                    # collected independently — which is what lets these rows
+                    # enter the inter-annotator agreement at all (SPA-85)
+                    blind_to_peers=True,
                     dimensions=[{"key": "correctness", "name": "Correctness",
                                  "score": score, "band": score_to_band(score)}],
                     judge_observation=observation,

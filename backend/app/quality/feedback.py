@@ -307,6 +307,9 @@ async def open_annotation_session(
         protocol_version=PROTOCOL_VERSION,
         blind_to_judge=blind,
         blind_to_model=blind,
+        # Not a choice: every session redacts the other annotators' ratings, so
+        # a rating produced through one was made without sight of them.
+        blind_to_peers=True,
     )
     db.add(session)
     await db.flush()
@@ -316,33 +319,23 @@ async def open_annotation_session(
     return session
 
 
-async def annotation_for_session(db: AsyncSession, session_id) -> Annotation | None:
-    """The rating already written against this session, if any.
+async def resolve_annotation_session(
+    db: AsyncSession, session_id, *, task_id, workspace_id, user_id
+) -> tuple[AnnotationSession | None, Annotation | None]:
+    """Look up the session a rating is being submitted against.
 
-    A retry after a lost response must find its own row rather than write a
-    second one — and, before the unique index existed, silently write it under a
-    different protocol."""
-    if not session_id:
-        return None
-    return (
-        await db.execute(
-            select(Annotation).where(Annotation.session_id == session_id)
-        )
-    ).scalar_one_or_none()
+    Returns ``(session, existing_rating)``. ``session`` is ``None`` when the id
+    is unknown or does not belong to this caller, this run and this workspace —
+    the identity checks happen **before** any rating is fetched, because looking
+    the rating up first and returning it would answer a replay of someone else's
+    session id with their feedback, across workspaces.
 
-
-async def claim_annotation_session(
-    db: AsyncSession, session_id, *, task_id, user_id
-) -> AnnotationSession | None:
-    """The unconsumed session this rating is being submitted against, or ``None``.
-
-    Locks the row: «single-use» has to be decided by the database, not by a
+    The row is locked: «single-use» has to be decided by the database, not by a
     read-then-write, or two concurrent submissions both see an unconsumed session
-    and one blind bundle vouches for two ratings. Checked against the caller and
-    the task so a session cannot vouch for someone else's rating or another run.
+    and one bundle vouches for two ratings.
     """
     if not session_id:
-        return None
+        return None, None
     session = (
         await db.execute(
             select(AnnotationSession)
@@ -350,11 +343,20 @@ async def claim_annotation_session(
             .with_for_update()
         )
     ).scalar_one_or_none()
-    if session is None or session.consumed_at is not None:
-        return None
-    if session.task_id != task_id or session.user_id != user_id:
-        return None
-    return session
+    if session is None:
+        return None, None
+    if (
+        session.user_id != user_id
+        or session.task_id != task_id
+        or session.workspace_id != workspace_id
+    ):
+        return None, None
+    existing = (
+        await db.execute(
+            select(Annotation).where(Annotation.session_id == session.id)
+        )
+    ).scalar_one_or_none()
+    return session, existing
 
 
 def peer_redacted_annotation(row: dict) -> dict:
@@ -397,17 +399,20 @@ def annotation_bundle(
     materialised `human_feedback` slot: that slot holds whoever rated last, so
     serving it would hand the second annotator the first one's scores to edit,
     and the κ computed over the result would be measuring agreement with a
-    pre-filled form. For the same reason other annotators' rows are redacted
-    until this annotator has rated — after that they are useful and no longer
-    influence anything.
+    pre-filled form.
+
+    Other annotators' opinions are redacted **always**, not «until you have
+    rated». Revealing them afterwards left re-annotation open: an annotator who
+    had seen their peers could rate again, and since the collector takes each
+    annotator's *current* row, the independent first rating was dropped as
+    superseded and the dependent one silently took its place in the κ. A session
+    is for producing an independent rating; reading what everyone else thought is
+    a different activity, served by `GET …/annotations` and the calibration
+    export.
     """
-    rated = any(
-        r.get("annotator_id") and str(r["annotator_id"]) == str(annotator_id)
-        for r in annotations
-    )
     rows = [
         r
-        if rated or (r.get("annotator_id") and str(r["annotator_id"]) == str(annotator_id))
+        if r.get("annotator_id") and str(r["annotator_id"]) == str(annotator_id)
         else peer_redacted_annotation(r)
         for r in annotations
     ]
@@ -441,6 +446,7 @@ def serialize_annotation(row: Annotation) -> dict:
         "protocol_version": row.protocol_version,
         "blind_to_model": row.blind_to_model,
         "blind_to_judge": row.blind_to_judge,
+        "blind_to_peers": row.blind_to_peers,
         "verdict": row.verdict,
         "overall_comment": row.overall_comment,
         "dimensions": row.dimensions or [],
@@ -524,6 +530,7 @@ async def save_annotation(
     annotator_label: str,
     blind_to_model: bool = False,
     blind_to_judge: bool = False,
+    blind_to_peers: bool = False,
     session: AnnotationSession | None = None,
     commit: bool = True,
 ) -> dict:
@@ -545,6 +552,7 @@ async def save_annotation(
     if session is not None:
         blind_to_judge = session.blind_to_judge
         blind_to_model = session.blind_to_model
+        blind_to_peers = session.blind_to_peers
         protocol_version = session.protocol_version
         session.consumed_at = datetime.utcnow()
     else:
@@ -593,6 +601,7 @@ async def save_annotation(
             protocol_version=protocol_version,
             blind_to_model=blind_to_model,
             blind_to_judge=blind_to_judge,
+            blind_to_peers=blind_to_peers,
             verdict=feedback["verdict"],
             overall_comment=feedback["overall_comment"],
             dimensions=feedback["dimensions"],

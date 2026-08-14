@@ -490,9 +490,9 @@ async def test_a_session_never_hands_you_another_annotators_rating(auth_client: 
 
     # the first annotator rates
     assert (await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
-        "verdict": "approve", "overall_comment": "great work",
+        "verdict": "approve", "overall_comment": "CANARY-OVERALL",
         "dimensions": [{"key": "correctness", "name": "Correctness", "score": 9,
-                        "comment": "spot on"}],
+                        "comment": "CANARY-DIM"}],
     })).status_code == 200
 
     # the second opens a session and is shown nothing of it
@@ -507,9 +507,11 @@ async def test_a_session_never_hands_you_another_annotators_rating(auth_client: 
     assert peer["dimensions"] == [{"key": "correctness", "name": "Correctness"}]
     # provenance survives — «someone rated this» is not an anchor
     assert peer["annotator_label"] and peer["created_at"]
-    assert "spot on" not in json.dumps(b) and "great work" not in json.dumps(b)
+    assert "CANARY" not in json.dumps(b)
 
-    # after rating, the peer's opinion is useful and no longer influences anything
+    # rating does NOT unlock the peer's opinion: revealing it afterwards left
+    # re-annotation open, and the collector would then take the dependent
+    # re-rating as this annotator's current one
     assert (await auth_client.put(
         f"/api/quality/records/{tid}/feedback",
         json={
@@ -522,11 +524,13 @@ async def test_a_session_never_hands_you_another_annotators_rating(auth_client: 
         f"/api/quality/records/{tid}/annotation-session", json={"blind": False},
         headers=other,
     )).json()
-    assert [r.get("redacted") for r in b2["annotations"]] == [None, None]
-    assert b2["annotations"][0]["verdict"] == "approve"
-    # ...and reopening your own form shows YOUR rating, not the latest one
+    peer2 = next(r for r in b2["annotations"] if r["annotator_label"] != peer["annotator_label"] or r.get("redacted"))
+    assert peer2["redacted"] is True and peer2["verdict"] is None
+    assert "CANARY" not in json.dumps(b2)
+    # ...while reopening your own form shows YOUR rating, not the latest one
     assert b2["human_feedback"]["verdict"] == "reject"
     assert b2["human_feedback"]["dimensions"][0]["score"] == 2
+    assert next(r for r in b2["annotations"] if not r.get("redacted"))["verdict"] == "reject"
 
 
 @pytest.mark.asyncio
@@ -594,6 +598,61 @@ async def test_an_unusable_session_is_a_conflict_not_a_downgrade(auth_client: As
     assert (await auth_client.get(
         f"/api/quality/records/{tid}/annotations"
     )).json()["annotations"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_used_session_id_never_returns_someone_elses_rating(auth_client: AsyncClient):
+    """The idempotent lookup must check identity BEFORE it fetches a rating —
+    resolving by session id alone answers a replay of somebody else's id with
+    their feedback, across workspaces."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tid = await _seed_judged_record(ws)
+    other = await _join_workspace(auth_client, ws, "admin")
+
+    sid = (await auth_client.post(
+        f"/api/quality/records/{tid}/annotation-session", json={"blind": True},
+        headers=other,
+    )).json()["session_id"]
+    assert (await auth_client.put(
+        f"/api/quality/records/{tid}/feedback",
+        json={"session_id": sid, "overall_comment": "PRIVATE",
+              "dimensions": [{"key": "correctness", "name": "Correctness", "score": 1}]},
+        headers=other,
+    )).status_code == 200
+
+    # replaying their consumed session id must not hand over their rating
+    r = await auth_client.put(f"/api/quality/records/{tid}/feedback", json={
+        "session_id": sid,
+        "dimensions": [{"key": "correctness", "name": "Correctness", "score": 8}],
+    })
+    assert r.status_code == 409
+    assert "PRIVATE" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_inter_annotator_kappa_ignores_ratings_that_saw_peers(auth_client: AsyncClient):
+    """A rating collected without a session makes no independence claim, so it
+    cannot be paired into an agreement number that asserts one."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    other = await _join_workspace(auth_client, ws, "admin")
+    for i in range(3):
+        tid = await _seed_judged_record(ws)
+        for headers in ({}, other):
+            # no session → blind_to_peers false
+            assert (await auth_client.put(
+                f"/api/quality/records/{tid}/feedback",
+                json={"verdict": "approve",
+                      "dimensions": [{"key": "correctness", "name": "Correctness",
+                                      "score": 9 - i}]},
+                headers=headers,
+            )).status_code == 200
+
+    rows = (await auth_client.get("/api/quality/calibration")).json()
+    assert rows and all(r["blind_to_peers"] is False for r in rows)
+    r = await auth_client.post("/api/quality/judge-calibration/run")
+    inter = r.json()["metrics"]["inter_annotator"]
+    # three runs each rated by both people — and still no agreement claimed
+    assert inter["available"] is False and inter["n_records"] == 0
 
 
 @pytest.mark.asyncio

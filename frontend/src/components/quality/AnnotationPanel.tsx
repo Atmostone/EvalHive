@@ -145,7 +145,7 @@ function AnnotationLedger({ rows }: { rows: Annotation[] }) {
         Annotations · {current.length} current
         {rows.length > current.length && ` (${rows.length - current.length} superseded)`}
         {people.size > 1 && ` · ${people.size} people`}
-        {hidden && ' · others hidden until you rate'}
+        {hidden && ' · others’ ratings hidden'}
       </div>
       <div className="border rounded-lg bg-white divide-y">
         {rows.map((r) => {
@@ -175,9 +175,9 @@ function AnnotationLedger({ rows }: { rows: Annotation[] }) {
               {r.redacted && (
                 <span
                   className="text-gray-400 italic"
-                  title="Hidden until you have rated this run: reading another annotator's scores would make yours dependent on theirs, and the agreement between you would measure nothing."
+                  title="Another annotator's rating is never shown inside an annotation session: reading it would make yours dependent on theirs, and the agreement between you would measure nothing. It is visible outside the session, in the calibration export."
                 >
-                  hidden until you rate
+                  hidden
                 </span>
               )}
               <span className="text-gray-400">{r.dimensions.length} dims</span>

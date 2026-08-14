@@ -87,6 +87,8 @@ f2a3b4c5d6e7  annotations — append-only annotation ledger, legacy backfill fro
 f3a4b5c6d7e8  annotation_sessions + annotations.session_id — the protocol a rating was collected under (SPA-85)
      ↓
 f5a6b7c8d9e0  unique annotations.session_id — one bundle vouches for one rating (SPA-85)
+     ↓
+f8a9b0c1d2e3  blind_to_peers on annotation_sessions + annotations — independence of a rating (SPA-85)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -578,7 +580,7 @@ Append-only: **one rating of one run by one annotator**. Added by migration
 | annotator_id | UUID? | FK `users.id` ON DELETE SET NULL; null for the machine types and for `legacy` |
 | annotator_label | VARCHAR(255)? | the user's email, or the model's `api_name` |
 | protocol_version | int | version of the collection protocol (currently 1) |
-| blind_to_model / blind_to_judge | bool | what the annotator actually could NOT see |
+| blind_to_model / blind_to_judge / blind_to_peers | bool | what the session that produced this rating did NOT serve. Inter-annotator κ is computed only over rows with `blind_to_peers` |
 | verdict | VARCHAR(20)? | `approve` \| `reject` \| null |
 | overall_comment | text? | |
 | dimensions | JSONB | same element shape as the `human_feedback` slot's `dimensions[]` |
@@ -635,7 +637,7 @@ The protocol one rating was collected under. Added by migration `f3a4b5c6d7e8`.
 | workspace_id | UUID | |
 | user_id | UUID? | FK `users.id` ON DELETE SET NULL — the protocol record outlives the account |
 | protocol_version | int | |
-| blind_to_judge / blind_to_model | bool | what the bundle served under this session did **not** contain |
+| blind_to_judge / blind_to_model / blind_to_peers | bool | what the bundle served under this session did **not** contain. `blind_to_peers` is always true: a session never serves another annotator's opinion |
 | created_at | TIMESTAMP | |
 | consumed_at | TIMESTAMP? | stamped when a rating is submitted against it — single-use |
 
@@ -658,9 +660,12 @@ scores» — a fact about what was served, not a claim about the annotator's who
 browsing history.
 
 The bundle also serves **the caller's own** current rating rather than the
-materialised `quality_records.human_feedback` slot, and redacts other annotators'
-scores/verdicts/comments until the caller has rated: two ratings seeded from each
-other are not independent, and the inter-annotator κ over them measures nothing.
+materialised `quality_records.human_feedback` slot, and always redacts other
+annotators' scores/verdicts/comments: two ratings seeded from each other are not
+independent, and the inter-annotator κ over them measures nothing. Revealing them
+after the caller had rated was not enough — re-annotation would then replace the
+independent rating with a dependent one, since the collector reads each
+annotator's *current* row.
 
 Single-use is enforced by the unique index on `annotations.session_id` together
 with a `SELECT … FOR UPDATE` on the session row, so two concurrent submissions

@@ -863,9 +863,8 @@ async def put_feedback(
     can be compared. Role-gated: calibration data is what the reliability claims
     rest on, and any member could previously overwrite it."""
     from app.quality.feedback import (
-        annotation_for_session,
-        claim_annotation_session,
         feedback_from_annotation,
+        resolve_annotation_session,
         save_annotation,
     )
 
@@ -878,25 +877,34 @@ async def put_feedback(
     # annotator has no session and declares its own protocol.
     session = None
     if human and body.session_id:
-        # A retry after a lost response must find its own rating, not write a
-        # second one — and certainly not write it under a silently different
-        # protocol, which is what quietly falling back to sighted used to do.
-        existing = await annotation_for_session(db, body.session_id)
-        if existing is not None:
-            return {
-                "task_id": task_id,
-                "human_feedback": feedback_from_annotation(existing),
-            }
-        session = await claim_annotation_session(
-            db, body.session_id, task_id=task.id, user_id=user.id
+        # Identity first, rating second. Resolving the rating by session id alone
+        # would answer a replay of somebody else's id with their feedback — in
+        # any workspace.
+        session, existing = await resolve_annotation_session(
+            db,
+            body.session_id,
+            task_id=task.id,
+            workspace_id=workspace.id,
+            user_id=user.id,
         )
         if session is None:
-            # Unknown, someone else's, for another run, or already consumed.
+            # Unknown, or not this caller's / this run's / this workspace's.
             # Downgrading to sighted would record a protocol the caller did not
             # ask for, so this is a conflict, not a default.
             raise HTTPException(
                 status_code=409,
-                detail="annotation session is unknown, not yours, or already used",
+                detail="annotation session is unknown or not yours",
+            )
+        if existing is not None:
+            # A retry after a lost response finds its own rating rather than
+            # writing a second one under a silently different protocol.
+            return {
+                "task_id": task_id,
+                "human_feedback": feedback_from_annotation(existing),
+            }
+        if session.consumed_at is not None:
+            raise HTTPException(
+                status_code=409, detail="annotation session has already been used"
             )
     feedback = await save_annotation(
         db,
