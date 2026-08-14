@@ -367,3 +367,27 @@ def test_legacy_single_chunk_with_a_call_id_is_untouched():
     trace = clean_trajectory(_task(), [], chunks)
     assert trace["steps"][0]["result_missing"] is False
     assert trace["steps"][0]["content"] == "output"
+
+
+def test_join_reducer_is_shared_with_the_data_lake():
+    """The Data Lake counts logical calls with THIS function, so `tool_call_count`
+    and the judge's step list cannot disagree about how many calls a run made.
+    Callers that only need identity may omit `content`."""
+    from app.quality.trace_cleaner import join_tool_call_parts
+
+    rows = [
+        {"tool_name": "w", "tool_call_id": "c1", "part_index": 0, "part_total": 1,
+         "arguments": {"path": "a"}, "arguments_truncated": False},
+        {"tool_name": "w", "tool_call_id": "c1", "part_index": 1, "part_total": 2,
+         "arguments": {"path": "a"}, "arguments_truncated": False},
+        {"tool_name": "b", "tool_call_id": "c2", "part_index": 0, "part_total": 1,
+         "arguments": {"cmd": "ls"}, "arguments_truncated": False},
+        {"tool_name": "b", "tool_call_id": "c2", "part_index": 1, "part_total": 3,
+         "arguments": {"cmd": "ls"}, "arguments_truncated": False},
+        {"tool_name": "b", "tool_call_id": "c2", "part_index": 2, "part_total": 3,
+         "arguments": {"cmd": "ls"}, "arguments_truncated": False},
+    ]
+    calls = join_tool_call_parts(rows)
+    assert len(calls) == 2
+    assert [c["tool_name"] for c in calls] == ["w", "b"]
+    assert calls[0]["arguments"] == {"path": "a"}

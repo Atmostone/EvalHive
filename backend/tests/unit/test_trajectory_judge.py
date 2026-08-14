@@ -439,3 +439,25 @@ def test_serializer_flags_missing_output_parts():
     steps = [{"seq": 0, "kind": "tool", "tool_name": "bash", "arguments": {"c": "x"},
               "parts_missing": 2, "content": "a…b", "truncated": False}]
     assert "[2 output part(s) missing]" in _serialize_trace(_trace(steps))
+
+
+def test_outputs_shrunk_counts_both_passes(_=None):
+    """The tally used to be overwritten: the error pass reported only what IT
+    shrank, so a trace where two non-error outputs had already been cut reported
+    `outputs_shrunk: 1`. The audit is the point of the block — it has to add up."""
+    def s(i, content):
+        return {"seq": i, "kind": "tool", "tool_name": "t", "arguments": {"i": i},
+                "content": content, "truncated": False}
+    steps = [s(0, "word " * 900), s(1, "word " * 900), s(2, "ERROR: traceback " + "x " * 900)]
+    _text, trim = fit_trace_to_budget(_trace(steps), 400)
+    assert trim["outputs_shrunk"] == 3
+
+
+def test_error_output_is_still_spared_when_the_budget_allows():
+    def s(i, content):
+        return {"seq": i, "kind": "tool", "tool_name": "t", "arguments": {"i": i},
+                "content": content, "truncated": False}
+    steps = [s(0, "word " * 3000), s(1, "ERROR: traceback short")]
+    text, trim = fit_trace_to_budget(_trace(steps), 800)
+    assert "traceback short" in text          # the error survived whole
+    assert trim["outputs_shrunk"] == 1        # only the ordinary output was cut

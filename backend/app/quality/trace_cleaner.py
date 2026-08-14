@@ -262,8 +262,13 @@ def _chunk_attr(chunk, name, default=None):
     return default if value is None else value
 
 
-def _join_tool_call_parts(log_chunks) -> list[dict]:
-    """Re-join the parts of one tool output into one call.
+def join_tool_call_parts(log_chunks) -> list[dict]:
+    """Re-join the parts of one tool output into one logical call.
+
+    Public because it is the single definition of «what counts as one tool call»,
+    shared with the Data Lake (E-01) so the frozen `tool_call_count` and the judge's
+    step list cannot disagree about how many calls a run made. Callers that only
+    need call identity may pass rows without `content`.
 
     An output over the agent's transport cap arrives as several consecutive rows
     sharing a `tool_call_id`. Left alone, each becomes its own step — separately
@@ -373,7 +378,7 @@ def clean_trajectory(
         events = list(events or [])
         # Parts of one split output are re-joined here, before anything is counted:
         # otherwise a single call is capped N times and counted N times.
-        calls = _join_tool_call_parts(list(log_chunks or []))
+        calls = join_tool_call_parts(list(log_chunks or []))
 
         # Baseline: what a naive trace would cost — system snapshot + every
         # event payload + every (untruncated) tool call and output.

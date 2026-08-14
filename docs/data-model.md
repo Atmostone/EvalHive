@@ -396,7 +396,7 @@ placeholders filled by downstream eval features.
 | final_status | VARCHAR(50) | done / failed / awaiting_approval (reconciled by the backfill job) |
 | is_decomposition_root | bool | parent task with subtasks |
 | cost_usd | NUMERIC(10,6) | denormalized |
-| input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics |
+| input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics. `tool_call_count` counts **logical calls**, not log rows — the agent writes the call before running the tool and the result after, and a large output splits further, so a row-count double-counted every call. The grouping is the trace cleaner's `join_tool_call_parts`, imported rather than reimplemented, so this number and the judge's step list cannot drift. Read by the experiment report as `steps_mean` |
 | quality_profile | JSONB? | **slot E-02** (v3 adds `rubric_fingerprint` / `prompt_fingerprint` / `files_only` — the conditions the verdict was obtained under, SPA-85) |
 | trajectory_profile | JSONB? | **slot E-07** (v3 adds `prompt_fingerprint`; v4 adds the `trim` policy the verdict was obtained under, SPA-86) |
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
@@ -508,7 +508,7 @@ building the record on demand if absent (added by migration `d5e6f7a8b9c0`). It 
 applies to tasks with a `capability_spec` (`{required_tools[], category?, match?}`).
 Glass-Box matching (reusing E-09's `extract_tool_sequence`) checks whether the
 required tools were actually called — sourced from the cleaned trace **unioned with
-the durable E-01 blob** (`execution.tool_calls`) and matched prefix-aware (`web_search`
+the durable E-01 blob** (`execution.tool_calls` — one entry per logical call, carrying `tool_name` **and** the frozen `arguments`) and matched prefix-aware (`web_search`
 ↔ `web__web_search`). The log archive now preserves `tool_name` (JSON-lines), so the
 cleaned trace keeps tool steps named post-compaction; the blob union stays as
 defense-in-depth (and for legacy plain-text archives, which lose it). Outcome

@@ -79,17 +79,56 @@ async def assemble_record(db: AsyncSession, task: Task) -> dict:
     snapshot = _spawn_snapshot_from_events(events)
 
     # Tool-call sequence from log chunks (present only before compaction).
+    #
+    # One logical call, not one row. A row is a transport artefact: the agent
+    # writes the call before running the tool and the result afterwards, and an
+    # output over the transport cap is split further — so counting rows counted a
+    # single call two or more times, and `tool_call_count` (which the report reads
+    # as `steps_mean`) inflated accordingly. The grouping is the trace cleaner's,
+    # imported rather than reimplemented, so the frozen count and the judge's step
+    # list cannot drift apart. `content` is deliberately not selected — the blob
+    # needs the call, not megabytes of output it already stores elsewhere.
+    from app.quality.trace_cleaner import join_tool_call_parts
+
     chunks = (
         await db.execute(
-            select(AgentLogChunk.chunk_seq, AgentLogChunk.tool_name)
+            select(
+                AgentLogChunk.chunk_seq,
+                AgentLogChunk.tool_name,
+                AgentLogChunk.tool_call_id,
+                AgentLogChunk.part_index,
+                AgentLogChunk.part_total,
+                AgentLogChunk.arguments,
+                AgentLogChunk.arguments_truncated,
+            )
             .where(AgentLogChunk.task_id == task.id)
             .order_by(AgentLogChunk.chunk_seq)
         )
     ).all()
+    rows = [
+        {
+            "chunk_seq": seq,
+            "tool_name": tool_name,
+            "tool_call_id": call_id,
+            "part_index": part_index,
+            "part_total": part_total,
+            "arguments": arguments,
+            "arguments_truncated": args_truncated,
+        }
+        for seq, tool_name, call_id, part_index, part_total, arguments, args_truncated in chunks
+    ]
+    seq_by_call = {r["tool_call_id"]: r["chunk_seq"] for r in reversed(rows)}
     tool_calls = [
-        {"seq": seq, "tool_name": tool_name}
-        for seq, tool_name in chunks
-        if tool_name
+        {
+            "seq": seq_by_call.get(call["tool_call_id"], i),
+            "tool_name": call["tool_name"],
+            # The parameters, frozen with the call (SPA-86) — `parameter_quality`
+            # cannot be re-examined from a blob that only knows the tool's name.
+            "arguments": call["arguments"],
+            "arguments_truncated": call["arguments_truncated"],
+        }
+        for i, call in enumerate(join_tool_call_parts(rows))
+        if call["tool_name"]
     ]
 
     # Decomposition tree.

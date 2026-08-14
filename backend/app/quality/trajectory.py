@@ -277,23 +277,33 @@ def _shrink(content: str, cap: int) -> tuple[str, bool]:
 
 
 def _apply_caps(
-    steps: list[dict], *, output_cap: int, reasoning_cap: int, spare_errors: bool
+    steps: list[dict], *, output_cap: int, error_output_cap: int, reasoning_cap: int
 ) -> tuple[list[dict], int, int]:
-    """Shorten step contents per kind. Tool calls and their arguments are never
-    touched — only the *results* and the reasoning prose are negotiable."""
+    """Shorten step contents per kind, always applied to the ORIGINAL steps.
+
+    Tool calls and their arguments are never touched — only the *results* and the
+    reasoning prose are negotiable. Error outputs get their own cap so the two
+    concerns stay separable: `error_output_cap = 0` leaves them whole, which is how
+    the first pass spares them (the same preference the cleaner's
+    `keep_tail_on_error` encodes) and the second pass gives them up.
+
+    Applying to the originals rather than to the previous round's output is what
+    makes the returned counts mean «how many outputs are shrunk under this policy»
+    instead of «how many changed since last time» — the latter reported 1 when two
+    non-error outputs had been shrunk in an earlier pass.
+    """
     out: list[dict] = []
     outputs_shrunk = 0
     reasoning_shrunk = 0
     for s in steps:
         kind = s.get("kind")
         content = s.get("content") or ""
-        if kind == "tool" and output_cap:
-            # Error output is the most informative thing in a failing trajectory —
-            # the same preference the cleaner's `keep_tail_on_error` encodes.
-            if spare_errors and _ERROR_RE.search(content):
+        if kind == "tool":
+            cap = error_output_cap if _ERROR_RE.search(content) else output_cap
+            if not cap:
                 out.append(s)
                 continue
-            content, changed = _shrink(content, output_cap)
+            content, changed = _shrink(content, cap)
             outputs_shrunk += int(changed)
         elif kind == "reasoning" and reasoning_cap:
             content, changed = _shrink(content, reasoning_cap)
@@ -387,34 +397,47 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
     report["capped"] = True
     report["anything_removed"] = True
 
-    # 1) Tool outputs, halved until they fit or hit the floor. Two passes: the
-    #    first spares error outputs, the second gives them up too.
-    for spare_errors in (True, False):
-        cap = _max_content_tokens(steps, "tool")
+    # 1) Tool outputs, halved until they fit or hit the floor. Two passes over the
+    #    ORIGINAL steps: the first spares error outputs (error_output_cap = 0), the
+    #    second gives them up too while holding the cap the first pass settled on.
+    base = list(steps)
+    out_cap = 0  # 0 = untouched
+    err_cap = 0
+    for pass_errors in (False, True):
+        cap = _max_content_tokens(base, "tool")
         while cap > _OUTPUT_FLOOR_TOKENS and _count_tokens(text) > max_input_tokens:
             cap = max(_OUTPUT_FLOOR_TOKENS, cap // 2)
+            trial_out = cap if not pass_errors else (out_cap or cap)
+            trial_err = cap if pass_errors else 0
             trimmed, n_out, _ = _apply_caps(
-                steps, output_cap=cap, reasoning_cap=0, spare_errors=spare_errors
+                base, output_cap=trial_out, error_output_cap=trial_err, reasoning_cap=0
             )
             candidate = _serialize_trace(cleaned_trace, trimmed)
             if _count_tokens(candidate) >= _count_tokens(text):
                 break  # halving stopped buying anything
-            text, report["output_cap_applied"], report["outputs_shrunk"] = candidate, cap, n_out
+            text = candidate
+            out_cap, err_cap = trial_out, trial_err
+            # Counted against the originals, so both passes' shrinking is included
+            # rather than the later pass overwriting the earlier one's tally.
+            report["output_cap_applied"], report["outputs_shrunk"] = cap, n_out
             steps = trimmed
         if _count_tokens(text) <= max_input_tokens:
             return text, report
 
-    # 2) Reasoning, once the outputs are spent.
-    cap = _max_content_tokens(steps, "reasoning")
+    # 2) Reasoning, once the outputs are spent — carrying the output caps forward so
+    #    this stage measures the combined policy, not reasoning in isolation.
+    cap = _max_content_tokens(base, "reasoning")
     while cap > _REASONING_FLOOR_TOKENS and _count_tokens(text) > max_input_tokens:
         cap = max(_REASONING_FLOOR_TOKENS, cap // 2)
-        trimmed, _, n_reason = _apply_caps(
-            steps, output_cap=0, reasoning_cap=cap, spare_errors=False
+        trimmed, n_out, n_reason = _apply_caps(
+            base, output_cap=out_cap, error_output_cap=err_cap, reasoning_cap=cap
         )
         candidate = _serialize_trace(cleaned_trace, trimmed)
         if _count_tokens(candidate) >= _count_tokens(text):
             break
-        text, report["reasoning_cap_applied"], report["reasoning_shrunk"] = candidate, cap, n_reason
+        text = candidate
+        report["reasoning_cap_applied"], report["reasoning_shrunk"] = cap, n_reason
+        report["outputs_shrunk"] = n_out
         steps = trimmed
     if _count_tokens(text) <= max_input_tokens:
         return text, report
