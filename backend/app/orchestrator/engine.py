@@ -25,6 +25,7 @@ from app.orchestrator.llm import (
 )
 from app.plugins.runtime import AgentSpec, get_agent_runtime
 from app.utils.events import log_event
+from app.utils.failures import FAILURE_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -621,6 +622,11 @@ async def check_timed_out_tasks():
                         get_agent_runtime().kill(task.agent_container_id)
 
                     task.status = TaskStatus.FAILED.value
+                    # Typed, but deliberately NOT contaminating (SPA-87): a run
+                    # that hit the wall clock may have been looping, and dropping
+                    # it from the aggregates would quietly forgive that. It only
+                    # stops being indistinguishable from a provider outage.
+                    task.failure_type = FAILURE_TIMEOUT
                     task.completed_at = datetime.utcnow()
                     await db.commit()
 

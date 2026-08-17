@@ -196,6 +196,11 @@ class ExperimentRun(Base):
     weighted_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     trajectory_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Denormalised from the task, like the scores above (SPA-87). Infrastructure
+    # failure types are excluded from the report's aggregates, so a leaderboard
+    # cannot show a provider outage as a weak model. NULL = not classified, and
+    # counts. Vocabulary + the contaminating subset: app/utils/failures.py.
+    failure_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # --- Toolathlon executable evaluation (gold.external_eval) ------------------
     # ``external_verdict`` is the executable checker's pass/fail, kept SEPARATE
@@ -291,6 +296,7 @@ class ExperimentAttempt(Base):
     weighted_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     trajectory_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    failure_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     external_verdict: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     launch_time: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     lane_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
