@@ -221,8 +221,14 @@ async def _process_webhook(
 
         elif event == "failed":
             from app.utils.cost import calculate_cost
+            from app.utils.failures import classify_agent_failure
 
             error = data.get("error", "Unknown error")
+            # The type, not just the sentence (SPA-87). The agent reports facts;
+            # the classification of what they mean for the experiment happens in
+            # one place. NULL when an older image sent nothing — «unclassified»,
+            # which is ordinary data, not an accusation and not a clean bill.
+            task.failure_type = classify_agent_failure(data.get("failure"))
             task.token_usage = data.get("token_usage", {})
             task.cost_usd = calculate_cost(task, task.token_usage)
 
@@ -254,6 +260,9 @@ async def _process_webhook(
             if not _is_benchmark(task) and task.retry_count < task.max_retries:
                 task.retry_count += 1
                 task.status = TaskStatus.READY.value
+                # The task lives on, so its failure type must not: a retried task
+                # that later succeeds carries no failure at all.
+                task.failure_type = None
                 await _logev(
                     "task_retry", "system",
                     {"retry": task.retry_count, "error": error},
@@ -263,7 +272,11 @@ async def _process_webhook(
                 task.completed_at = datetime.utcnow()
                 await _logev(
                     "agent_failed", "agent",
-                    {"error": error, "retries_exhausted": True},
+                    {
+                        "error": error,
+                        "failure_type": task.failure_type,
+                        "retries_exhausted": True,
+                    },
                     agent_cid=task.agent_container_id,
                 )
 
