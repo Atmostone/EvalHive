@@ -39,10 +39,16 @@ from app.quality.experiments import (
     live_configs,
 )
 from app.quality.ranking import build_matches
-from app.quality.stats import MIN_SAMPLES, mann_whitney_u, welch_t_test
+from app.quality.stats import MIN_SAMPLES, mann_whitney_u, rank_auc, welch_t_test
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
+from app.utils.failures import is_contaminated
 
-SCHEMA_VERSION = 15  # v15: config_drift — configurations whose frozen resolution
+SCHEMA_VERSION = 16  # v16: the judge↔checker headline no longer depends on a
+# threshold (judge_discrimination: score distributions split by the checker's
+# verdict + AUC); the 2×2 stays as the over-credit illustration, computed at a
+# threshold the experiment PRE-REGISTERED; runs killed by infrastructure are
+# excluded from the aggregates and counted in `exclusions` (SPA-87)
+# v15: config_drift — configurations whose frozen resolution
 # (model api_name, template content hash, agent image id) no longer matches reality
 # v14: the report records the experiment revision + input
 # fingerprint it was computed from, so a cached report can be matched against its
@@ -78,8 +84,19 @@ SELECTION_POLICIES = (
 )
 
 SIGNIFICANCE_ALPHA = 0.05
-# Outcome-judge threshold splitting "high" vs "low" in the RQ2 verdict×judge 2×2.
+# Outcome-judge threshold splitting "high" vs "low" in the RQ2 verdict×judge 2×2 —
+# the FALLBACK, used only when an experiment pre-registered none. An experiment
+# that means to report a 2×2 sets `eval_config.judge_threshold` at creation, and
+# because eval_config is write-once and inside the revision fingerprint, that
+# choice is evidence it was made before the results were seen. The pilot counted
+# over-credit at ≥6 and this constant said ≥5; nothing recorded the change, and
+# nothing could have, because it lived in the code.
 RQ2_JUDGE_THRESHOLD = 5.0
+# Neighbouring cut-offs reported next to the pre-registered one. Sensitivity is
+# shown so the reader can see how much the illustration moves — explicitly
+# EXPLORATORY, never the headline. The headline is `judge_discrimination`, which
+# has no threshold to move.
+RQ2_SENSITIVITY_THRESHOLDS = (4.0, 5.0, 6.0, 7.0)
 
 _SETTLED = {
     ExperimentRunStatus.SUCCESS.value,
@@ -447,6 +464,38 @@ def build_report(
         if selection == SELECTION_ALL_ATTEMPTS or not c.get("retired_at")
     }
     labels = {k: c.get("label") or k for k, c in configs.items()}
+
+    # Runs infrastructure decided the outcome of are not measurements of a model,
+    # so they leave the population before anything is averaged (SPA-87). This was
+    # free for as long as such a run died with a NULL score and every aggregate
+    # skipped it; after the cap-hit fix (SPA-70) it is scored like any other
+    # non-verifiable run, and a five-hour provider quota reads as a weak model.
+    # Excluding evidence is a strong move, so it is also a reported one — the
+    # counts below are part of the report, and they change what `success_rate`
+    # means (see `summary.success_rate_basis`).
+    excluded_runs = [r for r in runs if is_contaminated(r.failure_type)]
+    if excluded_runs:
+        runs = [r for r in runs if not is_contaminated(r.failure_type)]
+    by_type: dict[str, int] = {}
+    for r in excluded_runs:
+        by_type[r.failure_type] = by_type.get(r.failure_type, 0) + 1
+    excluded_by_config: dict[str, int] = {}
+    for r in excluded_runs:
+        excluded_by_config[r.config_key] = excluded_by_config.get(r.config_key, 0) + 1
+    exclusions = {
+        "contaminated": len(excluded_runs),
+        "by_type": dict(sorted(by_type.items())),
+        "by_config": [
+            {
+                "config_key": key,
+                "label": labels.get(key, key),
+                "contaminated": excluded_by_config.get(key, 0),
+            }
+            for key in sorted(configs)
+            if excluded_by_config.get(key)
+        ],
+    }
+
     by_config: dict[str, list[ExperimentRun]] = {k: [] for k in configs}
     for r in runs:
         by_config.setdefault(r.config_key, []).append(r)
@@ -464,6 +513,14 @@ def build_report(
         per_config.append({"config_key": key, "label": labels.get(key, key), **stats})
     summary = {
         "total_runs": len(runs),
+        # Excluded runs are gone from every number above, so the denominator has
+        # changed meaning: success_rate now answers «of the runs that measured the
+        # model, how many succeeded», not «if you attempt this task with this
+        # model, how often does it work». Different quantity, said out loud.
+        "excluded_contaminated": len(excluded_runs),
+        "success_rate_basis": (
+            "settled_non_contaminated" if excluded_runs else "settled"
+        ),
         "success": len(success_runs),
         "failed": sum(
             1 for r in runs if r.status == ExperimentRunStatus.FAILED.value
@@ -1025,18 +1082,90 @@ def build_report(
         )
     external = {"available": any_external, "per_config": external_per_config}
 
-    # --- RQ2: executable verdict × outcome judge (2×2) ------------------------
-    # Does the outcome judge agree with the executable checker? Every run with
-    # both an external verdict and a weighted score lands in one quadrant;
-    # agreement = (pass∧high + fail∧low) / n. The crux of "judge the process".
-    def _rq2_for(subset: list[ExperimentRun]) -> dict:
+    # --- RQ2 primary: does the judge separate the checker's passes from its
+    # failures? Threshold-FREE (SPA-87) ---------------------------------------
+    # The question is about ordering, so it is answered with ordering: the judge's
+    # score distribution on runs the checker passed, the same on runs it failed,
+    # and the AUC between them. `median_on_fail` IS the over-credit number — how
+    # well the judge scores work that demonstrably did not work — and it needs no
+    # cut-off to exist, so no cut-off can be chosen after the fact to improve it.
+    # This replaces the 2×2 as the headline; the 2×2 stays below to show which
+    # quadrant the disagreement sits in.
+    def _judge_scores(subset: list[ExperimentRun]) -> tuple[list[float], list[float]]:
+        passed = [
+            float(r.weighted_score)
+            for r in subset
+            if r.external_verdict is True and r.weighted_score is not None
+        ]
+        failed = [
+            float(r.weighted_score)
+            for r in subset
+            if r.external_verdict is False and r.weighted_score is not None
+        ]
+        return passed, failed
+
+    def _discrimination_for(subset: list[ExperimentRun]) -> dict:
+        passed, failed = _judge_scores(subset)
+        med_pass, med_fail = _median(passed), _median(failed)
+        return {
+            "n_checker_pass": len(passed),
+            "n_checker_fail": len(failed),
+            "median_on_pass": med_pass,
+            "median_on_fail": med_fail,
+            "mean_on_pass": _mean(passed),
+            "mean_on_fail": _mean(failed),
+            # How far apart the two distributions sit, in judge points. Positive =
+            # the judge scores the checker's passes higher, as it should.
+            "separation": (
+                round(med_pass - med_fail, 4)
+                if med_pass is not None and med_fail is not None
+                else None
+            ),
+            "auc": rank_auc(passed, failed),
+            "mann_whitney": mann_whitney_u(passed, failed),
+        }
+
+    discrimination_overall = _discrimination_for(runs)
+    judge_discrimination = {
+        "available": (
+            discrimination_overall["n_checker_pass"] > 0
+            and discrimination_overall["n_checker_fail"] > 0
+        ),
+        "primary": True,
+        "overall": discrimination_overall,
+        "per_config": [
+            {
+                "config_key": key,
+                "label": labels.get(key, key),
+                **_discrimination_for(by_config[key]),
+            }
+            for key in sorted(configs)
+        ],
+    }
+
+    # --- RQ2 illustration: executable verdict × outcome judge (2×2) -----------
+    # Where the disagreement lives, at ONE pre-registered cut-off. Every run with
+    # both an external verdict and a weighted score lands in a quadrant;
+    # agreement = (pass∧high + fail∧low) / n, and `fail_high` is the over-credit
+    # corner. Reported next to the sensitivity ladder, because a 2×2 whose cut-off
+    # is chosen after the fact is not evidence — which is why the cut-off comes
+    # from the experiment's frozen eval_config, not from this file.
+    pre_registered = (exp.eval_config or {}).get("judge_threshold")
+    try:
+        judge_threshold = float(pre_registered)
+        threshold_source = "pre_registered"
+    except (TypeError, ValueError):
+        judge_threshold = RQ2_JUDGE_THRESHOLD
+        threshold_source = "default"
+
+    def _rq2_for(subset: list[ExperimentRun], threshold: float) -> dict:
         cells = {"pass_high": 0, "pass_low": 0, "fail_high": 0, "fail_low": 0}
         n = 0
         for r in subset:
             if r.external_verdict is None or r.weighted_score is None:
                 continue
             n += 1
-            high = float(r.weighted_score) >= RQ2_JUDGE_THRESHOLD
+            high = float(r.weighted_score) >= threshold
             if r.external_verdict and high:
                 cells["pass_high"] += 1
             elif r.external_verdict:
@@ -1048,14 +1177,30 @@ def build_report(
         agree = cells["pass_high"] + cells["fail_low"]
         return {"n": n, "cells": cells, "agreement": round(agree / n, 4) if n else None}
 
-    rq2_overall = _rq2_for(runs)
+    rq2_overall = _rq2_for(runs, judge_threshold)
     rq2 = {
         "available": rq2_overall["n"] > 0,
-        "judge_threshold": RQ2_JUDGE_THRESHOLD,
+        # Not the headline any more: one cut-off's view of a question answered
+        # above without one.
+        "primary": False,
+        "judge_threshold": judge_threshold,
+        "threshold_source": threshold_source,
         "overall": rq2_overall,
         "per_config": [
-            {"config_key": key, "label": labels.get(key, key), **_rq2_for(by_config[key])}
+            {
+                "config_key": key,
+                "label": labels.get(key, key),
+                **_rq2_for(by_config[key], judge_threshold),
+            }
             for key in sorted(configs)
+        ],
+        "sensitivity": [
+            {
+                "threshold": t,
+                "pre_registered": t == judge_threshold,
+                **_rq2_for(runs, t),
+            }
+            for t in sorted({*RQ2_SENSITIVITY_THRESHOLDS, judge_threshold})
         ],
     }
 
@@ -1227,6 +1372,7 @@ def build_report(
         "generated_at": datetime.utcnow().isoformat(),
         "partial": partial,
         "n_terminal_runs": n_terminal,
+        "exclusions": exclusions,
         "summary": summary,
         "effort": effort,
         "heatmap": heatmap,
@@ -1241,6 +1387,7 @@ def build_report(
         "cost_breakdown": cost_breakdown,
         "trajectory_match": trajectory_match,
         "external": external,
+        "judge_discrimination": judge_discrimination,
         "rq2": rq2,
         "pareto": pareto,
         "scatter": scatter,
@@ -1312,6 +1459,7 @@ async def select_runs(
             weighted_score=att.weighted_score,
             trajectory_score=att.trajectory_score,
             duration_seconds=att.duration_seconds,
+            failure_type=att.failure_type,
             external_verdict=att.external_verdict,
             launch_time=att.launch_time,
             attempt_count=att.attempt_index,
