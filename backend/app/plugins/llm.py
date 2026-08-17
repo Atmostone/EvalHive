@@ -25,25 +25,13 @@ import random
 from abc import ABC, abstractmethod
 from typing import Any
 
+# Which statuses and exception classes count as transient lives in one place
+# (SPA-87), next to the classifier that turns the same table into a failure type.
+# Two copies of it used to answer the same question — «is this the provider's
+# fault?» — for retrying here and for marking a run contaminated there.
+from app.utils.failures import is_transient_llm_error as _is_transient_llm_error
+
 logger = logging.getLogger(__name__)
-
-# HTTP statuses worth retrying: rate limit, timeouts, server-side failures.
-_TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
-# litellm exception class names that are transient but may carry no status.
-_TRANSIENT_EXC_NAMES = {
-    "RateLimitError",
-    "Timeout",
-    "APIConnectionError",
-    "ServiceUnavailableError",
-    "InternalServerError",
-}
-
-
-def _is_transient_llm_error(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None)
-    if status in _TRANSIENT_STATUS:
-        return True
-    return type(exc).__name__ in _TRANSIENT_EXC_NAMES
 
 
 def _retry_config() -> tuple[int, float]:
