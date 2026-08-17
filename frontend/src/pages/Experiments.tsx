@@ -109,6 +109,10 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
   // Untrimmed process-judge input (SPA-86). Opt-in, not the default: at 200+
   // runs an untrimmed trace is a real bill, so the caller has to ask for it.
   const [fullTrace, setFullTrace] = useState(false)
+  // The cut-off the over-credit 2×2 will be drawn at (SPA-87). Set here or not at
+  // all: eval_config is write-once, so a value entered before the experiment runs
+  // is evidence the cut-off was chosen before its results existed.
+  const [judgeThreshold, setJudgeThreshold] = useState('')
   const [submitError, setSubmitError] = useState('')
 
   const { data: templates = [] } = useQuery({ queryKey: ['templates'], queryFn: templatesApi.list })
@@ -162,6 +166,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
       n_toolathlon_lanes: lanes !== '' ? Number(lanes) : null,
       eval_config: {
         eval_mode: evalMode,
+        ...(judgeThreshold !== '' ? { judge_threshold: Number(judgeThreshold) } : {}),
         // 0 is the «off» sentinel the backend reads as «do not truncate».
         ...(fullTrace
           ? {
@@ -174,7 +179,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
           : {}),
       },
     }),
-    [name, description, dataset, configMode, configs, axes, nRuns, budget, maxParallel, lanes, evalMode, fullTrace],
+    [name, description, dataset, configMode, configs, axes, nRuns, budget, maxParallel, lanes, evalMode, fullTrace, judgeThreshold],
   )
 
   const datasetReady =
@@ -543,6 +548,30 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
               {evalMode === 'checker'
                 ? 'Cases with an executable checker (e.g. Toolathlon) are graded by ground truth; the outcome judge is skipped there.'
                 : 'Skip the executable checker — the outcome judge becomes the evaluator (open-result mode). Use to exercise the judge + outcome×trajectory view where there is no oracle. Preprocess still seeds the environment.'}
+            </p>
+          </div>
+
+          <div>
+            <label htmlFor="judge-threshold" className="block text-sm font-medium text-gray-700 mb-1">
+              Over-credit threshold (pre-registered)
+            </label>
+            <input
+              id="judge-threshold"
+              type="number"
+              min={0}
+              max={10}
+              step={0.5}
+              value={judgeThreshold}
+              onChange={(e) => setJudgeThreshold(e.target.value)}
+              placeholder="5 (default)"
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              The outcome-judge score at which a run counts as «the judge said this worked», used
+              for the verdict×judge quadrant in the report. Fixed now and never editable
+              afterwards — that is the point: a cut-off chosen once the results are in proves
+              nothing. The report’s headline judge↔checker number uses no threshold at all, so
+              this only decides where the illustration is drawn.
             </p>
           </div>
 
