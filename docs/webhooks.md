@@ -90,11 +90,30 @@ Orchestrator:
 ```json
 {
   "error": "human-readable message",
+  "failure": {
+    "kind": "llm_error | cap_hit | tool_leak | crash",
+    "exception": "RateLimitError",
+    "status_code": 429,
+    "message": "first 500 chars of the exception"
+  },
   "token_usage": {"input_tokens": 0, "output_tokens": 0}
 }
 ```
 
-Orchestrator: retries when `retry_count < max_retries`, otherwise marks the task as `failed`.
+`failure` (SPA-87) carries **facts, not a verdict**. The agent knows the site of
+the failure — a cap-hit is not an exception, a crash has no HTTP status — and
+passes the exception class and status through untyped; the backend turns them
+into `tasks.failure_type` with the single classifier in `app/utils/failures.py`,
+so that judgement exists once instead of in both images. The agent keeps its own
+transient-error predicate, but that one only decides whether to retry an HTTP
+call: it can drift from the backend's table without changing whether a run counts
+as infrastructure-contaminated. The whole object is optional — an image built
+before it existed leaves `failure_type` NULL, which means «not classified» and is
+treated as ordinary data.
+
+Orchestrator: retries when `retry_count < max_retries` (never on the benchmark
+path, where a failure is a result), otherwise marks the task as `failed`. A task
+put back to `ready` has its `failure_type` cleared — it has not failed.
 
 ### event = "aborted" (P1)
 

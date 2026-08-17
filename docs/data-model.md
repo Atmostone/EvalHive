@@ -92,6 +92,9 @@ f8a9b0c1d2e3  blind_to_peers on annotation_sessions + annotations — independen
      ↓
 f9a0b1c2d3e4  agent_log_chunks.{arguments, arguments_truncated, tool_call_id, part_index, part_total} —
               tool-call arguments and call identity (SPA-86)
+     ↓
+faa1b2c3d4e5  tasks.failure_type + experiment_runs.failure_type + experiment_attempts.failure_type —
+              WHY a run failed, as a type rather than a string nobody stored (SPA-87)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -108,6 +111,7 @@ f9a0b1c2d3e4  agent_log_chunks.{arguments, arguments_truncated, tool_call_id, pa
 | title | VARCHAR(500) | required | |
 | description | TEXT | NULL | |
 | status | VARCHAR(50) | 'backlog' | TaskStatus enum |
+| failure_type | VARCHAR(32) | NULL | WHY it failed, when it did (SPA-87). `status` says only *that* it did, and a dozen writers set it. Vocabulary in `app/utils/failures.py`: `llm_rate_limit`, `llm_auth`, `llm_transient`, `infra` (all four = infrastructure decided the outcome, so the experiment report **excludes** the run from its aggregates), `llm_error`, `cap_hit`, `timeout`, `agent` (all four counted normally). NULL = not classified — an older agent image, a path that never reported — and counts as ordinary data. Set from the structured `failure` facts in the agent's `failed` webhook, cleared when a task goes back to `ready` for a retry. Distinct from the LLM-judged classes in `quality_records.failure_profile`: this is what killed the process, observed; those are how the agent misbehaved, judged |
 | priority | VARCHAR(20) | 'medium' | TaskPriority enum |
 | template_id | UUID FK→templates.id | NULL | chosen by the orchestrator |
 | agent_container_id | VARCHAR(255) | NULL | active container; cleared on kill |
@@ -191,7 +195,7 @@ an expanded configuration matrix × `n_runs_per_cell`, driven by the
 | budget_limit_usd | NUMERIC(10,6) | NULL | hard cap; reached → remaining cells `skipped`, status `capped` |
 | max_parallel | INT | NULL | caps the tick's claim target (also bounded by `max_concurrent_agents`) |
 | n_toolathlon_lanes | INT | NULL | number of isolated Toolathlon PG lanes to run in parallel (SPA-69; migration `e9f0a1b2c3d4`). NULL/0 → serial (one Toolathlon cell at a time, since all cases share one mock postgres); >1 lets the scheduler claim up to that many Toolathlon cells at once, each pinned to its own `toolathlon_pg_lane_<i>` instance so preprocess re-seeding can't clobber another |
-| eval_config | JSONB | {} | `{trajectory: bool=true, failure_modes: bool=false, trace?}`; E-02 always runs. `trace` (SPA-86) overrides the trim policy for this experiment's process judging: `{tool_output_token_cap, tool_args_token_cap, keep_tail_on_error, max_input_tokens}`, any cap `0` = no truncation. Absent → the workspace settings apply. Opt-in rather than default, because an untrimmed trace is a real bill at 200+ runs; unknown keys and negative caps are **rejected at create time**, since a typo here silently changes what every run was judged on |
+| eval_config | JSONB | {} | Write-once (no update endpoint) and hashed into `input_fingerprint`, so it is what the experiment is committed to. Keys: `eval_mode` (`checker` \| `judge`), `trajectory` (default true), `failure_modes`, `judge_incomplete_runs`, `outcome_files_only`, `audit_outcome_judge_on_verifiable`, `judge_threshold`, `trace`. `judge_threshold` (SPA-87, 0–10) is the outcome-judge cut-off the report's verdict×judge quadrant is drawn at — a **pre-registration**, not a setting: fixed before any result exists, and changing it means cloning into a new experiment. `trace` (SPA-86) overrides the trim policy for this experiment's process judging: `{tool_output_token_cap, tool_args_token_cap, keep_tail_on_error, max_input_tokens}`, any cap `0` = no truncation; absent → the workspace settings apply. **The whole object is validated at create time** — an unknown key, a mistyped flag or an out-of-range threshold is a 400, because a key that does nothing is a lie about how the experiment was judged |
 | accumulated_cost_usd | NUMERIC(10,6) | 0 | agent + judge spend, updated by the tick |
 | report | JSONB | NULL | cached assembled report (see `experiment_report.py`), written once terminal |
 | error | TEXT | NULL | |
@@ -215,6 +219,7 @@ report do not).
 | cost_usd | NUMERIC(10,6) | 0 | task + judge cost (denormalized) |
 | weighted_score / trajectory_score | FLOAT | NULL | from `quality_profile.weighted_score` / `trajectory_profile.overall_score` |
 | duration_seconds | INT | NULL | |
+| failure_type | VARCHAR(32) | NULL | denormalized from the task at settle time, like the scores above (SPA-87); harness-side failures (preprocess lost, orphaned task) are written directly as `infra`. The report drops the contaminating types from every aggregate and reports the count in `exclusions` — a provider quota must not read as a weak model. Mirrored on `experiment_attempts`, or a retry would lose it |
 | external_verdict | BOOLEAN | NULL | Toolathlon executable checker's pass/fail (migration `d8e9f0a1b2c3`), kept SEPARATE from `status`: a run can be `status=success` (agent finished, eval ran) with `external_verdict=False` (the checker failed it) — the crux of RQ2. NULL = no executable verdict (plain case, or eval infra error) |
 | launch_time | VARCHAR(64) | NULL | reused for preprocess + eval (date-relative checks) |
 | preprocess_container_id | VARCHAR(128) | NULL | lets a later tick re-inspect the detached preprocess container |
