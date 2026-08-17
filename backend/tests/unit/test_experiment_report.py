@@ -889,3 +889,23 @@ def test_contaminated_runs_leave_the_judge_checker_view_too():
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
     assert report["rq2"]["overall"]["n"] == 5
     assert report["judge_discrimination"]["overall"]["n_checker_fail"] == 2
+
+
+def test_a_config_whose_every_run_was_contaminated_survives_the_report():
+    """A provider outage can take out one arm of the matrix entirely. The config
+    must still appear, with empty numbers rather than a crash or a fabricated 0%."""
+    runs = [
+        _run("cfg-01", "case-a", 0, score=8.0),
+        _run("cfg-02", "case-a", 0, status="failed", score=1.0,
+             failure_type="llm_rate_limit"),
+        _run("cfg-02", "case-b", 0, status="failed", score=1.0,
+             failure_type="llm_rate_limit"),
+    ]
+    report = build_report(_exp(CONFIGS), runs, {}, partial=False)
+    per_config = {c["config_key"]: c for c in report["summary"]["per_config"]}
+    assert per_config["cfg-02"]["n_runs"] == 0
+    assert per_config["cfg-02"]["success_rate"] is None
+    assert per_config["cfg-02"]["quality_mean"] is None
+    assert report["exclusions"]["by_config"] == [
+        {"config_key": "cfg-02", "label": "orch", "contaminated": 2}
+    ]
