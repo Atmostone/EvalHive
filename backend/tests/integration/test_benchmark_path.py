@@ -208,3 +208,122 @@ async def test_tasks_list_hides_experiment_origin_by_default(
     assert "bench task" in body
     assert body["bench task"]["origin"] == "experiment"
     assert body["user task"]["origin"] == "user"
+
+
+# --- the failure reason survives as a type, not as a string nobody stores (SPA-87) ---
+
+
+@pytest.mark.asyncio
+async def test_a_quota_failure_lands_on_the_task_as_a_type(
+    auth_client: AsyncClient, db_session
+):
+    task, headers = await _task_with_token(
+        auth_client, db_session, run_config={"benchmark_mode": True}
+    )
+
+    r = await auth_client.post(
+        f"/api/v1/agent-webhook/{task.id}",
+        headers=headers,
+        json={
+            "event": "failed",
+            "task_id": str(task.id),
+            "idempotency_key": "b-quota-1",
+            "data": {
+                "error": "LLM call failed: rate limit exceeded",
+                "failure": {
+                    "kind": "llm_error",
+                    "exception": "RateLimitError",
+                    "status_code": 429,
+                    "message": "rate limit exceeded",
+                },
+                "token_usage": {"input": 1, "output": 1},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.FAILED.value
+    assert task.failure_type == "llm_rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_a_cap_hit_is_typed_but_is_not_infrastructure(
+    auth_client: AsyncClient, db_session
+):
+    task, headers = await _task_with_token(
+        auth_client, db_session, run_config={"benchmark_mode": True}
+    )
+
+    r = await auth_client.post(
+        f"/api/v1/agent-webhook/{task.id}",
+        headers=headers,
+        json={
+            "event": "failed",
+            "task_id": str(task.id),
+            "idempotency_key": "b-cap-1",
+            "data": {
+                "error": "Agent exceeded max iterations (150)",
+                "failure": {"kind": "cap_hit"},
+                "token_usage": {"input": 1, "output": 1},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(task)
+    from app.utils.failures import is_contaminated
+
+    assert task.failure_type == "cap_hit"
+    assert is_contaminated(task.failure_type) is False
+
+
+@pytest.mark.asyncio
+async def test_an_agent_that_reports_no_facts_leaves_the_type_null(
+    auth_client: AsyncClient, db_session
+):
+    """An image built before this existed. NULL is «not classified» and counts as
+    ordinary data — never quietly filled in with a guess in either direction."""
+    task, headers = await _task_with_token(
+        auth_client, db_session, run_config={"benchmark_mode": True}
+    )
+
+    r = await auth_client.post(
+        f"/api/v1/agent-webhook/{task.id}",
+        headers=headers,
+        json={
+            "event": "failed",
+            "task_id": str(task.id),
+            "idempotency_key": "b-nofacts-1",
+            "data": {"error": "boom", "token_usage": {"input": 1, "output": 1}},
+        },
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.FAILED.value
+    assert task.failure_type is None
+
+
+@pytest.mark.asyncio
+async def test_a_retried_task_carries_no_failure_type(auth_client: AsyncClient, db_session):
+    """A plain task goes back to READY instead of failing. It has not failed, so
+    it must not keep a failure on its row."""
+    task, headers = await _task_with_token(auth_client, db_session, max_retries=2)
+
+    r = await auth_client.post(
+        f"/api/v1/agent-webhook/{task.id}",
+        headers=headers,
+        json={
+            "event": "failed",
+            "task_id": str(task.id),
+            "idempotency_key": "b-retry-1",
+            "data": {
+                "error": "LLM call failed: 503",
+                "failure": {"kind": "llm_error", "status_code": 503},
+                "token_usage": {"input": 1, "output": 1},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.READY.value
+    assert task.retry_count == 1
+    assert task.failure_type is None

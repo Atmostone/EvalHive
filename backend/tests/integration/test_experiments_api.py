@@ -336,3 +336,103 @@ async def test_create_rejects_a_negative_trace_cap(auth_client: AsyncClient, db_
         ),
     )
     assert r.status_code == 400, r.text
+
+
+# --- eval_config as a whole: the judge threshold is a pre-registration (SPA-87) ---
+
+
+@pytest.mark.asyncio
+async def test_create_accepts_a_pre_registered_judge_threshold(
+    auth_client: AsyncClient, db_session
+):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="threshold ok")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(tpl.id, name="threshold-ok", eval_config={"judge_threshold": 6.0}),
+    )
+    assert r.status_code == 201, r.text
+    detail = (await auth_client.get(f"/api/experiments/{r.json()['id']}")).json()
+    assert detail["eval_config"]["judge_threshold"] == 6.0
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_misspelled_top_level_eval_key(
+    auth_client: AsyncClient, db_session
+):
+    """The hole this field exists to close: `judge_threshld: 6` used to be stored,
+    fingerprinted and ignored, and the report went on using the constant in the
+    code — an experiment whose recorded intent and actual conduct disagreed."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="threshold typo")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(tpl.id, name="threshold-typo", eval_config={"judge_threshld": 6}),
+    )
+    assert r.status_code == 400, r.text
+    assert "judge_threshld" in r.text
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_threshold_off_the_judge_scale(
+    auth_client: AsyncClient, db_session
+):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="threshold range")
+
+    for bad in (11, -1, "high"):
+        r = await auth_client.post(
+            "/api/experiments",
+            json=_body(
+                tpl.id, name=f"threshold-bad-{bad}", eval_config={"judge_threshold": bad}
+            ),
+        )
+        assert r.status_code == 400, r.text
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_wrong_typed_eval_flag(auth_client: AsyncClient, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="flag type")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(tpl.id, name="flag-type", eval_config={"judge_incomplete_runs": "yes"}),
+    )
+    assert r.status_code == 400, r.text
+    assert "judge_incomplete_runs" in r.text
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_an_unknown_eval_mode(auth_client: AsyncClient, db_session):
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="eval mode")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(tpl.id, name="eval-mode-bad", eval_config={"eval_mode": "judged"}),
+    )
+    assert r.status_code == 400, r.text
+
+
+@pytest.mark.asyncio
+async def test_the_threshold_reaches_the_report_as_pre_registered(
+    auth_client: AsyncClient, db_session
+):
+    """A field nobody reads is worse than no field. The report must say which
+    threshold it used and that the experiment committed to it in advance."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="threshold report")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(tpl.id, name="threshold-report", eval_config={"judge_threshold": 7.0}),
+    )
+    assert r.status_code == 201, r.text
+    report = (await auth_client.get(f"/api/experiments/{r.json()['id']}/report")).json()
+    assert report["rq2"]["judge_threshold"] == 7.0
+    assert report["rq2"]["threshold_source"] == "pre_registered"
+    assert report["rq2"]["primary"] is False
+    assert report["judge_discrimination"]["primary"] is True
