@@ -436,3 +436,105 @@ async def test_the_threshold_reaches_the_report_as_pre_registered(
     assert report["rq2"]["threshold_source"] == "pre_registered"
     assert report["rq2"]["primary"] is False
     assert report["judge_discrimination"]["primary"] is True
+
+
+# --- the exclusion must hold everywhere, not only in the report (SPA-87) ------
+
+
+async def _experiment_with_a_contaminated_run(auth_client, db_session):
+    """One clean run scoring 9.0 and one quota casualty scoring 1.0. If anything
+    averages them the answer is 5.0, which is the whole bug."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name=f"excl {uuid.uuid4().hex[:4]}")
+    r = await auth_client.post("/api/experiments", json=_body(tpl.id))
+    assert r.status_code == 201, r.text
+    exp_id = r.json()["id"]
+
+    db_session.add_all([
+        ExperimentRun(
+            experiment_id=uuid.UUID(exp_id), config_key="cfg-01", case_key="case-a",
+            run_index=0, status=ExperimentRunStatus.SUCCESS.value,
+            weighted_score=9.0, trajectory_score=9.0, cost_usd=Decimal("0.01"),
+            duration_seconds=10, attempt_count=1,
+        ),
+        ExperimentRun(
+            experiment_id=uuid.UUID(exp_id), config_key="cfg-01", case_key="case-b",
+            run_index=0, status=ExperimentRunStatus.FAILED.value,
+            weighted_score=1.0, trajectory_score=1.0, cost_usd=Decimal("0.01"),
+            duration_seconds=10, attempt_count=1, failure_type="llm_rate_limit",
+        ),
+    ])
+    await db_session.commit()
+    return exp_id
+
+
+@pytest.mark.asyncio
+async def test_the_live_matrix_counts_a_contaminated_run_but_does_not_average_it(
+    auth_client: AsyncClient, db_session
+):
+    exp_id = await _experiment_with_a_contaminated_run(auth_client, db_session)
+    detail = (await auth_client.get(f"/api/experiments/{exp_id}")).json()
+    cells = {(c["config_key"], c["case_key"]): c for c in detail["matrix"]}
+
+    clean = cells[("cfg-01", "case-a")]
+    dirty = cells[("cfg-01", "case-b")]
+    assert clean["quality_mean"] == 9.0 and clean["contaminated"] == 0
+    # The run still EXISTS — the matrix is a progress view — but its score is not
+    # the model's, so the cell reports no quality at all rather than a 1.0.
+    assert dirty["counts"] == {"failed": 1}
+    assert dirty["contaminated"] == 1
+    assert dirty["quality_mean"] is None and dirty["trajectory_mean"] is None
+    assert detail["run_totals"]["contaminated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_analytics_excludes_contaminated_runs_and_reports_the_count(
+    auth_client: AsyncClient, db_session
+):
+    exp_id = await _experiment_with_a_contaminated_run(auth_client, db_session)
+    rows = (await auth_client.get("/api/analytics/configs")).json()
+    row = next(r for r in rows if r["config_id"] == f"{exp_id}:cfg-01")
+    assert row["run_count"] == 1
+    assert row["contaminated"] == 1
+    assert row["quality_mean"] == 9.0        # not 5.0
+    assert row["success_rate"] == 1.0        # not 0.5
+
+
+@pytest.mark.asyncio
+async def test_results_and_export_mark_a_contaminated_run(
+    auth_client: AsyncClient, db_session
+):
+    """Raw endpoints stay unfiltered on purpose — they are the ledger — but a
+    consumer must be able to tell a quota casualty from a weak result."""
+    exp_id = await _experiment_with_a_contaminated_run(auth_client, db_session)
+
+    results = (await auth_client.get(f"/api/experiments/{exp_id}/results")).json()
+    by_case = {r["case_key"]: r for r in results}
+    assert len(by_case) == 2  # nothing was dropped
+    assert by_case["case-b"]["failure_type"] == "llm_rate_limit"
+    assert by_case["case-b"]["contaminated"] is True
+    assert by_case["case-a"]["contaminated"] is False
+
+    csv_text = (
+        await auth_client.get(f"/api/experiments/{exp_id}/export?format=csv")
+    ).text
+    assert "failure_type" in csv_text.splitlines()[0]
+    assert "llm_rate_limit" in csv_text
+
+
+@pytest.mark.asyncio
+async def test_a_new_experiment_records_the_threshold_it_accepted(
+    auth_client: AsyncClient, db_session
+):
+    """Accepting the default IS a pre-registration — as long as it is on the
+    record before any result exists, rather than read out of a constant later."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="threshold stamp")
+
+    r = await auth_client.post("/api/experiments", json=_body(tpl.id, name="stamped"))
+    assert r.status_code == 201, r.text
+    detail = (await auth_client.get(f"/api/experiments/{r.json()['id']}")).json()
+    assert detail["eval_config"]["judge_threshold"] == 5.0
+
+    report = (await auth_client.get(f"/api/experiments/{r.json()['id']}/report")).json()
+    assert report["rq2"]["threshold_source"] == "pre_registered"

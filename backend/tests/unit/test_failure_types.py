@@ -1,6 +1,7 @@
 """Typing a run's death, and deciding what it costs the aggregate (SPA-87)."""
 
 from app.utils.failures import (
+    CONTAMINATING_FAILURES,
     FAILURE_AGENT,
     FAILURE_CAP_HIT,
     FAILURE_INFRA,
@@ -11,8 +12,10 @@ from app.utils.failures import (
     FAILURE_TIMEOUT,
     classify_agent_failure,
     classify_llm_error,
+    infrastructure_decided,
     is_contaminated,
     is_transient_llm_error,
+    measures_the_model,
 )
 
 
@@ -116,3 +119,33 @@ class TestRetryPredicate:
 
         assert is_transient_llm_error(RateLimitError()) is True
         assert is_transient_llm_error(BadRequestError()) is False
+
+
+class TestSqlPredicates:
+    """The review's second finding: the report excluded a quota-killed run while
+    /analytics, the live matrix and the global leaderboard went on averaging it.
+    One definition, compiled here so its SQL is checked rather than assumed."""
+
+    def _sql(self, expr):
+        return str(expr.compile(compile_kwargs={"literal_binds": True}))
+
+    def test_the_population_keeps_unclassified_rows(self):
+        """`NULL NOT IN (...)` is NULL in SQL, which drops the row — that would
+        have silently deleted every run predating the classifier."""
+        from sqlalchemy import Column, String
+
+        col = Column("failure_type", String)
+        sql = self._sql(measures_the_model(col))
+        assert "IS NULL" in sql
+        assert "NOT IN" in sql
+
+    def test_the_two_predicates_are_built_from_one_set(self):
+        from sqlalchemy import Column, String
+
+        col = Column("failure_type", String)
+        keep = self._sql(measures_the_model(col))
+        drop = self._sql(infrastructure_decided(col))
+        for t in CONTAMINATING_FAILURES:
+            assert t in keep and t in drop
+        for t in (FAILURE_AGENT, FAILURE_CAP_HIT, FAILURE_TIMEOUT, FAILURE_LLM_ERROR):
+            assert t not in drop

@@ -157,3 +157,53 @@ async def test_run_requires_admin(auth_client: AsyncClient):
 
     r = await auth_client.post("/api/quality/ranking/run")
     assert r.status_code == 403
+
+
+# --- a quota casualty must not reach the loudest claim the platform makes ------
+
+
+async def test_contaminated_records_are_excluded_from_the_leaderboard(
+    auth_client: AsyncClient,
+):
+    """SPA-87: the leaderboard reads QualityRecords, which carry no failure type
+    of their own — so it went on ranking a run a provider outage had decided.
+    Here model-b is given two extra cases it "wins" only because its opponent's
+    runs were quota-killed; excluding them must leave the honest 5 matches."""
+    ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    await _seed_records(ws)
+
+    async with database.async_session() as s:
+        for case in ("case6", "case7"):
+            for model, score, failure_type in (
+                ("model-a", 0.5, "llm_rate_limit"),  # killed by the quota
+                ("model-b", 7.0, None),              # ran fine
+            ):
+                task = Task(
+                    title=f"{model}-{case}",
+                    status=TaskStatus.FAILED.value if failure_type else TaskStatus.DONE.value,
+                    workspace_id=ws,
+                    model_used=model,
+                    failure_type=failure_type,
+                )
+                s.add(task)
+                await s.flush()
+                s.add(
+                    QualityRecord(
+                        task_id=task.id,
+                        workspace_id=ws,
+                        model_used=model,
+                        template_name=f"tpl-{model[-1]}",
+                        final_status=task.status,
+                        benchmark_case_id=case,
+                        quality_profile={"weighted_score": score},
+                    )
+                )
+        await s.commit()
+
+    r = await auth_client.post("/api/quality/ranking/run")
+    assert r.status_code == 200, r.text
+    m = r.json()["metrics"]
+    # case6/case7 lose model-a's side entirely, so they are no longer shared —
+    # the leaderboard falls back to the 5 cases both models really contested.
+    assert m["n_matches"] == 5
+    assert m["players"][0]["player"] == "model-a"
