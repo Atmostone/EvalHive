@@ -398,3 +398,103 @@ async def test_a_bad_answer_from_the_orchestrator_is_not_contamination(
     )
     await db_session.refresh(task)
     assert task.failure_type is None
+
+
+@pytest.mark.asyncio
+async def test_a_parent_inherits_contamination_from_a_SUCCESSFUL_child(db_session):
+    """The case the first fix missed: a child that fell back to a substituted
+    template after a 429 SUCCEEDS. A successful run under a condition nobody
+    chose is exactly the one that must not count, so inheritance cannot be
+    conditional on the parent having failed."""
+    parent = Task(
+        title="p", priority="medium", status=TaskStatus.IN_PROGRESS.value,
+        workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    db_session.add(parent)
+    await db_session.commit()
+    await db_session.refresh(parent)
+
+    child = Task(
+        title="s", parent_id=parent.id, priority="low",
+        status=TaskStatus.DONE.value, failure_type="llm_rate_limit",
+        workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    db_session.add(child)
+    await db_session.commit()
+    await db_session.refresh(child)
+
+    await engine.check_parent_task_completion(db_session, child)
+    await db_session.refresh(parent)
+    assert parent.status == TaskStatus.DONE.value
+    assert parent.failure_type == "llm_rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_the_rollup_does_not_wipe_the_parent_own_contamination(db_session):
+    """The parent has its own orchestrator call, so it can already be flagged.
+    An unconditional assignment in the rollup erased that."""
+    parent = Task(
+        title="p", priority="medium", status=TaskStatus.IN_PROGRESS.value,
+        failure_type="llm_auth", workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    db_session.add(parent)
+    await db_session.commit()
+    await db_session.refresh(parent)
+
+    child = Task(
+        title="s", parent_id=parent.id, priority="low",
+        status=TaskStatus.FAILED.value, failure_type="cap_hit",
+        workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    db_session.add(child)
+    await db_session.commit()
+    await db_session.refresh(child)
+
+    await engine.check_parent_task_completion(db_session, child)
+    await db_session.refresh(parent)
+    assert parent.failure_type == "llm_auth"
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_failure_rolls_the_parent_up_itself(
+    db_session, default_model, monkeypatch
+):
+    """No agent started, so no webhook will ever arrive — and the roll-up used to
+    live only on that path. The parent hung until the wall clock relabelled it
+    `timeout`, which is not excluded, so an infrastructure failure came back as
+    an ordinary slow model."""
+    parent = Task(
+        title="p", priority="medium", status=TaskStatus.IN_PROGRESS.value,
+        workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    db_session.add(parent)
+    await db_session.commit()
+    await db_session.refresh(parent)
+
+    child = Task(
+        title="s", parent_id=parent.id, priority="low",
+        status=TaskStatus.READY.value, workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    tpl = Template(
+        name="t", description="d", soul_md="#", tool_ids=[], tags=[],
+        model_id=getattr(default_model, "id", default_model),
+        workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    db_session.add_all([child, tpl])
+    await db_session.commit()
+    await db_session.refresh(child)
+    await db_session.refresh(tpl)
+
+    def _boom():
+        raise RuntimeError("docker socket is gone")
+
+    monkeypatch.setattr("app.orchestrator.engine.get_agent_runtime", _boom)
+    await engine._spawn_agent_for_template(db_session, child, tpl)
+
+    await db_session.refresh(child)
+    await db_session.refresh(parent)
+    assert child.status == TaskStatus.FAILED.value
+    assert child.failure_type == "infra"
+    # …and the parent settled immediately, carrying the reason.
+    assert parent.status == TaskStatus.FAILED.value
+    assert parent.failure_type == "infra"

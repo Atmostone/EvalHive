@@ -538,3 +538,55 @@ async def test_a_new_experiment_records_the_threshold_it_accepted(
 
     report = (await auth_client.get(f"/api/experiments/{r.json()['id']}/report")).json()
     assert report["rq2"]["threshold_source"] == "pre_registered"
+
+
+@pytest.mark.asyncio
+async def test_an_arm_with_no_clean_runs_reports_nothing_rather_than_zero(
+    auth_client: AsyncClient, db_session
+):
+    """The sharpest form of «infrastructure looks like a weak model»: a
+    configuration a provider outage wiped out entirely has no observations, and
+    coercing that to 0.0 made it lose every comparison on the strength of the
+    outage. Absent is not zero."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name=f"wiped {uuid.uuid4().hex[:4]}")
+    r = await auth_client.post("/api/experiments", json=_body(tpl.id))
+    assert r.status_code == 201, r.text
+    exp_id = r.json()["id"]
+
+    db_session.add_all([
+        ExperimentRun(
+            experiment_id=uuid.UUID(exp_id), config_key="cfg-01", case_key="case-a",
+            run_index=0, status=ExperimentRunStatus.SUCCESS.value,
+            weighted_score=8.0, cost_usd=Decimal("0.01"), duration_seconds=10,
+            attempt_count=1,
+        ),
+        # cfg-02: every run killed by the quota — no observations at all.
+        ExperimentRun(
+            experiment_id=uuid.UUID(exp_id), config_key="cfg-02", case_key="case-a",
+            run_index=0, status=ExperimentRunStatus.FAILED.value,
+            weighted_score=0.4, cost_usd=Decimal("0.01"), duration_seconds=10,
+            attempt_count=1, failure_type="llm_rate_limit",
+        ),
+        ExperimentRun(
+            experiment_id=uuid.UUID(exp_id), config_key="cfg-02", case_key="case-b",
+            run_index=0, status=ExperimentRunStatus.FAILED.value,
+            weighted_score=0.6, cost_usd=Decimal("0.01"), duration_seconds=10,
+            attempt_count=1, failure_type="llm_rate_limit",
+        ),
+    ])
+    await db_session.commit()
+
+    rows = (await auth_client.get("/api/analytics/configs")).json()
+    wiped = next(r for r in rows if r["config_id"] == f"{exp_id}:cfg-02")
+    assert wiped["run_count"] == 0
+    assert wiped["contaminated"] == 2
+    # Not 0.0 anywhere — nothing is being claimed about this arm.
+    for key in (
+        "success_rate", "failure_rate", "quality_mean",
+        "trajectory_mean", "pass_rate", "avg_time_seconds", "avg_cost_usd",
+    ):
+        assert wiped[key] is None, key
+
+    survivor = next(r for r in rows if r["config_id"] == f"{exp_id}:cfg-01")
+    assert survivor["quality_mean"] == 8.0

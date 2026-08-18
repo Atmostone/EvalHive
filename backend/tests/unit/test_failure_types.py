@@ -16,6 +16,7 @@ from app.utils.failures import (
     is_contaminated,
     is_transient_llm_error,
     measures_the_model,
+    merge_failure_type,
 )
 
 
@@ -149,3 +150,42 @@ class TestSqlPredicates:
             assert t in keep and t in drop
         for t in (FAILURE_AGENT, FAILURE_CAP_HIT, FAILURE_TIMEOUT, FAILURE_LLM_ERROR):
             assert t not in drop
+
+
+class TestMergeInvariant:
+    """A run collects reasons over its life. Assigning the later one wins by
+    accident — and it is the wrong winner (SPA-87 review)."""
+
+    def test_contamination_cannot_be_demoted_by_a_later_reason(self):
+        # The real sequence: the orchestrator's LLM dies on a quota, the run
+        # degrades to a substituted template, and the agent then hits its cap.
+        assert (
+            merge_failure_type(FAILURE_LLM_RATE_LIMIT, FAILURE_CAP_HIT)
+            == FAILURE_LLM_RATE_LIMIT
+        )
+        assert merge_failure_type(FAILURE_INFRA, FAILURE_TIMEOUT) == FAILURE_INFRA
+        assert merge_failure_type(FAILURE_LLM_AUTH, FAILURE_AGENT) == FAILURE_LLM_AUTH
+
+    def test_contamination_still_wins_when_it_arrives_second(self):
+        assert (
+            merge_failure_type(FAILURE_CAP_HIT, FAILURE_LLM_RATE_LIMIT)
+            == FAILURE_LLM_RATE_LIMIT
+        )
+
+    def test_unclassified_never_overwrites_a_reason(self):
+        """None is the absence of a claim, so it cannot erase one."""
+        assert merge_failure_type(FAILURE_CAP_HIT, None) == FAILURE_CAP_HIT
+        assert merge_failure_type(FAILURE_LLM_AUTH, None) == FAILURE_LLM_AUTH
+
+    def test_an_empty_slot_takes_whatever_arrives(self):
+        assert merge_failure_type(None, FAILURE_CAP_HIT) == FAILURE_CAP_HIT
+        assert merge_failure_type(None, None) is None
+
+    def test_between_two_contaminating_reasons_the_later_is_more_specific(self):
+        assert (
+            merge_failure_type(FAILURE_INFRA, FAILURE_LLM_RATE_LIMIT)
+            == FAILURE_LLM_RATE_LIMIT
+        )
+
+    def test_an_ordinary_reason_replaces_an_ordinary_one(self):
+        assert merge_failure_type(FAILURE_AGENT, FAILURE_CAP_HIT) == FAILURE_CAP_HIT
