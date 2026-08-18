@@ -221,7 +221,11 @@ async def _process_webhook(
 
         elif event == "failed":
             from app.utils.cost import calculate_cost
-            from app.utils.failures import classify_agent_failure, merge_failure_type
+            from app.utils.failures import (
+                classify_agent_failure,
+                is_contaminated,
+                merge_failure_type,
+            )
 
             error = data.get("error", "Unknown error")
             # The type, not just the sentence (SPA-87). The agent reports facts;
@@ -232,8 +236,11 @@ async def _process_webhook(
             # quota death that made this run stop measuring the model, and the
             # agent's own later reason — a cap-hit, say — must not demote it back
             # to an ordinary weak result.
+            # Kept because the retry branch below needs to tell the CONDITION
+            # this attempt ran under from what the attempt itself did.
+            prior_failure = task.failure_type
             task.failure_type = merge_failure_type(
-                task.failure_type, classify_agent_failure(data.get("failure"))
+                prior_failure, classify_agent_failure(data.get("failure"))
             )
             task.token_usage = data.get("token_usage", {})
             task.cost_usd = calculate_cost(task, task.token_usage)
@@ -266,12 +273,24 @@ async def _process_webhook(
             if not _is_benchmark(task) and task.retry_count < task.max_retries:
                 task.retry_count += 1
                 task.status = TaskStatus.READY.value
-                # The task lives on, so its failure type must not: a retried task
-                # that later succeeds carries no failure at all.
-                task.failure_type = None
+                # Clear only what THIS attempt did. A contamination recorded
+                # before the agent ran describes the condition, not the attempt —
+                # and the condition survives the retry: when the orchestrator's
+                # LLM died on a quota it fell back to a substituted template, and
+                # `task.template_id` is now pinned, so the next attempt skips the
+                # orchestrator entirely and repeats the same outage-chosen setup.
+                # Clearing it wholesale let a retry that then succeeded land in
+                # the leaderboard as clean (SPA-87).
+                task.failure_type = (
+                    prior_failure if is_contaminated(prior_failure) else None
+                )
                 await _logev(
                     "task_retry", "system",
-                    {"retry": task.retry_count, "error": error},
+                    {
+                        "retry": task.retry_count,
+                        "error": error,
+                        "carried_failure_type": task.failure_type,
+                    },
                 )
             else:
                 task.status = TaskStatus.FAILED.value

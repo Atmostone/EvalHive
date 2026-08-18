@@ -113,7 +113,10 @@ treated as ordinary data.
 
 Orchestrator: retries when `retry_count < max_retries` (never on the benchmark
 path, where a failure is a result), otherwise marks the task as `failed`. A task
-put back to `ready` has its `failure_type` cleared — it has not failed.
+put back to `ready` keeps a `failure_type` recorded **before** the agent ran and clears
+the rest: the earlier one describes the condition the attempt ran under — an
+orchestrator LLM outage pins a substituted template on the task, so the retry
+repeats it — while the attempt's own reason belongs to the attempt.
 
 ### event = "aborted" (P1)
 

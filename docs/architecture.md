@@ -1147,8 +1147,10 @@ over its life — a quota kills the orchestrator's call, the run degrades, the
 agent then hits its cap — and plain assignment made the *last* one win, which is
 the wrong winner. Whether a run measured the model is decided by the first thing
 that stopped it measuring. `None` never overwrites, because it is the absence of
-a claim; a **retry** resets the slot outright, because the next attempt is a
-different run. And **every terminal path that ends a task without an agent rolls
+a claim; a **retry** clears only the reason of the attempt that just ended.
+A contamination recorded before the agent ran describes the CONDITION, and the
+condition survives: the orchestrator's fallback pinned a substituted template on
+the task, so the next attempt skips the orchestrator and repeats it. And **every terminal path that ends a task without an agent rolls
 the parent up itself** — spawn failure, unresolvable model, no templates,
 decomposition cycle, selection failure, the reaper. The roll-up lived only on the
 webhook path, so those parents waited for a child that was already finished until

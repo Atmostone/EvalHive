@@ -327,3 +327,65 @@ async def test_a_retried_task_carries_no_failure_type(auth_client: AsyncClient, 
     assert task.status == TaskStatus.READY.value
     assert task.retry_count == 1
     assert task.failure_type is None
+
+
+@pytest.mark.asyncio
+async def test_a_retry_keeps_the_contamination_of_the_condition_it_reruns(
+    auth_client: AsyncClient, db_session
+):
+    """The condition outlives the attempt. When the orchestrator's LLM died on a
+    quota it fell back to a substituted template and pinned it on the task, so the
+    retry skips the orchestrator and repeats the same outage-chosen setup. Wiping
+    the mark let a retry that then succeeded land in the leaderboard as clean."""
+    task, headers = await _task_with_token(auth_client, db_session, max_retries=2)
+    task.failure_type = "llm_rate_limit"  # flagged before the agent ever ran
+    await db_session.commit()
+
+    r = await auth_client.post(
+        f"/api/v1/agent-webhook/{task.id}",
+        headers=headers,
+        json={
+            "event": "failed",
+            "task_id": str(task.id),
+            "idempotency_key": "b-carry-1",
+            "data": {
+                "error": "Agent exceeded max iterations (20)",
+                "failure": {"kind": "cap_hit"},
+                "token_usage": {"input": 1, "output": 1},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.READY.value
+    assert task.retry_count == 1
+    # The attempt's own reason (cap_hit) is gone; the condition's is not.
+    assert task.failure_type == "llm_rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_drops_an_ordinary_reason(auth_client: AsyncClient, db_session):
+    """Only contamination is carried. A task that merely failed on its own merits
+    starts the next attempt with a clean slate."""
+    task, headers = await _task_with_token(auth_client, db_session, max_retries=2)
+    task.failure_type = "cap_hit"
+    await db_session.commit()
+
+    r = await auth_client.post(
+        f"/api/v1/agent-webhook/{task.id}",
+        headers=headers,
+        json={
+            "event": "failed",
+            "task_id": str(task.id),
+            "idempotency_key": "b-carry-2",
+            "data": {
+                "error": "boom",
+                "failure": {"kind": "crash"},
+                "token_usage": {"input": 1, "output": 1},
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.READY.value
+    assert task.failure_type is None
