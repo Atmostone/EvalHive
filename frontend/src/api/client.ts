@@ -729,7 +729,11 @@ export interface TemplateAnalytics {
 export interface ConfigAnalytics {
   config_id: string
   config_name: string
+  /** Runs that measured the model. SPA-87: runs infrastructure decided the
+   *  outcome of are counted in `contaminated` instead and are absent from every
+   *  average here — the same population the experiment report uses. */
   run_count: number
+  contaminated?: number
   success_rate: number
   failure_rate: number
   quality_mean: number

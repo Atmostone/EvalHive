@@ -99,6 +99,22 @@ export default function ConfigCompareView({ data }: { data: ConfigAnalytics[] })
             <div className="px-4 py-2 text-center tabular-nums">{a.run_count}</div>
             <div className="px-4 py-2 text-center tabular-nums">{b.run_count}</div>
           </div>
+          {(a.contaminated || b.contaminated) ? (
+            <div className="grid grid-cols-3 border-b text-sm">
+              <div
+                className="px-4 py-2 text-gray-600"
+                title="Runs a provider quota, a dead key, a transport failure or a harness collapse decided the outcome of. They are absent from every metric below — comparing them would compare outages, not models."
+              >
+                Excluded — infrastructure ⊘
+              </div>
+              <div className="px-4 py-2 text-center tabular-nums text-gray-500">
+                {a.contaminated || 0}
+              </div>
+              <div className="px-4 py-2 text-center tabular-nums text-gray-500">
+                {b.contaminated || 0}
+              </div>
+            </div>
+          ) : null}
           {METRICS.map((m) => {
             const va = Number(a[m.key]) || 0
             const vb = Number(b[m.key]) || 0

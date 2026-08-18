@@ -384,6 +384,14 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
                       {counts.evaluating ? <span className="text-indigo-600 font-medium" title="evaluating (executable checker)">{counts.evaluating}⏳</span> : null}
                       {counts.pending ? <span className="text-gray-400">{counts.pending}·</span> : null}
                       {counts.skipped ? <span className="text-amber-600">{counts.skipped}s</span> : null}
+                      {cell?.contaminated ? (
+                        <span
+                          className="text-gray-500"
+                          title="Infrastructure decided this run's outcome — a provider quota, a dead key, a transport failure or a harness collapse. The run is still here, but its scores are excluded from every average, so this cell may show no quality at all."
+                        >
+                          {cell.contaminated}⊘
+                        </span>
+                      ) : null}
                       {Object.keys(counts).length === 0 && <span className="text-gray-300">—</span>}
                       {cell?.external_total ? (
                         <span className={cell.external_pass === cell.external_total ? 'text-green-600' : cell.external_pass ? 'text-amber-600' : 'text-red-600'}
@@ -428,7 +436,7 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
           ))}
         </tbody>
       </table>
-      <div className="text-xs text-gray-400 mt-2">🔩 run outcome + ✔pass/total executable checker (✓ success · ✗ failed · ⚙ preprocessing · … running · ⏳ evaluating · · pending · s skipped) · ⚖️ LLM judge (q = outcome quality · t = process trajectory) · 🧑 human (mean score + ✓/✗ verdict) · ±σ = spread across runs · hover q/t for the per-dimension/axis breakdown — click a cell for run details</div>
+      <div className="text-xs text-gray-400 mt-2">🔩 run outcome + ✔pass/total executable checker (✓ success · ✗ failed · ⚙ preprocessing · … running · ⏳ evaluating · · pending · s skipped · ⊘ excluded: infrastructure decided the outcome, so the run is counted but never averaged) · ⚖️ LLM judge (q = outcome quality · t = process trajectory) · 🧑 human (mean score + ✓/✗ verdict) · ±σ = spread across runs · hover q/t for the per-dimension/axis breakdown — click a cell for run details</div>
       {retiredConfigs.length > 0 && (
         <div className="text-xs text-gray-500 mt-2 border-t pt-2">
           <span className="font-medium text-gray-600">Retired configurations:</span>{' '}

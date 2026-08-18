@@ -1503,6 +1503,10 @@ export interface ExperimentMatrixCell {
   config_key: string
   case_key: string
   counts: Record<string, number>
+  /** SPA-87: runs in this cell whose outcome infrastructure decided. They are
+   *  still counted in `counts` — the matrix is a progress view — but contribute
+   *  to none of the means below. */
+  contaminated?: number
   quality_mean?: number | null
   trajectory_mean?: number | null
   // Spread across the cell's scored runs (population σ; null until ≥2 samples) —
@@ -1552,6 +1556,11 @@ export interface ExperimentRunResult {
   task_id?: string | null
   task_status?: string | null
   result_summary?: string | null
+  /** SPA-87: why the run died, and whether that means infrastructure rather than
+   *  the model decided it. Raw rows are never filtered — this is the ledger — so
+   *  the mark is how a consumer tells a quota casualty from a weak result. */
+  failure_type?: string | null
+  contaminated?: boolean
   external_verdict?: 'pass' | 'fail' | null
   weighted_score?: number | null
   trajectory_score?: number | null
