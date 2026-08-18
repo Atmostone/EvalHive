@@ -162,3 +162,30 @@ def classify_agent_failure(failure: dict | None) -> str | None:
 def is_contaminated(failure_type: str | None) -> bool:
     """Did infrastructure, rather than the model, decide this run's outcome?"""
     return failure_type in CONTAMINATING_FAILURES
+
+
+def measures_the_model(column):
+    """SQL counterpart of ``not is_contaminated`` — the analytical population.
+
+    One definition for both sides, because the alternative is what the review
+    found: the report excluded a quota-killed run while /analytics, the live
+    matrix and the global leaderboard went on averaging it. A claim is only as
+    narrow as its widest reader.
+
+    NULL means «not classified» and belongs in the population, so this cannot be
+    a bare ``NOT IN``: in SQL, ``NULL NOT IN (...)`` is NULL, which filters the
+    row out — silently dropping every run that predates the classifier.
+    """
+    from sqlalchemy import or_
+
+    return or_(
+        column.is_(None), column.notin_(sorted(CONTAMINATING_FAILURES))
+    )
+
+
+def infrastructure_decided(column):
+    """SQL counterpart of ``is_contaminated`` — for counting what was excluded.
+
+    Exclusion is only defensible while it is reported, so every place that
+    filters must also be able to say how much it dropped."""
+    return column.in_(sorted(CONTAMINATING_FAILURES))

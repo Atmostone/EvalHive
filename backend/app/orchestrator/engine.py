@@ -25,7 +25,7 @@ from app.orchestrator.llm import (
 )
 from app.plugins.runtime import AgentSpec, get_agent_runtime
 from app.utils.events import log_event
-from app.utils.failures import FAILURE_TIMEOUT
+from app.utils.failures import FAILURE_INFRA, FAILURE_TIMEOUT, is_contaminated
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +236,7 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         except Exception as e:
             logger.error(f"template {template.id} has no model configured: {e}")
             task.status = TaskStatus.FAILED.value
+            task.failure_type = FAILURE_INFRA
             await db.commit()
             await log_event(
                 db, "orchestrator_decision", "orchestrator",
@@ -360,6 +361,7 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
     except Exception as e:
         logger.error(f"Failed to spawn agent: {e}", exc_info=True)
         task.status = TaskStatus.FAILED.value
+        task.failure_type = FAILURE_INFRA
         await db.commit()
         await log_event(
             db, "orchestrator_decision", "orchestrator",
@@ -423,6 +425,7 @@ async def process_ready_task(db: AsyncSession, task: Task):
     except Exception as e:
         logger.error(f"orchestrator model not configured for task {task.id}: {e}")
         task.status = TaskStatus.FAILED.value
+        task.failure_type = FAILURE_INFRA
         await db.commit()
         await log_event(
             db, "orchestrator_decision", "orchestrator",
@@ -439,6 +442,7 @@ async def process_ready_task(db: AsyncSession, task: Task):
     if not templates:
         logger.error("No templates available, cannot process task")
         task.status = TaskStatus.FAILED.value
+        task.failure_type = FAILURE_INFRA
         await db.commit()
         await log_event(
             db, "orchestrator_decision", "orchestrator",
@@ -536,6 +540,7 @@ async def process_ready_task(db: AsyncSession, task: Task):
     if not template:
         logger.error(f"Selected template {template_id} not found")
         task.status = TaskStatus.FAILED.value
+        task.failure_type = FAILURE_INFRA
         await db.commit()
         return
 
@@ -574,6 +579,16 @@ async def check_parent_task_completion(db: AsyncSession, task: Task):
     any_failed = any(s.status == TaskStatus.FAILED.value for s in subtasks)
     if any_failed:
         parent.status = TaskStatus.FAILED.value
+        # Under orchestrator:on the ExperimentRun denormalizes from the PARENT, so
+        # a child killed by a provider quota reached the report as an ordinary
+        # weak result — the status rolled up and the reason did not (SPA-87).
+        # Only an infrastructure failure is inherited: a child that failed on its
+        # own merits is a result, and the parent's failure is a real one too.
+        contaminated = sorted(
+            (s for s in subtasks if is_contaminated(s.failure_type)),
+            key=lambda s: (s.created_at or datetime.min, str(s.id)),
+        )
+        parent.failure_type = contaminated[0].failure_type if contaminated else None
     else:
         parent.status = TaskStatus.DONE.value
     # Benchmark roots (SPA-40, orchestrator:on cells) are judged end-to-end by

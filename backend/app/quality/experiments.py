@@ -504,6 +504,7 @@ async def create_experiment(
         raise ValueError("experiment name is required")
 
     _validate_eval_config(payload.get("eval_config"))
+    eval_config = _with_judge_threshold(payload.get("eval_config"))
 
     configs = expand_matrix(payload.get("configurations"), payload.get("axes"))
     if exclude_fingerprints:
@@ -593,7 +594,7 @@ async def create_experiment(
         budget_limit_usd=Decimal(str(budget)) if budget is not None else None,
         max_parallel=int(max_parallel) if max_parallel is not None else None,
         n_toolathlon_lanes=int(n_lanes) if n_lanes is not None else None,
-        eval_config=payload.get("eval_config") or {},
+        eval_config=eval_config,
         created_by=created_by,
     )
     # Record the inputs from the start, so the column always means "the inputs as
@@ -1359,6 +1360,27 @@ def _validate_eval_config(eval_config: dict | None) -> None:
     _validate_trace_config(eval_config)
 
 
+def _with_judge_threshold(eval_config: dict | None) -> dict:
+    """Stamp the project default threshold when the author named none (SPA-87).
+
+    Leaving the key absent worked — the report falls back to the same constant —
+    but it left nothing on the record, which is the one thing this field exists
+    for. Accepting a default IS a pre-registration as long as it is fixed before
+    any result exists, and writing it at creation is what makes that checkable:
+    the value goes into the frozen revision fingerprint like any other, and the
+    report can stop saying «default» for every experiment ever made.
+
+    Only new experiments get this. `threshold_source: default` in a report now
+    means precisely «created before the threshold was recorded», rather than
+    «nobody chose».
+    """
+    from app.quality.experiment_report import RQ2_JUDGE_THRESHOLD
+
+    out = dict(eval_config or {})
+    out.setdefault("judge_threshold", RQ2_JUDGE_THRESHOLD)
+    return out
+
+
 def _validate_trace_config(eval_config: dict | None) -> None:
     """Reject a malformed ``eval_config.trace`` (SPA-86)."""
     block = (eval_config or {}).get("trace")
@@ -1751,6 +1773,7 @@ async def _start_toolathlon_run(
         logger.warning(f"experiment: preprocess start failed for {run.case_key}: {e}")
         run.preprocess_log = f"preprocess start failed: {e}"[:4000]
         run.status = ExperimentRunStatus.FAILED.value
+        run.failure_type = FAILURE_INFRA
         run.completed_at = datetime.utcnow()
         await _fail_orphan_task(db, run)
 
