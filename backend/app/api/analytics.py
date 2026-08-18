@@ -197,13 +197,25 @@ async def config_analytics(
             "config_name": name,
             "run_count": int(r.run_count or 0),
             "contaminated": int(r.contaminated or 0),
-            "success_rate": (int(r.success or 0) / settled_n) if settled_n else 0.0,
-            "failure_rate": (int(r.failed or 0) / settled_n) if settled_n else 0.0,
-            "quality_mean": float(r.quality_mean) if r.quality_mean is not None else 0.0,
-            "trajectory_mean": float(r.trajectory_mean) if r.trajectory_mean is not None else 0.0,
-            "pass_rate": (int(r.ev_pass or 0) / eval_n) if eval_n else 0.0,
-            "avg_time_seconds": float(r.avg_time_seconds or 0),
-            "avg_cost_usd": float(r.avg_cost_usd or 0),
+            # NULL, not 0.0, when there is nothing left to average (SPA-87). A
+            # configuration whose every run a provider outage killed has no
+            # observations at all — coercing that to zero makes it lose every
+            # comparison on the strength of an outage, which is precisely the
+            # «infrastructure looks like a weak model» failure this work exists to
+            # close. Absent is not zero, and only the caller can say so.
+            "success_rate": (int(r.success or 0) / settled_n) if settled_n else None,
+            "failure_rate": (int(r.failed or 0) / settled_n) if settled_n else None,
+            "quality_mean": float(r.quality_mean) if r.quality_mean is not None else None,
+            "trajectory_mean": (
+                float(r.trajectory_mean) if r.trajectory_mean is not None else None
+            ),
+            "pass_rate": (int(r.ev_pass or 0) / eval_n) if eval_n else None,
+            "avg_time_seconds": (
+                float(r.avg_time_seconds) if r.avg_time_seconds is not None else None
+            ),
+            "avg_cost_usd": (
+                float(r.avg_cost_usd) if r.avg_cost_usd is not None else None
+            ),
         })
     out_list.sort(key=lambda x: -x["run_count"])
     return out_list
