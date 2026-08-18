@@ -1119,6 +1119,27 @@ scored like any other non-verifiable run, so a five-hour provider outage reads a
 a weak model. Excluding evidence changes the denominator, and the report says so
 — `success_rate` becomes «of the runs that measured the model», flagged in
 `summary.success_rate_basis`.
+
+The population is defined **once** and used by every reader: `measures_the_model`
+/ `infrastructure_decided` in `app/utils/failures.py` give the same rule a SQL
+form, and `/analytics/configs`, the live progress matrix and the global
+leaderboard (`derive_matches_from_records`) all take it. An exclusion that holds
+only in the report is not an exclusion — a claim is as narrow as its widest
+reader, and the leaderboard is the loudest one. The raw endpoints (`/results`,
+`/export`) deliberately stay unfiltered, because they are the ledger; they carry
+`failure_type` and `contaminated` so a consumer can still tell a quota casualty
+from a weak result.
+
+Two places lose the reason unless it is carried deliberately. Under
+`orchestrator:on` the `ExperimentRun` denormalizes from the decomposition
+**parent**, so `check_parent_task_completion` propagates a child's infrastructure
+failure upward — and only an infrastructure one, since a child that failed on its
+own merits is a result. And the orchestrator's own LLM calls do not fail on an
+outage, they **degrade**: template selection falls back to the first template and
+a failed decomposition decision simply proceeds without decomposing. The agent
+then produces a perfectly real result under a condition nobody chose. Only
+`orchestrator:on` cells reach that code, so the substituted decision is exactly
+the treatment being measured, and `_flag_llm_contamination` marks the task.
 - **Reliability gate (E-17 → report, SPA-76/79).** Every judge axis in the report
   carries a traffic-light badge, computed in `experiment_report.py` from the E-17
   calibration via `_classify_reliability`: **reliable** (κ ≥
