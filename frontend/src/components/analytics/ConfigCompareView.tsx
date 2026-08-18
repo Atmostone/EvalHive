@@ -26,14 +26,36 @@ const METRICS: MetricDef[] = [
 
 const NEAR_TIE_EPSILON = 0.01
 
-function compare(a: number, b: number, direction: MetricDirection): 'a' | 'b' | 'tie' {
+// SPA-87: a configuration whose every run a provider outage killed has NO
+// observations. The API sends null for that, and it must stay null all the way
+// to the screen — coerced to 0 it silently became «quality 0.0, success 0%» and
+// lost every row, which is an outage beating a model in a comparison.
+function num(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+function compare(
+  a: number | null,
+  b: number | null,
+  direction: MetricDirection,
+): 'a' | 'b' | 'tie' | 'incomparable' {
+  if (a === null || b === null) return 'incomparable'
   const denom = Math.max(Math.abs(a), Math.abs(b), 1e-9)
   if (Math.abs(a - b) / denom < NEAR_TIE_EPSILON) return 'tie'
   if (direction === 'higher_better') return a > b ? 'a' : 'b'
   return a < b ? 'a' : 'b'
 }
 
-function Indicator({ kind }: { kind: 'winner' | 'loser' | 'tie' }) {
+function Indicator({ kind }: { kind: 'winner' | 'loser' | 'tie' | 'incomparable' }) {
+  if (kind === 'incomparable')
+    return (
+      <span
+        className="h-4 w-4 text-center text-gray-300"
+        title="No comparable sample on one side — nothing is being claimed here."
+      >
+        ·
+      </span>
+    )
   if (kind === 'tie') return <Equal className="h-4 w-4 text-gray-400" aria-label="approximately equal" />
   if (kind === 'winner') return <ArrowUp className="h-4 w-4 text-green-600" aria-label="better" />
   return <ArrowDown className="h-4 w-4 text-red-500" aria-label="worse" />
@@ -99,9 +121,25 @@ export default function ConfigCompareView({ data }: { data: ConfigAnalytics[] })
             <div className="px-4 py-2 text-center tabular-nums">{a.run_count}</div>
             <div className="px-4 py-2 text-center tabular-nums">{b.run_count}</div>
           </div>
+          {(a.contaminated || b.contaminated) ? (
+            <div className="grid grid-cols-3 border-b text-sm">
+              <div
+                className="px-4 py-2 text-gray-600"
+                title="Runs a provider quota, a dead key, a transport failure or a harness collapse decided the outcome of. They are absent from every metric below — comparing them would compare outages, not models."
+              >
+                Excluded — infrastructure ⊘
+              </div>
+              <div className="px-4 py-2 text-center tabular-nums text-gray-500">
+                {a.contaminated || 0}
+              </div>
+              <div className="px-4 py-2 text-center tabular-nums text-gray-500">
+                {b.contaminated || 0}
+              </div>
+            </div>
+          ) : null}
           {METRICS.map((m) => {
-            const va = Number(a[m.key]) || 0
-            const vb = Number(b[m.key]) || 0
+            const va = num(a[m.key])
+            const vb = num(b[m.key])
             const result = compare(va, vb, m.direction)
             return (
               <div key={m.key as string} className="grid grid-cols-3 border-b last:border-0 text-sm">
@@ -112,12 +150,36 @@ export default function ConfigCompareView({ data }: { data: ConfigAnalytics[] })
                   </span>
                 </div>
                 <div className="px-4 py-2 flex items-center justify-center gap-2 tabular-nums">
-                  <Indicator kind={result === 'tie' ? 'tie' : result === 'a' ? 'winner' : 'loser'} />
-                  <span>{m.format(va)}</span>
+                  <Indicator
+                    kind={
+                      result === 'incomparable'
+                        ? 'incomparable'
+                        : result === 'tie'
+                          ? 'tie'
+                          : result === 'a'
+                            ? 'winner'
+                            : 'loser'
+                    }
+                  />
+                  <span className={va === null ? 'text-gray-400' : undefined}>
+                    {va === null ? '—' : m.format(va)}
+                  </span>
                 </div>
                 <div className="px-4 py-2 flex items-center justify-center gap-2 tabular-nums">
-                  <Indicator kind={result === 'tie' ? 'tie' : result === 'b' ? 'winner' : 'loser'} />
-                  <span>{m.format(vb)}</span>
+                  <Indicator
+                    kind={
+                      result === 'incomparable'
+                        ? 'incomparable'
+                        : result === 'tie'
+                          ? 'tie'
+                          : result === 'b'
+                            ? 'winner'
+                            : 'loser'
+                    }
+                  />
+                  <span className={vb === null ? 'text-gray-400' : undefined}>
+                    {vb === null ? '—' : m.format(vb)}
+                  </span>
                 </div>
               </div>
             )

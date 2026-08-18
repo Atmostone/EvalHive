@@ -729,14 +729,21 @@ export interface TemplateAnalytics {
 export interface ConfigAnalytics {
   config_id: string
   config_name: string
+  /** Runs that measured the model. SPA-87: runs infrastructure decided the
+   *  outcome of are counted in `contaminated` instead and are absent from every
+   *  average here — the same population the experiment report uses. */
   run_count: number
-  success_rate: number
-  failure_rate: number
-  quality_mean: number
-  trajectory_mean: number
-  pass_rate: number
-  avg_time_seconds: number
-  avg_cost_usd: number
+  contaminated?: number
+  /** null = no clean observations at all (e.g. every run of this arm was killed
+   *  by a provider outage). SPA-87: absent is not zero — rendering it as 0 made
+   *  an outage lose every comparison as if it were a weak model. */
+  success_rate: number | null
+  failure_rate: number | null
+  quality_mean: number | null
+  trajectory_mean: number | null
+  pass_rate: number | null
+  avg_time_seconds: number | null
+  avg_cost_usd: number | null
 }
 
 export interface TimelinePoint {

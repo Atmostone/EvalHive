@@ -25,6 +25,12 @@ from app.orchestrator.llm import (
 )
 from app.plugins.runtime import AgentSpec, get_agent_runtime
 from app.utils.events import log_event
+from app.utils.failures import (
+    FAILURE_INFRA,
+    FAILURE_TIMEOUT,
+    is_contaminated,
+    merge_failure_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,12 +241,17 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         except Exception as e:
             logger.error(f"template {template.id} has no model configured: {e}")
             task.status = TaskStatus.FAILED.value
+            task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
             await db.commit()
             await log_event(
                 db, "orchestrator_decision", "orchestrator",
                 {"action": "spawn_failed", "error": "template model not configured"},
                 task_id=task.id,
             )
+            # No agent will start, so no webhook will ever arrive to roll the
+            # parent up — it would hang until the wall clock relabelled it
+            # `timeout`, turning an infrastructure failure into a slow model.
+            await check_parent_task_completion(db, task)
             return
 
         # Per-run prompt override (run_config.soul_md), else the template's prompt.
@@ -359,12 +370,18 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
     except Exception as e:
         logger.error(f"Failed to spawn agent: {e}", exc_info=True)
         task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
         await db.commit()
         await log_event(
             db, "orchestrator_decision", "orchestrator",
             {"action": "spawn_failed", "error": str(e)},
             task_id=task.id,
         )
+        # No agent started, so no webhook will ever arrive — and the roll-up used
+        # to live only on that path. The parent hung until the wall clock
+        # relabelled it `timeout`, which is not excluded, so an infrastructure
+        # failure came back as an ordinary slow model (SPA-87).
+        await check_parent_task_completion(db, task)
 
 
 def _subtask_run_config(run_config: dict | None) -> dict | None:
@@ -422,12 +439,15 @@ async def process_ready_task(db: AsyncSession, task: Task):
     except Exception as e:
         logger.error(f"orchestrator model not configured for task {task.id}: {e}")
         task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
         await db.commit()
         await log_event(
             db, "orchestrator_decision", "orchestrator",
             {"action": "failed", "reason": "orchestrator model not configured"},
             task_id=task.id,
         )
+        # Terminal without an agent: nothing will webhook, so roll the parent up here.
+        await check_parent_task_completion(db, task)
         return
 
     result = await db.execute(
@@ -438,12 +458,15 @@ async def process_ready_task(db: AsyncSession, task: Task):
     if not templates:
         logger.error("No templates available, cannot process task")
         task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
         await db.commit()
         await log_event(
             db, "orchestrator_decision", "orchestrator",
             {"action": "failed", "reason": "No templates available"},
             task_id=task.id,
         )
+        # Terminal without an agent: nothing will webhook, so roll the parent up here.
+        await check_parent_task_completion(db, task)
         return
 
     templates_list = [template_to_dict(t) for t in templates]
@@ -468,6 +491,8 @@ async def process_ready_task(db: AsyncSession, task: Task):
                         )
                         task.status = TaskStatus.FAILED.value
                         await db.commit()
+                        # Terminal without an agent — roll the parent up here.
+                        await check_parent_task_completion(db, task)
                         return
 
             # Benchmark roots (SPA-40, orchestrator:on cells) must keep every
@@ -528,6 +553,8 @@ async def process_ready_task(db: AsyncSession, task: Task):
             {"action": "failed", "reason": "Template selection failed"},
             task_id=task.id,
         )
+        # Terminal without an agent: nothing will webhook, so roll the parent up here.
+        await check_parent_task_completion(db, task)
         return
 
     template_id = selection["template_id"]
@@ -535,7 +562,10 @@ async def process_ready_task(db: AsyncSession, task: Task):
     if not template:
         logger.error(f"Selected template {template_id} not found")
         task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
         await db.commit()
+        # Terminal without an agent: nothing will webhook, so roll the parent up here.
+        await check_parent_task_completion(db, task)
         return
 
     task.template_id = template.id
@@ -571,10 +601,26 @@ async def check_parent_task_completion(db: AsyncSession, task: Task):
         return
 
     any_failed = any(s.status == TaskStatus.FAILED.value for s in subtasks)
-    if any_failed:
-        parent.status = TaskStatus.FAILED.value
-    else:
-        parent.status = TaskStatus.DONE.value
+    parent.status = (
+        TaskStatus.FAILED.value if any_failed else TaskStatus.DONE.value
+    )
+    # Under orchestrator:on the ExperimentRun denormalizes from the PARENT, so a
+    # child a provider quota got to reached the report as an ordinary result —
+    # the status rolled up and the reason did not (SPA-87). Inherited regardless
+    # of the parent's own outcome: a child that fell back to a substituted
+    # template after a 429 SUCCEEDS, and a successful run under a condition
+    # nobody chose is exactly the case that must not count. Only an
+    # infrastructure reason is inherited — a child that failed on its own merits
+    # is a result — and it is merged, never assigned, so it cannot wipe a
+    # contamination the parent already carries from its own orchestrator call.
+    contaminated = sorted(
+        (s for s in subtasks if is_contaminated(s.failure_type)),
+        key=lambda s: (s.created_at or datetime.min, str(s.id)),
+    )
+    if contaminated:
+        parent.failure_type = merge_failure_type(
+            parent.failure_type, contaminated[0].failure_type
+        )
     # Benchmark roots (SPA-40, orchestrator:on cells) are judged end-to-end by
     # the quality pipeline, but decomposed parents have no result of their own
     # — synthesize a rollup from the children so E-02 has something to score.
@@ -621,6 +667,13 @@ async def check_timed_out_tasks():
                         get_agent_runtime().kill(task.agent_container_id)
 
                     task.status = TaskStatus.FAILED.value
+                    # Typed, but deliberately NOT contaminating (SPA-87): a run
+                    # that hit the wall clock may have been looping, and dropping
+                    # it from the aggregates would quietly forgive that. It only
+                    # stops being indistinguishable from a provider outage.
+                    task.failure_type = merge_failure_type(
+                        task.failure_type, FAILURE_TIMEOUT
+                    )
                     task.completed_at = datetime.utcnow()
                     await db.commit()
 
@@ -630,6 +683,10 @@ async def check_timed_out_tasks():
                         task_id=task.id,
                         agent_container_id=task.agent_container_id,
                     )
+                    # The reaper is this task's terminal event; no webhook follows
+                    # it, so the parent would wait for a child that is already
+                    # finished (SPA-87).
+                    await check_parent_task_completion(db, task)
     except Exception as e:
         logger.error(f"Timeout check error: {e}")
 

@@ -79,6 +79,30 @@ def _rank(values: list[float]) -> list[float]:
     return ranks
 
 
+def rank_auc(positive: list[float], negative: list[float]) -> float | None:
+    """P(a random ``positive`` scores above a random ``negative``), ties = ½.
+
+    The area under the ROC curve, computed from rank sums — the normalized
+    Mann-Whitney U, so it needs no threshold to exist. That is the point of it
+    here (SPA-87): «does the judge tell the checker's passes from its failures»
+    is answered once, instead of once per cut-off, so the headline cannot move
+    when someone picks a different one. 0.5 is chance; below 0.5 the judge ranks
+    them backwards, which is information a 2×2 at one threshold can hide.
+
+    ``None`` when either group is empty — with nothing to compare, there is no
+    discrimination to report. Unlike :func:`mann_whitney_u` this has no minimum
+    sample size, because it is a descriptive statistic and not a significance
+    test; how much to trust it is a question for the counts reported next to it.
+    """
+    n_pos, n_neg = len(positive), len(negative)
+    if n_pos == 0 or n_neg == 0:
+        return None
+    ranks = _rank(list(positive) + list(negative))
+    rank_sum_pos = sum(ranks[:n_pos])
+    u_pos = rank_sum_pos - n_pos * (n_pos + 1) / 2.0
+    return round(u_pos / (n_pos * n_neg), 4)
+
+
 def spearman(xs: list[float], ys: list[float]) -> float | None:
     """Spearman rank correlation (Pearson on average-tie ranks)."""
     n = len(xs)

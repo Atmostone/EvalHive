@@ -40,6 +40,7 @@ from app.quality.experiment_report import (
     compute_report,
     config_drift,
 )
+from app.utils.failures import is_contaminated
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
@@ -314,6 +315,11 @@ async def get_experiment(
     cells: dict[tuple[str, str], dict] = {}
     totals: dict[str, int] = {}
     for r in runs:
+        # A run infrastructure decided the outcome of still EXISTS — the matrix is
+        # a progress view and must show it — but its scores are not the model's, so
+        # they stay out of every cell average, exactly as in the report (SPA-87).
+        # The per-cell `contaminated` count is what makes the gap legible.
+        dirty = is_contaminated(r.failure_type)
         cell = cells.setdefault(
             (r.config_key, r.case_key),
             {
@@ -329,10 +335,15 @@ async def get_experiment(
                 "external_total": 0,
                 "human_rated": 0,
                 "human_approve": 0,
+                "contaminated": 0,
             },
         )
         cell["counts"][r.status] = cell["counts"].get(r.status, 0) + 1
         totals[r.status] = totals.get(r.status, 0) + 1
+        if dirty:
+            cell["contaminated"] += 1
+            totals["contaminated"] = totals.get("contaminated", 0) + 1
+            continue
         bd = breakdown_by_task.get(r.task_id)
         if r.weighted_score is not None:
             cell["_q"].append(float(r.weighted_score))
@@ -639,6 +650,12 @@ async def experiment_results(
                 "case_key": r.case_key,
                 "run_index": r.run_index,
                 "status": r.status,
+                # SPA-87: raw rows are deliberately NOT filtered here — this is the
+                # ledger, not the analysis — but without the reason a consumer
+                # cannot tell a quota casualty from a weak result, which is how one
+                # got into a leaderboard in the first place.
+                "failure_type": r.failure_type,
+                "contaminated": is_contaminated(r.failure_type),
                 # SPA-84: how many times this cell has run, and whether its
                 # configuration was retired — without these the UI cannot tell a
                 # first result from the survivor of three retries.
@@ -744,6 +761,8 @@ async def export_experiment(
             "case_key": r.case_key,
             "run_index": r.run_index,
             "status": r.status,
+            "failure_type": r.failure_type,
+            "contaminated": is_contaminated(r.failure_type),
             "weighted_score": r.weighted_score,
             "trajectory_score": r.trajectory_score,
             "cost_usd": float(r.cost_usd or 0),
@@ -770,7 +789,8 @@ async def export_experiment(
     base_cols = [
         "experiment_id", "experiment_name", "config_key", "config_label",
         "orchestrator", "template_id", "model_id", "temperature", "seed",
-        "memory_mode", "case_key", "run_index", "status", "weighted_score",
+        "memory_mode", "case_key", "run_index", "status",
+        "failure_type", "contaminated", "weighted_score",
         "trajectory_score", "cost_usd", "duration_seconds", "task_id",
         "repro_fingerprint",
     ]

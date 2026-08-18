@@ -8,8 +8,14 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._resolve_model import ResolvedModel
+from app.models.task import Task
 from app.plugins.llm import get_llm_provider
 from app.utils.events import log_event
+from app.utils.failures import (
+    classify_llm_error,
+    is_contaminated,
+    merge_failure_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,31 @@ async def _record_reasoning(
         )
     except Exception as e:
         logger.warning(f"reasoning log_event failed: {e}")
+
+async def _flag_llm_contamination(db, task_id, exc: Exception) -> None:
+    """Mark the task when a provider outage, not the orchestrator, made the call.
+
+    These helpers do not fail on an LLM error — they DEGRADE: template selection
+    falls back to the first template, and a failed decomposition decision simply
+    proceeds without decomposing. The agent then runs normally and produces a
+    perfectly real result, under a condition nobody chose. Only orchestrator:on
+    cells reach this code (a pinned template spawns directly), so the substituted
+    decision is exactly the treatment being measured — which makes the run no
+    longer a measurement of it (SPA-87).
+
+    Only contaminating types are recorded, and only over an empty slot: a reason
+    already established elsewhere is not overwritten by this best-effort flag.
+    """
+    ft = classify_llm_error(type(exc).__name__, getattr(exc, "status_code", None))
+    if not is_contaminated(ft) or db is None or task_id is None:
+        return
+    try:
+        task = await db.get(Task, task_id if isinstance(task_id, _uuid.UUID) else _uuid.UUID(str(task_id)))
+        if task is not None:
+            task.failure_type = merge_failure_type(task.failure_type, ft)
+    except Exception as e:  # noqa: BLE001 — a flag must never break the run
+        logger.warning(f"could not flag orchestrator LLM contamination: {e}")
+
 
 # Tools the orchestrator LLM can call
 ORCHESTRATOR_TOOLS = [
@@ -136,6 +167,7 @@ async def select_template_for_task(
         await _record_reasoning(
             db, task_id, "template_selection_failed", str(e)[:300],
         )
+        await _flag_llm_contamination(db, task_id, e)
 
     # Fallback: pick the first template
     logger.warning("Falling back to first template")
@@ -267,6 +299,7 @@ async def decide_decomposition(
         await _record_reasoning(
             db, task_id, "decomposition_failed", str(e)[:300],
         )
+        await _flag_llm_contamination(db, task_id, e)
         return None
 
 

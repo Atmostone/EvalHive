@@ -1503,6 +1503,10 @@ export interface ExperimentMatrixCell {
   config_key: string
   case_key: string
   counts: Record<string, number>
+  /** SPA-87: runs in this cell whose outcome infrastructure decided. They are
+   *  still counted in `counts` — the matrix is a progress view — but contribute
+   *  to none of the means below. */
+  contaminated?: number
   quality_mean?: number | null
   trajectory_mean?: number | null
   // Spread across the cell's scored runs (population σ; null until ≥2 samples) —
@@ -1552,6 +1556,11 @@ export interface ExperimentRunResult {
   task_id?: string | null
   task_status?: string | null
   result_summary?: string | null
+  /** SPA-87: why the run died, and whether that means infrastructure rather than
+   *  the model decided it. Raw rows are never filtered — this is the ledger — so
+   *  the mark is how a consumer tells a quota casualty from a weak result. */
+  failure_type?: string | null
+  contaminated?: boolean
   external_verdict?: 'pass' | 'fail' | null
   weighted_score?: number | null
   trajectory_score?: number | null
@@ -1636,6 +1645,21 @@ export interface ExperimentRq2Cell {
   agreement?: number | null
 }
 
+/** SPA-87: the judge↔checker relationship WITHOUT a threshold — the judge's score
+ *  distribution split by the executable verdict, plus AUC. `median_on_fail` is the
+ *  over-credit number; nothing here moves when someone picks a different cut-off. */
+export interface ExperimentJudgeDiscriminationCell {
+  n_checker_pass: number
+  n_checker_fail: number
+  median_on_pass?: number | null
+  median_on_fail?: number | null
+  mean_on_pass?: number | null
+  mean_on_fail?: number | null
+  separation?: number | null
+  auc?: number | null
+  mann_whitney?: { u: number; z: number; p: number; approx: boolean } | null
+}
+
 /** SPA-84: a configuration whose frozen resolution no longer matches reality —
  *  the template behind it was edited, the model row repointed, or the agent image
  *  rebuilt. All of these change what a condition MEANS at an unchanged fingerprint. */
@@ -1672,9 +1696,20 @@ export interface ExperimentReport {
     success: number
     failed: number
     skipped: number
+    /** SPA-87: runs infrastructure decided the outcome of, removed from every
+     *  aggregate above. Non-zero means success_rate answers a different question
+     *  — see success_rate_basis. */
+    excluded_contaminated?: number
+    success_rate_basis?: 'settled' | 'settled_non_contaminated'
     accumulated_cost_usd: number
     budget_limit_usd?: number | null
     per_config: ExperimentConfigSummary[]
+  }
+  /** SPA-87: what was dropped and why, so an exclusion is a reported act. */
+  exclusions?: {
+    contaminated: number
+    by_type: Record<string, number>
+    by_config: { config_key: string; label: string; contaminated: number }[]
   }
   // SPA-77: confound-controlled effort/efficiency. Primary metric is TOKENS
   // (deterministic), $ secondary (sparse: cost_available=false when un-metered),
@@ -1862,11 +1897,25 @@ export interface ExperimentReport {
       pass_rate?: number | null
     }[]
   }
+  /** SPA-87: the RQ2 headline. Threshold-free, so it cannot be improved by
+   *  choosing a different cut-off after the results are in. */
+  judge_discrimination?: {
+    available: boolean
+    primary: boolean
+    overall: ExperimentJudgeDiscriminationCell
+    per_config: (ExperimentJudgeDiscriminationCell & { config_key: string; label: string })[]
+  }
   rq2?: {
     available: boolean
+    /** false since SPA-87 — the 2×2 illustrates the quadrant, it is not the claim. */
+    primary?: boolean
     judge_threshold: number
+    /** 'pre_registered' = fixed in this experiment's frozen eval_config before it
+     *  ran; 'default' = nobody committed to one, so the project fallback applies. */
+    threshold_source?: 'pre_registered' | 'default'
     overall: ExperimentRq2Cell
     per_config: (ExperimentRq2Cell & { config_key: string; label: string })[]
+    sensitivity?: (ExperimentRq2Cell & { threshold: number; pre_registered: boolean })[]
   }
   pareto: {
     points: {

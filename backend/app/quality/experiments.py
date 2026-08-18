@@ -51,6 +51,7 @@ from app.quality.runs_common import (
     inflight_target,
 )
 from app.utils.events import log_event
+from app.utils.failures import FAILURE_INFRA, merge_failure_type
 
 logger = logging.getLogger(__name__)
 
@@ -502,7 +503,8 @@ async def create_experiment(
     if not name:
         raise ValueError("experiment name is required")
 
-    _validate_trace_config(payload.get("eval_config"))
+    _validate_eval_config(payload.get("eval_config"))
+    eval_config = _with_judge_threshold(payload.get("eval_config"))
 
     configs = expand_matrix(payload.get("configurations"), payload.get("axes"))
     if exclude_fingerprints:
@@ -592,7 +594,7 @@ async def create_experiment(
         budget_limit_usd=Decimal(str(budget)) if budget is not None else None,
         max_parallel=int(max_parallel) if max_parallel is not None else None,
         n_toolathlon_lanes=int(n_lanes) if n_lanes is not None else None,
-        eval_config=payload.get("eval_config") or {},
+        eval_config=eval_config,
         created_by=created_by,
     )
     # Record the inputs from the start, so the column always means "the inputs as
@@ -928,6 +930,7 @@ async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -
             weighted_score=run.weighted_score,
             trajectory_score=run.trajectory_score,
             duration_seconds=run.duration_seconds,
+            failure_type=run.failure_type,
             external_verdict=run.external_verdict,
             launch_time=run.launch_time,
             lane_index=run.lane_index,
@@ -984,6 +987,7 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
         r.weighted_score = None
         r.trajectory_score = None
         r.duration_seconds = None
+        r.failure_type = None
         r.external_verdict = None
         r.launch_time = None
         r.preprocess_container_id = None
@@ -1274,13 +1278,111 @@ _TRACE_CONFIG_KEYS = frozenset(
     {"tool_output_token_cap", "tool_args_token_cap", "keep_tail_on_error", "max_input_tokens"}
 )
 
+# Every top-level key the evaluation path actually reads. A key not on this list
+# does nothing, so accepting it is accepting a lie about how the experiment was
+# judged — the whole point of `judge_threshold` being a field is defeated if
+# `judge_threshld: 6` is stored, fingerprinted and ignored. Adding a flag means
+# adding it here; that is the intended friction.
+_EVAL_CONFIG_KEYS = frozenset(
+    {
+        "eval_mode",
+        "trajectory",
+        "failure_modes",
+        "judge_incomplete_runs",
+        "outcome_files_only",
+        "audit_outcome_judge_on_verifiable",
+        "judge_threshold",
+        "trace",
+    }
+)
+_EVAL_CONFIG_BOOL_KEYS = frozenset(
+    {
+        "trajectory",
+        "failure_modes",
+        "judge_incomplete_runs",
+        "outcome_files_only",
+        "audit_outcome_judge_on_verifiable",
+    }
+)
+_EVAL_MODES = frozenset({"checker", "judge"})
+# The outcome judge scores 0–10 (see app/quality/judge.py), so a threshold outside
+# that range would silently make one quadrant of the 2×2 unreachable.
+JUDGE_THRESHOLD_MIN = 0.0
+JUDGE_THRESHOLD_MAX = 10.0
 
-def _validate_trace_config(eval_config: dict | None) -> None:
-    """Reject a malformed ``eval_config.trace`` at create time.
+
+def _validate_eval_config(eval_config: dict | None) -> None:
+    """Reject a malformed ``eval_config`` at create time.
 
     A typo here fails silently and quietly changes what every run in the
     experiment was judged on — the exact class of error this block exists to
-    prevent. Better a 400 than a corpus whose conditions differ from its label."""
+    prevent. Better a 400 than a corpus whose conditions differ from its label.
+
+    ``eval_config`` is write-once (there is no update endpoint) and hashed into
+    the revision fingerprint, so what passes here is what the experiment is
+    committed to. That is what makes ``judge_threshold`` a pre-registration rather
+    than a setting: it is fixed before any result exists, and changing it means
+    cloning into a new experiment, which is a new record and not a rewritten one.
+    """
+    if eval_config is None:
+        return
+    if not isinstance(eval_config, dict):
+        raise ValueError("eval_config must be an object")
+
+    unknown = sorted(set(eval_config) - _EVAL_CONFIG_KEYS)
+    if unknown:
+        raise ValueError(
+            f"unknown eval_config key(s): {', '.join(unknown)} "
+            f"(known: {', '.join(sorted(_EVAL_CONFIG_KEYS))})"
+        )
+    for key in sorted(_EVAL_CONFIG_BOOL_KEYS & set(eval_config)):
+        if not isinstance(eval_config[key], bool):
+            raise ValueError(f"eval_config.{key} must be a boolean")
+    if "eval_mode" in eval_config and eval_config["eval_mode"] not in _EVAL_MODES:
+        raise ValueError(
+            f"eval_config.eval_mode must be one of: {', '.join(sorted(_EVAL_MODES))}"
+        )
+    if "judge_threshold" in eval_config:
+        value = eval_config["judge_threshold"]
+        if isinstance(value, bool):
+            raise ValueError("eval_config.judge_threshold must be a number")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("eval_config.judge_threshold must be a number")
+        if not JUDGE_THRESHOLD_MIN <= value <= JUDGE_THRESHOLD_MAX:
+            raise ValueError(
+                "eval_config.judge_threshold must be between "
+                f"{JUDGE_THRESHOLD_MIN:g} and {JUDGE_THRESHOLD_MAX:g} "
+                "(the outcome judge's scale)"
+            )
+
+    _validate_trace_config(eval_config)
+
+
+def _with_judge_threshold(eval_config: dict | None) -> dict:
+    """Stamp the project default threshold when the author named none (SPA-87).
+
+    Leaving the key absent worked — the report falls back to the same constant —
+    but it left nothing on the record, which is the one thing this field exists
+    for. Accepting a default IS a pre-registration as long as it is fixed before
+    any result exists, and writing it at creation is what makes that checkable:
+    the value goes into the frozen revision fingerprint like any other, and the
+    report can stop saying «default» for every experiment ever made.
+
+    Only new experiments get this. `threshold_source: default` in a report now
+    means precisely «created before the threshold was recorded», rather than
+    «nobody chose».
+    """
+    from app.quality.experiment_report import RQ2_JUDGE_THRESHOLD
+
+    out = dict(eval_config or {})
+    out.setdefault("judge_threshold", RQ2_JUDGE_THRESHOLD)
+    return out
+
+
+def _validate_trace_config(eval_config: dict | None) -> None:
+    """Reject a malformed ``eval_config.trace`` (SPA-86)."""
     block = (eval_config or {}).get("trace")
     if block is None:
         return
@@ -1671,6 +1773,7 @@ async def _start_toolathlon_run(
         logger.warning(f"experiment: preprocess start failed for {run.case_key}: {e}")
         run.preprocess_log = f"preprocess start failed: {e}"[:4000]
         run.status = ExperimentRunStatus.FAILED.value
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         await _fail_orphan_task(db, run)
 
@@ -1700,6 +1803,7 @@ async def _fail_orphan_task(db: AsyncSession, run: ExperimentRun) -> None:
     ).scalar_one_or_none()
     if task is not None and task.status == TaskStatus.BACKLOG.value:
         task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
         task.completed_at = datetime.utcnow()
 
 
@@ -1711,6 +1815,7 @@ async def _advance_preprocessing(
     long-running mock server."""
     if case is None:
         run.status = ExperimentRunStatus.FAILED.value
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         return
     try:
@@ -1719,6 +1824,7 @@ async def _advance_preprocessing(
         logger.warning(f"experiment: preprocess lost for {run.case_key}: {e}")
         run.preprocess_log = f"preprocess container lost: {e}"[:4000]
         run.status = ExperimentRunStatus.FAILED.value
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         await _fail_orphan_task(db, run)
         return
@@ -1755,6 +1861,7 @@ async def _advance_preprocessing(
         except Exception as e:
             run.preprocess_log = f"preprocess retry failed: {e}"[:4000]
             run.status = ExperimentRunStatus.FAILED.value
+            run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
             run.completed_at = datetime.utcnow()
             await _fail_orphan_task(db, run)
         return
@@ -1763,6 +1870,7 @@ async def _advance_preprocessing(
     run.preprocess_container_id = None
     run.preprocess_log = (logs or "")[-4000:]
     run.status = ExperimentRunStatus.FAILED.value
+    run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
     run.completed_at = datetime.utcnow()
     await _fail_orphan_task(db, run)
 
@@ -1833,6 +1941,7 @@ async def _settle_toolathlon(
         run.external_verdict = verdict
         run.eval_log = (eval_log or "")[-4000:]
         run.status = ExperimentRunStatus.FAILED.value
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         return
     await _evaluate_child(db, task, exp.eval_config or {}, case=case)
@@ -1846,6 +1955,7 @@ async def _settle_toolathlon(
         if task.status in _SUCCESS_TASK
         else ExperimentRunStatus.FAILED.value
     )
+    run.failure_type = merge_failure_type(run.failure_type, task.failure_type)
     run.cost_usd = _run_cost(task, rec)
     run.duration_seconds = _run_duration(task, rec)
     if rec is not None:
@@ -1938,6 +2048,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
         task = tasks.get(r.task_id)
         if task is None:
             r.status = ExperimentRunStatus.FAILED.value
+            r.failure_type = merge_failure_type(r.failure_type, FAILURE_INFRA)
             r.completed_at = now
             continue
         if task.status not in _TERMINAL_TASK:
@@ -1957,6 +2068,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
             if task.status in _SUCCESS_TASK
             else ExperimentRunStatus.FAILED.value
         )
+        r.failure_type = merge_failure_type(r.failure_type, task.failure_type)
         r.cost_usd = _run_cost(task, rec)
         r.duration_seconds = _run_duration(task, rec)
         if rec is not None:

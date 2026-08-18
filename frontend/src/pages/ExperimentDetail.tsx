@@ -87,6 +87,17 @@ const RELIABILITY_META: Record<ReliabilityStatus, { glyph: string; cls: string; 
   not_calibrated: { glyph: 'n/a', cls: 'text-gray-400', word: 'not calibrated' },
 }
 
+// Failure types the report excludes from its aggregates (SPA-87), in the words an
+// operator uses for them. An unknown key falls through to the raw type rather
+// than being hidden — a run dropped for a reason the UI cannot name is worse than
+// an ugly label.
+const EXCLUSION_LABELS: Record<string, string> = {
+  llm_rate_limit: 'provider rate limit / quota',
+  llm_auth: 'provider auth — dead key or spent credit',
+  llm_transient: 'provider timeout or 5xx',
+  infra: 'harness failure',
+}
+
 function reliabilitySource(source?: string): string {
   if (source === 'human') return 'a human rater'
   if (source === 'structural') return 'the deterministic loop counter'
@@ -373,6 +384,14 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
                       {counts.evaluating ? <span className="text-indigo-600 font-medium" title="evaluating (executable checker)">{counts.evaluating}⏳</span> : null}
                       {counts.pending ? <span className="text-gray-400">{counts.pending}·</span> : null}
                       {counts.skipped ? <span className="text-amber-600">{counts.skipped}s</span> : null}
+                      {cell?.contaminated ? (
+                        <span
+                          className="text-gray-500"
+                          title="Infrastructure decided this run's outcome — a provider quota, a dead key, a transport failure or a harness collapse. The run is still here, but its scores are excluded from every average, so this cell may show no quality at all."
+                        >
+                          {cell.contaminated}⊘
+                        </span>
+                      ) : null}
                       {Object.keys(counts).length === 0 && <span className="text-gray-300">—</span>}
                       {cell?.external_total ? (
                         <span className={cell.external_pass === cell.external_total ? 'text-green-600' : cell.external_pass ? 'text-amber-600' : 'text-red-600'}
@@ -417,7 +436,7 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
           ))}
         </tbody>
       </table>
-      <div className="text-xs text-gray-400 mt-2">🔩 run outcome + ✔pass/total executable checker (✓ success · ✗ failed · ⚙ preprocessing · … running · ⏳ evaluating · · pending · s skipped) · ⚖️ LLM judge (q = outcome quality · t = process trajectory) · 🧑 human (mean score + ✓/✗ verdict) · ±σ = spread across runs · hover q/t for the per-dimension/axis breakdown — click a cell for run details</div>
+      <div className="text-xs text-gray-400 mt-2">🔩 run outcome + ✔pass/total executable checker (✓ success · ✗ failed · ⚙ preprocessing · … running · ⏳ evaluating · · pending · s skipped · ⊘ excluded: infrastructure decided the outcome, so the run is counted but never averaged) · ⚖️ LLM judge (q = outcome quality · t = process trajectory) · 🧑 human (mean score + ✓/✗ verdict) · ±σ = spread across runs · hover q/t for the per-dimension/axis breakdown — click a cell for run details</div>
       {retiredConfigs.length > 0 && (
         <div className="text-xs text-gray-500 mt-2 border-t pt-2">
           <span className="font-medium text-gray-600">Retired configurations:</span>{' '}
@@ -743,6 +762,29 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
       {report.partial && (
         <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
           Partial report — the experiment is still running ({report.n_terminal_runs} runs settled).
+        </div>
+      )}
+      {!!report.exclusions?.contaminated && (
+        <div className="text-xs text-gray-600 bg-gray-50 border rounded-lg px-3 py-2">
+          <span className="font-medium">
+            {report.exclusions.contaminated} run{report.exclusions.contaminated === 1 ? '' : 's'} excluded
+          </span>{' '}
+          — infrastructure, not the model, decided their outcome:{' '}
+          {Object.entries(report.exclusions.by_type)
+            .map(([type, n]) => `${n} × ${EXCLUSION_LABELS[type] ?? type}`)
+            .join(', ')}
+          .{' '}
+          {!!report.exclusions.by_config.length && (
+            <span className="text-gray-500">
+              Hit{' '}
+              {report.exclusions.by_config.map((c) => `${c.label} (${c.contaminated})`).join(', ')}
+              .{' '}
+            </span>
+          )}
+          <span className="text-gray-500">
+            Every number below is computed without them, so <span className="font-medium">Success</span> reads
+            «of the runs that measured the model», not «of the runs attempted».
+          </span>
         </div>
       )}
 
@@ -1187,12 +1229,71 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
       )}
 
 
+      {report.judge_discrimination?.available && (
+        <section>
+          <h3 className="font-semibold text-gray-900 mb-2">
+            RQ2 · does the judge separate pass from fail?{' '}
+            <span className="text-xs text-gray-400 font-normal">
+              no threshold — the judge’s scores split by the executable verdict
+            </span>
+          </h3>
+          <div className="bg-white border rounded-lg p-4 max-w-2xl space-y-3">
+            <div className="grid grid-cols-3 gap-4 text-sm">
+              <div>
+                <div className="text-xs text-gray-500">median · checker passed</div>
+                <div className="text-2xl font-semibold text-green-700">
+                  {report.judge_discrimination.overall.median_on_pass?.toFixed(1) ?? '—'}
+                </div>
+                <div className="text-[11px] text-gray-400">n={report.judge_discrimination.overall.n_checker_pass}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500">median · checker failed</div>
+                <div className="text-2xl font-semibold text-amber-700">
+                  {report.judge_discrimination.overall.median_on_fail?.toFixed(1) ?? '—'}
+                </div>
+                <div className="text-[11px] text-gray-400">n={report.judge_discrimination.overall.n_checker_fail}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500" title="Probability that a run the checker passed outranks one it failed. 0.5 = chance; below 0.5 = the judge ranks them backwards.">
+                  AUC
+                </div>
+                <div className="text-2xl font-semibold text-gray-900">
+                  {report.judge_discrimination.overall.auc?.toFixed(2) ?? '—'}
+                </div>
+                <div className="text-[11px] text-gray-400">
+                  {report.judge_discrimination.overall.mann_whitney?.p != null
+                    ? `p=${report.judge_discrimination.overall.mann_whitney.p.toFixed(3)}`
+                    : 'p — n/a'}
+                </div>
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-400">
+              The headline, and it has no cut-off to move: <span className="text-amber-700">median · checker failed</span>{' '}
+              is the over-credit number — how well the judge scores work that demonstrably did not
+              work — and AUC is how reliably it ranks a pass above a fail at all. Every other
+              framing of this question depends on where a threshold is drawn, so it can be
+              improved after the fact by drawing it elsewhere.
+            </p>
+          </div>
+        </section>
+      )}
+
       {report.rq2?.available && (
         <section>
           <h3 className="font-semibold text-gray-900 mb-2">
             RQ2 · verdict × judge{' '}
             <span className="text-xs text-gray-400 font-normal">
-              executable pass/fail vs outcome judge (≥{report.rq2.judge_threshold}) — agreement{' '}
+              illustration at ≥{report.rq2.judge_threshold}
+              {report.rq2.threshold_source === 'pre_registered' ? (
+                <span className="ml-1 text-green-700" title="Set in this experiment's eval_config before it ran, and frozen there — the cut-off could not have been chosen to suit the result.">
+                  · pre-registered
+                </span>
+              ) : (
+                <span className="ml-1 text-amber-600" title="No threshold was pre-registered, so the project default applies. Set eval_config.judge_threshold at creation to record the choice.">
+                  · default, not pre-registered
+                </span>
+              )}
+              {' '}— agreement{' '}
               {report.rq2.overall.agreement != null ? `${(report.rq2.overall.agreement * 100).toFixed(0)}%` : '—'} (n={report.rq2.overall.n})
             </span>
           </h3>
@@ -1215,6 +1316,36 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
               result the checker rejected. This is the outcome-judge analogue of the human-calibrated κ in <span className="font-medium">Judge ↔ human</span> below.
             </p>
           </div>
+          {!!report.rq2.sensitivity?.length && (
+            <div className="bg-white border rounded-lg p-4 max-w-md mt-2">
+              <div className="text-xs text-gray-500 mb-2">
+                Sensitivity — exploratory. How the same corpus reads at neighbouring cut-offs.
+              </div>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-500">
+                    <th className="text-left font-medium py-1">threshold</th>
+                    <th className="text-right font-medium">over-credit</th>
+                    <th className="text-right font-medium">agreement</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.rq2.sensitivity.map((row) => (
+                    <tr key={row.threshold} className={row.pre_registered ? 'font-semibold text-gray-900' : 'text-gray-500'}>
+                      <td className="py-0.5">
+                        ≥{row.threshold}
+                        {row.pre_registered && <span className="ml-1 text-[10px] text-green-700">primary</span>}
+                      </td>
+                      <td className="text-right">{row.cells.fail_high}</td>
+                      <td className="text-right">
+                        {row.agreement != null ? `${(row.agreement * 100).toFixed(0)}%` : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       )}
       </div>

@@ -224,9 +224,31 @@ _TRANSIENT_EXC_NAMES = {
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:
+    """Retry policy for ONE HTTP call. Deliberately not the classifier that
+    decides whether a run counts as infrastructure-contaminated (SPA-87): that
+    one lives in the backend (`app/utils/failures.py`), fed by the facts reported
+    below. This image cannot import backend code, so the alternative would be a
+    second copy of the same decision, drifting silently against the first."""
     if getattr(exc, "status_code", None) in _TRANSIENT_STATUS:
         return True
     return type(exc).__name__ in _TRANSIENT_EXC_NAMES
+
+
+def _failure_facts(kind: str, exc: Exception | None = None) -> dict:
+    """What the backend needs to type this failure, in observed facts only.
+
+    The agent knows the SITE (a cap-hit is not an exception at all; a crash has no
+    HTTP status) and the raw exception; it does not decide what any of that means
+    for the experiment. Sending a verdict instead of facts would put the same
+    judgement in two images at once."""
+    facts: dict = {"kind": kind}
+    if exc is not None:
+        facts["exception"] = type(exc).__name__
+        status = getattr(exc, "status_code", None)
+        if isinstance(status, int):
+            facts["status_code"] = status
+        facts["message"] = str(exc)[:500]
+    return facts
 
 
 async def _acompletion_with_retry(task_id: str, **kwargs):
@@ -614,6 +636,7 @@ async def run_agent() -> dict:
                     "task_id": task_id, "event": "failed",
                     "data": {
                         "error": f"LLM call failed: {e}",
+                        "failure": _failure_facts("llm_error", e),
                         "token_usage": {
                             "input_tokens": total_input_tokens,
                             "output_tokens": total_output_tokens,
@@ -724,6 +747,7 @@ async def run_agent() -> dict:
                         "error": "model emitted an unparsed tool call as text (tool-call "
                                  "format leak); turn ended with no executed tool call and "
                                  "no deliverables",
+                        "failure": _failure_facts("tool_leak"),
                         "token_usage": {
                             "input_tokens": total_input_tokens,
                             "output_tokens": total_output_tokens,
@@ -756,6 +780,7 @@ async def run_agent() -> dict:
             "task_id": task_id, "event": "failed",
             "data": {
                 "error": f"Agent exceeded max iterations ({max_iterations})",
+                "failure": _failure_facts("cap_hit"),
                 "token_usage": {
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,

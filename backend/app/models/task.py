@@ -67,6 +67,13 @@ class Task(Base):
         String(50), nullable=False, default=TaskStatus.BACKLOG.value,
         server_default=TaskStatus.BACKLOG.value,
     )
+    # WHY it failed, when it did (SPA-87). `status` says only that it did, and a
+    # dozen writers set it — a provider quota and a model giving up used to be the
+    # same row. Vocabulary in app/utils/failures.py; NULL = not classified, which
+    # counts as ordinary data. Distinct from the LLM-judged failure classes in
+    # quality_records.failure_profile: this is what killed the process, observed,
+    # not how the agent misbehaved, judged.
+    failure_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     priority: Mapped[str] = mapped_column(
         String(20), default=TaskPriority.MEDIUM.value,
         server_default=TaskPriority.MEDIUM.value,

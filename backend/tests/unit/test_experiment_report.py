@@ -76,7 +76,8 @@ def _exp(configs):
 
 
 def _run(config_key, case_key, idx, *, status="success", score=None, traj=None,
-         cost="0.01", duration=60, task_id=None, external_verdict=None):
+         cost="0.01", duration=60, task_id=None, external_verdict=None,
+         failure_type=None):
     return ExperimentRun(
         config_key=config_key,
         case_key=case_key,
@@ -88,6 +89,7 @@ def _run(config_key, case_key, idx, *, status="success", score=None, traj=None,
         duration_seconds=duration,
         task_id=task_id or uuid.uuid4(),
         external_verdict=external_verdict,
+        failure_type=failure_type,
     )
 
 
@@ -162,7 +164,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 15
+    assert report["schema_version"] == 16
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -309,7 +311,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 15
+    assert report["schema_version"] == 16
 
     ext = report["external"]
     assert ext["available"] is True
@@ -721,3 +723,189 @@ def test_build_report_failure_reasons():
     ]
     assert loop_reasons[0]["confidence"] == 0.9
     assert fm["class_reasons"]["premature_stop"][0]["reason"] == "stopped before writing the file"
+
+
+# --- the judge↔checker headline needs no threshold (SPA-87) ------------------
+
+
+def _rq2_runs():
+    """Checker passes score 8/7/3; checker fails score 8 (over-credit) and 2."""
+    return [
+        _run("cfg-01", "case-a", 0, score=8.0, external_verdict=True),
+        _run("cfg-01", "case-a", 1, score=7.0, external_verdict=True),
+        _run("cfg-01", "case-b", 0, score=3.0, external_verdict=True),
+        _run("cfg-02", "case-a", 0, score=8.0, external_verdict=False),
+        _run("cfg-02", "case-b", 0, score=2.0, external_verdict=False),
+    ]
+
+
+def test_judge_discrimination_is_the_primary_and_has_no_threshold():
+    report = build_report(_exp(CONFIGS), _rq2_runs(), {}, partial=False)
+    disc = report["judge_discrimination"]
+    assert disc["available"] is True and disc["primary"] is True
+
+    overall = disc["overall"]
+    # Nothing in this block is a cut-off — that is the whole claim.
+    assert not [k for k in overall if "threshold" in k]
+    assert (overall["n_checker_pass"], overall["n_checker_fail"]) == (3, 2)
+    # The over-credit number, stated without binarising: the judge's median on
+    # work the checker rejected.
+    assert overall["median_on_fail"] == 5.0
+    assert overall["median_on_pass"] == 7.0
+    assert overall["separation"] == 2.0
+    # 3×2 = 6 pairs. The judge ranks the pass above the fail in 3 (8>2, 7>2, 3>2),
+    # below in 2 (7<8, 3<8), and ties once (8 vs 8, worth ½) → 3.5 / 6.
+    assert overall["auc"] == round(3.5 / 6.0, 4)
+
+
+def test_judge_discrimination_unavailable_without_both_sides():
+    runs = [_run("cfg-01", "case-a", 0, score=8.0, external_verdict=True)]
+    disc = build_report(_exp(CONFIGS), runs, {}, partial=False)["judge_discrimination"]
+    assert disc["available"] is False
+    assert disc["overall"]["auc"] is None
+    assert disc["overall"]["median_on_fail"] is None
+
+
+def test_rq2_uses_the_pre_registered_threshold():
+    exp = _exp(CONFIGS)
+    exp.eval_config = {"judge_threshold": 7.5}
+    rq2 = build_report(exp, _rq2_runs(), {}, partial=False)["rq2"]
+    assert rq2["judge_threshold"] == 7.5
+    assert rq2["threshold_source"] == "pre_registered"
+    assert rq2["primary"] is False
+    # At 7.5 only the 8.0s are "high": one pass, one fail.
+    assert rq2["overall"]["cells"] == {
+        "pass_high": 1, "pass_low": 2, "fail_high": 1, "fail_low": 1,
+    }
+
+
+def test_rq2_falls_back_to_the_default_and_says_so():
+    rq2 = build_report(_exp(CONFIGS), _rq2_runs(), {}, partial=False)["rq2"]
+    assert rq2["judge_threshold"] == 5.0
+    assert rq2["threshold_source"] == "default"
+
+
+def test_rq2_sensitivity_marks_only_the_pre_registered_row():
+    # Scores straddling the ladder, so the over-credit count really moves.
+    runs = [
+        _run("cfg-01", "case-a", 0, score=6.5, external_verdict=True),
+        _run("cfg-01", "case-b", 0, score=4.5, external_verdict=True),
+        _run("cfg-02", "case-a", 0, score=6.5, external_verdict=False),
+        _run("cfg-02", "case-b", 0, score=4.5, external_verdict=False),
+    ]
+    exp = _exp(CONFIGS)
+    exp.eval_config = {"judge_threshold": 6.0}
+    rq2 = build_report(exp, runs, {}, partial=False)["rq2"]
+    rows = {row["threshold"]: row for row in rq2["sensitivity"]}
+    assert sorted(rows) == [4.0, 5.0, 6.0, 7.0]
+    assert [t for t, row in rows.items() if row["pre_registered"]] == [6.0]
+    # Over-credit: 2 runs at ≥4, 1 at ≥5 and ≥6, none at ≥7. The same corpus, four
+    # different headline numbers — which is why the headline is not this.
+    assert [rows[t]["cells"]["fail_high"] for t in (4.0, 5.0, 6.0, 7.0)] == [2, 1, 1, 0]
+    # …while the threshold-free view says one thing about it, whatever the cut-off.
+    assert rq2["overall"]["cells"]["fail_high"] == 1
+
+
+def test_a_threshold_outside_the_sensitivity_ladder_still_appears_in_it():
+    exp = _exp(CONFIGS)
+    exp.eval_config = {"judge_threshold": 6.5}
+    rq2 = build_report(exp, _rq2_runs(), {}, partial=False)["rq2"]
+    assert [row["threshold"] for row in rq2["sensitivity"]] == [4.0, 5.0, 6.0, 6.5, 7.0]
+
+
+# --- infrastructure failures leave the aggregates (SPA-87) --------------------
+
+
+def test_contaminated_runs_are_excluded_and_counted():
+    runs = [
+        _run("cfg-01", "case-a", 0, score=8.0),
+        _run("cfg-01", "case-b", 0, status="failed", score=1.0,
+             failure_type="llm_rate_limit"),
+        _run("cfg-01", "case-c", 0, status="failed", score=1.5,
+             failure_type="llm_auth"),
+        _run("cfg-02", "case-a", 0, score=6.0),
+    ]
+    report = build_report(_exp(CONFIGS), runs, {}, partial=False)
+
+    excl = report["exclusions"]
+    assert excl["contaminated"] == 2
+    assert excl["by_type"] == {"llm_auth": 1, "llm_rate_limit": 1}
+    assert excl["by_config"] == [
+        {"config_key": "cfg-01", "label": "fast", "contaminated": 2}
+    ]
+
+    summary = report["summary"]
+    assert summary["total_runs"] == 2
+    assert summary["excluded_contaminated"] == 2
+    assert summary["success_rate_basis"] == "settled_non_contaminated"
+    # A quota outage must not read as a weak model: cfg-01's mean is its one real
+    # run, not that run averaged with two 1.x scores it never earned.
+    per_config = {c["config_key"]: c for c in summary["per_config"]}
+    assert per_config["cfg-01"]["quality_mean"] == 8.0
+    assert per_config["cfg-01"]["success_rate"] == 1.0
+
+
+def test_a_clean_report_says_the_denominator_is_untouched():
+    runs = [_run("cfg-01", "case-a", 0, score=8.0)]
+    summary = build_report(_exp(CONFIGS), runs, {}, partial=False)["summary"]
+    assert summary["excluded_contaminated"] == 0
+    assert summary["success_rate_basis"] == "settled"
+
+
+def test_cap_hit_and_timeout_failures_are_typed_but_still_counted():
+    """A run that hit its iteration cap or the wall clock failed on its own
+    merits. Typing it must not quietly delete it from the numbers."""
+    runs = [
+        _run("cfg-01", "case-a", 0, score=8.0),
+        _run("cfg-01", "case-b", 0, status="failed", score=2.0, failure_type="cap_hit"),
+        _run("cfg-01", "case-c", 0, status="failed", score=1.0, failure_type="timeout"),
+        _run("cfg-01", "case-d", 0, status="failed", score=3.0, failure_type="agent"),
+    ]
+    report = build_report(_exp(CONFIGS), runs, {}, partial=False)
+    assert report["exclusions"]["contaminated"] == 0
+    assert report["summary"]["total_runs"] == 4
+    assert report["summary"]["success_rate_basis"] == "settled"
+
+
+def test_an_unclassified_failure_counts():
+    """NULL means «not classified» — an older agent image, a path that never
+    reported. Reading it as contamination would silently delete real failures."""
+    runs = [
+        _run("cfg-01", "case-a", 0, score=8.0),
+        _run("cfg-01", "case-b", 0, status="failed", score=2.0, failure_type=None),
+    ]
+    report = build_report(_exp(CONFIGS), runs, {}, partial=False)
+    assert report["exclusions"]["contaminated"] == 0
+    assert report["summary"]["per_config"][0]["success_rate"] == 0.5
+
+
+def test_contaminated_runs_leave_the_judge_checker_view_too():
+    """A quota-killed run scored low with the checker having failed it lands in
+    the over-credit quadrant's opposite corner and flatters the agreement."""
+    runs = _rq2_runs() + [
+        _run("cfg-02", "case-z", 0, status="failed", score=0.5,
+             external_verdict=False, failure_type="llm_rate_limit"),
+    ]
+    report = build_report(_exp(CONFIGS), runs, {}, partial=False)
+    assert report["rq2"]["overall"]["n"] == 5
+    assert report["judge_discrimination"]["overall"]["n_checker_fail"] == 2
+
+
+def test_a_config_whose_every_run_was_contaminated_survives_the_report():
+    """A provider outage can take out one arm of the matrix entirely. The config
+    must still appear, with empty numbers rather than a crash or a fabricated 0%."""
+    runs = [
+        _run("cfg-01", "case-a", 0, score=8.0),
+        _run("cfg-02", "case-a", 0, status="failed", score=1.0,
+             failure_type="llm_rate_limit"),
+        _run("cfg-02", "case-b", 0, status="failed", score=1.0,
+             failure_type="llm_rate_limit"),
+    ]
+    report = build_report(_exp(CONFIGS), runs, {}, partial=False)
+    per_config = {c["config_key"]: c for c in report["summary"]["per_config"]}
+    assert per_config["cfg-02"]["n_runs"] == 0
+    assert per_config["cfg-02"]["success_rate"] is None
+    assert per_config["cfg-02"]["quality_mean"] is None
+    assert report["exclusions"]["by_config"] == [
+        {"config_key": "cfg-02", "label": "orch", "contaminated": 2}
+    ]

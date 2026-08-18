@@ -1088,6 +1088,79 @@ help" as one operation.
   config pair × metric (Welch t-test with an exact pure-python t-CDF as the
   primary marker, Mann-Whitney U normal-approximation as the non-parametric
   check; ★ p<0.05), failure-mode breakdown, orchestrator on/off comparison.
+
+#### The headline cannot depend on where a line is drawn (SPA-87)
+
+RQ2 — «does the outcome judge agree with the executable checker?» — was a 2×2 at
+a threshold that lived in the code. The pilot counted over-credit at ≥ 6, the
+constant said ≥ 5, and nothing recorded the change; recording it would not have
+bought reproducibility either, since `weighted_score` is stored and any threshold
+is recomputable offline. What was missing is **pre-registration**: evidence the
+cut-off was chosen before the results were seen.
+
+So the report answers the question without one. `judge_discrimination` is the
+primary: the judge's score distribution on runs the checker passed, the same on
+runs it failed, and the AUC between them (`rank_auc` — the normalized
+Mann-Whitney U, ties ½). `median_on_fail` **is** the over-credit number, and no
+choice of cut-off can improve it. The 2×2 survives as the illustration of which
+quadrant the disagreement sits in, drawn at `eval_config.judge_threshold` —
+write-once, inside the revision fingerprint, and reported with
+`threshold_source: pre_registered | default` beside a sensitivity ladder marked
+exploratory. Threshold drift stops being a documented hazard and becomes a
+structurally impossible one.
+
+The same section drops runs that are not measurements of a model at all.
+`failure_type` (`app/utils/failures.py`) separates a provider quota, a dead key,
+a transport failure and a harness collapse from a cap-hit, a timeout and a model
+giving up; only the first four are excluded, and `exclusions` reports how many,
+of what, and in which configuration. This used to be free: such a run died with a
+NULL score and every aggregate skipped it. After the cap-hit fix (SPA-70) it is
+scored like any other non-verifiable run, so a five-hour provider outage reads as
+a weak model. Excluding evidence changes the denominator, and the report says so
+— `success_rate` becomes «of the runs that measured the model», flagged in
+`summary.success_rate_basis`.
+
+The population is defined **once** and used by every reader: `measures_the_model`
+/ `infrastructure_decided` in `app/utils/failures.py` give the same rule a SQL
+form, and `/analytics/configs`, the live progress matrix and the global
+leaderboard (`derive_matches_from_records`) all take it. An exclusion that holds
+only in the report is not an exclusion — a claim is as narrow as its widest
+reader, and the leaderboard is the loudest one. The raw endpoints (`/results`,
+`/export`) deliberately stay unfiltered, because they are the ledger; they carry
+`failure_type` and `contaminated` so a consumer can still tell a quota casualty
+from a weak result.
+
+Two places lose the reason unless it is carried deliberately. Under
+`orchestrator:on` the `ExperimentRun` denormalizes from the decomposition
+**parent**, so `check_parent_task_completion` propagates a child's infrastructure
+failure upward — and only an infrastructure one, since a child that failed on its
+own merits is a result. And the orchestrator's own LLM calls do not fail on an
+outage, they **degrade**: template selection falls back to the first template and
+a failed decomposition decision simply proceeds without decomposing. The agent
+then produces a perfectly real result under a condition nobody chose. Only
+`orchestrator:on` cells reach that code, so the substituted decision is exactly
+the treatment being measured, and `_flag_llm_contamination` marks the task.
+
+Two invariants keep a recorded reason from being lost again. **A contaminating
+reason is merged, never assigned** (`merge_failure_type`): a run collects reasons
+over its life — a quota kills the orchestrator's call, the run degrades, the
+agent then hits its cap — and plain assignment made the *last* one win, which is
+the wrong winner. Whether a run measured the model is decided by the first thing
+that stopped it measuring. `None` never overwrites, because it is the absence of
+a claim; a **retry** clears only the reason of the attempt that just ended.
+A contamination recorded before the agent ran describes the CONDITION, and the
+condition survives: the orchestrator's fallback pinned a substituted template on
+the task, so the next attempt skips the orchestrator and repeats it. And **every terminal path that ends a task without an agent rolls
+the parent up itself** — spawn failure, unresolvable model, no templates,
+decomposition cycle, selection failure, the reaper. The roll-up lived only on the
+webhook path, so those parents waited for a child that was already finished until
+the wall clock relabelled them `timeout`, which is not excluded.
+
+Finally, an aggregate with no clean observations reports **null, not zero**.
+`/api/analytics/configs` coerced an empty sample to `0.0`, and the comparison UI
+ranked those zeros — so a configuration a provider outage wiped out lost every
+metric on the strength of the outage. Absent is not zero, and a comparison with
+nothing on one side makes no claim at all.
 - **Reliability gate (E-17 → report, SPA-76/79).** Every judge axis in the report
   carries a traffic-light badge, computed in `experiment_report.py` from the E-17
   calibration via `_classify_reliability`: **reliable** (κ ≥
@@ -1149,11 +1222,12 @@ help" as one operation.
 | `app/quality/reproducibility.py` | E-20 Reproducibility Snapshot: `assemble_snapshot` + `snapshot_fingerprint` + `diff_snapshots` + `capture_snapshot`/`replay_from_snapshot` — per-record `experiment_snapshot` (captured/missing manifest), SHA-256 determinism fingerprint, snapshot diff + re-run via `clone_task_for_rerun` |
 | `app/quality/comparison.py` | E-21 Pairwise Comparison: `create_comparison`/`advance_comparison` + `judge_pair_llm` (both-orders, position-bias mitigation) + `comparisons_to_matches`/`run_pairwise_leaderboard` — real A/B verdicts on `pairwise_comparisons`, handed to E-19 as explicit ELO matches |
 | `app/quality/experiments.py` | SPA-40 Experiment Runner: `create_experiment` + `expand_matrix`/`normalize_dataset` + `advance_experiment` — frozen dataset × config matrix × n_runs, poll-driven `experiment_runs` cells (E-02 + optional E-07/E-14/E-20), cost-capped. Driven by the `experiment_run_tick` job |
-| `app/quality/experiment_report.py` | SPA-40 Experiment report: `build_report`/`compute_report` — per-config summary, heatmap, Pareto frontier, pairwise leaderboard, `significance_matrix`, failure-mode/orchestrator breakdowns, plus the per-axis reliability traffic light (`_classify_reliability` / `_axis_reliability` / `_outcome_axis_reliability`; `SCHEMA_VERSION=13`) |
+| `app/quality/experiment_report.py` | SPA-40 Experiment report: `build_report`/`compute_report` — per-config summary, heatmap, Pareto frontier, pairwise leaderboard, `significance_matrix`, failure-mode/orchestrator breakdowns, plus the per-axis reliability traffic light (`_classify_reliability` / `_axis_reliability` / `_outcome_axis_reliability`; `SCHEMA_VERSION=16`) |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |
 | `app/utils/events.py` | log_event, broadcast to WS clients with filter matching |
+| `app/utils/failures.py` | SPA-87 Why a run died, as a type: the failure vocabulary, the single LLM-error classifier (also the backend's retry predicate, so «retry this?» and «did infrastructure decide this?» cannot drift apart), and `is_contaminated` — the subset the experiment report excludes |
 | `app/schemas/webhooks.py` | Pydantic discriminated union for agent → orchestrator events |
 
 ## Agent components (container)

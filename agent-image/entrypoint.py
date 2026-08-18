@@ -74,7 +74,7 @@ async def report_webhook(result: dict, *, idempotency_key: str | None = None) ->
 
 
 async def main():
-    from agent import run_agent
+    from agent import _failure_facts, run_agent
     from feedback_server import start_feedback_server
 
     task_id = os.environ.get("TASK_ID", "unknown")
@@ -89,7 +89,7 @@ async def main():
         result = {
             "task_id": task_id,
             "event": "failed",
-            "data": {"error": f"Agent crashed: {e}"},
+            "data": {"error": f"Agent crashed: {e}", "failure": _failure_facts("crash", e)},
         }
 
     server_task.cancel()

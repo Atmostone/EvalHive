@@ -31,8 +31,27 @@ class CompletedData(BaseModel):
     token_usage: TokenUsage = TokenUsage()
 
 
+class FailureFacts(BaseModel):
+    """What the agent observed at the moment it died (SPA-87).
+
+    Facts, not a verdict: the ``kind`` names the site of the failure (a cap-hit is
+    not an exception; a crash carries no HTTP status), and the exception class and
+    status are passed through untyped. The backend turns these into a failure type
+    — see :mod:`app.utils.failures` — so that judgement exists once rather than in
+    both images. Every field is optional: an older agent image sends nothing, which
+    the classifier reads as «unclassified», never as «clean»."""
+
+    kind: Optional[str] = Field(default=None, max_length=32)
+    exception: Optional[str] = Field(default=None, max_length=128)
+    status_code: Optional[int] = None
+    message: Optional[str] = Field(default=None, max_length=2000)
+
+
 class FailedData(BaseModel):
     error: str = ""
+    # Declared, or Pydantic's extra="ignore" would drop it silently — which is how
+    # a failed run's `result_summary` has been vanishing since SPA-40.
+    failure: Optional[FailureFacts] = None
     token_usage: TokenUsage = TokenUsage()
 
 

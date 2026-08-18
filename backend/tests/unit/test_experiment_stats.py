@@ -3,6 +3,7 @@
 from app.quality.stats import (
     _student_t_two_sided_p,
     mann_whitney_u,
+    rank_auc,
     welch_t_test,
 )
 
@@ -82,3 +83,38 @@ class TestMannWhitney:
     def test_overlapping_groups_not_significant(self):
         res = mann_whitney_u([1, 3, 5, 7], [2, 4, 6, 8])
         assert res["p"] > 0.5
+
+
+class TestRankAuc:
+    """P(a random positive outranks a random negative), ties ½ — the
+    threshold-free judge↔checker statistic (SPA-87)."""
+
+    def test_perfect_separation(self):
+        assert rank_auc([6.0, 7.0, 8.0], [1.0, 2.0]) == 1.0
+
+    def test_perfectly_inverted(self):
+        # Below 0.5 = the judge ranks them BACKWARDS, which a 2×2 at one cut-off
+        # can report as respectable agreement.
+        assert rank_auc([1.0, 2.0], [6.0, 7.0, 8.0]) == 0.0
+
+    def test_all_ties_is_chance(self):
+        assert rank_auc([5.0, 5.0], [5.0, 5.0]) == 0.5
+
+    def test_one_tie_counts_as_half(self):
+        # pairs: (5,5)=½, (5,1)=1 → 1.5 / 2
+        assert rank_auc([5.0], [5.0, 1.0]) == 0.75
+
+    def test_empty_group_has_no_answer(self):
+        assert rank_auc([], [1.0]) is None
+        assert rank_auc([1.0], []) is None
+        assert rank_auc([], []) is None
+
+    def test_agrees_with_mann_whitney_direction(self):
+        pos, neg = [9.0, 8.0, 7.0, 6.0, 5.5], [4.0, 3.0, 2.0, 1.0, 0.5]
+        assert rank_auc(pos, neg) == 1.0
+        assert mann_whitney_u(pos, neg)["p"] < 0.05
+
+    def test_no_minimum_sample_size(self):
+        # Deliberately unlike mann_whitney_u: a descriptive statistic reports on
+        # whatever data exists, and the counts beside it say how much to trust it.
+        assert rank_auc([8.0], [2.0]) == 1.0
