@@ -221,14 +221,20 @@ async def _process_webhook(
 
         elif event == "failed":
             from app.utils.cost import calculate_cost
-            from app.utils.failures import classify_agent_failure
+            from app.utils.failures import classify_agent_failure, merge_failure_type
 
             error = data.get("error", "Unknown error")
             # The type, not just the sentence (SPA-87). The agent reports facts;
             # the classification of what they mean for the experiment happens in
             # one place. NULL when an older image sent nothing — «unclassified»,
             # which is ordinary data, not an accusation and not a clean bill.
-            task.failure_type = classify_agent_failure(data.get("failure"))
+            # MERGED, not assigned: the orchestrator may already have recorded a
+            # quota death that made this run stop measuring the model, and the
+            # agent's own later reason — a cap-hit, say — must not demote it back
+            # to an ordinary weak result.
+            task.failure_type = merge_failure_type(
+                task.failure_type, classify_agent_failure(data.get("failure"))
+            )
             task.token_usage = data.get("token_usage", {})
             task.cost_usd = calculate_cost(task, task.token_usage)
 

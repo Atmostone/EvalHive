@@ -51,7 +51,7 @@ from app.quality.runs_common import (
     inflight_target,
 )
 from app.utils.events import log_event
-from app.utils.failures import FAILURE_INFRA
+from app.utils.failures import FAILURE_INFRA, merge_failure_type
 
 logger = logging.getLogger(__name__)
 
@@ -1773,7 +1773,7 @@ async def _start_toolathlon_run(
         logger.warning(f"experiment: preprocess start failed for {run.case_key}: {e}")
         run.preprocess_log = f"preprocess start failed: {e}"[:4000]
         run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = FAILURE_INFRA
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         await _fail_orphan_task(db, run)
 
@@ -1803,7 +1803,7 @@ async def _fail_orphan_task(db: AsyncSession, run: ExperimentRun) -> None:
     ).scalar_one_or_none()
     if task is not None and task.status == TaskStatus.BACKLOG.value:
         task.status = TaskStatus.FAILED.value
-        task.failure_type = FAILURE_INFRA
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
         task.completed_at = datetime.utcnow()
 
 
@@ -1815,7 +1815,7 @@ async def _advance_preprocessing(
     long-running mock server."""
     if case is None:
         run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = FAILURE_INFRA
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         return
     try:
@@ -1824,7 +1824,7 @@ async def _advance_preprocessing(
         logger.warning(f"experiment: preprocess lost for {run.case_key}: {e}")
         run.preprocess_log = f"preprocess container lost: {e}"[:4000]
         run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = FAILURE_INFRA
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         await _fail_orphan_task(db, run)
         return
@@ -1861,7 +1861,7 @@ async def _advance_preprocessing(
         except Exception as e:
             run.preprocess_log = f"preprocess retry failed: {e}"[:4000]
             run.status = ExperimentRunStatus.FAILED.value
-            run.failure_type = FAILURE_INFRA
+            run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
             run.completed_at = datetime.utcnow()
             await _fail_orphan_task(db, run)
         return
@@ -1870,7 +1870,7 @@ async def _advance_preprocessing(
     run.preprocess_container_id = None
     run.preprocess_log = (logs or "")[-4000:]
     run.status = ExperimentRunStatus.FAILED.value
-    run.failure_type = FAILURE_INFRA
+    run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
     run.completed_at = datetime.utcnow()
     await _fail_orphan_task(db, run)
 
@@ -1941,7 +1941,7 @@ async def _settle_toolathlon(
         run.external_verdict = verdict
         run.eval_log = (eval_log or "")[-4000:]
         run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = FAILURE_INFRA
+        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
         run.completed_at = datetime.utcnow()
         return
     await _evaluate_child(db, task, exp.eval_config or {}, case=case)
@@ -1955,7 +1955,7 @@ async def _settle_toolathlon(
         if task.status in _SUCCESS_TASK
         else ExperimentRunStatus.FAILED.value
     )
-    run.failure_type = task.failure_type
+    run.failure_type = merge_failure_type(run.failure_type, task.failure_type)
     run.cost_usd = _run_cost(task, rec)
     run.duration_seconds = _run_duration(task, rec)
     if rec is not None:
@@ -2048,7 +2048,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
         task = tasks.get(r.task_id)
         if task is None:
             r.status = ExperimentRunStatus.FAILED.value
-            r.failure_type = FAILURE_INFRA
+            r.failure_type = merge_failure_type(r.failure_type, FAILURE_INFRA)
             r.completed_at = now
             continue
         if task.status not in _TERMINAL_TASK:
@@ -2068,7 +2068,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
             if task.status in _SUCCESS_TASK
             else ExperimentRunStatus.FAILED.value
         )
-        r.failure_type = task.failure_type
+        r.failure_type = merge_failure_type(r.failure_type, task.failure_type)
         r.cost_usd = _run_cost(task, rec)
         r.duration_seconds = _run_duration(task, rec)
         if rec is not None:

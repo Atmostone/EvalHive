@@ -11,7 +11,11 @@ from app.api._resolve_model import ResolvedModel
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
 from app.utils.events import log_event
-from app.utils.failures import classify_llm_error, is_contaminated
+from app.utils.failures import (
+    classify_llm_error,
+    is_contaminated,
+    merge_failure_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +61,8 @@ async def _flag_llm_contamination(db, task_id, exc: Exception) -> None:
         return
     try:
         task = await db.get(Task, task_id if isinstance(task_id, _uuid.UUID) else _uuid.UUID(str(task_id)))
-        if task is not None and task.failure_type is None:
-            task.failure_type = ft
+        if task is not None:
+            task.failure_type = merge_failure_type(task.failure_type, ft)
     except Exception as e:  # noqa: BLE001 — a flag must never break the run
         logger.warning(f"could not flag orchestrator LLM contamination: {e}")
 

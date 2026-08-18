@@ -164,6 +164,31 @@ def is_contaminated(failure_type: str | None) -> bool:
     return failure_type in CONTAMINATING_FAILURES
 
 
+def merge_failure_type(existing: str | None, incoming: str | None) -> str | None:
+    """Combine two reasons for the same attempt — contamination cannot be demoted.
+
+    A run collects reasons over its life: the orchestrator's LLM dies on a quota
+    and the run degrades to a substituted template, then the agent hits its
+    iteration cap. Assigning the later one wins by accident, and it is the wrong
+    winner — `cap_hit` would overwrite `llm_rate_limit` and the run would count as
+    an ordinary weak result again, which is the exact failure this whole field
+    exists to prevent. Whether a run measured the model is decided by the FIRST
+    thing that stopped it measuring, not the last thing that happened to it.
+
+    ``None`` never overwrites: «not classified» is the absence of a claim, so it
+    cannot erase one. Between two contaminating reasons the later wins — both say
+    «infrastructure», and the later observation is the more specific about which.
+
+    A RETRY is not a merge. It resets the slot outright, because the next attempt
+    is a different run and inherits nothing.
+    """
+    if incoming is None:
+        return existing
+    if is_contaminated(existing) and not is_contaminated(incoming):
+        return existing
+    return incoming
+
+
 def measures_the_model(column):
     """SQL counterpart of ``not is_contaminated`` — the analytical population.
 
