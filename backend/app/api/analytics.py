@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_workspace
@@ -14,6 +14,7 @@ from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.models.workspace import Workspace
 from app.quality.experiments import LIVE_CELL
+from app.utils.failures import infrastructure_decided, measures_the_model
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -125,27 +126,43 @@ async def config_analytics(
 
     s_success = ExperimentRunStatus.SUCCESS.value
     s_failed = ExperimentRunStatus.FAILED.value
-    settled = case((ExperimentRun.status.in_([s_success, s_failed]), 1), else_=0)
-    success = case((ExperimentRun.status == s_success, 1), else_=0)
-    failed = case((ExperimentRun.status == s_failed, 1), else_=0)
-    ev_pass = case((ExperimentRun.external_verdict.is_(True), 1), else_=0)
-    ev_eval = case((ExperimentRun.external_verdict.isnot(None), 1), else_=0)
+    # Runs whose outcome infrastructure decided are not measurements of a model,
+    # so every aggregate below is computed WITHOUT them — the same population the
+    # experiment report uses (SPA-87). They are not filtered out in SQL but
+    # counted separately, because an exclusion nobody can see is indistinguishable
+    # from data that never existed.
+    clean = measures_the_model(ExperimentRun.failure_type)
+    dirty = infrastructure_decided(ExperimentRun.failure_type)
+    contaminated = case((dirty, 1), else_=0)
+    counted = case((clean, 1), else_=0)
+    settled = case(
+        (and_(clean, ExperimentRun.status.in_([s_success, s_failed])), 1), else_=0
+    )
+    success = case((and_(clean, ExperimentRun.status == s_success), 1), else_=0)
+    failed = case((and_(clean, ExperimentRun.status == s_failed), 1), else_=0)
+    ev_pass = case((and_(clean, ExperimentRun.external_verdict.is_(True)), 1), else_=0)
+    ev_eval = case((and_(clean, ExperimentRun.external_verdict.isnot(None)), 1), else_=0)
+    quality = case((clean, ExperimentRun.weighted_score), else_=None)
+    trajectory = case((clean, ExperimentRun.trajectory_score), else_=None)
+    duration = case((clean, ExperimentRun.duration_seconds), else_=None)
+    cost = case((clean, ExperimentRun.cost_usd), else_=None)
 
     stmt = (
         select(
             ExperimentRun.experiment_id,
             ExperimentRun.config_key,
             Experiment.name.label("experiment_name"),
-            func.count(ExperimentRun.id).label("run_count"),
+            func.sum(counted).label("run_count"),
+            func.sum(contaminated).label("contaminated"),
             func.sum(settled).label("settled"),
             func.sum(success).label("success"),
             func.sum(failed).label("failed"),
-            func.avg(ExperimentRun.weighted_score).label("quality_mean"),
-            func.avg(ExperimentRun.trajectory_score).label("trajectory_mean"),
+            func.avg(quality).label("quality_mean"),
+            func.avg(trajectory).label("trajectory_mean"),
             func.sum(ev_pass).label("ev_pass"),
             func.sum(ev_eval).label("ev_eval"),
-            func.avg(ExperimentRun.duration_seconds).label("avg_time_seconds"),
-            func.avg(ExperimentRun.cost_usd).label("avg_cost_usd"),
+            func.avg(duration).label("avg_time_seconds"),
+            func.avg(cost).label("avg_cost_usd"),
         )
         .join(Experiment, Experiment.id == ExperimentRun.experiment_id)
         .where(*where)
@@ -179,6 +196,7 @@ async def config_analytics(
             "config_id": f"{r.experiment_id}:{r.config_key}",
             "config_name": name,
             "run_count": int(r.run_count or 0),
+            "contaminated": int(r.contaminated or 0),
             "success_rate": (int(r.success or 0) / settled_n) if settled_n else 0.0,
             "failure_rate": (int(r.failed or 0) / settled_n) if settled_n else 0.0,
             "quality_mean": float(r.quality_mean) if r.quality_mean is not None else 0.0,

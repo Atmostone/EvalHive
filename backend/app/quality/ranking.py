@@ -29,8 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.quality_record import QualityRecord
 from app.models.ranking_report import RankingReport
+from app.models.task import Task
 from app.quality.aggregation import rank
 from app.utils.events import log_event
+from app.utils.failures import measures_the_model
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +126,19 @@ async def derive_matches_from_records(
     missing a score, a ``benchmark_case_id``, or a player key on the chosen axis are
     counted toward ``n_unmatched`` rather than silently dropped. Returns
     ``(matches, meta)``."""
-    q = select(QualityRecord).where(
-        QualityRecord.workspace_id == workspace_id,
-        QualityRecord.quality_profile.isnot(None),
+    # The leaderboard is the loudest claim the platform makes, so it must not be
+    # the one place a quota casualty still counts (SPA-87). The reason lives on the
+    # task; quality records cascade with tasks, so the join never drops a record
+    # that should have been counted. An outer join keeps records whose task is
+    # gone — missing evidence is not evidence of contamination.
+    q = (
+        select(QualityRecord)
+        .outerjoin(Task, Task.id == QualityRecord.task_id)
+        .where(
+            QualityRecord.workspace_id == workspace_id,
+            QualityRecord.quality_profile.isnot(None),
+            measures_the_model(Task.failure_type),
+        )
     )
     if suite:
         q = q.where(QualityRecord.benchmark_suite == suite)
