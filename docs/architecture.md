@@ -1140,6 +1140,25 @@ a failed decomposition decision simply proceeds without decomposing. The agent
 then produces a perfectly real result under a condition nobody chose. Only
 `orchestrator:on` cells reach that code, so the substituted decision is exactly
 the treatment being measured, and `_flag_llm_contamination` marks the task.
+
+Two invariants keep a recorded reason from being lost again. **A contaminating
+reason is merged, never assigned** (`merge_failure_type`): a run collects reasons
+over its life — a quota kills the orchestrator's call, the run degrades, the
+agent then hits its cap — and plain assignment made the *last* one win, which is
+the wrong winner. Whether a run measured the model is decided by the first thing
+that stopped it measuring. `None` never overwrites, because it is the absence of
+a claim; a **retry** resets the slot outright, because the next attempt is a
+different run. And **every terminal path that ends a task without an agent rolls
+the parent up itself** — spawn failure, unresolvable model, no templates,
+decomposition cycle, selection failure, the reaper. The roll-up lived only on the
+webhook path, so those parents waited for a child that was already finished until
+the wall clock relabelled them `timeout`, which is not excluded.
+
+Finally, an aggregate with no clean observations reports **null, not zero**.
+`/api/analytics/configs` coerced an empty sample to `0.0`, and the comparison UI
+ranked those zeros — so a configuration a provider outage wiped out lost every
+metric on the strength of the outage. Absent is not zero, and a comparison with
+nothing on one side makes no claim at all.
 - **Reliability gate (E-17 → report, SPA-76/79).** Every judge axis in the report
   carries a traffic-light badge, computed in `experiment_report.py` from the E-17
   calibration via `_classify_reliability`: **reliable** (κ ≥
