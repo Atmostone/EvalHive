@@ -358,6 +358,54 @@ async def test_create_accepts_a_pre_registered_judge_threshold(
 
 
 @pytest.mark.asyncio
+async def test_create_accepts_and_stamps_a_pre_registered_equivalence_margin(
+    auth_client: AsyncClient, db_session
+):
+    """SPA-62. «These two are the same» is a claim, and a margin picked after
+    seeing the difference is a description of the result instead of a test of it.
+    So the margin lands in the write-once eval_config that the revision
+    fingerprint covers — and is stamped with the default when nobody names one,
+    which is what makes `margin_source: default` in a report mean «created before
+    the field existed» rather than «nobody chose»."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="margin ok")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(tpl.id, name="margin-ok", eval_config={"equivalence_margin": 1.5}),
+    )
+    assert r.status_code == 201, r.text
+    detail = (await auth_client.get(f"/api/experiments/{r.json()['id']}")).json()
+    assert detail["eval_config"]["equivalence_margin"] == 1.5
+
+    r = await auth_client.post("/api/experiments", json=_body(tpl.id, name="margin-default"))
+    assert r.status_code == 201, r.text
+    detail = (await auth_client.get(f"/api/experiments/{r.json()['id']}")).json()
+    assert detail["eval_config"]["equivalence_margin"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_an_unusable_equivalence_margin(
+    auth_client: AsyncClient, db_session
+):
+    """Zero makes equivalence unprovable and ten makes it unfalsifiable; a bool
+    is a typo that `float(True) == 1.0` would otherwise swallow."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="margin range")
+
+    for bad in (0, -1, 10.5, True, "small"):
+        r = await auth_client.post(
+            "/api/experiments",
+            json=_body(
+                tpl.id,
+                name=f"margin-bad-{bad}",
+                eval_config={"equivalence_margin": bad},
+            ),
+        )
+        assert r.status_code == 400, f"{bad!r} was accepted: {r.text}"
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_a_misspelled_top_level_eval_key(
     auth_client: AsyncClient, db_session
 ):

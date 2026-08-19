@@ -504,7 +504,7 @@ async def create_experiment(
         raise ValueError("experiment name is required")
 
     _validate_eval_config(payload.get("eval_config"))
-    eval_config = _with_judge_threshold(payload.get("eval_config"))
+    eval_config = _with_pre_registered_defaults(payload.get("eval_config"))
 
     configs = expand_matrix(payload.get("configurations"), payload.get("axes"))
     if exclude_fingerprints:
@@ -1292,6 +1292,7 @@ _EVAL_CONFIG_KEYS = frozenset(
         "outcome_files_only",
         "audit_outcome_judge_on_verifiable",
         "judge_threshold",
+        "equivalence_margin",
         "trace",
     }
 )
@@ -1309,6 +1310,11 @@ _EVAL_MODES = frozenset({"checker", "judge"})
 # that range would silently make one quadrant of the 2×2 unreachable.
 JUDGE_THRESHOLD_MIN = 0.0
 JUDGE_THRESHOLD_MAX = 10.0
+# Smallest difference in judge points worth calling a difference (SPA-62). Same
+# scale, same reason for the bounds: a margin of 0 makes equivalence unprovable
+# and a margin of 10 makes it unfalsifiable.
+EQUIVALENCE_MARGIN_MIN = 0.0
+EQUIVALENCE_MARGIN_MAX = 10.0
 
 
 def _validate_eval_config(eval_config: dict | None) -> None:
@@ -1356,12 +1362,26 @@ def _validate_eval_config(eval_config: dict | None) -> None:
                 f"{JUDGE_THRESHOLD_MIN:g} and {JUDGE_THRESHOLD_MAX:g} "
                 "(the outcome judge's scale)"
             )
+    if "equivalence_margin" in eval_config:
+        value = eval_config["equivalence_margin"]
+        if isinstance(value, bool):
+            raise ValueError("eval_config.equivalence_margin must be a number")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise ValueError("eval_config.equivalence_margin must be a number")
+        if not EQUIVALENCE_MARGIN_MIN < value <= EQUIVALENCE_MARGIN_MAX:
+            raise ValueError(
+                "eval_config.equivalence_margin must be greater than "
+                f"{EQUIVALENCE_MARGIN_MIN:g} and at most "
+                f"{EQUIVALENCE_MARGIN_MAX:g} (the outcome judge's scale)"
+            )
 
     _validate_trace_config(eval_config)
 
 
-def _with_judge_threshold(eval_config: dict | None) -> dict:
-    """Stamp the project default threshold when the author named none (SPA-87).
+def _with_pre_registered_defaults(eval_config: dict | None) -> dict:
+    """Stamp the project defaults the author named none of (SPA-87, SPA-62).
 
     Leaving the key absent worked — the report falls back to the same constant —
     but it left nothing on the record, which is the one thing this field exists
@@ -1374,10 +1394,14 @@ def _with_judge_threshold(eval_config: dict | None) -> dict:
     means precisely «created before the threshold was recorded», rather than
     «nobody chose».
     """
-    from app.quality.experiment_report import RQ2_JUDGE_THRESHOLD
+    from app.quality.experiment_report import (
+        DEFAULT_EQUIVALENCE_MARGIN,
+        RQ2_JUDGE_THRESHOLD,
+    )
 
     out = dict(eval_config or {})
     out.setdefault("judge_threshold", RQ2_JUDGE_THRESHOLD)
+    out.setdefault("equivalence_margin", DEFAULT_EQUIVALENCE_MARGIN)
     return out
 
 
