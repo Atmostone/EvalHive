@@ -43,7 +43,11 @@ from app.quality.stats import MIN_SAMPLES, mann_whitney_u, rank_auc, welch_t_tes
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 from app.utils.failures import is_contaminated
 
-SCHEMA_VERSION = 16  # v16: the judge↔checker headline no longer depends on a
+SCHEMA_VERSION = 17  # v17: the reliability gate ACTS (SPA-88) — a parallel
+# `trusted` view recomputed from the axes the calibrator clears, next to the
+# untouched raw one; rank-rescued axes are barred from every numeric aggregate and
+# admitted only to rank methods; the four-way light becomes a six-way taxonomy
+# v16: the judge↔checker headline no longer depends on a
 # threshold (judge_discrimination: score distributions split by the checker's
 # verdict + AUC); the 2×2 stays as the over-credit illustration, computed at a
 # threshold the experiment PRE-REGISTERED; runs killed by infrastructure are
@@ -160,20 +164,52 @@ def _run_steps(rec) -> Optional[float]:
 _AGG_EXCLUDED_AXES = {"loop_detection"}
 
 
-def _traj_score(rec, stored: Optional[float]) -> Optional[float]:
+def _traj_score(
+    rec, stored: Optional[float], *, allowed: Optional[frozenset[str]] = None
+) -> Optional[float]:
     """Trajectory aggregate EXCLUDING the quarantined loop_detection axis (v11).
     Recompute the mean from the stored per-axis scores; fall back to the stored
-    6-axis overall when the per-axis breakdown is unavailable."""
+    6-axis overall when the per-axis breakdown is unavailable.
+
+    ``allowed`` restricts the mean to a set of axis keys (SPA-88, the trusted
+    view). With a restriction in force there is no fallback to ``stored``: the
+    stored overall averages every axis, including the ones the gate just removed,
+    so returning it would smuggle them back in under a trusted label."""
     axes = (getattr(rec, "trajectory_profile", None) or {}).get("axes") if rec is not None else None
     if axes:
         vals = [
             float(a["score"])
             for a in axes
-            if a.get("key") not in _AGG_EXCLUDED_AXES and a.get("score") is not None
+            if a.get("key") not in _AGG_EXCLUDED_AXES
+            and (allowed is None or a.get("key") in allowed)
+            and a.get("score") is not None
         ]
         if vals:
             return sum(vals) / len(vals)
-    return stored
+    return None if allowed is not None else stored
+
+
+def _trusted_weighted(rec, allowed: frozenset[str]) -> Optional[float]:
+    """The outcome score recomputed over the trusted rubric dimensions only.
+
+    Same arithmetic as the judge's own aggregate (:mod:`app.quality.judge`): a
+    weight-normalized mean over the dimensions that were actually SCORED, so
+    removing an axis RENORMALIZES rather than scoring it zero. ``None`` when no
+    trusted dimension carries a score — the honest answer, since with nothing
+    trustworthy measured this run has no trusted outcome to compare."""
+    if not allowed:
+        return None
+    dims = (getattr(rec, "quality_profile", None) or {}).get("dimensions") if rec is not None else None
+    num = den = 0.0
+    for d in dims or []:
+        if d.get("key") not in allowed or d.get("score") is None:
+            continue
+        if d.get("status") not in (None, "scored"):
+            continue
+        weight = float(d.get("weight") or 0)
+        num += float(d["score"]) * weight
+        den += weight
+    return round(num / den, 4) if den else None
 
 
 def _binary_kappa(both_yes: int, a_only: int, b_only: int, both_no: int) -> Optional[float]:
@@ -206,26 +242,85 @@ RELIABILITY_DIRECTIONAL_KAPPA = 0.4  # weak-but-directional floor
 # 'directional' instead of 'unreliable'. The κ thresholds above stay untouched.
 RELIABILITY_RANK_RHO = 0.5
 
+# --- SPA-88 trust taxonomy --------------------------------------------------- #
+# The four-way light folded three different situations into 'directional': a judge
+# that agrees moderately, a judge that agrees only on ORDER, and a judge we simply
+# have too little data about. Those license different claims, so they are different
+# statuses now. What each may drive is the whole point of the split:
+TRUST_RELIABLE_ABSOLUTE = "reliable_absolute"  # numeric aggregates + absolute claims
+TRUST_MODERATE = "moderate_agreement"          # numeric aggregates, flagged
+TRUST_RANK_ONLY = "rank_only"                  # rank / paired comparisons ONLY
+TRUST_INSUFFICIENT = "insufficient"            # nothing — too few pairs, or κ undefined
+TRUST_UNRELIABLE = "unreliable"                # nothing — the judge disagrees
+TRUST_NOT_CALIBRATED = "not_calibrated"        # nothing — unknown, not known-bad
+
+# Averaging a rank-rescued axis is precisely the error the rescue exists to avoid:
+# a scale-shifted judge orders runs correctly while its LEVEL means nothing, so its
+# mean is a number without a referent. Hence two sets rather than one boolean.
+NUMERIC_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE})
+RANK_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE, TRUST_RANK_ONLY})
+
 
 def _classify_reliability(
     kappa: Optional[float], n: int, *, has_source: bool, rho: Optional[float] = None
 ) -> str:
-    """Bucket a judged axis. No calibration source → 'not_calibrated'
-    (unknown, not known-bad). A live source with too little data or an undefined
-    κ → 'directional' (a hint, not a verdict). Otherwise threshold on κ, with one
-    rescue: κ below the bar but ranks agreeing (Spearman ρ ≥ RELIABILITY_RANK_RHO)
-    → 'directional' — a scale-shifted judge, trustworthy for ordering only."""
+    """Bucket a judged axis into the six-way trust taxonomy (SPA-88).
+
+    No calibration source → 'not_calibrated' (unknown, not known-bad). A live
+    source with too few pairs or an undefined κ → 'insufficient' — which is a
+    different claim from 'the judge half-agrees', and used to be indistinguishable
+    from it. Otherwise threshold on κ, with one rescue: κ below the bar but ranks
+    agreeing (Spearman ρ ≥ RELIABILITY_RANK_RHO) → 'rank_only', a scale-shifted
+    judge, trustworthy for ordering and for nothing else."""
     if not has_source:
-        return "not_calibrated"
+        return TRUST_NOT_CALIBRATED
     if kappa is None or n < MIN_SAMPLES:
-        return "directional"
+        return TRUST_INSUFFICIENT
     if kappa >= RELIABILITY_RELIABLE_KAPPA:
-        return "reliable"
+        return TRUST_RELIABLE_ABSOLUTE
     if kappa >= RELIABILITY_DIRECTIONAL_KAPPA:
-        return "directional"
+        return TRUST_MODERATE
     if rho is not None and rho >= RELIABILITY_RANK_RHO:
-        return "directional"
-    return "unreliable"
+        return TRUST_RANK_ONLY
+    return TRUST_UNRELIABLE
+
+
+def _trust_split(reliability: dict) -> tuple[frozenset[str], frozenset[str], dict]:
+    """Split a reliability block into (numeric-eligible, rank-eligible, report block).
+
+    ``rank`` is a superset of ``numeric``: an axis good enough to average is also
+    good enough to rank. The returned block is JSON-safe and carries the REASON for
+    every quarantine, because "we dropped this axis" is a claim the reader has to be
+    able to check — the raw view stays next to it for exactly that."""
+    numeric_rows: list[dict] = []
+    rank_rows: list[dict] = []
+    excluded_rows: list[dict] = []
+    for key, ax in sorted((reliability.get("axes") or {}).items()):
+        status = ax.get("status")
+        row = {
+            "key": key,
+            "name": ax.get("name") or key,
+            "status": status,
+            "source": ax.get("source"),
+            "kappa": ax.get("kappa"),
+            "rho": ax.get("rho"),
+            "n": ax.get("n"),
+        }
+        if status in NUMERIC_TRUST:
+            numeric_rows.append(row)
+        elif status in RANK_TRUST:
+            rank_rows.append(row)
+        else:
+            excluded_rows.append(row)
+    numeric_keys = frozenset(r["key"] for r in numeric_rows)
+    rank_keys = numeric_keys | frozenset(r["key"] for r in rank_rows)
+    block = {
+        "numeric": numeric_rows,
+        "rank_only": rank_rows,
+        "excluded": excluded_rows,
+        "n_axes": len(numeric_rows) + len(rank_rows) + len(excluded_rows),
+    }
+    return numeric_keys, rank_keys, block
 
 
 def _axis_reliability(
@@ -369,12 +464,20 @@ def pareto_frontier(points: list[dict]) -> list[str]:
 
 def significance_matrix(
     samples_by_config: dict[str, dict[str, list[float]]],
+    *,
+    rank_only_metrics: frozenset[str] = frozenset(),
 ) -> list[dict]:
     """Welch + Mann-Whitney for every config pair × metric with enough data.
 
     ``significant`` is judged on the Welch p (exact); Mann-Whitney rides along
     as the non-parametric cross-check (``approx: True``). Pairs/metrics where
-    neither test can run are omitted entirely."""
+    neither test can run are omitted entirely.
+
+    ``rank_only_metrics`` names metrics carried by a rank-rescued axis (SPA-88).
+    Welch compares MEANS, which is the one thing a scale-shifted judge cannot
+    support, so it is not run at all for those metrics: the verdict rests on
+    Mann-Whitney, which only ever looked at ranks. Such rows carry
+    ``rank_only: true`` — an approximate test, so a weaker claim, said out loud."""
     out: list[dict] = []
     keys = sorted(samples_by_config)
     metrics = sorted({m for v in samples_by_config.values() for m in v})
@@ -384,7 +487,8 @@ def significance_matrix(
             for metric in metrics:
                 a = samples_by_config[a_key].get(metric) or []
                 b = samples_by_config[b_key].get(metric) or []
-                welch = welch_t_test(a, b)
+                rank_only = metric in rank_only_metrics
+                welch = None if rank_only else welch_t_test(a, b)
                 mw = mann_whitney_u(a, b)
                 if welch is None and mw is None:
                     continue
@@ -397,6 +501,7 @@ def significance_matrix(
                         "welch": welch,
                         "mann_whitney": mw,
                         "p": p,
+                        "rank_only": rank_only,
                         "significant": p < SIGNIFICANCE_ALPHA,
                     }
                 )
@@ -817,6 +922,13 @@ def build_report(
     # the judge can be trusted (E-17 human κ, or the loop anchor for the loop axis).
     axis_reliability = _axis_reliability(calibration, loop_detection, axis_labels)
     outcome_axis_reliability = _outcome_axis_reliability(calibration)
+    # SPA-88: which axes the badge actually LETS THROUGH. Two sets per rubric — one
+    # for numbers, a wider one for ranks — resolved once here and used by every
+    # trusted aggregate below.
+    outcome_numeric_keys, outcome_rank_keys, outcome_trust = _trust_split(
+        outcome_axis_reliability
+    )
+    traj_numeric_keys, traj_rank_keys, trajectory_trust = _trust_split(axis_reliability)
 
     # --- cleaned-trace stats (E-06) per config --------------------------------
     # trajectory_profile.trace_stats = {original_tokens, cleaned_tokens, steps_total}
@@ -1291,6 +1403,203 @@ def build_report(
             samples[key] = cfg_samples
     significance = significance_matrix(samples)
 
+    def _metric_axis(metric: str) -> dict:
+        """Which judged axis a significance row rests on, and how far it is trusted.
+
+        The raw view keeps every row — but a row is a claim about a config, made
+        through an axis, and the axis's reliability is a condition of that claim.
+        It therefore travels with the row instead of living in a separate panel the
+        reader has to join by hand."""
+        if metric.startswith("dim:"):
+            key = metric[4:]
+            ax = (outcome_axis_reliability.get("axes") or {}).get(key) or {}
+            status = ax.get("status") or TRUST_NOT_CALIBRATED
+            return {
+                "kind": "outcome_axis",
+                "key": key,
+                "name": ax.get("name") or key,
+                "status": status,
+                "numeric": status in NUMERIC_TRUST,
+                "rank": status in RANK_TRUST,
+            }
+        if metric == "trajectory_score":
+            return {
+                "kind": "trajectory_aggregate",
+                "key": None,
+                "name": "Trajectory",
+                "status": None,
+                "numeric": bool(traj_numeric_keys),
+                "rank": bool(traj_rank_keys),
+                "n_axes_numeric": len(traj_numeric_keys),
+                "n_axes": trajectory_trust["n_axes"],
+            }
+        return {
+            "kind": "outcome_aggregate",
+            "key": None,
+            "name": "Outcome",
+            "status": None,
+            "numeric": bool(outcome_numeric_keys),
+            "rank": bool(outcome_rank_keys),
+            "n_axes_numeric": len(outcome_numeric_keys),
+            "n_axes": outcome_trust["n_axes"],
+        }
+
+    for row in significance:
+        row["axis"] = _metric_axis(row["metric"])
+
+    # --- SPA-88: the trusted view -----------------------------------------------
+    # SPA-76 badged the axes and SPA-79 rescued the rank-consistent ones; nothing
+    # ACTED on either, so an axis the calibrator called unreliable still moved every
+    # mean, every Pareto point and every «significant» row. Here the badge acts —
+    # in a SECOND view, not by editing the first: quarantining an axis is a claim
+    # about the JUDGE, and the reader is owed the unfiltered numbers to check it
+    # against. Raw keeps everything; trusted is recomputed from what cleared the
+    # gate and states what it dropped.
+    #
+    # Deliberately NOT gated: judge_discrimination, rq2 and checker_human. Those
+    # measure the judge against an independent oracle — gating them by the judge's
+    # own trust score would be circular, and they are how the score is earned.
+    trusted_per_config: list[dict] = []
+    trusted_samples: dict[str, dict[str, list[float]]] = {}
+    for key in sorted(configs):
+        group_success = [
+            r for r in by_config[key] if r.status == ExperimentRunStatus.SUCCESS.value
+        ]
+        q_vals = [
+            v
+            for r in group_success
+            if (v := _trusted_weighted(records_by_task.get(r.task_id), outcome_numeric_keys))
+            is not None
+        ]
+        t_vals = [
+            v
+            for r in group_success
+            if (
+                v := _traj_score(
+                    records_by_task.get(r.task_id), None, allowed=traj_numeric_keys
+                )
+            )
+            is not None
+        ]
+        trusted_per_config.append(
+            {
+                "config_key": key,
+                "label": labels.get(key, key),
+                "quality_mean": _mean(q_vals),
+                "n_quality": len(q_vals),
+                "trajectory_mean": _mean(t_vals),
+                "n_trajectory": len(t_vals),
+            }
+        )
+        cfg_samples = {}
+        if q_vals:
+            cfg_samples["weighted_score"] = q_vals
+        if t_vals:
+            cfg_samples["trajectory_score"] = t_vals
+        for dim_key, vals in dim_samples.get(key, {}).items():
+            if vals and dim_key in outcome_rank_keys:
+                cfg_samples[f"dim:{dim_key}"] = vals
+        if cfg_samples:
+            trusted_samples[key] = cfg_samples
+
+    trusted_significance = significance_matrix(
+        trusted_samples,
+        rank_only_metrics=frozenset(
+            f"dim:{k}" for k in outcome_rank_keys - outcome_numeric_keys
+        ),
+    )
+    for row in trusted_significance:
+        row["axis"] = _metric_axis(row["metric"])
+
+    # What the gate cost, in the only currency the reader cares about: conclusions.
+    # A row that vanished had no trustworthy axis under it; a row that survived but
+    # stopped being significant was carried by the axes that just left.
+    trusted_rows = {(r["a"], r["b"], r["metric"]) for r in trusted_significance}
+    trusted_significant = {
+        (r["a"], r["b"], r["metric"]) for r in trusted_significance if r["significant"]
+    }
+    dropped_rows = [
+        r
+        for r in significance
+        if r["significant"] and (r["a"], r["b"], r["metric"]) not in trusted_rows
+    ]
+    demoted_rows = [
+        r
+        for r in significance
+        if r["significant"]
+        and (r["a"], r["b"], r["metric"]) in trusted_rows
+        and (r["a"], r["b"], r["metric"]) not in trusted_significant
+    ]
+
+    trusted_quality_by_config = {
+        e["config_key"]: e["quality_mean"] for e in trusted_per_config
+    }
+    trusted_points = [
+        {
+            "config_key": p["config_key"],
+            "label": p["label"],
+            "quality": trusted_quality_by_config.get(p["config_key"]),
+            "cost": p["cost"],
+            "effort": p["effort"],
+            "time": p["time"],
+        }
+        for p in points
+    ]
+    trusted_frontier = pareto_frontier(trusted_points)
+    for p in trusted_points:
+        p["on_frontier"] = p["config_key"] in trusted_frontier
+
+    # The leaderboard runs on the WIDER set: build_matches turns pointwise scores
+    # into per-case pairwise comparisons, and a judge that is merely scale-shifted
+    # still orders two runs of the same case correctly. That is the entire content
+    # of the rank rescue, so this is the one place it may be spent.
+    trusted_scored = [
+        {"case": r.case_key, "player": r.config_key, "score": v}
+        for r in success_runs
+        if (v := _trusted_weighted(records_by_task.get(r.task_id), outcome_rank_keys))
+        is not None
+    ]
+    trusted_matches, trusted_match_meta = build_matches(trusted_scored, subject="config")
+    trusted_ranking = rank(trusted_matches, method=method)
+    for player in trusted_ranking.get("players") or []:
+        player["label"] = labels.get(player["player"], player["player"])
+
+    trusted = {
+        # False when no axis on either rubric cleared the gate — including the
+        # ordinary case of a corpus with no second annotator, where the honest
+        # answer is «nothing here is known to be trustworthy», not an empty table
+        # dressed up as a result.
+        "available": bool(
+            outcome_rank_keys or traj_rank_keys
+        ),
+        "policy": {
+            "numeric_statuses": sorted(NUMERIC_TRUST),
+            "rank_statuses": sorted(RANK_TRUST),
+            "reliable_kappa": RELIABILITY_RELIABLE_KAPPA,
+            "moderate_kappa": RELIABILITY_DIRECTIONAL_KAPPA,
+            "rank_rho": RELIABILITY_RANK_RHO,
+            "min_samples": MIN_SAMPLES,
+        },
+        "outcome_axes": outcome_trust,
+        "trajectory_axes": trajectory_trust,
+        "summary": {"per_config": trusted_per_config},
+        "pareto": {"points": trusted_points, "frontier": trusted_frontier},
+        "leaderboard": {
+            "source": "derived_pointwise",
+            "basis": "rank_eligible_axes",
+            "derivation": trusted_match_meta,
+            **trusted_ranking,
+        },
+        "significance": trusted_significance,
+        "dropped": {
+            "significance_rows": len(significance) - len(trusted_significance),
+            "significant_rows": len(dropped_rows),
+            "significant_metrics": sorted({r["metric"] for r in dropped_rows}),
+            "demoted_rows": len(demoted_rows),
+            "demoted_metrics": sorted({r["metric"] for r in demoted_rows}),
+        },
+    }
+
     # --- failure modes -------------------------------------------------------------
     # E-14 detects failure CLASSES (tool_confusion / loop / premature_stop / …),
     # each with a free-text ``reason`` and confidence. The report counted classes
@@ -1393,6 +1702,7 @@ def build_report(
         "scatter": scatter,
         "leaderboard": leaderboard,
         "significance": significance,
+        "trusted": trusted,
         "failure_modes": failure_modes,
         "orchestrator": orchestrator,
         "judge_calibration": calibration,
