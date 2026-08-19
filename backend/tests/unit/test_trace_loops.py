@@ -256,3 +256,19 @@ def test_whitespace_in_arguments_is_significant():
     out = detect_loops([_tool("bash", {"command": "run  a"}),
                         _tool("bash", {"command": "run a"})])
     assert out["max_repeat_run"] == 1
+
+
+def test_the_same_call_in_two_attempts_is_a_retry_not_a_loop():
+    """SPA-113: a retry starts the task over, which is the opposite of going in
+    circles. Without the attempt index the counter reads the second attempt's
+    identical calls as repetition inside one run."""
+    from app.quality.trace_loops import detect_loops
+
+    def call(attempt):
+        return {"kind": "tool", "tool_name": "file_write",
+                "arguments": {"path": "a.md"}, "attempt": attempt}
+
+    across = detect_loops([call(1), call(1), call(2), call(2)])
+    within = detect_loops([call(1), call(1), call(1), call(1)])
+    assert within["max_repeat_run"] > across["max_repeat_run"]
+    assert across["repeated_action_ratio"] < within["repeated_action_ratio"]

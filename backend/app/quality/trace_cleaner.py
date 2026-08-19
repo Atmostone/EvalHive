@@ -33,7 +33,7 @@ from app.models.task import Task
 logger = logging.getLogger(__name__)
 
 # v2: tool-call arguments per step, and joined multi-part outputs (SPA-86)
-TRACE_SCHEMA_VERSION = 2
+TRACE_SCHEMA_VERSION = 3
 
 DEFAULT_TOOL_OUTPUT_TOKEN_CAP = 600
 # Arguments get a cap of their own: a file body can arrive as a parameter, and the
@@ -154,6 +154,19 @@ def _truncate_to_tokens(text: str, cap: int) -> tuple[str, int]:
 # --- step extraction ------------------------------------------------------
 
 
+def _parse_dt(value) -> datetime | None:
+    """An ISO timestamp off an archived chunk, or None. Never raises: a trace is
+    still worth reading when one row's clock is unparseable."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _ts(value) -> float | None:
     if value is None:
         return None
@@ -181,18 +194,46 @@ def _event_text(data: dict) -> str:
         return str(data)
 
 
+def _progress_echo_of(event_type: str | None, data: dict) -> str | None:
+    """The tool a progress ping merely announces, or None (SPA-113).
+
+    The agent emits `agent_progress` when it starts a call — `{iteration,
+    tool_name, current_step, recent_output}` — and the call itself is recorded in
+    full as a log chunk, with arguments and the complete result. `recent_output` is
+    a preview of that same result, not extra evidence. Kept as its own step the
+    ping becomes a second occurrence of one action, and the judge counts actions:
+    on the run that surfaced this, E-07 scored efficiency 4/10 for a file «written
+    three separate times» that was written once.
+
+    Returning the tool NAME rather than a boolean is deliberate — whether the ping
+    is really an echo cannot be decided from the event alone. If the chunk never
+    arrived (a failed POST), the ping is the only surviving trace of the call and
+    must stay. The caller, which can see both lists, makes that call.
+
+    A ping carrying something a chunk never holds — an error, a message, the
+    model's own words — is not an echo at all and never enters this path."""
+    if event_type != "agent_progress" or not isinstance(data, dict):
+        return None
+    tool = data.get("tool_name")
+    if not tool or any(data.get(k) for k in _EVENT_TEXT_KEYS):
+        return None
+    return str(tool)
+
+
 def _event_step(ev) -> dict | None:
     event_type = getattr(ev, "event_type", None)
+    data = getattr(ev, "data", None) or {}
     if event_type in _REASONING_EVENTS:
         kind = "reasoning"
     elif event_type in _AGENT_EVENTS:
         kind = "agent"
     else:
         return None
-    text = _event_text(getattr(ev, "data", None) or {})
+    text = _event_text(data)
     return {
         "kind": kind,
         "event_type": event_type,
+        "_progress_echo": _progress_echo_of(event_type, data),
         "tool_name": None,
         "arguments": None,
         "arguments_truncated": False,
@@ -397,6 +438,27 @@ def clean_trajectory(
             1 for ev in events if _event_step(ev) is None
         )
 
+        # Each `agent_spawned` starts an attempt. The event itself is dropped from
+        # the trace (it is the system snapshot), but its clock is what tells a
+        # retry apart from a repetition — without it two attempts read as one run
+        # that did everything twice, and repetition is precisely what the process
+        # judge is asked to grade (SPA-113).
+        spawns = sorted(
+            t
+            for ev in events
+            if getattr(ev, "event_type", None) == "agent_spawned"
+            and (t := _ts(getattr(ev, "created_at", None))) is not None
+        )
+        n_attempts = max(1, len(spawns))
+
+        def _attempt_of(ts: float | None) -> int:
+            # An undated step (a pre-SPA-113 archive) can only be placed after
+            # everything dated, so the trace can honestly attribute it to the last
+            # attempt and nothing finer.
+            if ts is None:
+                return n_attempts
+            return max(1, sum(1 for s_ts in spawns if s_ts <= ts))
+
         raw_steps = [s for s in (_event_step(ev) for ev in events) if s is not None]
         for i, call in enumerate(calls):
             raw_steps.append(_chunk_step(call, order=i))
@@ -404,6 +466,82 @@ def clean_trajectory(
         # Chronological merge: dated items ascending, undated (archive) last in
         # their original order (stable sort).
         raw_steps.sort(key=lambda s: (s["_ts"] is None, s["_ts"] or 0.0, s["_order"]))
+
+        for s in raw_steps:
+            s["attempt"] = _attempt_of(s["_ts"])
+
+        # An announcement is an echo only when the thing it announced was actually
+        # recorded. Resolved here, where both the pings and the tool steps are in
+        # hand: a ping whose chunk never arrived is the only surviving trace of
+        # that call and stays.
+        recorded = {
+            (s["attempt"], s["tool_name"]) for s in raw_steps if s["kind"] == "tool" and s["tool_name"]
+        }
+        before = len(raw_steps)
+        raw_steps = [
+            s
+            for s in raw_steps
+            if not (
+                s.get("_progress_echo")
+                and (s["attempt"], s["_progress_echo"]) in recorded
+            )
+        ]
+        progress_echoes_dropped = before - len(raw_steps)
+
+        # The same fact written twice is not two facts. The orchestrator logs one
+        # decision as both `orchestrator_reasoning` and `orchestrator_decision`
+        # with identical text, and the judge reads the pair as the agent doing
+        # something twice — on the live run it cited «template_selected twice in
+        # steps 2-3» and docked efficiency for it. Only adjacent, byte-identical,
+        # non-tool steps collapse: two identical TOOL calls are two real actions,
+        # and the loop counter exists precisely to notice them.
+        deduped: list[dict] = []
+        for s in raw_steps:
+            prev = deduped[-1] if deduped else None
+            if (
+                prev is not None
+                and s["kind"] != "tool"
+                and s["kind"] == prev["kind"]
+                and s["attempt"] == prev["attempt"]
+                and s["content"].strip()
+                and s["content"] == prev["content"]
+            ):
+                continue
+            deduped.append(s)
+        duplicate_steps_dropped = len(raw_steps) - len(deduped)
+        raw_steps = deduped
+
+        # A visible boundary, not just a number on each step: the judge reads prose,
+        # and «the agent tried this twice» has to be legible without arithmetic.
+        # Only when there was more than one attempt — a marker on every single-run
+        # trace would be noise on the overwhelmingly common case.
+        if n_attempts > 1:
+            marked: list[dict] = []
+            current = 0
+            for s in raw_steps:
+                if s["attempt"] != current and s["attempt"] > 1:
+                    marked.append(
+                        {
+                            "kind": "attempt",
+                            "event_type": None,
+                            "tool_name": None,
+                            "arguments": None,
+                            "arguments_truncated": False,
+                            "parts_missing": 0,
+                            "result_missing": False,
+                            "content": (
+                                f"── attempt {s['attempt']} of {n_attempts}: the previous "
+                                "attempt was retried; what follows is a new run of the "
+                                "same task, not a repetition within one ──"
+                            ),
+                            "_ts": s["_ts"],
+                            "_order": -1,
+                            "attempt": s["attempt"],
+                        }
+                    )
+                current = s["attempt"]
+                marked.append(s)
+            raw_steps = marked
 
         steps: list[dict] = []
         steps_truncated = 0
@@ -440,6 +578,7 @@ def clean_trajectory(
             steps.append(
                 {
                     "seq": seq,
+                    "attempt": int(s.get("attempt") or 1),
                     "kind": s["kind"],
                     "tool_name": s["tool_name"],
                     "arguments": arguments,
@@ -481,6 +620,14 @@ def clean_trajectory(
                 "steps_result_missing": steps_result_missing,
                 "steps_parts_missing": steps_parts_missing,
                 "events_dropped": events_dropped,
+                # Progress pings removed as echoes of a recorded tool call (SPA-113).
+                "progress_echoes_dropped": progress_echoes_dropped,
+                # Adjacent non-tool steps that repeated the previous one verbatim.
+                "duplicate_steps_dropped": duplicate_steps_dropped,
+                # How many times the agent was run for this task. >1 means the
+                # trace spans retries and repetition across the boundary is not a
+                # loop (SPA-113).
+                "attempts": n_attempts,
             },
             "config": {
                 "tool_output_token_cap": cap,
@@ -506,6 +653,9 @@ def clean_trajectory(
                 "steps_result_missing": 0,
                 "steps_parts_missing": 0,
                 "events_dropped": 0,
+                "progress_echoes_dropped": 0,
+                "duplicate_steps_dropped": 0,
+                "attempts": 1,
             },
             "config": {
                 "tool_output_token_cap": cap,
@@ -520,9 +670,10 @@ def clean_trajectory(
 async def _load_log_chunks(db: AsyncSession, task: Task) -> list:
     """Load a task's log chunks from Postgres, or the MinIO archive after
     compaction (mirrors api/agent_logs.list_log_chunks). The JSON-lines archive
-    preserves the tool call — name, arguments and part identity; legacy plain-text
-    archives lose them (degrade gracefully). `created_at` is always absent from the
-    archive."""
+    preserves the tool call — name, arguments, part identity and, since SPA-113,
+    the chunk's timestamp; legacy plain-text archives lose them (degrade
+    gracefully). An archive written before SPA-113 has no timestamp, and its tool
+    steps sort last, exactly as they did then."""
     if task.log_archive_s3_path:
         try:
             from app.storage.minio_client import decode_log_archive, read_log_archive
@@ -542,6 +693,7 @@ async def _load_log_chunks(db: AsyncSession, task: Task) -> list:
                 tool_call_id=d.get("tool_call_id"),
                 part_index=d.get("part_index", 0) or 0,
                 part_total=d.get("part_total", 1) or 1,
+                created_at=_parse_dt(d.get("created_at")),
             )
             for i, d in enumerate(decode_log_archive(blob))
         ]

@@ -235,6 +235,11 @@ def _serialize_trace(cleaned_trace: dict, steps: list[dict] | None = None) -> st
     A tool step is rendered as the CALL — name and arguments — followed by its
     output, because `parameter_quality` and `tool_selection` are questions about
     the call, and until SPA-86 the judge was shown only the name and the result.
+
+    A trace spanning several attempts carries `kind == "attempt"` boundary steps
+    (SPA-113). They are rendered as a plain separator line rather than a numbered
+    step: they are not something the agent did, and numbering them would put a
+    frame around the run inside the run.
     """
     task = cleaned_trace.get("task") or {}
     lines = [
@@ -244,6 +249,9 @@ def _serialize_trace(cleaned_trace: dict, steps: list[dict] | None = None) -> st
         "Trajectory steps (chronological):",
     ]
     for s in cleaned_trace.get("steps") if steps is None else steps:
+        if s.get("kind") == "attempt":
+            lines.append((s.get("content") or "").strip())
+            continue
         tool = s.get("tool_name")
         label = f"{s.get('kind')}/{tool}" if tool else str(s.get("kind"))
         trunc = " [truncated]" if s.get("truncated") else ""
@@ -470,9 +478,17 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
         return text, report
 
     # 3) Whole middle steps — the outcome lives in the tail, so head and tail stay.
+    # An attempt boundary is never evicted (SPA-113): drop it and the retry it marks
+    # silently becomes repetition inside one run, which is the reading the marker
+    # exists to prevent. It costs one line, so it is never what makes a trace fit.
     omitted: list[dict] = []
     while len(steps) > 2 and _count_tokens(text) > max_input_tokens:
-        omitted.append(steps.pop(len(steps) // 2))
+        victim = len(steps) // 2
+        movable = [i for i in range(1, len(steps) - 1) if steps[i].get("kind") != "attempt"]
+        if not movable:
+            break
+        victim = min(movable, key=lambda i: abs(i - victim))
+        omitted.append(steps.pop(victim))
         marker = {
             "seq": "…",
             "kind": "omitted",

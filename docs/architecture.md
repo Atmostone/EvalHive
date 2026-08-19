@@ -388,10 +388,36 @@ sources (`agent_events` + `agent_log_chunks` + `tasks`) it builds a `CleanedTrac
   1M-context judge, reading the whole trajectory is a legitimate request, and a
   value between `0` and the floor is refused rather than silently clamped.
 
-Steps are merged chronologically; token counts use `tiktoken` (char/4 fallback) to
-report savings. Log chunks load from Postgres, or the MinIO archive after
-compaction (the JSON-lines archive preserves the call; legacy plain-text archives
-lose the tool name and the arguments — the cleaner degrades gracefully). It
+- **De-duplicates the announcement** (SPA-113). `agent_progress` fires when a call
+  starts, and `recent_output` on it is a preview of the very result the log chunk
+  holds in full. Kept as its own step it doubled every call, and the judge counts
+  actions: on the first live run E-07 scored `efficiency` 4/10 citing a file
+  «written three separate times» that was written once — two of the three were
+  announcements. The ping is dropped only when the call it announces was actually
+  recorded **in the same attempt**; if the chunk never arrived, the ping is the only
+  surviving trace of that call and stays.
+- **Collapses a fact recorded twice** (SPA-113). The orchestrator logs one decision
+  as both `orchestrator_reasoning` and `orchestrator_decision` with identical text.
+  Adjacent, byte-identical, non-tool steps merge; two identical **tool** calls never
+  do, because that repetition is exactly what the structural loop counter is for.
+- **Bounds the attempts** (SPA-113). Each `agent_spawned` opens one. Every step
+  carries `attempt`, `stats.attempts` counts them, and a multi-attempt trace gets a
+  visible boundary step (`kind == "attempt"`) — rendered as a separator rather than a
+  numbered action, and exempt from the judge-budget trim, since dropping it turns a
+  retry back into repetition. The structural loop counter folds the attempt into its
+  action identity for the same reason: starting the task over is the opposite of
+  going in circles.
+
+Steps are merged **chronologically across both sources** — this is the order the
+judge is asked to reason about, so it has to be the order things happened. Token
+counts use `tiktoken` (char/4 fallback) to report savings. Log chunks load from
+Postgres, or the MinIO archive after compaction (the JSON-lines archive preserves
+the call and, since SPA-113, its `created_at`; legacy plain-text archives lose the
+tool name and the arguments — the cleaner degrades gracefully). Before SPA-113 the
+archive dropped the timestamp, and because undated steps sort last, compaction
+silently moved every tool call to the end of the trace: the judge read a run whose
+calls all happened after it finished. Archives written before that fix still decode
+undated and keep the old order — there is nothing to recover it from. It
 produces the judge's *input* only: it scores nothing and never writes
 `trajectory_profile` (E-07). Like the other evaluators it never raises (on failure
 returns a trace with an `error` field). Read-only preview, computed on demand and

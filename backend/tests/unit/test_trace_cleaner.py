@@ -391,3 +391,133 @@ def test_join_reducer_is_shared_with_the_data_lake():
     assert len(calls) == 2
     assert [c["tool_name"] for c in calls] == ["w", "b"]
     assert calls[0]["arguments"] == {"path": "a"}
+
+
+# --- SPA-113: the trace has to be a description of what happened -------------
+
+
+def test_events_and_tool_calls_are_interleaved_by_time():
+    """The defect this fixes: every tool step sorted after every event, so the
+    judge read a run whose calls all happened after it reported completion."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [
+        _ev("orchestrator_decision", {"action": "processing_task"}, secs=0),
+        _ev("agent_spawned", {"tools": []}, secs=5),
+        _ev("agent_completed", {"result_summary": "done"}, secs=40),
+    ]
+    chunks = [
+        _chunk("written", tool_name="file_write", seq=0, secs=20,
+               arguments={"path": "a.md"}, tool_call_id="c0"),
+        _chunk("contents", tool_name="file_read", seq=1, secs=30,
+               arguments={"path": "a.md"}, tool_call_id="c1"),
+    ]
+    out = clean_trajectory(task, events, chunks)
+    assert [(s["kind"], s.get("tool_name")) for s in out["steps"]] == [
+        ("reasoning", None),
+        ("tool", "file_write"),
+        ("tool", "file_read"),
+        ("agent", None),
+    ], "the completion message must come after the calls it describes"
+
+
+def test_a_progress_ping_does_not_double_a_tool_call():
+    """E-07 scored efficiency 4/10 on a live run for a file «written three
+    separate times» that was written once: two of the three were progress pings
+    announcing the call the chunk already records in full."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [
+        # `recent_output` is a preview of the very result the chunk carries in full.
+        _ev("agent_progress",
+            {"iteration": 1, "tool_name": "file_write", "current_step": "tool:file_write",
+             "recent_output": "written"},
+            secs=9),
+        # …but a ping carrying something the chunk never holds is evidence.
+        _ev("agent_progress", {"tool_name": "file_write", "error": "disk full"}, secs=11),
+    ]
+    chunks = [_chunk("written", tool_name="file_write", seq=0, secs=10,
+                     arguments={"path": "a.md"}, tool_call_id="c0")]
+    out = clean_trajectory(task, events, chunks)
+    assert [s["kind"] for s in out["steps"]] == ["tool", "agent"]
+    assert "disk full" in out["steps"][1]["content"]
+    assert out["stats"]["progress_echoes_dropped"] == 1
+
+
+def test_a_progress_ping_survives_when_its_tool_call_was_never_recorded():
+    """The chunk POST can fail. Then the ping is the only surviving trace of that
+    call, and dropping it would erase an action the agent actually took."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [_ev("agent_progress",
+                  {"iteration": 1, "tool_name": "file_write", "recent_output": "written"},
+                  secs=9)]
+    out = clean_trajectory(task, events, [])
+    assert [s["kind"] for s in out["steps"]] == ["agent"]
+    assert out["stats"]["progress_echoes_dropped"] == 0
+
+
+def test_two_attempts_are_bounded_and_counted():
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [
+        _ev("agent_spawned", {}, secs=0),
+        _ev("agent_failed", {"error": "rejected"}, secs=20),
+        _ev("agent_spawned", {}, secs=25),
+        _ev("agent_completed", {"result_summary": "ok"}, secs=60),
+    ]
+    chunks = [
+        _chunk("w", tool_name="file_write", seq=0, secs=10,
+               arguments={"path": "a.md"}, tool_call_id="c0"),
+        _chunk("w", tool_name="file_write", seq=1, secs=40,
+               arguments={"path": "a.md"}, tool_call_id="c1"),
+    ]
+    out = clean_trajectory(task, events, chunks)
+    assert out["stats"]["attempts"] == 2
+    boundaries = [s for s in out["steps"] if s["kind"] == "attempt"]
+    assert len(boundaries) == 1 and "attempt 2 of 2" in boundaries[0]["content"]
+    assert [s["attempt"] for s in out["steps"] if s["kind"] != "attempt"] == [1, 1, 2, 2]
+
+    # A single-attempt trace carries no marker — it would be noise on every run.
+    solo = clean_trajectory(task, events[2:], chunks[1:])
+    assert solo["stats"]["attempts"] == 1
+    assert not [s for s in solo["steps"] if s["kind"] == "attempt"]
+
+
+def test_an_archived_chunk_keeps_its_clock():
+    """Compaction used to drop `created_at`, which is what put every tool step at
+    the end of an archived task's trace."""
+    from app.storage.minio_client import decode_log_archive, encode_log_archive
+
+    chunk = _chunk("written", tool_name="file_write", seq=0, secs=20,
+                   arguments={"path": "a.md"}, tool_call_id="c0")
+    decoded = decode_log_archive(encode_log_archive([chunk]).decode())
+    assert decoded[0]["created_at"] == chunk.created_at.isoformat()
+    assert decoded[0]["arguments"] == {"path": "a.md"}
+
+    # An archive written before this carries no timestamp and must still decode.
+    legacy = decode_log_archive('{"content": "x", "tool_name": "file_read"}')
+    assert legacy[0]["created_at"] is None
+
+
+def test_one_decision_logged_twice_is_one_step():
+    """The orchestrator writes a decision as both `orchestrator_reasoning` and
+    `orchestrator_decision` with identical text. The judge read the pair as the
+    agent acting twice — on the live run it cited «template_selected twice in
+    steps 2-3» and took a point off efficiency for it."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [
+        _ev("orchestrator_reasoning", {"reasoning": "Writer fits this task"}, secs=1),
+        _ev("orchestrator_decision", {"reasoning": "Writer fits this task"}, secs=2),
+    ]
+    out = clean_trajectory(task, events, [])
+    assert [s["content"] for s in out["steps"]] == ["Writer fits this task"]
+    assert out["stats"]["duplicate_steps_dropped"] == 1
+
+
+def test_two_identical_tool_calls_stay_two_actions():
+    """Collapsing those would hide the very repetition the loop counter looks for."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    chunks = [
+        _chunk("done", tool_name="bash", seq=0, secs=1, arguments={"cmd": "ls"}, tool_call_id="c0"),
+        _chunk("done", tool_name="bash", seq=1, secs=2, arguments={"cmd": "ls"}, tool_call_id="c1"),
+    ]
+    out = clean_trajectory(task, [], chunks)
+    assert len([s for s in out["steps"] if s["kind"] == "tool"]) == 2
+    assert out["stats"]["duplicate_steps_dropped"] == 0

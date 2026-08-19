@@ -183,8 +183,8 @@ def encode_log_archive(chunks) -> bytes:
 
     JSON-lines, one object per chunk — so the cleaned trace (E-06) and trajectory
     matcher (E-09) keep the tool name, and now its arguments and call identity
-    (SPA-86), after compaction instead of going blind. `json.dumps` escapes
-    newlines, so each chunk is one line."""
+    (SPA-86) and its timestamp (SPA-113), after compaction instead of going blind.
+    `json.dumps` escapes newlines, so each chunk is one line."""
     import json
 
     lines = [
@@ -197,6 +197,11 @@ def encode_log_archive(chunks) -> bytes:
                 "tool_call_id": getattr(c, "tool_call_id", None),
                 "part_index": getattr(c, "part_index", 0) or 0,
                 "part_total": getattr(c, "part_total", 1) or 1,
+                # The chunk's own clock. Without it the archived trace cannot be
+                # put back in the order it happened (SPA-113).
+                "created_at": (
+                    ts.isoformat() if (ts := getattr(c, "created_at", None)) is not None else None
+                ),
             },
             ensure_ascii=False,
             default=str,
@@ -218,6 +223,11 @@ def _decoded_chunk(o: dict) -> dict:
         "tool_call_id": o.get("tool_call_id"),
         "part_index": o.get("part_index", 0) or 0,
         "part_total": o.get("part_total", 1) or 1,
+        # SPA-113: when this was absent, every tool step in an archived task's
+        # trace sorted after every event — the cleaner puts undated steps last —
+        # so the judge read a run whose tool calls all happened after it finished.
+        # Archives written before this carry None and degrade to that old order.
+        "created_at": o.get("created_at"),
     }
 
 

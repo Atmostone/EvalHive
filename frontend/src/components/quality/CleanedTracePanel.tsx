@@ -12,6 +12,7 @@ const KIND_STYLE: Record<CleanedTraceStepKind, string> = {
   reasoning: 'bg-purple-100 text-purple-700',
   tool: 'bg-blue-100 text-blue-700',
   agent: 'bg-gray-100 text-gray-700',
+  attempt: 'bg-amber-100 text-amber-800',
 }
 
 interface Props {
@@ -102,7 +103,18 @@ export default function CleanedTracePanel({ taskId }: Props) {
             <p className="text-xs text-gray-400">No trajectory steps recorded.</p>
           ) : (
             <div className="space-y-2 max-h-96 overflow-y-auto">
-              {trace.steps.map((s) => (
+              {trace.steps.map((s) =>
+                /* SPA-113: a boundary is not a step the agent took, so it reads as a
+                   rule across the trace rather than as another numbered action. */
+                s.kind === 'attempt' ? (
+                  <div key={s.seq} className="flex items-center gap-2 py-1">
+                    <div className="h-px flex-1 bg-amber-300" />
+                    <span className="text-[10px] uppercase tracking-wide text-amber-700 font-medium whitespace-nowrap">
+                      {s.content.replace(/^──\s*|\s*──$/g, '')}
+                    </span>
+                    <div className="h-px flex-1 bg-amber-300" />
+                  </div>
+                ) : (
                 <div key={s.seq} className="text-xs">
                   <div className="flex items-center gap-2 mb-0.5">
                     <span className="text-gray-400">#{s.seq}</span>
@@ -152,7 +164,8 @@ export default function CleanedTracePanel({ taskId }: Props) {
                     {s.content || '∅'}
                   </pre>
                 </div>
-              ))}
+                ),
+              )}
             </div>
           )}
         </>
