@@ -494,3 +494,30 @@ def test_an_archived_chunk_keeps_its_clock():
     # An archive written before this carries no timestamp and must still decode.
     legacy = decode_log_archive('{"content": "x", "tool_name": "file_read"}')
     assert legacy[0]["created_at"] is None
+
+
+def test_one_decision_logged_twice_is_one_step():
+    """The orchestrator writes a decision as both `orchestrator_reasoning` and
+    `orchestrator_decision` with identical text. The judge read the pair as the
+    agent acting twice — on the live run it cited «template_selected twice in
+    steps 2-3» and took a point off efficiency for it."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [
+        _ev("orchestrator_reasoning", {"reasoning": "Writer fits this task"}, secs=1),
+        _ev("orchestrator_decision", {"reasoning": "Writer fits this task"}, secs=2),
+    ]
+    out = clean_trajectory(task, events, [])
+    assert [s["content"] for s in out["steps"]] == ["Writer fits this task"]
+    assert out["stats"]["duplicate_steps_dropped"] == 1
+
+
+def test_two_identical_tool_calls_stay_two_actions():
+    """Collapsing those would hide the very repetition the loop counter looks for."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    chunks = [
+        _chunk("done", tool_name="bash", seq=0, secs=1, arguments={"cmd": "ls"}, tool_call_id="c0"),
+        _chunk("done", tool_name="bash", seq=1, secs=2, arguments={"cmd": "ls"}, tool_call_id="c1"),
+    ]
+    out = clean_trajectory(task, [], chunks)
+    assert len([s for s in out["steps"] if s["kind"] == "tool"]) == 2
+    assert out["stats"]["duplicate_steps_dropped"] == 0

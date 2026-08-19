@@ -488,6 +488,29 @@ def clean_trajectory(
         ]
         progress_echoes_dropped = before - len(raw_steps)
 
+        # The same fact written twice is not two facts. The orchestrator logs one
+        # decision as both `orchestrator_reasoning` and `orchestrator_decision`
+        # with identical text, and the judge reads the pair as the agent doing
+        # something twice — on the live run it cited «template_selected twice in
+        # steps 2-3» and docked efficiency for it. Only adjacent, byte-identical,
+        # non-tool steps collapse: two identical TOOL calls are two real actions,
+        # and the loop counter exists precisely to notice them.
+        deduped: list[dict] = []
+        for s in raw_steps:
+            prev = deduped[-1] if deduped else None
+            if (
+                prev is not None
+                and s["kind"] != "tool"
+                and s["kind"] == prev["kind"]
+                and s["attempt"] == prev["attempt"]
+                and s["content"].strip()
+                and s["content"] == prev["content"]
+            ):
+                continue
+            deduped.append(s)
+        duplicate_steps_dropped = len(raw_steps) - len(deduped)
+        raw_steps = deduped
+
         # A visible boundary, not just a number on each step: the judge reads prose,
         # and «the agent tried this twice» has to be legible without arithmetic.
         # Only when there was more than one attempt — a marker on every single-run
@@ -599,6 +622,8 @@ def clean_trajectory(
                 "events_dropped": events_dropped,
                 # Progress pings removed as echoes of a recorded tool call (SPA-113).
                 "progress_echoes_dropped": progress_echoes_dropped,
+                # Adjacent non-tool steps that repeated the previous one verbatim.
+                "duplicate_steps_dropped": duplicate_steps_dropped,
                 # How many times the agent was run for this task. >1 means the
                 # trace spans retries and repetition across the boundary is not a
                 # loop (SPA-113).
@@ -629,6 +654,7 @@ def clean_trajectory(
                 "steps_parts_missing": 0,
                 "events_dropped": 0,
                 "progress_echoes_dropped": 0,
+                "duplicate_steps_dropped": 0,
                 "attempts": 1,
             },
             "config": {
