@@ -347,3 +347,57 @@ async def test_knowledge_rules_and_memory_endpoints(auth_client: AsyncClient):
 
     docs = await auth_client.get("/api/knowledge/documents")
     assert docs.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_manual_requeue_drops_the_failed_attempts_reason(auth_client: AsyncClient, db_session):
+    """SPA-113. `failure_type` describes the attempt that failed. Carried across a
+    manual re-queue it marks the next run with a reason that is no longer true —
+    and a contaminating one silently removes a *successful* measurement from every
+    aggregate, because `measures_the_model()` drops it."""
+    import uuid as _uuid
+
+    from app.models.task import Task, TaskStatus
+    from app.models.template import Template
+    from app.utils.failures import FAILURE_AGENT, FAILURE_INFRA
+
+    tpl = Template(
+        name=f"pin-{_uuid.uuid4().hex[:6]}", description="d", soul_md="# soul",
+        tool_ids=[], tags=[],
+        workspace_id=_uuid.UUID(auth_client.headers["X-Workspace-Id"]),
+    )
+    db_session.add(tpl)
+    await db_session.commit()
+
+    async def _failed(failure_type, *, template_id=None):
+        r = await auth_client.post(
+            "/api/tasks", json={"title": f"requeue {failure_type}", "priority": "low"}
+        )
+        tid = r.json()["id"]
+        task = await db_session.get(Task, _uuid.UUID(tid))
+        task.status = TaskStatus.FAILED.value
+        task.failure_type = failure_type
+        task.template_id = template_id
+        await db_session.commit()
+        return tid
+
+    # The value is visible at all — it was recorded from the start and readable
+    # only in SQL until now.
+    tid = await _failed(FAILURE_AGENT)
+    assert (await auth_client.get(f"/api/tasks/{tid}")).json()["failure_type"] == FAILURE_AGENT
+
+    # An agent-caused reason belongs to the attempt and goes with it.
+    body = (await auth_client.patch(f"/api/tasks/{tid}", json={"status": "ready"})).json()
+    assert body["failure_type"] is None
+
+    # A contamination with nothing pinned goes too: the orchestrator never got as
+    # far as choosing, so the next attempt inherits nothing to be tainted by.
+    tid = await _failed(FAILURE_INFRA)
+    body = (await auth_client.patch(f"/api/tasks/{tid}", json={"status": "ready"})).json()
+    assert body["failure_type"] is None
+
+    # …but a contamination describing a PINNED condition survives (SPA-87): the
+    # degraded orchestrator chose this template, and the next attempt reuses it.
+    tid = await _failed(FAILURE_INFRA, template_id=tpl.id)
+    body = (await auth_client.patch(f"/api/tasks/{tid}", json={"status": "ready"})).json()
+    assert body["failure_type"] == FAILURE_INFRA

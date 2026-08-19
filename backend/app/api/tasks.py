@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_workspace
 from app.database import get_db
 from app.models.task import Task, TaskPriority, TaskStatus
+from app.utils.failures import is_contaminated
 from app.models.workspace import Workspace
 from app.schemas.decomposition import DecompositionResponse
 from app.utils.events import log_event
@@ -45,6 +46,7 @@ class TaskOut(BaseModel):
     description: Optional[str]
     status: str
     priority: str
+    failure_type: Optional[str]
     template_id: Optional[str]
     agent_container_id: Optional[str]
     result_summary: Optional[str]
@@ -68,6 +70,11 @@ def task_to_dict(task: Task) -> dict:
         "id": str(task.id),
         "parent_id": str(task.parent_id) if task.parent_id else None,
         "title": task.title,
+        # Why this run stopped measuring the model (SPA-87). It was recorded from
+        # the start and readable only in SQL: the experiment surfaces carried it,
+        # the task itself did not, so an operator looking at a failed task saw
+        # «failed» and nothing else (SPA-113).
+        "failure_type": task.failure_type,
         "description": task.description,
         "status": task.status,
         "priority": task.priority,
@@ -170,6 +177,11 @@ async def get_task(
     return result
 
 
+# Statuses that put a failed task back in the queue — the point at which its
+# recorded failure stops describing what is about to happen.
+_REQUEUE_STATUSES = (TaskStatus.READY.value, TaskStatus.BACKLOG.value)
+
+
 @router.patch("/{task_id}")
 async def update_task(
     task_id: str,
@@ -198,6 +210,21 @@ async def update_task(
             task.started_at = datetime.utcnow()
         if body.status in (TaskStatus.DONE.value, TaskStatus.FAILED.value):
             task.completed_at = datetime.utcnow()
+        # Re-queueing by hand starts a NEW attempt, and `failure_type` describes the
+        # attempt that failed — carried across, it marks the next run with a reason
+        # that is no longer true, and a contaminating one silently removes a
+        # successful measurement from every aggregate (SPA-113).
+        #
+        # The one SPA-87 exception survives: a contamination recorded BEFORE the
+        # agent ran describes a condition pinned on the task — the orchestrator's
+        # LLM died, it fell back to a substituted template and pinned it, and the
+        # next attempt will reuse that same template. The pin IS `template_id`, so
+        # that is what the test asks about. A failure with nothing pinned (the
+        # orchestrator never got as far as choosing) leaves nothing behind to taint
+        # the next run.
+        if old_status == TaskStatus.FAILED.value and body.status in _REQUEUE_STATUSES:
+            if not (is_contaminated(task.failure_type) and task.template_id is not None):
+                task.failure_type = None
 
     await db.commit()
     await db.refresh(task)

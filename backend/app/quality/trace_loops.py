@@ -207,6 +207,13 @@ def detect_loops(steps: list[dict] | None) -> dict:
             _action_key(str(s.get("tool_name")), s.get("arguments"), i)
             for i, s in enumerate(tool_steps)
         ]
+        # SPA-113: the same call in attempt 1 and attempt 2 is a RETRY, not a loop.
+        # The attempt index is folded into the identity so a repetition across the
+        # boundary cannot be counted as one within a run — the counter answers «did
+        # this agent go in circles», and starting over is the opposite of that.
+        attempts = [int(s.get("attempt") or 1) for s in tool_steps]
+        if len(set(attempts)) > 1:
+            action_keys = [f"a{a}|{k}" for a, k in zip(attempts, action_keys)]
 
         # 1) longest run of consecutive IDENTICAL actions (tool + content).
         max_repeat_run = 1
