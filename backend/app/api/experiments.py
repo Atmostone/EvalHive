@@ -37,6 +37,7 @@ from app.quality import experiments as service
 from app.quality.experiment_report import (
     SCHEMA_VERSION as REPORT_SCHEMA_VERSION,
     SELECTION_LATEST_VALID as REPORT_SELECTION_DEFAULT,
+    calibration_fingerprint,
     compute_report,
     config_drift,
 )
@@ -566,6 +567,10 @@ async def experiment_report(
         # when a mutation moves it, so comparing it to itself would just repeat
         # the revision check and never catch input changed by any other route.
         and cached.get("input_fingerprint") == service.experiment_input_fingerprint(exp)
+        # …and from the calibration as it stands now. A human rating a run changes
+        # which axes the report is allowed to draw a conclusion from (SPA-88)
+        # without touching the experiment, so neither check above can see it.
+        and cached.get("calibration_fingerprint") == await calibration_fingerprint(db, exp)
         and (cached.get("leaderboard") or {}).get("method") == method
     ):
         # config_drift watches inputs no fingerprint can see — the contents of a

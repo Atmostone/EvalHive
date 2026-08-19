@@ -18,6 +18,8 @@ from app.models.experiment import (
     ExperimentRunStatus,
     ExperimentStatus,
 )
+from app.models.annotation import Annotation
+from app.models.quality_record import QualityRecord
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.orchestrator.engine import _record_run_condition
@@ -876,3 +878,104 @@ async def test_the_tick_never_claims_a_retired_cell(auth_client, db_session):
     assert exp.status == ExperimentStatus.COMPLETED.value, (
         "a retired pending cell must not keep the experiment open forever"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_human_rating_invalidates_the_cached_report(auth_client, db_session):
+    """SPA-88: the calibration is an input no experiment mutation touches.
+
+    A person rates a run; which axes the report may draw a conclusion from changes;
+    the experiment does not, so neither the revision nor the input fingerprint can
+    see it. While calibration only drove a badge that was cosmetic. Now it decides
+    which axes carry a number, and a cache served on those two checks alone hands
+    back a pre-annotation winner for as long as the experiment stays settled."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+
+    first = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    second = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    assert first["generated_at"] == second["generated_at"], "second call served from cache"
+    assert first["trusted"]["available"] is False, "nothing is rated yet"
+
+    run = next(r for r in await _runs(db_session, exp) if r.task_id)
+    record = (
+        await db_session.execute(
+            select(QualityRecord).where(QualityRecord.task_id == run.task_id)
+        )
+    ).scalars().first()
+    if record is None:
+        record = QualityRecord(
+            task_id=run.task_id,
+            workspace_id=workspace_id,
+            quality_profile={
+                "dimensions": [
+                    {"key": "correctness", "name": "Correctness", "score": 8,
+                     "weight": 1, "status": "scored"}
+                ],
+                "weighted_score": 8.0,
+            },
+        )
+        db_session.add(record)
+        await db_session.flush()
+    db_session.add(
+        Annotation(
+            quality_record_id=record.id,
+            task_id=run.task_id,
+            workspace_id=workspace_id,
+            annotator_type="human",
+            annotator_label="reviewer",
+            blind_to_model=True,
+            blind_to_judge=True,
+            blind_to_peers=True,
+            verdict="approve",
+            dimensions=[{"key": "correctness", "name": "Correctness", "score": 8}],
+            judge_observation={"outcome": {"scores": {"correctness": 8}, "gate_passed": True}},
+        )
+    )
+    await db_session.commit()
+    await db_session.refresh(exp)
+
+    third = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    assert third["generated_at"] != first["generated_at"], "recomputed after the rating"
+    assert third["calibration_fingerprint"] != first["calibration_fingerprint"]
+    # The experiment itself did not move — which is exactly why the two existing
+    # checks could not have caught this.
+    assert third["input_revision"] == first["input_revision"]
+    assert third["input_fingerprint"] == first["input_fingerprint"]
+
+    fourth = (await auth_client.get(f"/api/experiments/{exp.id}/report")).json()
+    assert fourth["generated_at"] == third["generated_at"], "and caches again afterwards"
+
+
+@pytest.mark.asyncio
+async def test_the_calibration_fingerprint_is_sampled_before_the_calibration(monkeypatch, db_session, auth_client):
+    """Which side of the race the cache falls on is the whole question.
+
+    Sampled AFTER the calibration read, an annotation committed in between is
+    stamped into a report that did not use it — and that cache then looks valid
+    for as long as the experiment stays settled. Sampled before, the same race
+    leaves the stored fingerprint older than reality and the next read simply
+    recomputes. One direction is a permanently wrong number, the other is a
+    wasted recompute."""
+    import app.quality.judge_calibration as jc
+    from app.quality import experiment_report as er
+
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    exp, _ = await _settled_experiment(db_session, workspace_id)
+
+    order: list[str] = []
+    real_fp, real_pairs = er.calibration_fingerprint, jc.collect_judge_human_pairs
+
+    async def spy_fp(*a, **kw):
+        order.append("fingerprint")
+        return await real_fp(*a, **kw)
+
+    async def spy_pairs(*a, **kw):
+        order.append("calibration")
+        return await real_pairs(*a, **kw)
+
+    monkeypatch.setattr(er, "calibration_fingerprint", spy_fp)
+    monkeypatch.setattr(jc, "collect_judge_human_pairs", spy_pairs)
+
+    await er.compute_report(db_session, exp)
+    assert order == ["fingerprint", "calibration"]

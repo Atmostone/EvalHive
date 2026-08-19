@@ -15,12 +15,13 @@ DB-bound convenience that loads them. The API caches the result into
 
 from __future__ import annotations
 
+import hashlib
 import statistics
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.experiment import (
@@ -29,6 +30,7 @@ from app.models.experiment import (
     ExperimentRun,
     ExperimentRunStatus,
 )
+from app.models.annotation import Annotation
 from app.models.quality_record import QualityRecord
 from app.quality.aggregation import rank
 from app.quality.experiments import (
@@ -257,6 +259,11 @@ TRUST_NOT_CALIBRATED = "not_calibrated"        # nothing — unknown, not known-
 # Averaging a rank-rescued axis is precisely the error the rescue exists to avoid:
 # a scale-shifted judge orders runs correctly while its LEVEL means nothing, so its
 # mean is a number without a referent. Hence two sets rather than one boolean.
+# NUMERIC_TRUST drives every aggregate — means, Pareto, the leaderboard, Welch.
+# RANK_TRUST additionally admits an axis to the trusted view through methods that
+# read ranks and only ranks: today that is its own Mann-Whitney row. Note that
+# "combine several rank_only axes into one score" is NOT such a method, however
+# the combination is done, unless it is done on ranks.
 NUMERIC_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE})
 RANK_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE, TRUST_RANK_ONLY})
 
@@ -1549,14 +1556,26 @@ def build_report(
     for p in trusted_points:
         p["on_frontier"] = p["config_key"] in trusted_frontier
 
-    # The leaderboard runs on the WIDER set: build_matches turns pointwise scores
-    # into per-case pairwise comparisons, and a judge that is merely scale-shifted
-    # still orders two runs of the same case correctly. That is the entire content
-    # of the rank rescue, so this is the one place it may be spent.
+    # NUMERIC axes only — the same set as every other trusted aggregate. It is
+    # tempting to run the leaderboard on the wider rank-eligible set, on the
+    # grounds that build_matches compares two runs of the SAME case and a
+    # scale-shifted judge orders those correctly. That argument holds for one axis
+    # in isolation and breaks the moment axes are combined: `_trusted_weighted` is
+    # a weighted MEAN, so a rank-rescued axis contributes its magnitude, not its
+    # order, and rescaling it — which is exactly what «scale-shifted» licenses —
+    # can flip the composite winner. Spearman ρ says the ORDER survives; it says
+    # nothing about the size of a gap, and a mean is made of gaps.
+    #
+    # Aggregating rank-rescued axes properly means per-axis, per-case votes rather
+    # than a mean. That is a different leaderboard — it would drop the rubric's
+    # weights and change what «better» means for the calibrated axes too — so it
+    # is a decision of its own, not a detail of this one. A rank_only axis
+    # therefore spends its licence in the one place that is rank-pure: its own
+    # Mann-Whitney row in the significance matrix.
     trusted_scored = [
         {"case": r.case_key, "player": r.config_key, "score": v}
         for r in success_runs
-        if (v := _trusted_weighted(records_by_task.get(r.task_id), outcome_rank_keys))
+        if (v := _trusted_weighted(records_by_task.get(r.task_id), outcome_numeric_keys))
         is not None
     ]
     trusted_matches, trusted_match_meta = build_matches(trusted_scored, subject="config")
@@ -1565,13 +1584,19 @@ def build_report(
         player["label"] = labels.get(player["player"], player["player"])
 
     trusted = {
-        # False when no axis on either rubric cleared the gate — including the
-        # ordinary case of a corpus with no second annotator, where the honest
+        # True only when the trusted view can actually SHOW something — including
+        # the ordinary case of a corpus with no second annotator, where the honest
         # answer is «nothing here is known to be trustworthy», not an empty table
         # dressed up as a result.
-        "available": bool(
-            outcome_rank_keys or traj_rank_keys
-        ),
+        #
+        # Note which sets appear. `outcome_rank_keys` (a superset of the numeric
+        # one) counts because a rank-rescued OUTCOME axis still earns its own
+        # Mann-Whitney row. A rank-rescued TRAJECTORY axis earns nothing: the
+        # report has no per-trajectory-axis significance rows, only the aggregate,
+        # and that aggregate is numeric. Counting it here would open a view with
+        # every cell empty — the badge is in the raw report, which is where an
+        # axis that licenses nothing belongs.
+        "available": bool(outcome_rank_keys or traj_numeric_keys),
         "policy": {
             "numeric_statuses": sorted(NUMERIC_TRUST),
             "rank_statuses": sorted(RANK_TRUST),
@@ -1586,7 +1611,7 @@ def build_report(
         "pareto": {"points": trusted_points, "frontier": trusted_frontier},
         "leaderboard": {
             "source": "derived_pointwise",
-            "basis": "rank_eligible_axes",
+            "basis": "numeric_trusted_axes",
             "derivation": trusted_match_meta,
             **trusted_ranking,
         },
@@ -1926,6 +1951,25 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     return out
 
 
+
+async def calibration_fingerprint(db: AsyncSession, exp: Experiment) -> str:
+    """What the report's judge↔human calibration was computed from (SPA-88).
+
+    The population is every annotation on a task this experiment's runs point at;
+    a re-rating adds a superseding row, so both the count and the latest timestamp
+    move, and a deletion moves the count. Hashed to keep the report's shape stable
+    and its provenance opaque — this is a cache key, not a statistic."""
+    row = (
+        await db.execute(
+            select(func.count(Annotation.id), func.max(Annotation.created_at))
+            .select_from(Annotation)
+            .join(ExperimentRun, ExperimentRun.task_id == Annotation.task_id)
+            .where(ExperimentRun.experiment_id == exp.id)
+        )
+    ).one()
+    n, latest = int(row[0] or 0), row[1]
+    return hashlib.sha256(f"{n}|{latest.isoformat() if latest else ''}".encode()).hexdigest()[:16]
+
 async def compute_report(
     db: AsyncSession,
     exp: Experiment,
@@ -1935,6 +1979,14 @@ async def compute_report(
     selection: str = SELECTION_LATEST_VALID,
 ) -> dict:
     """Load the experiment's runs + records and assemble the report."""
+    # Sampled BEFORE the calibration it stamps, never after. Taken afterwards, an
+    # annotation committed in between would be stamped into a report that did not
+    # use it, and the cache would then look valid for as long as the experiment
+    # stays settled — a wrong answer, permanently. Taken first, the same race
+    # leaves the stored fingerprint older than reality, so the next read misses
+    # the cache and recomputes. One direction of this race is a stale number and
+    # the other is a wasted recompute; they are not close to equally bad.
+    calib_fp = await calibration_fingerprint(db, exp)
     runs = await select_runs(db, exp, selection=selection)
     task_ids = [r.task_id for r in runs if r.task_id]
     records_by_task: dict[uuid.UUID, QualityRecord] = {}
@@ -1971,4 +2023,13 @@ async def compute_report(
         calibration=calibration, selection=selection,
     )
     report["config_drift"] = await config_drift(db, exp)
+    # The E-17 calibration is an input to the report that no experiment mutation
+    # touches: a person rates a run, the judge's per-axis trust changes, and the
+    # revision does not move. That was invisible while calibration only drove a
+    # badge; since SPA-88 it decides which axes may carry a number, so a cached
+    # report can serve a pre-annotation winner forever. Fingerprinted rather than
+    # invalidated on write, for the reason stated above the input fingerprint: a
+    # cache that measures its own inputs cannot be defeated by a write path
+    # nobody remembered to hook.
+    report["calibration_fingerprint"] = calib_fp
     return report

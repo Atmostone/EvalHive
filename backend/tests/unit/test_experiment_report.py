@@ -1111,7 +1111,7 @@ def test_an_unreliable_axis_cannot_pick_a_winner():
     assert t_summary == {"cfg-01": 6.0, "cfg-02": 7.0}
 
 
-def test_a_rank_only_axis_orders_configs_but_never_enters_a_mean():
+def test_a_rank_only_axis_reaches_a_rank_test_and_nothing_else():
     runs, records = _two_dim_runs(
         {
             "cfg-01": {"helpfulness": [9, 8, 9, 8, 9]},
@@ -1133,11 +1133,59 @@ def test_a_rank_only_axis_orders_configs_but_never_enters_a_mean():
     # No numeric aggregate exists — a scale-shifted judge has no level to average.
     assert all(e["quality_mean"] is None for e in trusted["summary"]["per_config"])
     assert trusted["pareto"]["frontier"] == []
-    # …but the ordering it does support still runs the leaderboard.
-    assert trusted["leaderboard"]["basis"] == "rank_eligible_axes"
-    assert trusted["leaderboard"]["players"][0]["player"] == "cfg-01"
+    # …and no leaderboard either: the leaderboard runs on a weighted MEAN of the
+    # trusted axes, which is an average however few axes go into it.
+    assert trusted["leaderboard"]["basis"] == "numeric_trusted_axes"
+    assert trusted["leaderboard"]["status"] == "empty"
+    # The one thing it may do: its own rank test, on its own scores.
     row = next(r for r in trusted["significance"] if r["metric"] == "dim:helpfulness")
     assert row["rank_only"] is True and row["welch"] is None
+
+
+def test_rescaling_a_rank_only_axis_cannot_move_the_trusted_view():
+    """The property that makes the rescue safe, stated as a test.
+
+    A rank-rescued axis is one whose ORDER tracks the human while its level does
+    not — so any monotone rescaling of it is equally consistent with what the
+    calibration measured. Raw is free to move under such a rescaling, and does.
+    Nothing in the trusted view may."""
+    # Same ordering on the rescued axis both times (cfg-02 above cfg-01), same
+    # ordering on the trustworthy one (cfg-01 above cfg-02) — only the SIZE of the
+    # rescued gap differs, which is precisely what ρ does not constrain.
+    def _report(helpfulness):
+        runs, records = _two_dim_runs(
+            {
+                "cfg-01": {"correctness": [9] * 5, "helpfulness": [helpfulness[0]] * 5},
+                "cfg-02": {"correctness": [6] * 5, "helpfulness": [helpfulness[1]] * 5},
+            }
+        )
+        return build_report(
+            _exp(CONFIGS),
+            runs,
+            records,
+            calibration=_calibration(
+                [
+                    {"key": "correctness", "name": "Correctness", "n": 40, "cohen_kappa": 0.71, "spearman": 0.80},
+                    {"key": "helpfulness", "name": "Helpfulness", "n": 40, "cohen_kappa": 0.10, "spearman": 0.91},
+                ]
+            ),
+        )
+
+    wide = _report((1.0, 9.0))    # raw means 5.0 vs 7.5 → cfg-02 leads raw
+    narrow = _report((5.0, 6.0))  # raw means 7.0 vs 6.0 → cfg-01 leads raw
+
+    # The rescaling is real: it flips the raw winner without changing any ordering
+    # the calibration actually validated.
+    assert wide["leaderboard"]["players"][0]["player"] == "cfg-02"
+    assert narrow["leaderboard"]["players"][0]["player"] == "cfg-01"
+
+    # …and reaches nothing in the trusted view.
+    for report in (wide, narrow):
+        assert report["trusted"]["leaderboard"]["players"][0]["player"] == "cfg-01"
+        assert {
+            e["config_key"]: e["quality_mean"] for e in report["trusted"]["summary"]["per_config"]
+        } == {"cfg-01": 9.0, "cfg-02": 6.0}
+        assert report["trusted"]["pareto"]["frontier"] == ["cfg-01"]
 
 
 def test_without_a_calibration_source_nothing_is_trusted():
@@ -1158,3 +1206,49 @@ def test_without_a_calibration_source_nothing_is_trusted():
     assert trusted["leaderboard"]["status"] == "empty"
     # …while the raw view is untouched.
     assert report["leaderboard"]["players"][0]["player"] == "cfg-01"
+
+
+def test_a_rank_rescued_trajectory_axis_does_not_open_an_empty_trusted_view():
+    """`available` promises a view with something in it, not a view that exists.
+
+    A rank-rescued OUTCOME axis earns its own Mann-Whitney row, so it is content.
+    A rank-rescued TRAJECTORY axis earns nothing — the report has no per-axis
+    trajectory significance rows, only the aggregate, and the aggregate is
+    numeric. Counting it as availability opens a Trusted tab in which every single
+    cell is «—»."""
+    runs, records = [], {}
+    for cfg, scores in (("cfg-01", [9, 8, 9, 8, 9]), ("cfg-02", [4, 3, 4, 3, 4])):
+        for i, v in enumerate(scores):
+            task_id = uuid.uuid4()
+            runs.append(_run(cfg, f"case-{i}", 0, score=7.0, traj=float(v), task_id=task_id))
+            records[task_id] = _record(
+                trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": v}]
+            )
+    report = build_report(
+        _exp(CONFIGS),
+        runs,
+        records,
+        calibration=_calibration(
+            [{"key": "efficiency", "name": "Efficiency", "n": 40, "cohen_kappa": 0.10, "spearman": 0.91}]
+        ),
+    )
+    # The badge is still earned, and still shown in the raw report.
+    assert report["axis_reliability"]["axes"]["efficiency"]["status"] == "rank_only"
+    trusted = report["trusted"]
+    assert [r["key"] for r in trusted["trajectory_axes"]["rank_only"]] == ["efficiency"]
+    # …but it licenses nothing here, so there is no trusted view to offer.
+    assert trusted["available"] is False
+    assert all(e["trajectory_mean"] is None for e in trusted["summary"]["per_config"])
+    assert trusted["significance"] == []
+
+    # A trajectory axis the calibrator DOES trust numerically is content, and opens it.
+    ok = build_report(
+        _exp(CONFIGS),
+        runs,
+        records,
+        calibration=_calibration(
+            [{"key": "efficiency", "name": "Efficiency", "n": 40, "cohen_kappa": 0.71, "spearman": 0.80}]
+        ),
+    )
+    assert ok["trusted"]["available"] is True
+    assert ok["trusted"]["summary"]["per_config"][0]["trajectory_mean"] is not None
