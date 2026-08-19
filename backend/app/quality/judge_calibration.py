@@ -39,6 +39,7 @@ from app.quality.judge import _resolve_judge_model
 from app.quality.stats import (
     BANDS,
     MIN_SAMPLES,
+    bootstrap_kappa_ci,
     cohen_kappa,
     mean_bias,
     pearson,
@@ -243,7 +244,7 @@ def _annotator_key(p: dict) -> str | None:
 
 def _pooled_kappa(
     by_unit: dict[str, dict[str, str]], labels: list[str]
-) -> tuple[float | None, float | None, int]:
+) -> tuple[float | None, dict | None, float | None, int]:
     """Cohen's κ pooled over every unordered pair of annotators who rated the
     same unit. ``by_unit`` maps unit → annotator → label; a unit rated by k
     annotators contributes k(k-1)/2 observations. Pooling is the honest
@@ -260,10 +261,11 @@ def _pooled_kappa(
                 b.append(raters[who[j]])
     n = len(a)
     if not n:
-        return None, None, 0
+        return None, None, None, 0
     kappa = cohen_kappa(a, b, labels) if n >= MIN_SAMPLES else None
+    kappa_ci = bootstrap_kappa_ci(a, b, labels) if n >= MIN_SAMPLES else None
     agreement = round(sum(1 for x, y in zip(a, b) if x == y) / n, 4)
-    return kappa, agreement, n
+    return kappa, kappa_ci, agreement, n
 
 
 def _inter_annotator(pairs: list[dict], *, threshold_kappa: float) -> dict:
@@ -300,7 +302,7 @@ def _inter_annotator(pairs: list[dict], *, threshold_kappa: float) -> dict:
 
     dimensions: list[dict] = []
     for key in sorted(by_dim):
-        kappa, agreement, n = _pooled_kappa(by_dim[key], BANDS)
+        kappa, kappa_ci, agreement, n = _pooled_kappa(by_dim[key], BANDS)
         if not n:
             continue
         dimensions.append(
@@ -309,13 +311,14 @@ def _inter_annotator(pairs: list[dict], *, threshold_kappa: float) -> dict:
                 "name": names.get(key, key),
                 "n": n,
                 "cohen_kappa": kappa,
+                "cohen_kappa_ci": kappa_ci,
                 "agreement_pct": agreement,
                 "reliable": kappa is not None and kappa >= threshold_kappa,
                 "status": "ok" if n >= MIN_SAMPLES else "insufficient_data",
             }
         )
 
-    o_kappa, o_agreement, o_n = _pooled_kappa(by_verdict, VERDICT_LABELS)
+    o_kappa, o_kappa_ci, o_agreement, o_n = _pooled_kappa(by_verdict, VERDICT_LABELS)
     n_records = sum(1 for who in raters_by_task.values() if len(who) > 1)
     return {
         # False when no run in the population carries a second annotator — the
@@ -327,6 +330,7 @@ def _inter_annotator(pairs: list[dict], *, threshold_kappa: float) -> dict:
         "overall": {
             "n": o_n,
             "cohen_kappa": o_kappa,
+            "cohen_kappa_ci": o_kappa_ci,
             "agreement_pct": o_agreement,
             "reliable": o_kappa is not None and o_kappa >= threshold_kappa,
         },
@@ -366,6 +370,15 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
 
         n = len(judge_scores)
         kappa = cohen_kappa(judge_bands, human_bands, BANDS) if n >= MIN_SAMPLES else None
+        # The gate (SPA-88) classifies this axis by the point estimate alone. At the
+        # n an experiment produces the interval around it routinely straddles both
+        # the 0.4 and the 0.6 cut-off, so it travels alongside — the classification
+        # rule is deliberately NOT changed here, only made checkable.
+        kappa_ci = (
+            bootstrap_kappa_ci(judge_bands, human_bands, BANDS)
+            if n >= MIN_SAMPLES
+            else None
+        )
         dim = {
             "key": key,
             "name": name,
@@ -373,6 +386,7 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
             "pearson": pearson(judge_scores, human_scores),
             "spearman": spearman(judge_scores, human_scores),
             "cohen_kappa": kappa,
+            "cohen_kappa_ci": kappa_ci,
             "mean_bias": mean_bias(judge_scores, human_scores),
             "judge_mean": round(sum(judge_scores) / n, 2) if n else None,
             "human_mean": round(sum(human_scores) / n, 2) if n else None,
@@ -398,12 +412,16 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
     h_v = [v[1] for v in verdict_pairs.values()]
     n_v = len(j_v)
     overall_kappa = cohen_kappa(j_v, h_v, VERDICT_LABELS) if n_v >= MIN_SAMPLES else None
+    overall_kappa_ci = (
+        bootstrap_kappa_ci(j_v, h_v, VERDICT_LABELS) if n_v >= MIN_SAMPLES else None
+    )
     agreement_pct = (
         round(sum(1 for a, b in zip(j_v, h_v) if a == b) / n_v, 4) if n_v else None
     )
     overall = {
         "n": n_v,
         "cohen_kappa": overall_kappa,
+        "cohen_kappa_ci": overall_kappa_ci,
         "agreement_pct": agreement_pct,
         "reliable": overall_kappa is not None and overall_kappa >= threshold_kappa,
     }
