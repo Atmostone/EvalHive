@@ -35,7 +35,7 @@ const STATS: Term[] = [
   },
   {
     name: 'Reliability bands',
-    desc: "How far a judge axis can be trusted, from real calibration: reliable_absolute (κ ≥ 0.6) and moderate_agreement (0.4–0.6) may carry numeric aggregates; rank_only (κ below the bar but rank ρ ≥ 0.5 — a scale-shifted judge) may order configurations and never enter a mean; insufficient, unreliable and not_calibrated carry nothing. The report is computed twice: raw keeps every axis, the Trusted view keeps only what cleared the gate and states what it dropped.",
+    desc: "How far a judge axis can be trusted, from real calibration: reliable_absolute (κ ≥ 0.6) and moderate_agreement (0.4–0.6) may carry numeric aggregates; rank_only (κ below the bar but rank ρ ≥ 0.5 — a scale-shifted judge) may carry a rank test on its own scores and never a mean, a Pareto point or a leaderboard place; insufficient, unreliable and not_calibrated carry nothing. The report is computed twice: raw keeps every axis, the Trusted view keeps only what cleared the gate and states what it dropped.",
   },
   {
     name: 'ECE / Brier (confidence calibration)',

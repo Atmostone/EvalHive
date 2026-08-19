@@ -1189,10 +1189,26 @@ nothing on one side makes no claim at all.
   unchanged; a parallel `report.trusted` recomputes what a quarantined axis could have
   moved — per-config quality (renormalized over the trusted rubric dimensions, so a
   dropped axis is removed rather than scored zero), per-config trajectory, the Pareto
-  frontier, the pairwise leaderboard (on the wider rank-eligible set: `build_matches`
-  compares two runs of the *same case*, which a shifted scale survives) and the
-  significance matrix, where a rank-only metric skips Welch entirely and is judged on
-  Mann-Whitney. Quarantining an axis is a claim about the judge, and the reader is owed
+  frontier, the pairwise leaderboard and the significance matrix, where a rank-only
+  metric skips Welch entirely and is judged on Mann-Whitney.
+
+  Every one of those aggregates uses the **numeric** set, the leaderboard included.
+  It is tempting to give the leaderboard the wider set on the grounds that
+  `build_matches` compares two runs of the *same case*, which a scale shift survives —
+  but the score it compares is a weighted **mean over axes**, so a rank-rescued axis
+  contributes its magnitude and any rescaling of it (exactly what «scale-shifted»
+  licenses) can flip the composite winner without changing an ordering the calibration
+  validated. ρ constrains order, not the size of a gap; a mean is made of gaps. A
+  rank-legitimate leaderboard would aggregate per-axis, per-case votes instead — which
+  drops the rubric's weights and redefines «better» for the calibrated axes too, so it
+  is a separate decision. `rank_only` therefore spends its licence in the one rank-pure
+  place available: its own Mann-Whitney row.
+
+  The calibration is an input no experiment mutation touches, so the report records a
+  `calibration_fingerprint` (`calibration_fingerprint(db, exp)` — the annotation
+  population over the experiment's runs) and the endpoint's cache is checked against it
+  alongside the revision and the input fingerprint. Otherwise a report cached before
+  anyone rated a run keeps serving `trusted.available: false` forever. Quarantining an axis is a claim about the judge, and the reader is owed
   the unfiltered numbers to check it against; `trusted.dropped` states what the gate
   cost in significant rows. Deliberately **not** gated: `judge_discrimination`, `rq2`
   and `checker_human` — they measure the judge against an independent oracle, so gating

@@ -122,7 +122,7 @@ function reliabilityTooltip(a?: AxisReliability): string {
   // a reader actually needs from the badge.
   const licence =
     a.status === 'rank_only'
-      ? ' Scale-shifted judge: ranks agree with the human, absolute scores do not — it may order configurations, never enter a mean.'
+      ? ' Scale-shifted judge: ranks agree with the human, absolute scores do not. It may carry a rank test on its own scores and nothing else — no mean, no frontier, no leaderboard, since all three are built from magnitudes it cannot support.'
       : a.status === 'insufficient'
         ? ' Too few rated pairs to say anything either way — excluded from the trusted view as unknown, not as bad.'
         : a.status === 'unreliable'
@@ -713,8 +713,10 @@ function TrustedViewToggle({ report, view, setView }: {
         {rankOnly.length > 0 && (
           <>
             <span className="font-medium text-amber-700">{rankOnly.length} rank-only</span> ({names(rankOnly)}):
-            a judge that orders runs like the human but scores them on a shifted scale. It orders the
-            leaderboard and nothing else — averaging it is exactly the error the rescue exists to avoid.{' '}
+            a judge that orders runs like the human but scores them on a shifted scale. It appears in the
+            trusted view only as its own rank test (Mann-Whitney on its own scores) — not in a mean, a
+            frontier or the leaderboard, because rescaling it without changing a single ordering the
+            calibration validated would move all three.{' '}
           </>
         )}
         {t.dropped.significant_rows > 0 && (
@@ -1041,7 +1043,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
               <span className="font-medium">Reliability gate (outcome):</span> each rubric axis is badged by judge↔human agreement —{' '}
               <span className="text-green-700 font-semibold">✓</span> reliable (κ≥{report.outcome_axis_reliability.reliable_kappa}),{' '}
               <span className="text-amber-600 font-semibold">~</span> moderate ({report.outcome_axis_reliability.directional_kappa}–{report.outcome_axis_reliability.reliable_kappa})
-              or rank-only (κ below it but rank ρ≥{report.outcome_axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: it may order configurations, never enter a mean),{' '}
+              or rank-only (κ below it but rank ρ≥{report.outcome_axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: usable for a rank test, never for a mean),{' '}
               <span className="text-red-600 font-semibold">⚠</span> unreliable,{' '}
               <span className="text-gray-400 font-semibold">n/a</span> not calibrated or too few rated pairs.{' '}
               <span className="font-medium">Greyed/struck (⚠) axes are below the bar — shown for completeness; switch the view to Trusted to see the report without them.</span>
@@ -1124,7 +1126,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
               <span className="font-medium">Reliability gate:</span> each axis is badged by how far the process judge can be
               trusted — <span className="text-green-700 font-semibold">✓</span> reliable (κ≥{report.axis_reliability.reliable_kappa}),{' '}
               <span className="text-amber-600 font-semibold">~</span> moderate ({report.axis_reliability.directional_kappa}–{report.axis_reliability.reliable_kappa})
-              or rank-only (κ below it but rank ρ≥{report.axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: it may order configurations, never enter a mean),{' '}
+              or rank-only (κ below it but rank ρ≥{report.axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: usable for a rank test, never for a mean),{' '}
               <span className="text-red-600 font-semibold">⚠</span> unreliable,{' '}
               <span className="text-gray-400 font-semibold">n/a</span> not calibrated or too few rated pairs. κ here is chance-corrected agreement with a human
               (the loop axis instead anchors to the deterministic counter — see Loop detection). <span className="font-medium">Greyed/struck (⚠) axes are below the bar — shown for
@@ -1605,7 +1607,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           </div>
           <span className="text-xs text-gray-400">
             derived from pointwise scores, case-paired
-            {trustedOn && ' · trusted view: rank-eligible axes, which includes the rank-rescued ones'}
+            {trustedOn && ' · trusted view: numeric axes only — a weighted mean is still a mean, so rank-rescued axes stay out'}
           </span>
         </div>
         {leaderboard.status !== 'ok' ? (
