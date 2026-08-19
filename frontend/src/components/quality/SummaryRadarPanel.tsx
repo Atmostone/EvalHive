@@ -16,7 +16,15 @@ interface Row {
   cells: Record<string, { mean?: number | null } | undefined>
 }
 
-type AxisStatus = 'reliable' | 'directional' | 'unreliable' | 'not_calibrated'
+// SPA-88: the six-way trust taxonomy (see AxisTrustStatus in types). Only the
+// grey/non-grey distinction matters here — a radar is a shape, not a claim.
+type AxisStatus =
+  | 'reliable_absolute'
+  | 'moderate_agreement'
+  | 'rank_only'
+  | 'insufficient'
+  | 'unreliable'
+  | 'not_calibrated'
 
 /** Overlayable per-config radar over a set of axes (quality dimensions E-02, or
  *  trajectory axes E-07). Each config is a semi-transparent layer; checkboxes
@@ -76,7 +84,8 @@ export default function SummaryRadarPanel({
     const value = String(props.payload?.value ?? '')
     const st = statusByLabel[value]
     const struck = st === 'unreliable'
-    const fill = st === 'unreliable' || st === 'not_calibrated' ? '#9ca3af' : '#6b7280'
+    const fill =
+      st === 'unreliable' || st === 'not_calibrated' || st === 'insufficient' ? '#9ca3af' : '#6b7280'
     return (
       <text
         x={props.x}

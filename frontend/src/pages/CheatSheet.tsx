@@ -35,7 +35,7 @@ const STATS: Term[] = [
   },
   {
     name: 'Reliability bands',
-    desc: "How far a process-judge axis can be trusted, from real calibration: reliable (κ ≥ 0.6), directional (0.4–0.6 or thin data), unreliable (κ < 0.4), or not calibrated (no human or structural anchor). Axes below the bar are quarantined — shown but not weighed into conclusions.",
+    desc: "How far a judge axis can be trusted, from real calibration: reliable_absolute (κ ≥ 0.6) and moderate_agreement (0.4–0.6) may carry numeric aggregates; rank_only (κ below the bar but rank ρ ≥ 0.5 — a scale-shifted judge) may order configurations and never enter a mean; insufficient, unreliable and not_calibrated carry nothing. The report is computed twice: raw keeps every axis, the Trusted view keeps only what cleared the gate and states what it dropped.",
   },
   {
     name: 'ECE / Brier (confidence calibration)',

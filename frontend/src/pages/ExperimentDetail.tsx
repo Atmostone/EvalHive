@@ -18,7 +18,7 @@ import {
 import { experimentsApi, qualityApi } from '@/api/client'
 import RunAnalysis from '@/components/quality/RunAnalysis'
 import SummaryRadarPanel from '@/components/quality/SummaryRadarPanel'
-import type { ExperimentConfig, ExperimentDetail as ExperimentDetailType, ExperimentReport } from '@/types'
+import type { ExperimentConfig, ExperimentDetail as ExperimentDetailType, ExperimentReport, ExperimentTrustAxis } from '@/types'
 import { StatusPill } from './Experiments'
 import { ArrowLeft, Copy, Download, Pause, Play, RefreshCw, RotateCcw, Square, Trash2, X } from 'lucide-react'
 
@@ -80,12 +80,20 @@ function metricJudge(metric: string): { label: string; cls: string } {
 type AxisReliability = NonNullable<ExperimentReport['axis_reliability']>['axes'][string]
 type ReliabilityStatus = AxisReliability['status']
 
+// SPA-88: six statuses, four colours. The taxonomy underneath is richer than the
+// light on top — 'insufficient' and 'not_calibrated' are both grey because both
+// mean "we do not know", and 'rank_only' shares amber with 'moderate_agreement'
+// because both mean "usable, with a caveat" — but the caveats differ, so the word
+// and the tooltip differ.
 const RELIABILITY_META: Record<ReliabilityStatus, { glyph: string; cls: string; word: string }> = {
-  reliable: { glyph: '✓', cls: 'text-green-700', word: 'reliable' },
-  directional: { glyph: '~', cls: 'text-amber-600', word: 'directional only' },
+  reliable_absolute: { glyph: '✓', cls: 'text-green-700', word: 'reliable' },
+  moderate_agreement: { glyph: '~', cls: 'text-amber-600', word: 'moderate agreement' },
+  rank_only: { glyph: '~', cls: 'text-amber-600', word: 'rank only' },
+  insufficient: { glyph: 'n/a', cls: 'text-gray-400', word: 'insufficient data' },
   unreliable: { glyph: '⚠', cls: 'text-red-600', word: 'unreliable' },
   not_calibrated: { glyph: 'n/a', cls: 'text-gray-400', word: 'not calibrated' },
 }
+
 
 // Failure types the report excludes from its aggregates (SPA-87), in the words an
 // operator uses for them. An unknown key falls through to the raw type rather
@@ -107,16 +115,20 @@ function reliabilitySource(source?: string): string {
 function reliabilityTooltip(a?: AxisReliability): string {
   if (!a) return ''
   if (a.status === 'not_calibrated')
-    return 'Reliability: not calibrated — no human rating or structural anchor for this axis. The judge score is shown but unverified.'
+    return 'Reliability: not calibrated — no human rating or structural anchor for this axis. The judge score is shown but unverified, and the trusted view leaves it out.'
   const k = a.kappa != null ? `κ ${a.kappa.toFixed(2)}` : 'κ undefined'
   const r = a.rho != null ? ` · rank ρ ${a.rho.toFixed(2)}` : ''
-  // Rank-rescued directional: κ below the bar but the judge orders runs like the
-  // human — a scale-shifted judge, usable for comparison, not absolute scores.
-  const rankNote =
-    a.status === 'directional' && a.kappa != null && a.kappa < 0.4 && a.rho != null && a.rho >= 0.5
-      ? ' Scale-shifted judge: ranks agree with the human, absolute scores do not — trust comparisons only.'
-      : ''
-  return `Reliability: ${RELIABILITY_META[a.status].word} — judge vs ${reliabilitySource(a.source)} (${k}${r}, n=${a.n}). Bar: κ≥0.6 reliable · 0.4–0.6 directional · <0.4 unreliable unless rank ρ≥0.5.${rankNote}`
+  // What this axis is allowed to DRIVE — the point of the taxonomy, and the thing
+  // a reader actually needs from the badge.
+  const licence =
+    a.status === 'rank_only'
+      ? ' Scale-shifted judge: ranks agree with the human, absolute scores do not — it may order configurations, never enter a mean.'
+      : a.status === 'insufficient'
+        ? ' Too few rated pairs to say anything either way — excluded from the trusted view as unknown, not as bad.'
+        : a.status === 'unreliable'
+          ? ' Quarantined: it drives no aggregate, no Pareto point and no significant row in the trusted view.'
+          : ' Cleared for numeric aggregates in the trusted view.'
+  return `Reliability: ${RELIABILITY_META[a.status].word} — judge vs ${reliabilitySource(a.source)} (${k}${r}, n=${a.n}). Bar: κ≥0.6 reliable · 0.4–0.6 moderate · <0.4 rank-only if ρ≥0.5, else unreliable.${licence}`
 }
 
 // SPA-84: an experiment id alone no longer identifies a fixed set of runs — every
@@ -176,8 +188,10 @@ function trajectoryAggregateStatus(report: ExperimentReport): ReliabilityStatus 
   const sourced = Object.values(axes).filter((v) => v.source !== 'none')
   if (sourced.length === 0) return 'not_calibrated'
   if (sourced.some((v) => v.status === 'unreliable')) return 'unreliable'
-  if (sourced.some((v) => v.status === 'directional')) return 'directional'
-  return 'reliable'
+  if (sourced.some((v) => v.status === 'insufficient')) return 'insufficient'
+  if (sourced.some((v) => v.status === 'rank_only')) return 'rank_only'
+  if (sourced.some((v) => v.status === 'moderate_agreement')) return 'moderate_agreement'
+  return 'reliable_absolute'
 }
 
 // Per-cell dimension/axis means (sorted worst-first by the backend) → a compact
@@ -625,6 +639,97 @@ function JudgeHumanScatter({ matrix, configurations, verifiable }: {
   )
 }
 
+// SPA-88: the reliability gate, acting. SPA-76 badged the axes and SPA-79 rescued
+// the rank-consistent ones — but nothing acted on either badge, so an axis the
+// calibrator had called unreliable still moved every mean, every Pareto point and
+// every "significant" row. The trusted view recomputes those from the axes that
+// cleared the gate, and sits NEXT TO the raw one rather than replacing it:
+// quarantining an axis is a claim about the JUDGE, and the reader is owed the
+// unfiltered numbers to check that claim against.
+function TrustedViewToggle({ report, view, setView }: {
+  report: ExperimentReport
+  view: 'raw' | 'trusted'
+  setView: (v: 'raw' | 'trusted') => void
+}) {
+  const t = report.trusted
+  if (!t) return null
+  const names = (rows: ExperimentTrustAxis[]) => rows.map((r) => r.name).join(', ')
+  const rankOnly = [...t.outcome_axes.rank_only, ...t.trajectory_axes.rank_only]
+  const dropped = [...t.outcome_axes.excluded, ...t.trajectory_axes.excluded]
+  // "The judge disagrees" and "nobody ever checked" both keep an axis out of the
+  // trusted view, and they are not the same claim about it — so they are not the
+  // same sentence either.
+  const disagrees = dropped.filter((a) => a.status === 'unreliable')
+  const unknown = dropped.filter((a) => a.status !== 'unreliable')
+  const nAxes = t.outcome_axes.n_axes + t.trajectory_axes.n_axes
+  if (!t.available) {
+    return (
+      <div className="border border-gray-200 bg-gray-50 rounded-lg p-3 text-xs text-gray-500 max-w-4xl">
+        <span className="font-medium text-gray-700">No trusted view.</span> Not one of the {nAxes} judged
+        axes here has a calibration source that clears the gate, so there is nothing to recompute a
+        trusted aggregate from. The numbers below are the judge's, unverified — which is a different
+        thing from verified-bad.
+      </div>
+    )
+  }
+  return (
+    <div className="border rounded-lg p-3 bg-white">
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-xs font-medium text-gray-600 uppercase tracking-wide">View</span>
+        <div className="flex rounded-lg border overflow-hidden text-xs">
+          {([['raw', 'Raw — every axis'], ['trusted', 'Trusted — gated axes only']] as const).map(([v, label]) => (
+            <button key={v} onClick={() => setView(v)}
+              className={`px-2.5 py-1 ${view === v ? 'bg-blue-600 text-white' : 'bg-white hover:bg-gray-50'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-gray-400">
+          affects Summary quality/trajectory, Pareto, leaderboard and significance — never success rate, cost, tokens or the checker
+        </span>
+      </div>
+      <p className="text-[11px] text-gray-500 mt-2 max-w-4xl leading-relaxed">
+        {dropped.length === 0 && (
+          <><span className="font-medium text-gray-700">Every calibrated axis cleared the gate.</span>{' '}</>
+        )}
+        {disagrees.length > 0 && (
+          <>
+            <span className="font-medium text-red-700">{disagrees.length} of {nAxes} axes are quarantined</span>{' '}
+            ({names(disagrees)}) — below κ {t.policy.moderate_kappa} and with no rank rescue either, so the
+            judge agrees with the human neither on level nor on order.{' '}
+          </>
+        )}
+        {unknown.length > 0 && (
+          <>
+            <span className="font-medium text-gray-700">{unknown.length} of {nAxes} axes are unverified</span>{' '}
+            ({names(unknown)}) — no calibration source, or too few rated pairs to say anything either way.
+            Unknown, not known-bad; the trusted view leaves them out because it can only stand behind what
+            was checked.{' '}
+          </>
+        )}
+        {dropped.length > 0 && (
+          <>They drive no mean, no frontier and no verdict in the trusted view.{' '}</>
+        )}
+        {rankOnly.length > 0 && (
+          <>
+            <span className="font-medium text-amber-700">{rankOnly.length} rank-only</span> ({names(rankOnly)}):
+            a judge that orders runs like the human but scores them on a shifted scale. It orders the
+            leaderboard and nothing else — averaging it is exactly the error the rescue exists to avoid.{' '}
+          </>
+        )}
+        {t.dropped.significant_rows > 0 && (
+          <>
+            Gating removed <span className="font-medium text-gray-700">{t.dropped.significant_rows} “significant”
+            row(s)</span> ({t.dropped.significant_metrics.join(', ')})
+            {t.dropped.demoted_rows > 0 && <> and demoted {t.dropped.demoted_rows} more</>} — findings that
+            existed only because an axis nobody can trust was allowed to vote.
+          </>
+        )}
+      </p>
+    </div>
+  )
+}
+
 function ReportTab({ id, isTerminal, detail }: { id: string; isTerminal: boolean; detail: ExperimentDetailType }) {
   const queryClient = useQueryClient()
   const [method, setMethod] = useState<'bt' | 'elo'>('bt')
@@ -685,9 +790,23 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
   // keep only the trajectory (E-07) signal. (SPA-68)
   const verifiable = !!report.external?.available
   const isOutcomeMetric = (m: string) => m === 'weighted_score' || m.startsWith('dim:')
+  // SPA-88: raw keeps every axis; trusted is recomputed from the ones the
+  // calibrator cleared. The toggle swaps the numbers that a quarantined axis
+  // could have moved — Summary quality/trajectory, Pareto, leaderboard,
+  // significance — and nothing else: success rate, cost, tokens and the
+  // checker's pass rate are not the judge's opinion and are never gated.
+  const [view, setView] = useState<'raw' | 'trusted'>('raw')
+  const trusted = report.trusted
+  const trustedOn = view === 'trusted' && !!trusted?.available
+  const trustedByConfig = new Map(
+    (trusted?.summary.per_config ?? []).map((c) => [c.config_key, c]),
+  )
+  const pareto = trustedOn ? trusted!.pareto : report.pareto
+  const leaderboard = trustedOn ? trusted!.leaderboard : report.leaderboard
+  const significanceRows = trustedOn ? trusted!.significance : report.significance
   const visibleSignificance = verifiable
-    ? report.significance.filter((s) => !isOutcomeMetric(s.metric))
-    : report.significance
+    ? significanceRows.filter((s) => !isOutcomeMetric(s.metric))
+    : significanceRows
   return (
     <div className="space-y-6">
       {/* SPA-84: pinning what a config resolved to is only worth doing if the
@@ -788,8 +907,13 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
         </div>
       )}
 
+      <TrustedViewToggle report={report} view={view} setView={setView} />
+
       <section>
-        <h3 className="font-semibold text-gray-900 mb-2">Summary</h3>
+        <h3 className="font-semibold text-gray-900 mb-2">
+          Summary
+          {trustedOn && <span className="ml-2 text-xs font-normal text-green-700">trusted axes only</span>}
+        </h3>
         <div className="bg-white border rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase">
@@ -819,8 +943,14 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                       {passRateByConfig.get(c.config_key) != null ? `${(passRateByConfig.get(c.config_key)! * 100).toFixed(0)}%` : '—'}
                     </td>
                   )}
-                  {!verifiable && <td className="px-3 py-2">{fmt(c.quality_mean)}</td>}
-                  <td className="px-3 py-2">{fmt(c.trajectory_mean)}</td>
+                  {!verifiable && (
+                    <td className="px-3 py-2">
+                      {fmt(trustedOn ? trustedByConfig.get(c.config_key)?.quality_mean ?? null : c.quality_mean)}
+                    </td>
+                  )}
+                  <td className="px-3 py-2">
+                    {fmt(trustedOn ? trustedByConfig.get(c.config_key)?.trajectory_mean ?? null : c.trajectory_mean)}
+                  </td>
                   <td className="px-3 py-2">{stepsByConfig.get(c.config_key) != null ? stepsByConfig.get(c.config_key)!.toFixed(1) : '—'}</td>
                   <td className="px-3 py-2 font-medium">{fmtTokens(c.tokens_mean)}
                     {c.rel_effort != null && <span className={`ml-1 text-xs ${relEffortStyle(c.rel_effort)}`}>×{c.rel_effort.toFixed(2)}</span>}
@@ -910,11 +1040,11 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
             <p className="text-[11px] text-gray-400 mt-1 max-w-3xl">
               <span className="font-medium">Reliability gate (outcome):</span> each rubric axis is badged by judge↔human agreement —{' '}
               <span className="text-green-700 font-semibold">✓</span> reliable (κ≥{report.outcome_axis_reliability.reliable_kappa}),{' '}
-              <span className="text-amber-600 font-semibold">~</span> directional ({report.outcome_axis_reliability.directional_kappa}–{report.outcome_axis_reliability.reliable_kappa},
-              or rank ρ≥{report.outcome_axis_reliability.rank_rho ?? 0.5} below it — a scale-shifted judge: comparisons yes, absolute scores no),{' '}
+              <span className="text-amber-600 font-semibold">~</span> moderate ({report.outcome_axis_reliability.directional_kappa}–{report.outcome_axis_reliability.reliable_kappa})
+              or rank-only (κ below it but rank ρ≥{report.outcome_axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: it may order configurations, never enter a mean),{' '}
               <span className="text-red-600 font-semibold">⚠</span> unreliable,{' '}
-              <span className="text-gray-400 font-semibold">n/a</span> not calibrated.{' '}
-              <span className="font-medium">Greyed/struck (⚠) axes are below the reliability bar — shown for completeness, not weighed in conclusions.</span>
+              <span className="text-gray-400 font-semibold">n/a</span> not calibrated or too few rated pairs.{' '}
+              <span className="font-medium">Greyed/struck (⚠) axes are below the bar — shown for completeness; switch the view to Trusted to see the report without them.</span>
             </p>
           )}
           </>
@@ -993,12 +1123,12 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
             <p className="text-[11px] text-gray-400 mt-1 max-w-3xl">
               <span className="font-medium">Reliability gate:</span> each axis is badged by how far the process judge can be
               trusted — <span className="text-green-700 font-semibold">✓</span> reliable (κ≥{report.axis_reliability.reliable_kappa}),{' '}
-              <span className="text-amber-600 font-semibold">~</span> directional ({report.axis_reliability.directional_kappa}–{report.axis_reliability.reliable_kappa},
-              or rank ρ≥{report.axis_reliability.rank_rho ?? 0.5} below it — a scale-shifted judge: comparisons yes, absolute scores no),{' '}
+              <span className="text-amber-600 font-semibold">~</span> moderate ({report.axis_reliability.directional_kappa}–{report.axis_reliability.reliable_kappa})
+              or rank-only (κ below it but rank ρ≥{report.axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: it may order configurations, never enter a mean),{' '}
               <span className="text-red-600 font-semibold">⚠</span> unreliable,{' '}
-              <span className="text-gray-400 font-semibold">n/a</span> not calibrated. κ here is chance-corrected agreement with a human
-              (the loop axis instead anchors to the deterministic counter — see Loop detection). <span className="font-medium">Greyed/struck (⚠) axes are below the reliability bar — shown for
-              completeness, not weighed in conclusions.</span>
+              <span className="text-gray-400 font-semibold">n/a</span> not calibrated or too few rated pairs. κ here is chance-corrected agreement with a human
+              (the loop axis instead anchors to the deterministic counter — see Loop detection). <span className="font-medium">Greyed/struck (⚠) axes are below the bar — shown for
+              completeness; switch the view to Trusted to see the report without them.</span>
             </p>
           ) : report.axis_reliability ? (
             <p className="text-[11px] text-gray-400 mt-1 max-w-3xl">
@@ -1376,7 +1506,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <section>
           {(() => {
-            const pts = report.pareto.points
+            const pts = pareto.points
             const costVaries = new Set(pts.map((p) => p.cost)).size > 1
             const effortVaries = new Set(pts.map((p) => p.effort ?? null)).size > 1
             // SPA-77: X axis = cost when priced, else fall back to TOKEN effort so the
@@ -1473,10 +1603,17 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
               </button>
             ))}
           </div>
-          <span className="text-xs text-gray-400">derived from pointwise scores, case-paired</span>
+          <span className="text-xs text-gray-400">
+            derived from pointwise scores, case-paired
+            {trustedOn && ' · trusted view: rank-eligible axes, which includes the rank-rescued ones'}
+          </span>
         </div>
-        {report.leaderboard.status !== 'ok' ? (
-          <p className="text-sm text-gray-500">Not enough scored runs for a leaderboard ({report.leaderboard.status}).</p>
+        {leaderboard.status !== 'ok' ? (
+          <p className="text-sm text-gray-500">
+            {trustedOn
+              ? `No leaderboard from the trusted axes alone (${leaderboard.status}) — nothing here can order these configurations.`
+              : `Not enough scored runs for a leaderboard (${leaderboard.status}).`}
+          </p>
         ) : (
           <div className="bg-white border rounded-lg overflow-hidden">
             <table className="w-full text-sm">
@@ -1490,7 +1627,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                 </tr>
               </thead>
               <tbody>
-                {report.leaderboard.players.map((p) => (
+                {leaderboard.players.map((p) => (
                   <tr key={p.player} className="border-t">
                     <td className="px-3 py-2 font-bold">{p.rank}</td>
                     <td className="px-3 py-2 font-medium" title={p.player}>{p.label}</td>
@@ -1557,17 +1694,39 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                         <td className="px-3 py-2">{s.a} vs {s.b}</td>
                         <td className="px-3 py-2 text-gray-700">
                           {metricLabel(s.metric)}
-                          {agg && agg !== 'reliable' && (
+                          {agg && agg !== 'reliable_absolute' && (
                             <span className={`ml-1 text-[10px] font-semibold ${RELIABILITY_META[agg].cls}`}
-                              title={`Aggregate of the trajectory judge's 6 axes — ${RELIABILITY_META[agg].word}; only as reliable as its weakest calibrated axis. See the Trajectory profile heatmap reliability gate.`}>
+                              title={`Aggregate of the trajectory judge's axes — ${RELIABILITY_META[agg].word}; only as reliable as its weakest calibrated axis. See the Trajectory profile heatmap reliability gate.`}>
                               {RELIABILITY_META[agg].glyph}
+                            </span>
+                          )}
+                          {/* SPA-88: a row is a claim about two configs made THROUGH an
+                              axis, so how far that axis is trusted travels with it. */}
+                          {s.axis?.kind === 'outcome_axis' && s.axis.status && s.axis.status !== 'reliable_absolute' && (
+                            <span className={`ml-1 text-[10px] font-semibold ${RELIABILITY_META[s.axis.status].cls}`}
+                              title={`Measured through the ${s.axis.name} axis — ${RELIABILITY_META[s.axis.status].word}. ${
+                                s.axis.numeric
+                                  ? 'Cleared for a comparison of means.'
+                                  : s.axis.rank
+                                    ? 'Ranks only — the difference in means this row reports is not supported by the calibration.'
+                                    : 'Quarantined: the trusted view drops this row entirely.'
+                              }`}>
+                              {RELIABILITY_META[s.axis.status].glyph}
+                            </span>
+                          )}
+                          {s.rank_only && (
+                            <span className="ml-1 text-[10px] px-1 rounded bg-amber-50 text-amber-700 font-medium"
+                              title="Rank-rescued axis: Welch compares MEANS, which a scale-shifted judge cannot support, so it was not run — the verdict rests on Mann-Whitney alone, which is approximate.">
+                              ranks
                             </span>
                           )}
                         </td>
                         <td className="px-3 py-2">
                           <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${judge.cls}`}>{judge.label}</span>
                         </td>
-                        <td className="px-3 py-2">{s.welch ? s.welch.p.toFixed(4) : '—'}</td>
+                        <td className="px-3 py-2">
+                          {s.welch ? s.welch.p.toFixed(4) : <span className="text-gray-400">{s.rank_only ? 'n/a' : '—'}</span>}
+                        </td>
                         <td className="px-3 py-2">{s.mann_whitney ? s.mann_whitney.p.toFixed(4) : '—'}</td>
                         <td className="px-3 py-2">
                           {s.significant
