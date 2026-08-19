@@ -1681,6 +1681,95 @@ export interface ConfigDrift {
   core_conditions?: string[]
 }
 
+// SPA-88 trust taxonomy. What a status may DRIVE is the whole point of the split:
+// 'reliable_absolute' and 'moderate_agreement' may carry numeric aggregates;
+// 'rank_only' is a scale-shifted judge — ordering only, never a mean; the rest
+// carry nothing. 'insufficient' (too few pairs) and 'unreliable' (the judge
+// disagrees) used to be the same amber light, and they are not the same claim.
+export type AxisTrustStatus =
+  | 'reliable_absolute'
+  | 'moderate_agreement'
+  | 'rank_only'
+  | 'insufficient'
+  | 'unreliable'
+  | 'not_calibrated'
+
+export interface ExperimentTrustAxis {
+  key: string
+  name: string
+  status: AxisTrustStatus
+  source?: string | null
+  kappa?: number | null
+  rho?: number | null
+  n?: number
+}
+
+export interface ExperimentSignificanceRow {
+  a: string
+  b: string
+  metric: string
+  p: number
+  significant: boolean
+  // A rank-rescued axis cannot support a comparison of means, so Welch is not run
+  // at all and the verdict rests on Mann-Whitney — approximate, hence a weaker claim.
+  rank_only?: boolean
+  welch?: { t: number; df: number; p: number; mean_a: number; mean_b: number } | null
+  mann_whitney?: { u: number; z: number; p: number; approx: boolean } | null
+  // The axis this row was measured through, and how far it is trusted.
+  axis?: {
+    kind: 'outcome_axis' | 'outcome_aggregate' | 'trajectory_aggregate'
+    key?: string | null
+    name?: string
+    status?: AxisTrustStatus | null
+    numeric: boolean
+    rank: boolean
+    n_axes_numeric?: number
+    n_axes?: number
+  }
+}
+
+export interface ExperimentTrustedView {
+  available: boolean
+  policy: {
+    numeric_statuses: AxisTrustStatus[]
+    rank_statuses: AxisTrustStatus[]
+    reliable_kappa: number
+    moderate_kappa: number
+    rank_rho: number
+    min_samples: number
+  }
+  outcome_axes: ExperimentTrustSplit
+  trajectory_axes: ExperimentTrustSplit
+  summary: {
+    per_config: {
+      config_key: string
+      label: string
+      quality_mean?: number | null
+      n_quality: number
+      trajectory_mean?: number | null
+      n_trajectory: number
+    }[]
+  }
+  pareto: ExperimentReport['pareto']
+  leaderboard: ExperimentReport['leaderboard'] & { basis?: string }
+  significance: ExperimentSignificanceRow[]
+  // What the gate cost, in the only currency the reader cares about: conclusions.
+  dropped: {
+    significance_rows: number
+    significant_rows: number
+    significant_metrics: string[]
+    demoted_rows: number
+    demoted_metrics: string[]
+  }
+}
+
+export interface ExperimentTrustSplit {
+  numeric: ExperimentTrustAxis[]
+  rank_only: ExperimentTrustAxis[]
+  excluded: ExperimentTrustAxis[]
+  n_axes: number
+}
+
 export interface ExperimentReport {
   schema_version: number
   generated_at: string
@@ -1805,7 +1894,7 @@ export interface ExperimentReport {
         kappa?: number | null
         rho?: number | null
         n: number
-        status: 'reliable' | 'directional' | 'unreliable' | 'not_calibrated'
+        status: AxisTrustStatus
       }
     >
   } | null
@@ -1826,7 +1915,7 @@ export interface ExperimentReport {
         kappa?: number | null
         rho?: number | null
         n: number
-        status: 'reliable' | 'directional' | 'unreliable' | 'not_calibrated'
+        status: AxisTrustStatus
       }
     >
   } | null
@@ -1960,15 +2049,11 @@ export interface ExperimentReport {
     }[]
     derivation?: Record<string, unknown>
   }
-  significance: {
-    a: string
-    b: string
-    metric: string
-    p: number
-    significant: boolean
-    welch?: { t: number; df: number; p: number; mean_a: number; mean_b: number } | null
-    mann_whitney?: { u: number; z: number; p: number; approx: boolean } | null
-  }[]
+  significance: ExperimentSignificanceRow[]
+  // SPA-88: the parallel view computed only from the axes that cleared the gate.
+  // Raw above keeps every axis — quarantining one is a claim about the JUDGE, and
+  // the reader is owed the unfiltered numbers to check it against.
+  trusted?: ExperimentTrustedView | null
   failure_modes: {
     per_config: {
       config_key: string

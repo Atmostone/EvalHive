@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from app.models.experiment import Experiment, ExperimentRun
 from app.quality.experiment_report import (
+    SIGNIFICANCE_ALPHA,
     build_report,
     pareto_frontier,
     significance_matrix,
@@ -164,7 +165,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 16
+    assert report["schema_version"] == 17
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -311,7 +312,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 16
+    assert report["schema_version"] == 17
 
     ext = report["external"]
     assert ext["available"] is True
@@ -601,32 +602,33 @@ def test_build_report_loop_detection_structural_anchor():
 def test_classify_reliability_buckets():
     from app.quality.experiment_report import _classify_reliability
 
-    assert _classify_reliability(0.7, 10, has_source=True) == "reliable"
-    assert _classify_reliability(0.6, 10, has_source=True) == "reliable"  # boundary
-    assert _classify_reliability(0.5, 10, has_source=True) == "directional"
-    assert _classify_reliability(0.4, 10, has_source=True) == "directional"  # boundary
+    assert _classify_reliability(0.7, 10, has_source=True) == "reliable_absolute"
+    assert _classify_reliability(0.6, 10, has_source=True) == "reliable_absolute"  # boundary
+    assert _classify_reliability(0.5, 10, has_source=True) == "moderate_agreement"
+    assert _classify_reliability(0.4, 10, has_source=True) == "moderate_agreement"  # boundary
     assert _classify_reliability(0.39, 10, has_source=True) == "unreliable"
     assert _classify_reliability(-0.1, 10, has_source=True) == "unreliable"
-    assert _classify_reliability(0.9, 2, has_source=True) == "directional"  # too few pairs
-    assert _classify_reliability(None, 10, has_source=True) == "directional"  # undefined κ
+    # SPA-88: too little data is its own answer, not a weak endorsement
+    assert _classify_reliability(0.9, 2, has_source=True) == "insufficient"
+    assert _classify_reliability(None, 10, has_source=True) == "insufficient"
     assert _classify_reliability(0.9, 10, has_source=False) == "not_calibrated"
 
 
 def test_classify_reliability_rank_rescue():
-    # v13: κ below the bar but ranks agreeing (Spearman ρ≥0.5) → directional, not
+    # κ below the bar but ranks agreeing (Spearman ρ≥0.5) → rank_only, not
     # unreliable — a scale-shifted judge is usable for comparisons only.
     from app.quality.experiment_report import _classify_reliability
 
-    assert _classify_reliability(0.0, 10, has_source=True, rho=0.93) == "directional"
-    assert _classify_reliability(0.0, 10, has_source=True, rho=0.5) == "directional"  # boundary
+    assert _classify_reliability(0.0, 10, has_source=True, rho=0.93) == "rank_only"
+    assert _classify_reliability(0.0, 10, has_source=True, rho=0.5) == "rank_only"  # boundary
     assert _classify_reliability(0.0, 10, has_source=True, rho=0.49) == "unreliable"
     assert _classify_reliability(0.0, 10, has_source=True, rho=None) == "unreliable"
     assert _classify_reliability(0.0, 10, has_source=True, rho=-0.2) == "unreliable"
     # ranks never DEMOTE: κ above the bar stays what κ says
-    assert _classify_reliability(0.7, 10, has_source=True, rho=0.1) == "reliable"
-    assert _classify_reliability(0.5, 10, has_source=True, rho=0.1) == "directional"
+    assert _classify_reliability(0.7, 10, has_source=True, rho=0.1) == "reliable_absolute"
+    assert _classify_reliability(0.5, 10, has_source=True, rho=0.1) == "moderate_agreement"
     # too few pairs still wins over the rank rescue
-    assert _classify_reliability(0.0, 2, has_source=True, rho=0.9) == "directional"
+    assert _classify_reliability(0.0, 2, has_source=True, rho=0.9) == "insufficient"
 
 
 def test_outcome_axis_reliability():
@@ -647,9 +649,9 @@ def test_outcome_axis_reliability():
     ax = oar["axes"]
     assert oar["available"] is True
     assert "tool_selection" not in ax
-    assert ax["task_completion"]["status"] == "directional"  # rank-rescued (ρ=0.62)
+    assert ax["task_completion"]["status"] == "rank_only"  # rank-rescued (ρ=0.62)
     assert ax["format_compliance"]["status"] == "unreliable"  # low κ AND low ρ
-    assert ax["readability"]["status"] == "directional"  # κ in 0.4–0.6 band
+    assert ax["readability"]["status"] == "moderate_agreement"  # κ in 0.4–0.6 band
     assert ax["task_completion"]["rho"] == 0.62
 
     # no calibration → honest empty state (axes dict empty: rubric-dependent list)
@@ -676,11 +678,11 @@ def test_axis_reliability_sources_and_priority():
     ar = _axis_reliability(calibration, loop_detection, {})
     ax = ar["axes"]
     assert ar["available"] is True
-    assert (ax["efficiency"]["status"], ax["efficiency"]["source"]) == ("reliable", "human")
-    assert (ax["tool_selection"]["status"], ax["tool_selection"]["source"]) == ("directional", "human")
+    assert (ax["efficiency"]["status"], ax["efficiency"]["source"]) == ("reliable_absolute", "human")
+    assert (ax["tool_selection"]["status"], ax["tool_selection"]["source"]) == ("moderate_agreement", "human")
     assert (ax["parameter_quality"]["status"], ax["parameter_quality"]["source"]) == ("unreliable", "human")
-    # human dim exists but n=2 < MIN_SAMPLES → directional (insufficient), still human-sourced
-    assert (ax["error_recovery"]["status"], ax["error_recovery"]["source"]) == ("directional", "human")
+    # human dim exists but n=2 < MIN_SAMPLES → insufficient, still human-sourced
+    assert (ax["error_recovery"]["status"], ax["error_recovery"]["source"]) == ("insufficient", "human")
     assert (ax["goal_alignment"]["status"], ax["goal_alignment"]["source"]) == ("not_calibrated", "none")
     # v11: the judge loop_detection axis is retired — never badged, even with a human κ.
     assert "loop_detection" not in ax
@@ -909,3 +911,344 @@ def test_a_config_whose_every_run_was_contaminated_survives_the_report():
     assert report["exclusions"]["by_config"] == [
         {"config_key": "cfg-02", "label": "orch", "contaminated": 2}
     ]
+
+
+# --- SPA-88: the reliability gate acts ---------------------------------------
+
+
+def test_trust_split_partitions_axes_by_what_they_may_drive():
+    from app.quality.experiment_report import _trust_split
+
+    def ax(name, status):
+        return {"name": name, "status": status, "source": "human",
+                "kappa": 0.5, "rho": 0.5, "n": 10}
+
+    numeric, rank_keys, block = _trust_split(
+        {
+            "axes": {
+                "a": ax("A", "reliable_absolute"),
+                "b": ax("B", "moderate_agreement"),
+                "c": ax("C", "rank_only"),
+                "d": ax("D", "unreliable"),
+                "e": ax("E", "insufficient"),
+                "f": ax("F", "not_calibrated"),
+            }
+        }
+    )
+    assert numeric == frozenset({"a", "b"})
+    # rank is a SUPERSET: good enough to average is good enough to order
+    assert rank_keys == frozenset({"a", "b", "c"})
+    assert [r["key"] for r in block["numeric"]] == ["a", "b"]
+    assert [r["key"] for r in block["rank_only"]] == ["c"]
+    # every quarantine carries the reason it was quarantined for
+    assert [r["key"] for r in block["excluded"]] == ["d", "e", "f"]
+    assert block["excluded"][0]["kappa"] == 0.5
+    assert block["n_axes"] == 6
+
+    numeric2, rank2, block2 = _trust_split({})
+    assert numeric2 == frozenset() and rank2 == frozenset()
+    assert block2["n_axes"] == 0
+
+
+def test_trusted_weighted_renormalizes_instead_of_scoring_a_dropped_axis_zero():
+    from app.quality.experiment_report import _trusted_weighted
+
+    rec = _record(
+        dimensions=[
+            {"key": "correctness", "name": "Correctness", "score": 8, "weight": 3, "status": "scored"},
+            {"key": "originality", "name": "Originality", "score": 2, "weight": 1, "status": "scored"},
+        ]
+    )
+    assert _trusted_weighted(rec, frozenset({"correctness", "originality"})) == 6.5
+    # Dropping an axis must RENORMALIZE (8.0), not average a phantom zero in (6.0).
+    assert _trusted_weighted(rec, frozenset({"correctness"})) == 8.0
+    assert _trusted_weighted(rec, frozenset()) is None
+    assert _trusted_weighted(rec, frozenset({"absent"})) is None
+
+    # A dimension the judge could not score contributes nothing, exactly as in
+    # the judge's own aggregate — a trusted axis that failed is not a trusted 0.
+    errored = _record(
+        dimensions=[{"key": "correctness", "score": None, "weight": 1, "status": "error"}]
+    )
+    assert _trusted_weighted(errored, frozenset({"correctness"})) is None
+
+
+def test_traj_score_under_a_gate_never_falls_back_to_the_stored_overall():
+    from app.quality.experiment_report import _traj_score
+
+    rec = _record(
+        trajectory_axes=[
+            {"key": "efficiency", "name": "Efficiency", "score": 9},
+            {"key": "goal_alignment", "name": "Goal alignment", "score": 3},
+        ]
+    )
+    assert _traj_score(rec, 7.0) == 6.0
+    assert _traj_score(rec, 7.0, allowed=frozenset({"efficiency"})) == 9.0
+    # The stored overall averages every axis — including the ones just gated out —
+    # so falling back to it would smuggle them in under a trusted label.
+    assert _traj_score(rec, 7.0, allowed=frozenset({"tool_selection"})) is None
+    assert _traj_score(None, 7.0, allowed=frozenset({"efficiency"})) is None
+
+
+def test_a_rank_only_metric_is_judged_on_ranks_not_on_means():
+    from app.quality.experiment_report import significance_matrix
+
+    samples = {"a": {"dim:x": [8, 9, 10, 11]}, "b": {"dim:x": [1, 2, 3, 4]}}
+    row = significance_matrix(samples, rank_only_metrics=frozenset({"dim:x"}))[0]
+    assert row["rank_only"] is True
+    # Welch compares MEANS — the one thing a scale-shifted judge cannot support.
+    assert row["welch"] is None
+    assert row["mann_whitney"] is not None
+    assert row["p"] == row["mann_whitney"]["p"]
+
+    plain = significance_matrix(samples)[0]
+    assert plain["rank_only"] is False
+    assert plain["welch"] is not None
+    assert plain["p"] == plain["welch"]["p"]
+
+
+def _two_dim_runs(per_config: dict[str, dict[str, list[float]]]):
+    """Runs + records for two configs scored on the same two rubric dimensions.
+
+    ``per_config`` is ``{config_key: {dim_key: [score per case]}}``; every list is
+    the same length, one entry per case. The stored ``weighted_score`` is the
+    equally-weighted mean of the dimensions, matching what the judge would have
+    written."""
+    runs, records = [], {}
+    for cfg, dims in per_config.items():
+        n = len(next(iter(dims.values())))
+        for i in range(n):
+            scores = {k: v[i] for k, v in dims.items()}
+            weighted = sum(scores.values()) / len(scores)
+            task_id = uuid.uuid4()
+            runs.append(_run(cfg, f"case-{i}", 0, score=weighted, task_id=task_id))
+            records[task_id] = _record(
+                dimensions=[
+                    {"key": k, "name": k.title(), "score": v, "weight": 1, "status": "scored"}
+                    for k, v in scores.items()
+                ]
+            )
+    return runs, records
+
+
+def _calibration(dims: list[dict]):
+    return {"available": True, "dimensions": dims}
+
+
+def test_an_unreliable_axis_cannot_produce_a_significant_row():
+    """Regression fixture from Эксп 5b.
+
+    There, ``dim:originality`` came out Welch-significant (p = 0.0399) between two
+    configurations on an axis whose judge agreed with humans at κ = 0.058 and
+    ρ = 0.095 — no agreement on level, none on order either. The raw view still
+    reports it, because hiding it would be a different dishonesty; the trusted
+    view must not, and must say that it dropped it."""
+    runs, records = _two_dim_runs(
+        {
+            # correctness: no real difference (κ = 0.71 — trustworthy, and it says
+            # there is nothing here)
+            "cfg-01": {"correctness": [8, 7, 8, 7, 8], "originality": [7, 8, 8, 8, 7]},
+            "cfg-02": {"correctness": [7, 8, 7, 8, 8], "originality": [6, 7, 7, 7, 7]},
+        }
+    )
+    report = build_report(
+        _exp(CONFIGS),
+        runs,
+        records,
+        calibration=_calibration(
+            [
+                {"key": "correctness", "name": "Correctness", "n": 40, "cohen_kappa": 0.71, "spearman": 0.80},
+                {"key": "originality", "name": "Originality", "n": 40, "cohen_kappa": 0.058, "spearman": 0.095},
+            ]
+        ),
+    )
+
+    raw = next(r for r in report["significance"] if r["metric"] == "dim:originality")
+    assert raw["significant"] is True
+    assert 0.03 < raw["p"] < SIGNIFICANCE_ALPHA
+    # The raw row carries its own condition: the axis it was measured through.
+    assert raw["axis"]["status"] == "unreliable"
+    assert raw["axis"]["numeric"] is False
+
+    trusted = report["trusted"]
+    assert trusted["available"] is True
+    assert [r["key"] for r in trusted["outcome_axes"]["excluded"]] == ["originality"]
+    assert [r["key"] for r in trusted["outcome_axes"]["numeric"]] == ["correctness"]
+    assert not [r for r in trusted["significance"] if r["metric"] == "dim:originality"]
+    assert trusted["dropped"]["significant_metrics"] == ["dim:originality"]
+    assert trusted["dropped"]["significant_rows"] == 1
+
+
+def test_an_unreliable_axis_cannot_pick_a_winner():
+    # cfg-01 wins on the axis nobody should trust and loses on the one they can.
+    runs, records = _two_dim_runs(
+        {
+            "cfg-01": {"correctness": [6, 6, 6, 6, 6], "originality": [10, 10, 10, 10, 10]},
+            "cfg-02": {"correctness": [7, 7, 7, 7, 7], "originality": [5, 5, 5, 5, 5]},
+        }
+    )
+    report = build_report(
+        _exp(CONFIGS),
+        runs,
+        records,
+        calibration=_calibration(
+            [
+                {"key": "correctness", "name": "Correctness", "n": 40, "cohen_kappa": 0.71, "spearman": 0.80},
+                {"key": "originality", "name": "Originality", "n": 40, "cohen_kappa": 0.058, "spearman": 0.095},
+            ]
+        ),
+    )
+
+    assert report["leaderboard"]["players"][0]["player"] == "cfg-01"
+    assert report["pareto"]["frontier"] == ["cfg-01"]
+    summary = {e["config_key"]: e["quality_mean"] for e in report["summary"]["per_config"]}
+    assert summary["cfg-01"] > summary["cfg-02"]
+
+    trusted = report["trusted"]
+    assert trusted["leaderboard"]["players"][0]["player"] == "cfg-02"
+    assert trusted["pareto"]["frontier"] == ["cfg-02"]
+    t_summary = {e["config_key"]: e["quality_mean"] for e in trusted["summary"]["per_config"]}
+    assert t_summary == {"cfg-01": 6.0, "cfg-02": 7.0}
+
+
+def test_a_rank_only_axis_reaches_a_rank_test_and_nothing_else():
+    runs, records = _two_dim_runs(
+        {
+            "cfg-01": {"helpfulness": [9, 8, 9, 8, 9]},
+            "cfg-02": {"helpfulness": [4, 3, 4, 3, 4]},
+        }
+    )
+    report = build_report(
+        _exp(CONFIGS),
+        runs,
+        records,
+        calibration=_calibration(
+            # κ collapsed, ranks intact: the SPA-79 rescue, and its whole licence
+            [{"key": "helpfulness", "name": "Helpfulness", "n": 40, "cohen_kappa": 0.10, "spearman": 0.91}]
+        ),
+    )
+    trusted = report["trusted"]
+    assert [r["key"] for r in trusted["outcome_axes"]["rank_only"]] == ["helpfulness"]
+    assert trusted["outcome_axes"]["numeric"] == []
+    # No numeric aggregate exists — a scale-shifted judge has no level to average.
+    assert all(e["quality_mean"] is None for e in trusted["summary"]["per_config"])
+    assert trusted["pareto"]["frontier"] == []
+    # …and no leaderboard either: the leaderboard runs on a weighted MEAN of the
+    # trusted axes, which is an average however few axes go into it.
+    assert trusted["leaderboard"]["basis"] == "numeric_trusted_axes"
+    assert trusted["leaderboard"]["status"] == "empty"
+    # The one thing it may do: its own rank test, on its own scores.
+    row = next(r for r in trusted["significance"] if r["metric"] == "dim:helpfulness")
+    assert row["rank_only"] is True and row["welch"] is None
+
+
+def test_rescaling_a_rank_only_axis_cannot_move_the_trusted_view():
+    """The property that makes the rescue safe, stated as a test.
+
+    A rank-rescued axis is one whose ORDER tracks the human while its level does
+    not — so any monotone rescaling of it is equally consistent with what the
+    calibration measured. Raw is free to move under such a rescaling, and does.
+    Nothing in the trusted view may."""
+    # Same ordering on the rescued axis both times (cfg-02 above cfg-01), same
+    # ordering on the trustworthy one (cfg-01 above cfg-02) — only the SIZE of the
+    # rescued gap differs, which is precisely what ρ does not constrain.
+    def _report(helpfulness):
+        runs, records = _two_dim_runs(
+            {
+                "cfg-01": {"correctness": [9] * 5, "helpfulness": [helpfulness[0]] * 5},
+                "cfg-02": {"correctness": [6] * 5, "helpfulness": [helpfulness[1]] * 5},
+            }
+        )
+        return build_report(
+            _exp(CONFIGS),
+            runs,
+            records,
+            calibration=_calibration(
+                [
+                    {"key": "correctness", "name": "Correctness", "n": 40, "cohen_kappa": 0.71, "spearman": 0.80},
+                    {"key": "helpfulness", "name": "Helpfulness", "n": 40, "cohen_kappa": 0.10, "spearman": 0.91},
+                ]
+            ),
+        )
+
+    wide = _report((1.0, 9.0))    # raw means 5.0 vs 7.5 → cfg-02 leads raw
+    narrow = _report((5.0, 6.0))  # raw means 7.0 vs 6.0 → cfg-01 leads raw
+
+    # The rescaling is real: it flips the raw winner without changing any ordering
+    # the calibration actually validated.
+    assert wide["leaderboard"]["players"][0]["player"] == "cfg-02"
+    assert narrow["leaderboard"]["players"][0]["player"] == "cfg-01"
+
+    # …and reaches nothing in the trusted view.
+    for report in (wide, narrow):
+        assert report["trusted"]["leaderboard"]["players"][0]["player"] == "cfg-01"
+        assert {
+            e["config_key"]: e["quality_mean"] for e in report["trusted"]["summary"]["per_config"]
+        } == {"cfg-01": 9.0, "cfg-02": 6.0}
+        assert report["trusted"]["pareto"]["frontier"] == ["cfg-01"]
+
+
+def test_without_a_calibration_source_nothing_is_trusted():
+    runs, records = _two_dim_runs(
+        {
+            "cfg-01": {"correctness": [8, 8, 8, 8, 8]},
+            "cfg-02": {"correctness": [5, 5, 5, 5, 5]},
+        }
+    )
+    report = build_report(_exp(CONFIGS), runs, records)
+    trusted = report["trusted"]
+    # Unknown is not trusted: an uncalibrated corpus produces an empty trusted
+    # view, not a table that looks like a result.
+    assert trusted["available"] is False
+    assert [r["status"] for r in trusted["outcome_axes"]["excluded"]] == []
+    assert all(e["quality_mean"] is None for e in trusted["summary"]["per_config"])
+    assert trusted["significance"] == []
+    assert trusted["leaderboard"]["status"] == "empty"
+    # …while the raw view is untouched.
+    assert report["leaderboard"]["players"][0]["player"] == "cfg-01"
+
+
+def test_a_rank_rescued_trajectory_axis_does_not_open_an_empty_trusted_view():
+    """`available` promises a view with something in it, not a view that exists.
+
+    A rank-rescued OUTCOME axis earns its own Mann-Whitney row, so it is content.
+    A rank-rescued TRAJECTORY axis earns nothing — the report has no per-axis
+    trajectory significance rows, only the aggregate, and the aggregate is
+    numeric. Counting it as availability opens a Trusted tab in which every single
+    cell is «—»."""
+    runs, records = [], {}
+    for cfg, scores in (("cfg-01", [9, 8, 9, 8, 9]), ("cfg-02", [4, 3, 4, 3, 4])):
+        for i, v in enumerate(scores):
+            task_id = uuid.uuid4()
+            runs.append(_run(cfg, f"case-{i}", 0, score=7.0, traj=float(v), task_id=task_id))
+            records[task_id] = _record(
+                trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": v}]
+            )
+    report = build_report(
+        _exp(CONFIGS),
+        runs,
+        records,
+        calibration=_calibration(
+            [{"key": "efficiency", "name": "Efficiency", "n": 40, "cohen_kappa": 0.10, "spearman": 0.91}]
+        ),
+    )
+    # The badge is still earned, and still shown in the raw report.
+    assert report["axis_reliability"]["axes"]["efficiency"]["status"] == "rank_only"
+    trusted = report["trusted"]
+    assert [r["key"] for r in trusted["trajectory_axes"]["rank_only"]] == ["efficiency"]
+    # …but it licenses nothing here, so there is no trusted view to offer.
+    assert trusted["available"] is False
+    assert all(e["trajectory_mean"] is None for e in trusted["summary"]["per_config"])
+    assert trusted["significance"] == []
+
+    # A trajectory axis the calibrator DOES trust numerically is content, and opens it.
+    ok = build_report(
+        _exp(CONFIGS),
+        runs,
+        records,
+        calibration=_calibration(
+            [{"key": "efficiency", "name": "Efficiency", "n": 40, "cohen_kappa": 0.71, "spearman": 0.80}]
+        ),
+    )
+    assert ok["trusted"]["available"] is True
+    assert ok["trusted"]["summary"]["per_config"][0]["trajectory_mean"] is not None
