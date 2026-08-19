@@ -396,6 +396,10 @@ sources (`agent_events` + `agent_log_chunks` + `tasks`) it builds a `CleanedTrac
   announcements. The ping is dropped only when the call it announces was actually
   recorded **in the same attempt**; if the chunk never arrived, the ping is the only
   surviving trace of that call and stays.
+- **Collapses a fact recorded twice** (SPA-113). The orchestrator logs one decision
+  as both `orchestrator_reasoning` and `orchestrator_decision` with identical text.
+  Adjacent, byte-identical, non-tool steps merge; two identical **tool** calls never
+  do, because that repetition is exactly what the structural loop counter is for.
 - **Bounds the attempts** (SPA-113). Each `agent_spawned` opens one. Every step
   carries `attempt`, `stats.attempts` counts them, and a multi-attempt trace gets a
   visible boundary step (`kind == "attempt"`) — rendered as a separator rather than a
