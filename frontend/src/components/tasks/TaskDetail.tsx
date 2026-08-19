@@ -27,6 +27,21 @@ interface TaskDetailProps {
   onClose: () => void
 }
 
+// The failure vocabulary (app/utils/failures.py), in the words an operator uses.
+// The first four are contaminating: infrastructure decided the outcome, so the run
+// is not a measurement of the model and leaves every analytical aggregate.
+const FAILURE_LABELS: Record<string, string> = {
+  llm_rate_limit: 'provider rate limit / quota',
+  llm_auth: 'provider auth — dead key or spent credit',
+  llm_transient: 'provider timeout or 5xx',
+  infra: 'harness failure',
+  llm_error: 'provider rejected the request',
+  cap_hit: 'iteration cap reached',
+  timeout: 'wall-clock timeout',
+  agent: 'the agent gave up or crashed',
+}
+const CONTAMINATING_FAILURES = ['llm_rate_limit', 'llm_auth', 'llm_transient', 'infra']
+
 export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   const queryClient = useQueryClient()
   const [rejectFeedback, setRejectFeedback] = useState('')
@@ -122,6 +137,27 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           <span className={cn('text-xs px-2 py-1 rounded-full', PRIORITY_COLORS[t.priority as keyof typeof PRIORITY_COLORS])}>
             {t.priority}
           </span>
+          {/* SPA-113: «failed» alone says nothing an operator can act on — a dead
+              provider key, a container that never came up and a model giving up
+              were the same word on screen while the reason sat in the database. */}
+          {t.failure_type && (
+            <span
+              className={cn(
+                'text-xs px-2 py-1 rounded-full',
+                CONTAMINATING_FAILURES.includes(t.failure_type)
+                  ? 'bg-amber-100 text-amber-800'
+                  : 'bg-red-50 text-red-700',
+              )}
+              title={
+                (FAILURE_LABELS[t.failure_type] ?? t.failure_type) +
+                (CONTAMINATING_FAILURES.includes(t.failure_type)
+                  ? ' — infrastructure decided this outcome, not the model, so runs like it are excluded from analytical aggregates.'
+                  : ' — the run itself, so it counts as a measurement of the model.')
+              }
+            >
+              {FAILURE_LABELS[t.failure_type] ?? t.failure_type}
+            </span>
+          )}
         </div>
 
         {/* Description */}

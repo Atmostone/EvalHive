@@ -17,6 +17,9 @@ export interface Task {
   description?: string | null
   status: TaskStatus
   priority: TaskPriority
+  /** Why this run stopped measuring the model (SPA-87). Recorded from the start,
+   *  but only readable in SQL until SPA-113. */
+  failure_type?: string | null
   template_id?: string | null
   agent_container_id?: string | null
   result_summary?: string | null
@@ -308,10 +311,15 @@ export interface ReviewContext {
 }
 
 // Trace Cleaner (E-06): compact, judge-ready trajectory feeding the trajectory judge (E-07).
-export type CleanedTraceStepKind = 'reasoning' | 'tool' | 'agent'
+// 'attempt' is a boundary between agent runs of the same task (SPA-113), not
+// something the agent did — it is rendered as a separator, never numbered.
+export type CleanedTraceStepKind = 'reasoning' | 'tool' | 'agent' | 'attempt'
 
 export interface CleanedTraceStep {
   seq: number
+  /** Which run of this task the step belongs to, 1-based (SPA-113). Repetition
+   *  across a boundary is a retry, not a loop. */
+  attempt?: number
   kind: CleanedTraceStepKind
   tool_name?: string | null
   /** The call's arguments (SPA-86). `null` means they were never recorded — not
@@ -339,6 +347,10 @@ export interface CleanedTraceStats {
   steps_result_missing?: number
   steps_parts_missing?: number
   events_dropped: number
+  /** Progress pings removed as echoes of a tool call already recorded in full. */
+  progress_echoes_dropped?: number
+  /** How many times the agent was run for this task; >1 means the trace spans retries. */
+  attempts?: number
 }
 
 export interface CleanedTrace {
