@@ -1163,16 +1163,40 @@ metric on the strength of the outage. Absent is not zero, and a comparison with
 nothing on one side makes no claim at all.
 - **Reliability gate (E-17 → report, SPA-76/79).** Every judge axis in the report
   carries a traffic-light badge, computed in `experiment_report.py` from the E-17
-  calibration via `_classify_reliability`: **reliable** (κ ≥
-  `RELIABILITY_RELIABLE_KAPPA` = 0.6) / **directional** (`RELIABILITY_DIRECTIONAL_KAPPA`
-  = 0.4 ≤ κ < 0.6, **OR** κ < 0.4 but Spearman ρ ≥ `RELIABILITY_RANK_RHO` = 0.5, **OR**
-  too few pairs n < 3) / **unreliable** (κ < 0.4 AND ρ < 0.5) / **not_calibrated** (no
-  calibration source). The **rank-rescue** (v13) keeps a scale-shifted judge whose
-  *ranking* still tracks humans usable for **comparisons** (which of A/B is better) even
-  when its absolute κ is low — ranks only rescue, never demote (κ ≥ 0.6 stays reliable).
-  v13 also extends the same per-axis κ badge to the **outcome** rubric axes
-  (`_outcome_axis_reliability`), not just the six E-07 trajectory axes
-  (`_axis_reliability`); `SCHEMA_VERSION` bumped 12 → 13.
+  calibration via `_classify_reliability`. v13 extended the badge from the six E-07
+  trajectory axes (`_axis_reliability`) to the **outcome** rubric axes
+  (`_outcome_axis_reliability`); **v17 (SPA-88) makes it act**, and splits the four
+  zones into six because they license different claims:
+
+  | status | rule | may drive |
+  | -- | -- | -- |
+  | `reliable_absolute` | κ ≥ `RELIABILITY_RELIABLE_KAPPA` = 0.6 | numeric aggregates, absolute claims |
+  | `moderate_agreement` | 0.4 ≤ κ < 0.6 | numeric aggregates, flagged |
+  | `rank_only` | κ < 0.4 **and** Spearman ρ ≥ `RELIABILITY_RANK_RHO` = 0.5 | ranks / paired comparisons **only** |
+  | `insufficient` | n < 3, or κ undefined | nothing |
+  | `unreliable` | κ < 0.4 **and** ρ < 0.5 | nothing |
+  | `not_calibrated` | no source | nothing |
+
+  The **rank-rescue** (v13) keeps a scale-shifted judge whose *ranking* still tracks
+  humans usable for comparisons even when its absolute κ is low — ranks only rescue,
+  never demote. What v17 adds is the consequence: such an axis is now barred from
+  every **numeric** aggregate, since averaging a judge whose level is meaningless
+  produces a number without a referent — exactly the error the rescue was invented to
+  avoid. Two frozensets encode this (`NUMERIC_TRUST` ⊂ `RANK_TRUST`), and
+  `_trust_split` resolves them per rubric.
+
+  Acting on the badge is done by **adding a view, not editing one**. The raw report is
+  unchanged; a parallel `report.trusted` recomputes what a quarantined axis could have
+  moved — per-config quality (renormalized over the trusted rubric dimensions, so a
+  dropped axis is removed rather than scored zero), per-config trajectory, the Pareto
+  frontier, the pairwise leaderboard (on the wider rank-eligible set: `build_matches`
+  compares two runs of the *same case*, which a shifted scale survives) and the
+  significance matrix, where a rank-only metric skips Welch entirely and is judged on
+  Mann-Whitney. Quarantining an axis is a claim about the judge, and the reader is owed
+  the unfiltered numbers to check it against; `trusted.dropped` states what the gate
+  cost in significant rows. Deliberately **not** gated: `judge_discrimination`, `rq2`
+  and `checker_human` — they measure the judge against an independent oracle, so gating
+  them by the judge's own trust score would be circular. `SCHEMA_VERSION` 16 → 17.
 - **Repro**: clone-with-changes (frozen dataset copied verbatim), re-run =
   clone + run; every run's E-20 snapshot lands in the quality record; CSV/JSON
   export is flat per-run rows. CLI:
@@ -1222,7 +1246,7 @@ nothing on one side makes no claim at all.
 | `app/quality/reproducibility.py` | E-20 Reproducibility Snapshot: `assemble_snapshot` + `snapshot_fingerprint` + `diff_snapshots` + `capture_snapshot`/`replay_from_snapshot` — per-record `experiment_snapshot` (captured/missing manifest), SHA-256 determinism fingerprint, snapshot diff + re-run via `clone_task_for_rerun` |
 | `app/quality/comparison.py` | E-21 Pairwise Comparison: `create_comparison`/`advance_comparison` + `judge_pair_llm` (both-orders, position-bias mitigation) + `comparisons_to_matches`/`run_pairwise_leaderboard` — real A/B verdicts on `pairwise_comparisons`, handed to E-19 as explicit ELO matches |
 | `app/quality/experiments.py` | SPA-40 Experiment Runner: `create_experiment` + `expand_matrix`/`normalize_dataset` + `advance_experiment` — frozen dataset × config matrix × n_runs, poll-driven `experiment_runs` cells (E-02 + optional E-07/E-14/E-20), cost-capped. Driven by the `experiment_run_tick` job |
-| `app/quality/experiment_report.py` | SPA-40 Experiment report: `build_report`/`compute_report` — per-config summary, heatmap, Pareto frontier, pairwise leaderboard, `significance_matrix`, failure-mode/orchestrator breakdowns, plus the per-axis reliability traffic light (`_classify_reliability` / `_axis_reliability` / `_outcome_axis_reliability`; `SCHEMA_VERSION=16`) |
+| `app/quality/experiment_report.py` | SPA-40 Experiment report: `build_report`/`compute_report` — per-config summary, heatmap, Pareto frontier, pairwise leaderboard, `significance_matrix`, failure-mode/orchestrator breakdowns, plus the per-axis reliability traffic light and the gate it drives (`_classify_reliability` six-way / `_axis_reliability` / `_outcome_axis_reliability` / `_trust_split` / `_trusted_weighted`; raw vs `trusted` views; `SCHEMA_VERSION=17`) |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |
