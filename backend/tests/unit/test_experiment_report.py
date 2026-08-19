@@ -40,32 +40,134 @@ class TestParetoFrontier:
         assert pareto_frontier([]) == []
 
 
+def _cells(values, prefix="case"):
+    """``[8.0, 8.2, ...]`` -> ``{"case-0": 8.0, "case-1": 8.2, ...}``."""
+    return {f"{prefix}-{i}": v for i, v in enumerate(values)}
+
+
 class TestSignificanceMatrix:
     def test_separated_groups_significant(self):
-        samples = {
-            "cfg-01": {"weighted_score": [8.0, 8.2, 8.1, 7.9, 8.3]},
-            "cfg-02": {"weighted_score": [5.0, 5.2, 5.1, 4.9, 5.3]},
+        cells = {
+            "cfg-01": {"weighted_score": _cells([8.0, 8.2, 8.1, 7.9, 8.3])},
+            "cfg-02": {"weighted_score": _cells([5.0, 5.2, 5.1, 4.9, 5.3])},
         }
-        entries = significance_matrix(samples)
+        entries, correction = significance_matrix(cells)
         assert len(entries) == 1
         entry = entries[0]
         assert (entry["a"], entry["b"]) == ("cfg-01", "cfg-02")
         assert entry["significant"] is True
+        assert entry["design"] == "paired"
+        assert entry["primary_test"] == "paired_t"
+        # Welch survives as the unpaired cross-check, not as the verdict.
         assert entry["welch"]["p"] < 0.05
         assert entry["mann_whitney"]["approx"] is True
+        assert correction["families"]["confirmatory"]["n_tests"] == 1
 
     def test_identical_distributions_not_significant(self):
         same = [6.0, 7.0, 8.0, 7.5, 6.5]
-        entries = significance_matrix(
-            {"cfg-01": {"weighted_score": same}, "cfg-02": {"weighted_score": list(same)}}
+        entries, _ = significance_matrix(
+            {
+                "cfg-01": {"weighted_score": _cells(same)},
+                "cfg-02": {"weighted_score": _cells(list(same))},
+            },
+            equivalence_margin=0.5,
         )
         assert entries[0]["significant"] is False
+        # And «not significant» is not left as a shrug: every case moved by exactly
+        # zero, so equivalence is decidable without a test and says so.
+        assert entries[0]["equivalence"]["equivalent"] is True
 
     def test_insufficient_data_omitted(self):
-        entries = significance_matrix(
-            {"cfg-01": {"weighted_score": [1.0]}, "cfg-02": {"weighted_score": [2.0]}}
+        entries, correction = significance_matrix(
+            {
+                "cfg-01": {"weighted_score": {"case-0": 1.0}},
+                "cfg-02": {"weighted_score": {"case-0": 2.0}},
+            }
         )
         assert entries == []
+        assert correction["n_tests"] == 0
+
+    def test_pairing_by_case_beats_the_unpaired_test_it_replaced(self):
+        """The design was always paired; until SPA-62 the test never was.
+
+        Four cases of wildly different difficulty, config B better by ~1 point on
+        every single one. Welch, comparing two independent lists, cannot see it —
+        the between-case spread swamps the between-config one. The paired test
+        looks at the same four differences and finds them unanimous."""
+        a = {"easy": 9.0, "medium": 6.0, "hard": 3.0, "brutal": 1.0}
+        b = {"easy": 9.9, "medium": 7.1, "hard": 4.0, "brutal": 2.1}
+        entries, _ = significance_matrix(
+            {"cfg-01": {"weighted_score": a}, "cfg-02": {"weighted_score": b}}
+        )
+        entry = entries[0]
+        assert entry["design"] == "paired"
+        assert entry["p"] < 0.01
+        assert entry["welch"]["p"] > 0.5
+        assert entry["significant"] is True
+
+    def test_a_case_only_one_config_finished_falls_back_and_says_so(self):
+        """A case one config failed is missing from the pairing, and which case
+        that is belongs in the row — it is survivor conditioning, not a detail."""
+        a = {"c1": 8.0, "c2": 7.0, "c3": 6.0, "csvsum": 9.0}
+        b = {"c1": 5.0, "c2": 4.2, "c3": 3.1}
+        entries, _ = significance_matrix(
+            {"cfg-01": {"weighted_score": a}, "cfg-02": {"weighted_score": b}}
+        )
+        entry = entries[0]
+        assert entry["design"] == "paired"      # 3 shared cases is still enough
+        assert entry["n_pairs"] == 3
+        assert entry["unpaired_cases"] == {"a": ["csvsum"], "b": []}
+
+    def test_too_few_shared_cases_falls_back_to_welch(self):
+        a = {"c1": 8.0, "c2": 7.0, "c3": 6.0, "c4": 9.0}
+        b = {"c1": 5.0, "x2": 4.0, "x3": 3.0, "x4": 4.5}
+        entries, _ = significance_matrix(
+            {"cfg-01": {"weighted_score": a}, "cfg-02": {"weighted_score": b}}
+        )
+        entry = entries[0]
+        assert entry["design"] == "unpaired"
+        assert entry["unpaired_reason"] == "insufficient_shared_cases"
+        assert entry["primary_test"] == "welch"
+        assert entry["effect_kind"] == "hedges_g"
+
+    def test_the_screen_is_corrected_against_its_own_size_not_the_headline(self):
+        """Two families, two counts. A pooled correction would charge the metrics
+        the experiment was built to compare for forty-odd rubric curiosities."""
+        cells = {
+            "cfg-01": {
+                "weighted_score": _cells([8.0, 8.2, 8.1, 7.9, 8.3]),
+                **{f"dim:d{i}": _cells([7.0, 7.1, 6.9, 7.0, 7.1]) for i in range(20)},
+            },
+            "cfg-02": {
+                "weighted_score": _cells([5.0, 5.2, 5.1, 4.9, 5.3]),
+                **{f"dim:d{i}": _cells([7.0, 7.1, 6.9, 7.0, 7.1]) for i in range(20)},
+            },
+        }
+        entries, correction = significance_matrix(cells)
+        assert correction["families"]["confirmatory"]["n_tests"] == 1
+        assert correction["families"]["exploratory"]["n_tests"] == 20
+        headline = next(e for e in entries if e["metric"] == "weighted_score")
+        # Corrected against a family of one, the real difference survives.
+        assert headline["significant"] is True
+        assert headline["q"] == headline["p"]
+
+    def test_a_lone_nominal_hit_among_many_does_not_survive_correction(self):
+        """The shape of the audit's own false positive: one row at p < 0.05 out of
+        dozens is what pure noise produces, and the corrected verdict says so."""
+        cells = {"cfg-01": {}, "cfg-02": {}}
+        for i in range(24):
+            cells["cfg-01"][f"dim:d{i}"] = _cells([7.0, 7.1, 6.9, 7.05, 7.02])
+            cells["cfg-02"][f"dim:d{i}"] = _cells([7.02, 7.08, 6.93, 7.03, 7.04])
+        # One dimension lands just under the bar on its own — p = 0.035, the same
+        # shape as Эксп 5b's dim:originality at 0.0399 among 48.
+        cells["cfg-01"]["dim:d0"] = _cells([8.0, 8.2, 8.1, 7.9, 8.3])
+        cells["cfg-02"]["dim:d0"] = _cells([7.95, 7.65, 7.95, 7.475, 8.05])
+        entries, correction = significance_matrix(cells)
+        hit = next(e for e in entries if e["metric"] == "dim:d0")
+        assert hit["significant_uncorrected"] is True
+        assert hit["significant"] is False
+        assert hit["q"] > hit["p"]
+        assert correction["families"]["exploratory"]["n_significant"] == 0
 
 
 def _exp(configs):
@@ -165,7 +267,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 17
+    assert report["schema_version"] == 18
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -235,9 +337,23 @@ def test_build_report_full_shape():
     assert leaderboard["players"][0]["label"] == "fast"
     assert leaderboard["players"][0]["rank"] == 1
 
-    sig = {(e["a"], e["b"], e["metric"]): e for e in report["significance"]}
-    weighted = sig[("cfg-01", "cfg-02", "weighted_score")]
-    assert weighted["significant"] is True
+    # SPA-62: two cases run three times each is TWO observations per config, not
+    # six — repeated runs of one case are averaged into their cell. Below three
+    # cases nothing is testable, and the report says that rather than showing an
+    # empty table that reads like «we looked and found nothing».
+    assert report["significance"] == []
+    correction = report["significance_correction"]
+    assert correction["n_tests"] == 0
+    assert correction["min_cases"] == 3
+    assert correction["omitted"]["too_few_cases"] == correction["n_omitted"] > 0
+
+    estimand = report["estimand"]
+    assert estimand["population"] == "success_runs"
+    assert estimand["unit"] == "case_cell_mean"
+    # cfg-02 lost a run; its scores therefore describe its luckier subset.
+    assert estimand["survivor_conditioned"] is True
+    assert estimand["excluded_by_status"] == {"cfg-01": 0, "cfg-02": 1}
+    assert estimand["margin_source"] == "default"
 
     failure = report["failure_modes"]["per_config"]
     cfg2 = next(f for f in failure if f["config_key"] == "cfg-02")
@@ -312,7 +428,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 17
+    assert report["schema_version"] == 18
 
     ext = report["external"]
     assert ext["available"] is True
@@ -993,18 +1109,24 @@ def test_traj_score_under_a_gate_never_falls_back_to_the_stored_overall():
 def test_a_rank_only_metric_is_judged_on_ranks_not_on_means():
     from app.quality.experiment_report import significance_matrix
 
-    samples = {"a": {"dim:x": [8, 9, 10, 11]}, "b": {"dim:x": [1, 2, 3, 4]}}
-    row = significance_matrix(samples, rank_only_metrics=frozenset({"dim:x"}))[0]
+    cells = {
+        "a": {"dim:x": _cells([8, 9, 10, 11])},
+        "b": {"dim:x": _cells([1, 2, 3.5, 4])},
+    }
+    row = significance_matrix(cells, rank_only_metrics=frozenset({"dim:x"}))[0][0]
     assert row["rank_only"] is True
     # Welch compares MEANS — the one thing a scale-shifted judge cannot support.
+    # Neither does the paired t-test, so the rank-rescued row rests on the signed
+    # rank test and, below its minimum, on Mann-Whitney.
     assert row["welch"] is None
+    assert row["primary_test"] in {"wilcoxon", "mann_whitney"}
     assert row["mann_whitney"] is not None
-    assert row["p"] == row["mann_whitney"]["p"]
 
-    plain = significance_matrix(samples)[0]
+    plain = significance_matrix(cells)[0][0]
     assert plain["rank_only"] is False
     assert plain["welch"] is not None
-    assert plain["p"] == plain["welch"]["p"]
+    assert plain["primary_test"] == "paired_t"
+    assert plain["p"] == plain["paired_t"]["p"]
 
 
 def _two_dim_runs(per_config: dict[str, dict[str, list[float]]]):
@@ -1033,6 +1155,37 @@ def _two_dim_runs(per_config: dict[str, dict[str, list[float]]]):
 
 def _calibration(dims: list[dict]):
     return {"available": True, "dimensions": dims}
+
+
+def test_repeated_runs_of_one_case_are_one_observation_not_many():
+    """Three cases run three times each is a sample of THREE, not nine.
+
+    Repeated runs of the same case share everything about that case; entering
+    them as independent observations is pseudoreplication, and it inflates
+    confidence exactly where the design is weakest. The cell is the unit, so the
+    row reports three pairs — and stays testable, unlike the two-case matrix."""
+    runs, records = [], {}
+    for case_i in range(3):
+        for run_i in range(3):
+            for cfg, base in (("cfg-01", 8.0), ("cfg-02", 6.0)):
+                # Case difficulty dominates; the config effect is the constant on
+                # top of it, which is precisely what the pairing recovers.
+                score = base + case_i * 1.5 + run_i * 0.05
+                r = _run(cfg, f"case-{case_i}", run_i, score=score, traj=7.0)
+                runs.append(r)
+                records[r.task_id] = _record(
+                    dimensions=[{"key": "correctness", "score": score}]
+                )
+
+    report = build_report(_exp(CONFIGS), runs, records)
+    row = next(
+        r for r in report["significance"] if r["metric"] == "weighted_score"
+    )
+    assert row["design"] == "paired"
+    assert row["n_pairs"] == 3
+    assert row["n_cases_a"] == 3 and row["n_cases_b"] == 3
+    assert row["effect_kind"] == "cohens_dz"
+    assert row["ci"] is not None and row["power"]["n"] == 3
 
 
 def test_an_unreliable_axis_cannot_produce_a_significant_row():
@@ -1065,7 +1218,12 @@ def test_an_unreliable_axis_cannot_produce_a_significant_row():
 
     raw = next(r for r in report["significance"] if r["metric"] == "dim:originality")
     assert raw["significant"] is True
-    assert 0.03 < raw["p"] < SIGNIFICANCE_ALPHA
+    assert raw["p"] < SIGNIFICANCE_ALPHA
+    # SPA-62: the verdict now comes from the paired test, and on the same data it
+    # is STRICTLY stronger than the Welch number this fixture used to assert —
+    # which is the whole argument for pairing, visible on the audit's own case.
+    assert raw["design"] == "paired"
+    assert raw["p"] < raw["welch"]["p"]
     # The raw row carries its own condition: the axis it was measured through.
     assert raw["axis"]["status"] == "unreliable"
     assert raw["axis"]["numeric"] is False
