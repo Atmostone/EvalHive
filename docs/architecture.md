@@ -813,8 +813,17 @@ call** — pure agreement statistics over already-stored scores.
 - **Pure-Python stats** (`app/quality/stats.py`, no scipy/numpy): `pearson`,
   `spearman` (Pearson on average-tie ranks), `cohen_kappa` (over the fixed band set),
   `score_to_band` (the human-feedback cuts: bad 0–3 / improve 4–7 / good 8–10),
-  `mean_bias`. Any metric with fewer than `MIN_SAMPLES` (3) pairs returns `None` and the
-  dimension is marked `insufficient_data`.
+  `mean_bias`. Significance and intervals live here too (SPA-40, SPA-62):
+  `welch_t_test` / `mann_whitney_u` for unpaired slices, `paired_t_test` /
+  `wilcoxon_signed_rank` for the paired ones, `hedges_g` and `paired_effect_size`
+  (d_z — kept apart under two names because they are standardised by different
+  spreads and comparing them is meaningless), `benjamini_hochberg`,
+  `tost_equivalence`, `wilson_interval`, the seeded percentile bootstraps
+  (`bootstrap_diff_ci`, `bootstrap_unpaired_diff_ci`, `bootstrap_kappa_ci`,
+  `bootstrap_auc_ci` — seeded, because an interval that moves between two runs
+  over the same data is not evidence of anything) and `paired_power` /
+  `unpaired_power`. Any metric with fewer than `MIN_SAMPLES` (3) pairs returns
+  `None` and the dimension is marked `insufficient_data`.
 - **Shared pair collection.** `collect_judge_human_pairs` flattens one row per rated
   dimension across the **current** annotations (SPA-85: superseded rows excluded, and
   by default only the human types, so an unattended machine annotation never silently
@@ -1111,9 +1120,51 @@ help" as one operation.
   Pareto frontier (quality ↑ × cost ↓ × time ↓), outcome × trajectory scatter,
   pairwise leaderboard (pointwise scores case-paired via E-19 `build_matches`
   + `rank`, Bradley-Terry/Elo + bootstrap CI), statistical significance per
-  config pair × metric (Welch t-test with an exact pure-python t-CDF as the
-  primary marker, Mann-Whitney U normal-approximation as the non-parametric
-  check; ★ p<0.05), failure-mode breakdown, orchestrator on/off comparison.
+  config pair × metric (see below), failure-mode breakdown, orchestrator on/off
+  comparison.
+
+#### The design was always paired; the test had to become paired too (SPA-62)
+
+The matrix runs the *same cases* through every configuration. That is a paired
+design, and until SPA-62 it was tested as if it were not: samples reached
+`significance_matrix` as a flat list per config, so case identity was gone before
+any test ran and Welch compared two independent samples. Everything the two
+configs share — a case being hard, a rubric dimension being lenient — therefore
+stayed in the noise instead of cancelling, and on a four-case matrix the spread
+between an easy case and a hard one is routinely larger than the spread between
+the configs, which is precisely when an unpaired test cannot see a consistent
+improvement.
+
+Three commitments follow, and they are commitments about what a number *means*
+rather than about how it is computed:
+
+- **The unit is the (config, case) cell, not the run.** Repeated runs of one case
+  share everything about that case; entering them as independent observations is
+  pseudoreplication and inflates confidence exactly where the design is weakest.
+  A cell contributes one value, averaged. The visible cost is real: two cases run
+  three times each used to look like six observations per config and is honestly
+  two, which is below the minimum — so the report reports the omission and its
+  reason, because an unexplained empty table reads like a null result.
+- **Multiplicity is part of the result.** Dozens of tests at α = 0.05 manufacture
+  roughly one green row per twenty from nothing. `significant` is decided on a
+  Benjamini-Hochberg q and the uncorrected verdict travels beside it. Correction
+  runs **within** a family and never across: the two headline metrics the
+  experiment was built to compare are one family, the per-dimension screen over
+  whatever the rubric contained is another. Pooling them makes the screen's size
+  the headline's problem, which is a cost the headline did not incur.
+- **Absence of evidence is labelled as such.** «Not significant» means «we could
+  not tell». A row that fails to reach significance carries a TOST verdict against
+  `eval_config.equivalence_margin` — pre-registered like the RQ2 threshold, for
+  the same reason — so «no difference» becomes a claim that could be wrong, and
+  where even that is undecidable the row reports what the design *could* have
+  detected instead of shrugging.
+
+The same principle extends to the point estimates elsewhere in the report: κ, AUC
+and every rate carry intervals. The κ interval is deliberately **carried and not
+acted on** — the reliability gate's cut-offs are SPA-88's decision, and this
+change only makes it possible to see how firmly a point estimate stands where the
+gate reads it. And because scores exist only for runs that finished, `estimand`
+names the population rather than leaving the reader to assume one.
 
 #### The headline cannot depend on where a line is drawn (SPA-87)
 
@@ -1288,7 +1339,9 @@ nothing on one side makes no claim at all.
 | `app/quality/reproducibility.py` | E-20 Reproducibility Snapshot: `assemble_snapshot` + `snapshot_fingerprint` + `diff_snapshots` + `capture_snapshot`/`replay_from_snapshot` — per-record `experiment_snapshot` (captured/missing manifest), SHA-256 determinism fingerprint, snapshot diff + re-run via `clone_task_for_rerun` |
 | `app/quality/comparison.py` | E-21 Pairwise Comparison: `create_comparison`/`advance_comparison` + `judge_pair_llm` (both-orders, position-bias mitigation) + `comparisons_to_matches`/`run_pairwise_leaderboard` — real A/B verdicts on `pairwise_comparisons`, handed to E-19 as explicit ELO matches |
 | `app/quality/experiments.py` | SPA-40 Experiment Runner: `create_experiment` + `expand_matrix`/`normalize_dataset` + `advance_experiment` — frozen dataset × config matrix × n_runs, poll-driven `experiment_runs` cells (E-02 + optional E-07/E-14/E-20), cost-capped. Driven by the `experiment_run_tick` job |
-| `app/quality/experiment_report.py` | SPA-40 Experiment report: `build_report`/`compute_report` — per-config summary, heatmap, Pareto frontier, pairwise leaderboard, `significance_matrix`, failure-mode/orchestrator breakdowns, plus the per-axis reliability traffic light and the gate it drives (`_classify_reliability` six-way / `_axis_reliability` / `_outcome_axis_reliability` / `_trust_split` / `_trusted_weighted`; raw vs `trusted` views; `SCHEMA_VERSION=17`) |
+| `app/quality/experiment_report.py` | SPA-40 Experiment report: `build_report`/`compute_report` — per-config summary, heatmap, Pareto frontier, pairwise leaderboard, `significance_matrix`, failure-mode/orchestrator breakdowns, plus the per-axis reliability traffic light and the gate it drives (`_classify_reliability` six-way / `_axis_reliability` / `_outcome_axis_reliability` / `_trust_split` / `_trusted_weighted`; raw vs `trusted` views), and the paired,
+multiplicity-corrected statistics on top of it (`_significance_cells` /
+`_compare_cells`; `SCHEMA_VERSION=18`) |
 | `app/api/data_lake.py` | `/api/data-lake` — records (filter), full blob, group-by query, export (json/parquet) |
 | `app/api/quality.py` | `/api/quality` — rubrics CRUD, task quality profile, on-demand evaluate |
 | `app/utils/cost.py` | Token-usage → USD via the model_pricing setting |

@@ -14,8 +14,40 @@ const STATS: Term[] = [
     desc: "A rank-based, distribution-free alternative to the t-test — it asks whether one group tends to rank higher, without assuming a bell curve. Safer on small or skewed samples; shown next to Welch as a cross-check. If both agree, trust it more.",
   },
   {
-    name: 'p-value · significance (★)',
-    desc: "The probability the observed difference happened by chance. ★ marks p < 0.05 — the conventional bar for 'significant'. Large p (e.g. 0.7) = the configs are indistinguishable on this metric with the data we have.",
+    name: 'Paired test (paired by case)',
+    desc: "The experiment runs the SAME cases through every configuration, so the honest comparison is within each case: subtract, then ask whether the differences lean one way. Everything the two configs share — a case being hard, a rubric dimension being lenient — cancels. An unpaired test throws that away and is often blind to a real, consistent improvement because the gap between an easy case and a hard one is bigger than the gap between the configs.",
+  },
+  {
+    name: 'Design: paired vs unpaired',
+    desc: "Paired = the two configs finished enough of the same cases (at least 3) and were compared case by case; 'n=4' is the number of shared cases, NOT the number of runs — repeated runs of one case are averaged into it, because ten runs of one case are still one case. Unpaired = too few shared cases, so the comparison falls back to Welch, which is weaker.",
+  },
+  {
+    name: 'p-value · q-value (★)',
+    desc: "p is the chance THIS difference is noise. But the report runs dozens of comparisons at once, and at p < 0.05 roughly one in twenty comes up green with nothing behind it — so on 48 tests you expect about two fake stars for free. q is p adjusted for how many tests were run (Benjamini-Hochberg), and ★ follows q, not p. A row marked 'was p<.05' passed on its own and did not survive the company it was in.",
+  },
+  {
+    name: 'Test families (confirmatory / exploratory)',
+    desc: "The two headline metrics (Overall quality, Trajectory) are what the experiment was built to compare; the per-dimension rows are a screen over whatever the rubric happened to contain. They are corrected separately, so a real finding on the headline is not punished for forty curiosities — and each family prints how many tests it ran.",
+  },
+  {
+    name: 'Effect size · Hedges\' g · Cohen\'s d_z',
+    desc: "The size of a difference, in units of its own spread — because 'significant' only says a difference is there, not whether it matters. d_z is used on paired rows (standardised by the spread of the within-case differences), g on unpaired ones (standardised by the spread within the groups). They answer different questions and must never be compared to each other, which is why the report names which one it is showing.",
+  },
+  {
+    name: 'TOST · equivalence (≈)',
+    desc: "'Not significant' means 'we could not tell', which is NOT 'they are the same' — on four cases you can barely tell anything. TOST asks the opposite question: is the difference small enough to be inside a margin we set in advance (0.5 judge points by default)? ≈ equivalent = yes, and that is a claim that could have been wrong. ? inconclusive = the data cannot support either verdict.",
+  },
+  {
+    name: 'MDE · required n (power)',
+    desc: "What the design could have seen. MDE is the smallest difference this many cases could have detected; required n is how many cases the difference actually observed would have needed. Together they separate 'we looked and there is nothing' from 'this experiment was never big enough to find it' — which look identical on the page without them.",
+  },
+  {
+    name: 'Wilson interval',
+    desc: "A confidence interval for a percentage (pass rate, agreement, the 2×2 cells). The textbook formula misbehaves badly on small counts — it can run below 0% or above 100%, and on a zero cell it reports [0%, 0%], claiming certainty from no evidence at all. Wilson does neither.",
+  },
+  {
+    name: 'Estimand · survivor conditioning',
+    desc: "Which population the numbers actually describe. Quality and trajectory scores exist only for runs that FINISHED, so a configuration that crashes more often is scored on its luckier subset and can look better than it is; the same applies per case — a case one config failed is missing from the pairing. The report states this rather than assuming you knew.",
   },
   {
     name: 'Pearson correlation',

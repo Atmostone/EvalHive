@@ -801,6 +801,7 @@ export interface JudgeCalibrationDimension {
   pearson: number | null
   spearman: number | null
   cohen_kappa: number | null
+  cohen_kappa_ci?: KappaCI | null
   mean_bias: number | null
   reliable: boolean
   status: 'ok' | 'insufficient_data'
@@ -817,6 +818,7 @@ export interface InterAnnotatorAgreement {
     name: string
     n: number
     cohen_kappa: number | null
+    cohen_kappa_ci?: KappaCI | null
     agreement_pct: number | null
     reliable: boolean
     status: 'ok' | 'insufficient_data'
@@ -824,6 +826,7 @@ export interface InterAnnotatorAgreement {
   overall: {
     n: number
     cohen_kappa: number | null
+    cohen_kappa_ci?: KappaCI | null
     agreement_pct: number | null
     reliable: boolean
   }
@@ -846,6 +849,7 @@ export interface JudgeCalibrationMetrics {
   overall: {
     n: number
     cohen_kappa: number | null
+    cohen_kappa_ci?: KappaCI | null
     agreement_pct: number | null
     reliable: boolean
   }
@@ -1589,6 +1593,7 @@ export interface ExperimentConfigSummary {
   label: string
   n_runs: number
   success_rate?: number | null
+  success_rate_ci?: ProportionCI | null
   quality_mean?: number | null
   trajectory_mean?: number | null
   cost_mean?: number | null
@@ -1655,6 +1660,10 @@ export interface ExperimentRq2Cell {
   n: number
   cells: { pass_high: number; pass_low: number; fail_high: number; fail_low: number }
   agreement?: number | null
+  agreement_ci?: ProportionCI | null
+  /** `fail_high` as a rate: work the checker failed and the judge scored high. */
+  over_credit_rate?: number | null
+  over_credit_ci?: ProportionCI | null
 }
 
 /** SPA-87: the judge↔checker relationship WITHOUT a threshold — the judge's score
@@ -1669,6 +1678,7 @@ export interface ExperimentJudgeDiscriminationCell {
   mean_on_fail?: number | null
   separation?: number | null
   auc?: number | null
+  auc_ci?: { auc: number; lo: number; hi: number; n_positive: number; n_negative: number } | null
   mann_whitney?: { u: number; z: number; p: number; approx: boolean } | null
 }
 
@@ -1712,8 +1722,40 @@ export interface ExperimentTrustAxis {
   status: AxisTrustStatus
   source?: string | null
   kappa?: number | null
+  /** The gate classifies by the point estimate; the interval says how firmly.
+   *  Carried, not acted on — where the cut-offs sit was decided in SPA-88. */
+  kappa_ci?: KappaCI | null
   rho?: number | null
   n?: number
+}
+
+/** Bootstrap interval for Cohen's κ. The reliability gate classifies by the point
+ *  estimate; this says how firmly it stands there (SPA-62). */
+export interface KappaCI {
+  kappa: number
+  lo: number
+  hi: number
+  n: number
+  alpha: number
+  n_resamples: number
+}
+
+/** Percentile-bootstrap interval for a difference of means. */
+export interface DiffCI {
+  mean_diff: number
+  lo: number
+  hi: number
+  alpha: number
+  n_resamples: number
+}
+
+/** Wilson score interval for a proportion — used wherever a rate is reported. */
+export interface ProportionCI {
+  p: number
+  lo: number
+  hi: number
+  n: number
+  alpha: number
 }
 
 export interface ExperimentSignificanceRow {
@@ -1721,10 +1763,56 @@ export interface ExperimentSignificanceRow {
   b: string
   metric: string
   p: number
+  /** Benjamini-Hochberg q within this row's family. `significant` follows THIS. */
+  q?: number
   significant: boolean
+  /** What the star would have said before the correction — kept so a demotion is
+   *  legible instead of a row that quietly stopped being green. */
+  significant_uncorrected?: boolean
+  /** Headline metric (corrected among a handful) vs rubric-dimension screen
+   *  (corrected among dozens). Families are corrected separately. */
+  family?: 'confirmatory' | 'exploratory'
+  /** The matrix runs the same cases across configs, so the comparison is paired
+   *  whenever the two sides share enough of them; Welch is the fallback. */
+  design?: 'paired' | 'unpaired'
+  unpaired_reason?:
+    | 'insufficient_shared_cases'
+    | 'insufficient_nonzero_pairs'
+    | 'degenerate_differences'
+    | null
+  primary_test?: 'paired_t' | 'wilcoxon' | 'welch' | 'mann_whitney'
+  n_pairs?: number
+  n_cases_a?: number
+  n_cases_b?: number
+  /** Cases only one config finished — case-level survivor conditioning, named. */
+  unpaired_cases?: { a: string[]; b: string[] }
+  /** d_z on a paired row, Hedges' g on an unpaired one. Different estimands: they
+   *  are standardised by different spreads and must never be compared. */
+  effect?: number | null
+  effect_kind?: 'cohens_dz' | 'hedges_g'
+  ci?: DiffCI | null
+  /** TOST: whether «no difference» is a claim or an absence of one. */
+  equivalence?:
+    | { margin: number; p: number; equivalent: boolean; n_pairs: number; exact: boolean }
+    | { available: false; reason: string }
+    | null
+  /** What this design could have seen: the smallest detectable difference at 80%
+   *  power, and the n the observed difference would have needed. */
+  power?: {
+    sd: number
+    observed_diff: number
+    mde: number
+    n_required: number | null
+    n: number
+    alpha: number
+    power: number
+    paired: boolean
+  } | null
   // A rank-rescued axis cannot support a comparison of means, so Welch is not run
   // at all and the verdict rests on Mann-Whitney — approximate, hence a weaker claim.
   rank_only?: boolean
+  paired_t?: { t: number; df: number; p: number; mean_diff: number; n_pairs: number } | null
+  wilcoxon?: { w: number; z: number; p: number; n_pairs: number; approx: boolean } | null
   welch?: { t: number; df: number; p: number; mean_a: number; mean_b: number } | null
   mann_whitney?: { u: number; z: number; p: number; approx: boolean } | null
   // The axis this row was measured through, and how far it is trusted.
@@ -1765,6 +1853,7 @@ export interface ExperimentTrustedView {
   pareto: ExperimentReport['pareto']
   leaderboard: ExperimentReport['leaderboard'] & { basis?: string }
   significance: ExperimentSignificanceRow[]
+  significance_correction: ExperimentSignificanceCorrection
   // What the gate cost, in the only currency the reader cares about: conclusions.
   dropped: {
     significance_rows: number
@@ -1773,6 +1862,36 @@ export interface ExperimentTrustedView {
     demoted_rows: number
     demoted_metrics: string[]
   }
+}
+
+/** How many tests the table ran, and what it did about that. */
+export interface ExperimentSignificanceCorrection {
+  method: 'benjamini_hochberg'
+  controls: 'fdr'
+  alpha: number
+  n_tests: number
+  families: Record<string, {
+    n_tests: number
+    n_significant: number
+    n_significant_uncorrected: number
+  }>
+  equivalence_margin: number | null
+  /** Fewer shared cases than this and nothing is testable at all. */
+  min_cases: number
+  n_omitted: number
+  omitted: Record<string, number>
+}
+
+/** The population the report's numbers are about — stated, because it is not the
+ *  one a reader assumes. */
+export interface ExperimentEstimand {
+  population: 'success_runs'
+  unit: 'case_cell_mean'
+  quantity: string
+  survivor_conditioned: boolean
+  excluded_by_status: Record<string, number>
+  equivalence_margin: number | null
+  margin_source: 'pre_registered' | 'default'
 }
 
 export interface ExperimentTrustSplit {
@@ -1904,6 +2023,8 @@ export interface ExperimentReport {
         name: string
         source: 'human' | 'structural' | 'none'
         kappa?: number | null
+        /** How firmly the point estimate stands where the gate reads it. */
+        kappa_ci?: KappaCI | null
         rho?: number | null
         n: number
         status: AxisTrustStatus
@@ -1925,6 +2046,8 @@ export interface ExperimentReport {
         name: string
         source: 'human' | 'structural' | 'none'
         kappa?: number | null
+        /** How firmly the point estimate stands where the gate reads it. */
+        kappa_ci?: KappaCI | null
         rho?: number | null
         n: number
         status: AxisTrustStatus
@@ -1996,6 +2119,7 @@ export interface ExperimentReport {
       n_evaluated: number
       n_pass: number
       pass_rate?: number | null
+      pass_rate_ci?: ProportionCI | null
     }[]
   }
   /** SPA-87: the RQ2 headline. Threshold-free, so it cannot be improved by
@@ -2062,6 +2186,8 @@ export interface ExperimentReport {
     derivation?: Record<string, unknown>
   }
   significance: ExperimentSignificanceRow[]
+  significance_correction: ExperimentSignificanceCorrection
+  estimand: ExperimentEstimand
   // SPA-88: the parallel view computed only from the axes that cleared the gate.
   // Raw above keeps every axis — quarantining one is a claim about the JUDGE, and
   // the reader is owed the unfiltered numbers to check it against.
@@ -2095,6 +2221,7 @@ export interface ExperimentReport {
       pearson?: number | null
       spearman?: number | null
       cohen_kappa?: number | null
+      cohen_kappa_ci?: KappaCI | null
       mean_bias?: number | null
       judge_mean?: number | null
       human_mean?: number | null
@@ -2104,6 +2231,7 @@ export interface ExperimentReport {
     overall: {
       n: number
       cohen_kappa?: number | null
+      cohen_kappa_ci?: KappaCI | null
       agreement_pct?: number | null
       reliable: boolean
     }

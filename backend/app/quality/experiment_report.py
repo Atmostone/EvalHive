@@ -41,11 +41,34 @@ from app.quality.experiments import (
     live_configs,
 )
 from app.quality.ranking import build_matches
-from app.quality.stats import MIN_SAMPLES, mann_whitney_u, rank_auc, welch_t_test
+from app.quality.stats import (
+    MIN_SAMPLES,
+    benjamini_hochberg,
+    bootstrap_auc_ci,
+    bootstrap_diff_ci,
+    bootstrap_unpaired_diff_ci,
+    hedges_g,
+    mann_whitney_u,
+    paired_effect_size,
+    paired_power,
+    paired_t_test,
+    rank_auc,
+    tost_equivalence,
+    unpaired_power,
+    welch_t_test,
+    wilcoxon_signed_rank,
+    wilson_interval,
+)
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 from app.utils.failures import is_contaminated
 
-SCHEMA_VERSION = 17  # v17: the reliability gate ACTS (SPA-88) — a parallel
+SCHEMA_VERSION = 18  # v18: paper-grade statistics (SPA-62) — comparisons are
+# paired by case (the design was always paired; the test never was), `significant`
+# is decided on a Benjamini-Hochberg q within its own family, every row carries an
+# effect size with a bootstrap CI and — when it finds nothing — a TOST verdict that
+# separates equivalence from ignorance; κ, AUC and the 2×2 gain intervals, and the
+# report names the population its numbers describe
+# v17: the reliability gate ACTS (SPA-88) — a parallel
 # `trusted` view recomputed from the axes the calibrator clears, next to the
 # untouched raw one; rank-rescued axes are barred from every numeric aggregate and
 # admitted only to rank methods; the four-way light becomes a six-way taxonomy
@@ -90,6 +113,18 @@ SELECTION_POLICIES = (
 )
 
 SIGNIFICANCE_ALPHA = 0.05
+
+# Which metrics are a claim the experiment was built to make, and which are a
+# screen. Correcting the two headline metrics in the same family as forty-odd
+# rubric-dimension rows would punish the findings the matrix exists for on behalf
+# of curiosities nobody named in advance — so each family is corrected against
+# its own size, and both sizes are printed.
+CONFIRMATORY_METRICS = frozenset({"weighted_score", "trajectory_score"})
+# Smallest difference in judge points worth calling a difference, when the
+# experiment's author pre-registered none. Fixed BEFORE any result exists (it is
+# stamped into eval_config at create time, SPA-87's mechanism) — a margin chosen
+# after seeing the data is not an equivalence claim, it is a description.
+DEFAULT_EQUIVALENCE_MARGIN = 0.5
 # Outcome-judge threshold splitting "high" vs "low" in the RQ2 verdict×judge 2×2 —
 # the FALLBACK, used only when an experiment pre-registered none. An experiment
 # that means to report a 2×2 sets `eval_config.judge_threshold` at creation, and
@@ -310,6 +345,7 @@ def _trust_split(reliability: dict) -> tuple[frozenset[str], frozenset[str], dic
             "status": status,
             "source": ax.get("source"),
             "kappa": ax.get("kappa"),
+            "kappa_ci": ax.get("kappa_ci"),
             "rho": ax.get("rho"),
             "n": ax.get("n"),
         }
@@ -369,16 +405,17 @@ def _axis_reliability(
         h_kappa = hd.get("cohen_kappa") if hd else None
         struct_ok = key == "loop_detection" and struct_n > 0
 
+        h_kappa_ci = hd.get("cohen_kappa_ci") if hd else None
         if hd is not None and h_n >= MIN_SAMPLES:
-            source, kappa, n = "human", h_kappa, h_n
+            source, kappa, n, kappa_ci = "human", h_kappa, h_n, h_kappa_ci
         elif struct_ok and struct_n >= MIN_SAMPLES:
-            source, kappa, n = "structural", struct_kappa, struct_n
+            source, kappa, n, kappa_ci = "structural", struct_kappa, struct_n, None
         elif hd is not None:  # human source exists but too few pairs
-            source, kappa, n = "human", h_kappa, h_n
+            source, kappa, n, kappa_ci = "human", h_kappa, h_n, h_kappa_ci
         elif struct_ok:  # structural ran but very few runs
-            source, kappa, n = "structural", struct_kappa, struct_n
+            source, kappa, n, kappa_ci = "structural", struct_kappa, struct_n, None
         else:
-            source, kappa, n = "none", None, 0
+            source, kappa, n, kappa_ci = "none", None, 0, None
 
         # Rank correlation only exists for the human source (the structural loop
         # anchor is binary — no meaningful per-run ordering to correlate).
@@ -390,6 +427,7 @@ def _axis_reliability(
             "name": label,
             "source": source,
             "kappa": kappa,
+            "kappa_ci": kappa_ci,
             "rho": rho,
             "n": n,
             "status": _classify_reliability(kappa, n, has_source=has_source, rho=rho),
@@ -429,6 +467,7 @@ def _outcome_axis_reliability(calibration: Optional[dict]) -> dict:
                 "name": d.get("name") or key,
                 "source": "human",
                 "kappa": kappa,
+                "kappa_ci": d.get("cohen_kappa_ci"),
                 "rho": rho,
                 "n": n,
                 "status": _classify_reliability(kappa, n, has_source=True, rho=rho),
@@ -469,50 +508,264 @@ def pareto_frontier(points: list[dict]) -> list[str]:
     return frontier
 
 
+def _compare_cells(
+    a_key: str,
+    b_key: str,
+    metric: str,
+    a_cells: dict[str, float],
+    b_cells: dict[str, float],
+    *,
+    rank_only: bool,
+    equivalence_margin: float | None,
+    confirmatory: bool,
+) -> dict | None:
+    """One row of the significance matrix: two configs, one metric.
+
+    The matrix runs the SAME cases across configs, so the comparison is paired and
+    every source of variation the two configs share — a hard case, a lenient
+    rubric dimension — cancels instead of drowning the effect. Unpaired Welch,
+    which is all this function used to do, cannot see a constant per-case
+    improvement whenever the between-case spread exceeds the between-config one;
+    on a four-case matrix it almost always does.
+
+    Welch and Mann-Whitney are still computed and still reported — as the
+    unpaired cross-check, not as the verdict."""
+    shared = sorted(set(a_cells) & set(b_cells))
+    pairs = [(a_cells[c], b_cells[c]) for c in shared]
+    a_vals = [a_cells[c] for c in sorted(a_cells)]
+    b_vals = [b_cells[c] for c in sorted(b_cells)]
+
+    # Both tests of both designs, always: the row names which one it rests on, and
+    # the others ride along so a reader can see whether they agree.
+    p_t = paired_t_test(pairs) if len(pairs) >= MIN_SAMPLES else None
+    wilcox = wilcoxon_signed_rank(pairs) if len(pairs) >= MIN_SAMPLES else None
+    # A rank-rescued axis cannot support a comparison of MEANS (SPA-88), so the
+    # mean-based tests are not merely demoted for it — they are not run at all.
+    welch = None if rank_only else welch_t_test(a_vals, b_vals)
+    mw = mann_whitney_u(a_vals, b_vals)
+
+    design, reason, primary_test, primary = "paired", None, None, None
+    if rank_only:
+        primary_test, primary = "wilcoxon", wilcox
+    else:
+        primary_test, primary = "paired_t", p_t
+    if primary is None:
+        design = "unpaired"
+        if len(pairs) < MIN_SAMPLES:
+            reason = "insufficient_shared_cases"
+        elif rank_only:
+            # Wilcoxon's normal approximation needs more non-zero differences than
+            # a small matrix has; that is a sample-size limit, not a degeneracy.
+            reason = "insufficient_nonzero_pairs"
+        else:
+            # Enough pairs and the paired test still could not run: every
+            # difference was identical, so there is no variance to test against.
+            # The equivalence verdict below is the one that can speak here.
+            reason = "degenerate_differences"
+        primary_test, primary = ("mann_whitney", mw) if rank_only else ("welch", welch)
+    if primary is None and not rank_only:
+        # Both mean-based tests are unavailable (constant scores leave Welch with
+        # no denominator). The rank test asks a weaker question but can still
+        # answer; dropping the row entirely would say less than it could.
+        primary_test, primary = "mann_whitney", mw
+    if primary is None:
+        return None
+
+    paired_design = design == "paired"
+    if paired_design:
+        effect, effect_kind = paired_effect_size(pairs), "cohens_dz"
+        ci = bootstrap_diff_ci(pairs)
+        power = paired_power(pairs)
+    else:
+        effect, effect_kind = hedges_g(a_vals, b_vals), "hedges_g"
+        ci = bootstrap_unpaired_diff_ci(a_vals, b_vals)
+        power = unpaired_power(a_vals, b_vals)
+
+    # Equivalence runs on the PAIRS whenever they exist, even on a row whose
+    # primary test fell back to unpaired: the degenerate case (every case moved by
+    # the same amount, or not at all) is exactly where equivalence is decidable
+    # and the significance test is not.
+    equivalence = None
+    if len(pairs) >= MIN_SAMPLES and equivalence_margin:
+        equivalence = tost_equivalence(pairs, equivalence_margin)
+    elif len(pairs) < MIN_SAMPLES:
+        equivalence = {"available": False, "reason": "insufficient_shared_cases"}
+
+    p_value = primary["p"]
+    return {
+        "a": a_key,
+        "b": b_key,
+        "metric": metric,
+        "family": "confirmatory" if confirmatory else "exploratory",
+        "design": design,
+        "unpaired_reason": reason,
+        "primary_test": primary_test,
+        "n_pairs": len(pairs),
+        "n_cases_a": len(a_cells),
+        "n_cases_b": len(b_cells),
+        # Case-level survivor conditioning, named rather than silently dropped: a
+        # case one config failed and the other did not is missing from the pairing,
+        # and which cases those are is part of reading the row.
+        "unpaired_cases": {
+            "a": sorted(set(a_cells) - set(b_cells)),
+            "b": sorted(set(b_cells) - set(a_cells)),
+        },
+        "paired_t": p_t,
+        "wilcoxon": wilcox,
+        "welch": welch,
+        "mann_whitney": mw,
+        "effect": effect,
+        "effect_kind": effect_kind,
+        "ci": ci,
+        "equivalence": equivalence,
+        "power": power,
+        "p": p_value,
+        "rank_only": rank_only,
+        # q, significant: filled in by the correction pass, which needs every row.
+        "significant_uncorrected": p_value < SIGNIFICANCE_ALPHA,
+    }
+
+
 def significance_matrix(
-    samples_by_config: dict[str, dict[str, list[float]]],
+    cells_by_config: dict[str, dict[str, dict[str, float]]],
     *,
     rank_only_metrics: frozenset[str] = frozenset(),
-) -> list[dict]:
-    """Welch + Mann-Whitney for every config pair × metric with enough data.
+    equivalence_margin: float | None = None,
+    confirmatory_metrics: frozenset[str] = CONFIRMATORY_METRICS,
+) -> tuple[list[dict], dict]:
+    """Every config pair × metric, paired by case, corrected for how many were run.
 
-    ``significant`` is judged on the Welch p (exact); Mann-Whitney rides along
-    as the non-parametric cross-check (``approx: True``). Pairs/metrics where
-    neither test can run are omitted entirely.
+    ``cells_by_config`` is ``config -> metric -> case_key -> value``: one number
+    per (config, case) CELL, averaged over that cell's repeated runs. The cell is
+    the unit because the case is what the design repeats — treating repeated runs
+    of one case as independent observations would understate every interval
+    exactly where the clustering lives.
 
-    ``rank_only_metrics`` names metrics carried by a rank-rescued axis (SPA-88).
-    Welch compares MEANS, which is the one thing a scale-shifted judge cannot
-    support, so it is not run at all for those metrics: the verdict rests on
-    Mann-Whitney, which only ever looked at ranks. Such rows carry
-    ``rank_only: true`` — an approximate test, so a weaker claim, said out loud."""
+    Two things a reader is owed and used to get neither of. First, the design:
+    paired when the two configs share enough cases, Welch over the unpooled cell
+    values when they do not, said out loud either way. Second, the multiplicity: a
+    matrix runs dozens of tests, and at α = 0.05 roughly one in twenty comes up
+    green with nothing under it, so ``significant`` is decided on the
+    Benjamini-Hochberg q-value and the uncorrected verdict is kept beside it.
+
+    Correction happens WITHIN a family, never across: the two headline metrics are
+    what the experiment was built to compare, the rubric dimensions are a screen
+    over whatever the rubric happened to contain. Pooling them makes the screen's
+    size the headline's problem.
+
+    Returns ``(rows, correction)``."""
     out: list[dict] = []
-    keys = sorted(samples_by_config)
-    metrics = sorted({m for v in samples_by_config.values() for m in v})
+    omitted: dict[str, int] = {}
+    keys = sorted(cells_by_config)
+    metrics = sorted({m for v in cells_by_config.values() for m in v})
     for i in range(len(keys)):
         for j in range(i + 1, len(keys)):
             a_key, b_key = keys[i], keys[j]
             for metric in metrics:
-                a = samples_by_config[a_key].get(metric) or []
-                b = samples_by_config[b_key].get(metric) or []
-                rank_only = metric in rank_only_metrics
-                welch = None if rank_only else welch_t_test(a, b)
-                mw = mann_whitney_u(a, b)
-                if welch is None and mw is None:
-                    continue
-                p = welch["p"] if welch is not None else mw["p"]
-                out.append(
-                    {
-                        "a": a_key,
-                        "b": b_key,
-                        "metric": metric,
-                        "welch": welch,
-                        "mann_whitney": mw,
-                        "p": p,
-                        "rank_only": rank_only,
-                        "significant": p < SIGNIFICANCE_ALPHA,
-                    }
+                a_cells = cells_by_config[a_key].get(metric) or {}
+                b_cells = cells_by_config[b_key].get(metric) or {}
+                row = _compare_cells(
+                    a_key,
+                    b_key,
+                    metric,
+                    a_cells,
+                    b_cells,
+                    rank_only=metric in rank_only_metrics,
+                    equivalence_margin=equivalence_margin,
+                    confirmatory=metric in confirmatory_metrics,
                 )
-    return out
+                if row is not None:
+                    out.append(row)
+                    continue
+                # A comparison that could not be made is not the same as one that
+                # found nothing, and an empty table with no explanation reads like
+                # the second. Counting repeated runs of one case as one cell is
+                # what makes this visible: a matrix of 2 cases × 3 runs used to
+                # look like six observations per config and be tested as such.
+                if min(len(a_cells), len(b_cells)) < MIN_SAMPLES:
+                    reason = "too_few_cases"
+                else:
+                    reason = "no_applicable_test"
+                omitted[reason] = omitted.get(reason, 0) + 1
+
+    families: dict[str, dict] = {}
+    for family in sorted({r["family"] for r in out}):
+        idx = [i for i, r in enumerate(out) if r["family"] == family]
+        for i, q in zip(idx, benjamini_hochberg([out[i]["p"] for i in idx])):
+            out[i]["q"] = q
+            out[i]["significant"] = q < SIGNIFICANCE_ALPHA
+        families[family] = {
+            "n_tests": len(idx),
+            "n_significant": sum(1 for i in idx if out[i]["significant"]),
+            "n_significant_uncorrected": sum(
+                1 for i in idx if out[i]["significant_uncorrected"]
+            ),
+        }
+    correction = {
+        "method": "benjamini_hochberg",
+        "controls": "fdr",
+        "alpha": SIGNIFICANCE_ALPHA,
+        "n_tests": len(out),
+        "families": families,
+        "equivalence_margin": equivalence_margin,
+        "min_cases": MIN_SAMPLES,
+        "n_omitted": sum(omitted.values()),
+        "omitted": omitted,
+    }
+    return out, correction
+
+
+def _significance_cells(
+    runs: list[ExperimentRun],
+    records_by_task: dict,
+    *,
+    outcome_value,
+    trajectory_value,
+    dim_allowed,
+) -> dict[str, dict[str, dict[str, float]]]:
+    """``config -> metric -> case_key -> value``, one value per (config, case) cell.
+
+    The structure the significance matrix needs and the report used to throw away:
+    scores were collected into a flat list per config, so by the time a test ran
+    there was no way to tell which case a number came from, and the design's
+    pairing was unrecoverable.
+
+    Repeated runs of the same case are averaged into their cell rather than
+    entering as separate observations — see :func:`significance_matrix` for why
+    the cell, not the run, is the unit.
+
+    The three callables select what «the value» is, which is the only difference
+    between the raw view (every axis) and the trusted one (only axes that cleared
+    the reliability gate)."""
+    acc: dict[str, dict[str, dict[str, list[float]]]] = {}
+
+    def add(config_key: str, metric: str, case_key: str, value: float) -> None:
+        acc.setdefault(config_key, {}).setdefault(metric, {}).setdefault(
+            case_key, []
+        ).append(float(value))
+
+    for r in runs:
+        if r.status != ExperimentRunStatus.SUCCESS.value:
+            continue
+        rec = records_by_task.get(r.task_id)
+        if (v := outcome_value(r, rec)) is not None:
+            add(r.config_key, "weighted_score", r.case_key, v)
+        if (v := trajectory_value(r, rec)) is not None:
+            add(r.config_key, "trajectory_score", r.case_key, v)
+        profile = (rec.quality_profile or {}) if rec is not None else {}
+        for dim in profile.get("dimensions") or []:
+            key, score = dim.get("key"), dim.get("score")
+            if key is None or score is None or not dim_allowed(key):
+                continue
+            add(r.config_key, f"dim:{key}", r.case_key, score)
+
+    return {
+        config_key: {
+            metric: {case: sum(v) / len(v) for case, v in cells.items()}
+            for metric, cells in metrics.items()
+        }
+        for config_key, metrics in acc.items()
+    }
 
 
 def _group_means(
@@ -541,6 +794,7 @@ def _group_means(
     return {
         "n_runs": len(settled),
         "success_rate": round(len(success) / len(settled), 3) if settled else None,
+        "success_rate_ci": wilson_interval(len(success), len(settled)),
         "quality_mean": _mean([r.weighted_score for r in success]),
         "trajectory_mean": _mean(
             [_traj_score(records_by_task.get(r.task_id), r.trajectory_score) for r in success]
@@ -1197,6 +1451,7 @@ def build_report(
                 "n_evaluated": len(evaluated),
                 "n_pass": len(passed),
                 "pass_rate": round(len(passed) / len(evaluated), 4) if evaluated else None,
+                "pass_rate_ci": wilson_interval(len(passed), len(evaluated)),
             }
         )
     external = {"available": any_external, "per_config": external_per_config}
@@ -1241,6 +1496,9 @@ def build_report(
                 else None
             ),
             "auc": rank_auc(passed, failed),
+            # RQ2's headline number over a few dozen runs reads far more precise
+            # than it is when printed bare.
+            "auc_ci": bootstrap_auc_ci(passed, failed),
             "mann_whitney": mann_whitney_u(passed, failed),
         }
 
@@ -1294,7 +1552,18 @@ def build_report(
             else:
                 cells["fail_low"] += 1
         agree = cells["pass_high"] + cells["fail_low"]
-        return {"n": n, "cells": cells, "agreement": round(agree / n, 4) if n else None}
+        return {
+            "n": n,
+            "cells": cells,
+            "agreement": round(agree / n, 4) if n else None,
+            # Wilson, not the textbook normal approximation: on the counts a 2×2
+            # over forty runs produces the latter runs outside [0, 1], and on an
+            # empty over-credit cell it reports [0, 0] — certainty from no
+            # evidence, which is the opposite of what the interval is for.
+            "agreement_ci": wilson_interval(agree, n),
+            "over_credit_rate": round(cells["fail_high"] / n, 4) if n else None,
+            "over_credit_ci": wilson_interval(cells["fail_high"], n),
+        }
 
     rq2_overall = _rq2_for(runs, judge_threshold)
     rq2 = {
@@ -1383,32 +1652,55 @@ def build_report(
     }
 
     # --- significance ------------------------------------------------------------
-    samples: dict[str, dict[str, list[float]]] = {}
-    for key in configs:
-        group_success = [
-            r
-            for r in by_config[key]
-            if r.status == ExperimentRunStatus.SUCCESS.value
-        ]
-        cfg_samples: dict[str, list[float]] = {}
-        weighted = [
-            r.weighted_score for r in group_success if r.weighted_score is not None
-        ]
-        if weighted:
-            cfg_samples["weighted_score"] = weighted
-        trajectory = [
-            _traj_score(records_by_task.get(r.task_id), r.trajectory_score)
-            for r in group_success
+    # The equivalence margin, like the RQ2 threshold above, comes from the frozen
+    # eval_config rather than from this file: «these two are the same» chosen after
+    # seeing the difference is a description, not a claim.
+    pre_registered_margin = (exp.eval_config or {}).get("equivalence_margin")
+    try:
+        equivalence_margin = float(pre_registered_margin)
+        margin_source = "pre_registered"
+    except (TypeError, ValueError):
+        equivalence_margin = DEFAULT_EQUIVALENCE_MARGIN
+        margin_source = "default"
+
+    cells = _significance_cells(
+        runs,
+        records_by_task,
+        outcome_value=lambda r, _rec: r.weighted_score,
+        trajectory_value=lambda r, rec: (
+            _traj_score(rec, r.trajectory_score)
             if r.trajectory_score is not None
-        ]
-        if trajectory:
-            cfg_samples["trajectory_score"] = trajectory
-        for dim_key, vals in dim_samples.get(key, {}).items():
-            if vals:
-                cfg_samples[f"dim:{dim_key}"] = vals
-        if cfg_samples:
-            samples[key] = cfg_samples
-    significance = significance_matrix(samples)
+            else None
+        ),
+        dim_allowed=lambda _key: True,
+    )
+    significance, significance_correction = significance_matrix(
+        cells, equivalence_margin=equivalence_margin
+    )
+
+    # What population these numbers are about — stated, because it is not the one a
+    # reader assumes. Scores exist only for runs that finished SUCCESS, so a config
+    # that fails more often is scored on its luckier subset, and the pairing drops
+    # any case one side failed. Naming the estimand is this ticket's job; CHANGING
+    # the population (scoring failed runs too) would be a different experiment, not
+    # a statistics fix.
+    excluded_by_status = {
+        key: sum(
+            1
+            for r in by_config[key]
+            if r.status in _SETTLED and r.status != ExperimentRunStatus.SUCCESS.value
+        )
+        for key in sorted(configs)
+    }
+    estimand = {
+        "population": "success_runs",
+        "unit": "case_cell_mean",
+        "quantity": "mean_within_case_difference",
+        "survivor_conditioned": any(excluded_by_status.values()),
+        "excluded_by_status": excluded_by_status,
+        "equivalence_margin": equivalence_margin,
+        "margin_source": margin_source,
+    }
 
     def _metric_axis(metric: str) -> dict:
         """Which judged axis a significance row rests on, and how far it is trusted.
@@ -1467,7 +1759,6 @@ def build_report(
     # measure the judge against an independent oracle — gating them by the judge's
     # own trust score would be circular, and they are how the score is earned.
     trusted_per_config: list[dict] = []
-    trusted_samples: dict[str, dict[str, list[float]]] = {}
     for key in sorted(configs):
         group_success = [
             r for r in by_config[key] if r.status == ExperimentRunStatus.SUCCESS.value
@@ -1498,22 +1789,25 @@ def build_report(
                 "n_trajectory": len(t_vals),
             }
         )
-        cfg_samples = {}
-        if q_vals:
-            cfg_samples["weighted_score"] = q_vals
-        if t_vals:
-            cfg_samples["trajectory_score"] = t_vals
-        for dim_key, vals in dim_samples.get(key, {}).items():
-            if vals and dim_key in outcome_rank_keys:
-                cfg_samples[f"dim:{dim_key}"] = vals
-        if cfg_samples:
-            trusted_samples[key] = cfg_samples
 
-    trusted_significance = significance_matrix(
-        trusted_samples,
+    trusted_cells = _significance_cells(
+        runs,
+        records_by_task,
+        outcome_value=lambda _r, rec: _trusted_weighted(rec, outcome_numeric_keys),
+        trajectory_value=lambda _r, rec: _traj_score(
+            rec, None, allowed=traj_numeric_keys
+        ),
+        dim_allowed=lambda key: key in outcome_rank_keys,
+    )
+    # Corrected independently of the raw table: these are a different, smaller set
+    # of claims, and adjusting them against rows this view does not show would
+    # charge the trusted findings for evidence the reader is not being offered.
+    trusted_significance, trusted_correction = significance_matrix(
+        trusted_cells,
         rank_only_metrics=frozenset(
             f"dim:{k}" for k in outcome_rank_keys - outcome_numeric_keys
         ),
+        equivalence_margin=equivalence_margin,
     )
     for row in trusted_significance:
         row["axis"] = _metric_axis(row["metric"])
@@ -1616,6 +1910,7 @@ def build_report(
             **trusted_ranking,
         },
         "significance": trusted_significance,
+        "significance_correction": trusted_correction,
         "dropped": {
             "significance_rows": len(significance) - len(trusted_significance),
             "significant_rows": len(dropped_rows),
@@ -1727,6 +2022,8 @@ def build_report(
         "scatter": scatter,
         "leaderboard": leaderboard,
         "significance": significance,
+        "significance_correction": significance_correction,
+        "estimand": estimand,
         "trusted": trusted,
         "failure_modes": failure_modes,
         "orchestrator": orchestrator,

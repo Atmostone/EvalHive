@@ -117,6 +117,9 @@ function reliabilityTooltip(a?: AxisReliability): string {
   if (a.status === 'not_calibrated')
     return 'Reliability: not calibrated — no human rating or structural anchor for this axis. The judge score is shown but unverified, and the trusted view leaves it out.'
   const k = a.kappa != null ? `κ ${a.kappa.toFixed(2)}` : 'κ undefined'
+  const kci = a.kappa_ci
+    ? ` [95% CI ${a.kappa_ci.lo.toFixed(2)}–${a.kappa_ci.hi.toFixed(2)}]`
+    : ''
   const r = a.rho != null ? ` · rank ρ ${a.rho.toFixed(2)}` : ''
   // What this axis is allowed to DRIVE — the point of the taxonomy, and the thing
   // a reader actually needs from the badge.
@@ -128,7 +131,7 @@ function reliabilityTooltip(a?: AxisReliability): string {
         : a.status === 'unreliable'
           ? ' Quarantined: it drives no aggregate, no Pareto point and no significant row in the trusted view.'
           : ' Cleared for numeric aggregates in the trusted view.'
-  return `Reliability: ${RELIABILITY_META[a.status].word} — judge vs ${reliabilitySource(a.source)} (${k}${r}, n=${a.n}). Bar: κ≥0.6 reliable · 0.4–0.6 moderate · <0.4 rank-only if ρ≥0.5, else unreliable.${licence}`
+  return `Reliability: ${RELIABILITY_META[a.status].word} — judge vs ${reliabilitySource(a.source)} (${k}${kci}${r}, n=${a.n}). Bar: κ≥0.6 reliable · 0.4–0.6 moderate · <0.4 rank-only if ρ≥0.5, else unreliable.${licence}`
 }
 
 // SPA-84: an experiment id alone no longer identifies a fixed set of runs — every
@@ -557,7 +560,18 @@ function JudgeHumanCalibration({ cal, checkerHuman }: {
                 <tr key={d.key} className="border-t">
                   <td className="px-3 py-2 text-gray-700">{d.name}</td>
                   <td className="px-3 py-2 text-gray-500">{d.n}</td>
-                  <td className="px-3 py-2">{d.cohen_kappa == null ? '—' : d.cohen_kappa.toFixed(2)}</td>
+                  <td className="px-3 py-2">
+                    {d.cohen_kappa == null ? '—' : d.cohen_kappa.toFixed(2)}
+                    {/* SPA-62: the gate acts on the point estimate; at these n the
+                        interval routinely reaches across the 0.4 and 0.6 lines, and
+                        a reader cannot judge the gate without seeing that. */}
+                    {d.cohen_kappa_ci && (
+                      <span className="ml-1 text-[10px] text-gray-400"
+                        title={`95% bootstrap interval over ${d.cohen_kappa_ci.n} ratings, resampling the judge–human PAIRS.`}>
+                        [{d.cohen_kappa_ci.lo.toFixed(2)}, {d.cohen_kappa_ci.hi.toFixed(2)}]
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-2">{d.pearson == null ? '—' : d.pearson.toFixed(2)}</td>
                   <td className="px-3 py-2">{d.spearman == null ? '—' : d.spearman.toFixed(2)}</td>
                   <td className="px-3 py-2 text-gray-600 font-medium">{d.judge_mean == null ? '—' : d.judge_mean.toFixed(1)}</td>
@@ -806,6 +820,9 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
   const pareto = trustedOn ? trusted!.pareto : report.pareto
   const leaderboard = trustedOn ? trusted!.leaderboard : report.leaderboard
   const significanceRows = trustedOn ? trusted!.significance : report.significance
+  const significanceCorrection = trustedOn
+    ? trusted!.significance_correction
+    : report.significance_correction
   const visibleSignificance = verifiable
     ? significanceRows.filter((s) => !isOutcomeMetric(s.metric))
     : significanceRows
@@ -1393,6 +1410,13 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                   {report.judge_discrimination.overall.auc?.toFixed(2) ?? '—'}
                 </div>
                 <div className="text-[11px] text-gray-400">
+                  {/* The headline number over a few dozen runs reads far more
+                      precise than it is when printed bare (SPA-62). */}
+                  {report.judge_discrimination.overall.auc_ci && (
+                    <span title="95% bootstrap interval, resampling the checker's passes and failures independently. An interval covering 0.50 means the separation is not established.">
+                      [{report.judge_discrimination.overall.auc_ci.lo.toFixed(2)}, {report.judge_discrimination.overall.auc_ci.hi.toFixed(2)}]{' · '}
+                    </span>
+                  )}
                   {report.judge_discrimination.overall.mann_whitney?.p != null
                     ? `p=${report.judge_discrimination.overall.mann_whitney.p.toFixed(3)}`
                     : 'p — n/a'}
@@ -1426,7 +1450,13 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                 </span>
               )}
               {' '}— agreement{' '}
-              {report.rq2.overall.agreement != null ? `${(report.rq2.overall.agreement * 100).toFixed(0)}%` : '—'} (n={report.rq2.overall.n})
+              {report.rq2.overall.agreement != null ? `${(report.rq2.overall.agreement * 100).toFixed(0)}%` : '—'}
+              {report.rq2.overall.agreement_ci && (
+                <span className="text-gray-400"
+                  title="Wilson 95% score interval. On a 2×2 over a few dozen runs the textbook interval runs outside [0,1] and reports certainty on an empty cell; Wilson does neither.">
+                  {' '}[{(report.rq2.overall.agreement_ci.lo * 100).toFixed(0)}–{(report.rq2.overall.agreement_ci.hi * 100).toFixed(0)}%]
+                </span>
+              )} (n={report.rq2.overall.n})
             </span>
           </h3>
           <div className="bg-white border rounded-lg p-4 max-w-md">
@@ -1438,7 +1468,18 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
               <div className="bg-green-50 text-green-700 font-semibold py-3 rounded" title="checker passed & judge high — agree">{report.rq2.overall.cells.pass_high}</div>
               <div className="bg-amber-50 text-amber-700 font-semibold py-3 rounded" title="checker passed but judge scored low — judge under-credits">{report.rq2.overall.cells.pass_low}</div>
               <div className="text-xs text-gray-500 font-medium flex items-center justify-end pr-2">checker fail</div>
-              <div className="bg-amber-50 text-amber-700 font-semibold py-3 rounded" title="judge scored high but checker failed — judge over-credits">{report.rq2.overall.cells.fail_high}</div>
+              <div className="bg-amber-50 text-amber-700 font-semibold py-3 rounded" title="judge scored high but checker failed — judge over-credits">
+                {report.rq2.overall.cells.fail_high}
+                {/* The report's central number. Printed as a bare count it reads
+                    as a measurement; the interval says how well it is pinned. */}
+                {report.rq2.overall.over_credit_ci && (
+                  <div className="text-[10px] font-normal text-amber-600"
+                    title="Wilson 95% interval for the over-credit RATE. On an empty cell the textbook interval would claim [0%, 0%] — certainty from no evidence.">
+                    {(report.rq2.overall.over_credit_ci.p * 100).toFixed(0)}%
+                    {' ['}{(report.rq2.overall.over_credit_ci.lo * 100).toFixed(0)}–{(report.rq2.overall.over_credit_ci.hi * 100).toFixed(0)}%]
+                  </div>
+                )}
+              </div>
               <div className="bg-red-50 text-red-700 font-semibold py-3 rounded" title="checker failed & judge low — agree">{report.rq2.overall.cells.fail_low}</div>
             </div>
             <p className="text-[11px] text-gray-400 mt-2">
@@ -1651,7 +1692,54 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
       <JudgeHumanScatter matrix={detail.matrix} configurations={detail.configurations} verifiable={verifiable} />
 
       <section>
-        <h3 className="font-semibold text-gray-900 mb-2">Statistical significance <span className="text-xs text-gray-400 font-normal">Welch t-test (primary) + Mann-Whitney U (approx); ★ = p &lt; 0.05</span></h3>
+        <h3 className="font-semibold text-gray-900 mb-2">Statistical significance <span className="text-xs text-gray-400 font-normal">paired by case (Welch fallback); ★ = q &lt; 0.05 after correction</span></h3>
+        {/* SPA-62: a table that runs dozens of tests and prints each as if it were
+            the only one manufactures roughly one green row per twenty from nothing.
+            How many were run, and in which family, is therefore part of the result. */}
+        {significanceCorrection && (
+          <p className="text-xs text-gray-500 mb-2 -mt-1 max-w-3xl">
+            {significanceCorrection.n_tests} test{significanceCorrection.n_tests === 1 ? '' : 's'} run,
+            corrected with Benjamini-Hochberg (FDR) within each family:{' '}
+            {Object.entries(significanceCorrection.families).map(([name, f], i) => (
+              <span key={name}>
+                {i > 0 && ' · '}
+                <span className="font-medium">{name}</span> {f.n_tests}
+                {f.n_significant_uncorrected > f.n_significant && (
+                  <span className="text-amber-700">
+                    {' '}({f.n_significant_uncorrected - f.n_significant} lost the star to the correction)
+                  </span>
+                )}
+              </span>
+            ))}
+            {significanceCorrection.n_omitted > 0 && (
+              <>
+                {' · '}
+                <span className="text-gray-400">
+                  {significanceCorrection.n_omitted} comparison{significanceCorrection.n_omitted === 1 ? '' : 's'} not testable
+                  {significanceCorrection.omitted.too_few_cases
+                    ? ` (fewer than ${significanceCorrection.min_cases} shared cases)`
+                    : ''}
+                </span>
+              </>
+            )}
+          </p>
+        )}
+        {report.estimand && (
+          <p className="text-xs text-gray-400 mb-2 max-w-3xl">
+            Estimand: the mean within-case difference over runs that finished{' '}
+            <span className="font-medium">successfully</span>, one value per (config, case) cell —
+            repeated runs of a case are averaged, not counted separately.
+            {report.estimand.survivor_conditioned && (() => {
+              const lost = Object.entries(report.estimand.excluded_by_status).filter(([, n]) => n > 0)
+              return (
+                <span className="text-amber-700">
+                  {' '}Survivor-conditioned: {lost.map(([k, n]) => `${k} lost ${n} run${n === 1 ? '' : 's'}`).join(', ')}
+                  {' '}— {lost.length === 1 ? 'it is' : 'they are'} scored on the subset that finished.
+                </span>
+              )
+            })()}
+          </p>
+        )}
         {verifiable && (
           <p className="text-xs text-gray-400 mb-2 -mt-1 max-w-3xl">
             On verifiable benches the outcome judge is the subject being audited (not the evaluator), so its metrics
@@ -1668,7 +1756,11 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           </p>
         )}
         {visibleSignificance.length === 0 ? (
-          <p className="text-sm text-gray-500">Not enough samples per cell yet (need n ≥ 3 scored runs on both sides).</p>
+          <p className="text-sm text-gray-500">
+            Nothing testable yet — a comparison needs at least 3 CASES scored on both sides.
+            Repeated runs of the same case are averaged into it, so running one case ten times
+            is still one observation.
+          </p>
         ) : (
           <div className="bg-white border rounded-lg overflow-hidden">
             <table className="w-full text-sm">
@@ -1677,8 +1769,10 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                   <th className="px-3 py-2">Pair</th>
                   <th className="px-3 py-2">Metric</th>
                   <th className="px-3 py-2" title="which evaluator produced this metric — outcome judge or process judge">Judge</th>
-                  <th className="px-3 py-2">Welch p</th>
-                  <th className="px-3 py-2">Mann-Whitney p</th>
+                  <th className="px-3 py-2" title="Paired = the same cases compared within themselves, which is how the matrix was built. Unpaired = too few shared cases, so Welch over the cell values.">Design</th>
+                  <th className="px-3 py-2" title="Mean difference with its 95% bootstrap interval, plus the standardised effect. An interval spanning zero says the direction itself is not settled.">Effect</th>
+                  <th className="px-3 py-2" title="Uncorrected p from this row's primary test">p</th>
+                  <th className="px-3 py-2" title="Benjamini-Hochberg q within this row's family — p adjusted for how many tests were run. The verdict follows this.">q</th>
                   <th className="px-3 py-2">Verdict</th>
                 </tr>
               </thead>
@@ -1726,14 +1820,69 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                         <td className="px-3 py-2">
                           <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${judge.cls}`}>{judge.label}</span>
                         </td>
-                        <td className="px-3 py-2">
-                          {s.welch ? s.welch.p.toFixed(4) : <span className="text-gray-400">{s.rank_only ? 'n/a' : '—'}</span>}
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {s.design === 'unpaired' ? (
+                            <span className="text-amber-700" title={
+                              s.unpaired_reason === 'degenerate_differences'
+                                ? 'Enough shared cases, but every within-case difference was identical — nothing for the paired test to weigh. See the equivalence verdict.'
+                                : `Fewer than ${significanceCorrection?.min_cases ?? 3} cases run by both configs, so the comparison falls back to Welch over the cell values.`
+                            }>unpaired</span>
+                          ) : (
+                            <span className="text-gray-600">paired n={s.n_pairs}</span>
+                          )}
+                          {!!(s.unpaired_cases && (s.unpaired_cases.a.length || s.unpaired_cases.b.length)) && (
+                            <span className="ml-1 text-[10px] text-amber-600" title={
+                              `Run by only one side, so absent from the pairing: ` +
+                              [...(s.unpaired_cases.a.map((c) => `${s.a}: ${c}`)),
+                               ...(s.unpaired_cases.b.map((c) => `${s.b}: ${c}`))].join(', ')
+                            }>
+                              −{s.unpaired_cases.a.length + s.unpaired_cases.b.length}
+                            </span>
+                          )}
                         </td>
-                        <td className="px-3 py-2">{s.mann_whitney ? s.mann_whitney.p.toFixed(4) : '—'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {s.ci ? (
+                            <span title={
+                              `${s.effect_kind === 'cohens_dz' ? "Cohen's d_z" : "Hedges' g"} = ${s.effect ?? '—'}. ` +
+                              `95% bootstrap interval for the mean difference, resampling cases.`
+                            }>
+                              <span className="text-gray-700">{s.ci.mean_diff > 0 ? '+' : ''}{s.ci.mean_diff.toFixed(2)}</span>
+                              <span className="text-gray-400"> [{s.ci.lo.toFixed(2)}, {s.ci.hi.toFixed(2)}]</span>
+                            </span>
+                          ) : <span className="text-gray-400">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-gray-500">{s.p.toFixed(4)}</td>
                         <td className="px-3 py-2">
-                          {s.significant
-                            ? <span className="text-green-700 font-medium">★ significant</span>
-                            : <span className="text-gray-400">not significant</span>}
+                          {s.q === undefined ? <span className="text-gray-400">—</span> : (
+                            <span className={s.significant ? 'text-gray-900 font-medium' : 'text-gray-500'}>
+                              {s.q.toFixed(4)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {s.significant ? (
+                            <span className="text-green-700 font-medium">★ significant</span>
+                          ) : s.equivalence && 'equivalent' in s.equivalence && s.equivalence.equivalent ? (
+                            <span className="text-blue-700 font-medium" title={
+                              `Both one-sided tests reject a difference larger than ±${s.equivalence.margin} judge points, ` +
+                              `so «no difference» is a claim here rather than an absence of one.`
+                            }>≈ equivalent</span>
+                          ) : (
+                            <span className="text-gray-400" title={
+                              s.power?.n_required
+                                ? `Could not tell. This design could have detected a difference of ${s.power.mde.toFixed(2)}; ` +
+                                  `the ${Math.abs(s.power.observed_diff).toFixed(2)} it saw would have needed n ≈ ${s.power.n_required} cases.`
+                                : 'Could not tell — and not enough data to call it equivalent either.'
+                            }>? inconclusive</span>
+                          )}
+                          {/* A row that was green before the correction should not
+                              simply stop being green with no trace. */}
+                          {!s.significant && s.significant_uncorrected && (
+                            <span className="ml-1 text-[10px] px-1 rounded bg-amber-50 text-amber-700 font-medium"
+                              title="Nominally significant on its own (p < 0.05), but not after correcting for how many tests this family ran.">
+                              was p&lt;.05
+                            </span>
+                          )}
                         </td>
                       </tr>
                     )
