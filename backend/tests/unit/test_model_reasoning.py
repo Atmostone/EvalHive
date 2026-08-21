@@ -236,3 +236,51 @@ async def test_withholding_it_is_recorded_as_a_condition_not_hidden(
     assert "a.txt" in prov.seen  # the rest of the trace is untouched
     assert profile["reasoning_shown"] is False
     assert profile["n_reasoning_steps"] == 1
+
+
+# --- the wire ------------------------------------------------------------------ #
+
+
+def test_the_webhook_schema_carries_the_reasoning_split():
+    """`extra: "ignore"` drops any undeclared key silently, with no error
+    anywhere — which is how the first live run reported 103 reasoning tokens in
+    its webhook and stored a task that had none."""
+    from app.schemas.webhooks import TokenUsage
+
+    tu = TokenUsage.model_validate(
+        {"input_tokens": 2530, "output_tokens": 266, "reasoning_tokens": 103}
+    )
+    assert tu.reasoning_tokens == 103
+    assert tu.model_dump()["reasoning_tokens"] == 103
+
+
+def test_a_non_reasoning_agent_reports_absence_not_zero():
+    from app.schemas.webhooks import TokenUsage
+
+    tu = TokenUsage.model_validate({"input_tokens": 10, "output_tokens": 5})
+    assert tu.reasoning_tokens is None
+
+
+async def test_a_compacted_run_still_shows_its_deliberation(db_session, monkeypatch):
+    """Encoder, decoder and the archive→chunk reconstruction all have to carry the
+    field. Patching two of the three is invisible until a run is compacted — which
+    is precisely the asymmetry SPA-113 fixed for the clock, and this caught on the
+    first live run after the encoder and decoder alone were done."""
+    from app.quality import trace_cleaner as tc
+
+    chunks = [_chunk("listing", secs=5, call_id="c0", reasoning="I will look first.")]
+    blob = encode_log_archive(chunks).decode("utf-8")
+
+    task = Task(
+        title="t", status=TaskStatus.DONE.value, workspace_id=DEFAULT_WORKSPACE_ID,
+        log_archive_s3_path="logs/fake.log",
+    )
+    db_session.add(task)
+    await db_session.flush()
+    monkeypatch.setattr(tc, "_parse_dt", lambda v: None)
+    monkeypatch.setattr(
+        "app.storage.minio_client.read_log_archive", lambda _p: blob.encode("utf-8")
+    )
+
+    restored = await tc._load_log_chunks(db_session, task)
+    assert restored[0].reasoning == "I will look first."

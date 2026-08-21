@@ -755,6 +755,11 @@ async def _load_log_chunks(db: AsyncSession, task: Task) -> list:
                 part_index=d.get("part_index", 0) or 0,
                 part_total=d.get("part_total", 1) or 1,
                 created_at=_parse_dt(d.get("created_at")),
+                # The model's deliberation (SPA-114). Encoder, decoder AND this
+                # reconstruction all have to carry it, or a compacted run loses
+                # what a live one shows — the same asymmetry SPA-113 fixed for
+                # the clock, one layer further in.
+                reasoning=d.get("reasoning"),
             )
             for i, d in enumerate(decode_log_archive(blob))
         ]
