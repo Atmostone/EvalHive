@@ -73,7 +73,12 @@ class TestSignificanceMatrix:
             equivalence_margin=0.5,
         )
         assert entries[0]["significant"] is False
-        # And «not significant» is not left as a shrug: every case moved by exactly
+        # Identical on every case defeats all three paired tests, and that is the
+        # most definite answer available rather than the absence of one.
+        assert entries[0]["design"] == "paired"
+        assert entries[0]["primary_test"] == "identical"
+        assert entries[0]["p"] == 1.0
+        # «Not significant» is not left as a shrug: every case moved by exactly
         # zero, so equivalence is decidable without a test and says so.
         assert entries[0]["equivalence"]["equivalent"] is True
 
@@ -1119,7 +1124,7 @@ def test_a_rank_only_metric_is_judged_on_ranks_not_on_means():
     # Neither does the paired t-test, so the rank-rescued row rests on the signed
     # rank test and, below its minimum, on Mann-Whitney.
     assert row["welch"] is None
-    assert row["primary_test"] in {"wilcoxon", "mann_whitney"}
+    assert row["primary_test"] in {"wilcoxon", "sign", "mann_whitney"}
     assert row["mann_whitney"] is not None
 
     plain = significance_matrix(cells)[0][0]
@@ -1155,6 +1160,91 @@ def _two_dim_runs(per_config: dict[str, dict[str, list[float]]]):
 
 def _calibration(dims: list[dict]):
     return {"available": True, "dimensions": dims}
+
+
+def test_a_rank_only_row_produces_no_magnitude_of_any_kind():
+    """SPA-115. Skipping Welch is not enough.
+
+    A rank-rescued axis is one whose ORDER agrees with the human and whose scale
+    does not. Every magnitude — a mean difference, an interval on one, a
+    standardised effect, an equivalence verdict measured in judge points — is a
+    claim that scale supports, and a strictly monotone rescaling that preserves
+    every rank moves all of them freely. The row must therefore carry none of
+    them, and must say that it is refusing rather than look like missing data."""
+    from app.quality.experiment_report import significance_matrix
+
+    cells = {
+        "a": {"dim:x": _cells([8.0, 9.0, 10.0, 11.0])},
+        "b": {"dim:x": _cells([1.0, 2.0, 3.5, 4.0])},
+    }
+    row = significance_matrix(
+        cells, rank_only_metrics=frozenset({"dim:x"}), equivalence_margin=1.0
+    )[0][0]
+    assert row["rank_only"] is True
+    assert row["magnitudes_withheld"] == "rank_only_axis"
+    assert row["effect"] is None and row["effect_kind"] is None
+    assert row["ci"] is None
+    assert row["power"] is None
+    assert row["equivalence"] is None
+    assert row["welch"] is None
+    assert row["primary_test"] in {"wilcoxon", "sign"}
+
+    # The same axis without the rank-only flag keeps everything — so the absence
+    # above is the flag's doing, not a shortage of data.
+    plain = significance_matrix(cells, equivalence_margin=1.0)[0][0]
+    assert plain["ci"] is not None and plain["effect"] is not None
+    assert plain["magnitudes_withheld"] is None
+
+
+def test_a_rank_only_verdict_survives_rescaling_the_axis():
+    """The property the whole rank-only category exists for: rescale the axis in
+    a way that preserves every ordering, and nothing the row claims may move."""
+    from app.quality.experiment_report import significance_matrix
+
+    a = [8.0, 9.0, 10.0, 11.0]
+    b = [1.0, 2.0, 3.5, 4.0]
+    # Strictly increasing, so every rank is preserved and every gap is not.
+    squash = lambda v: v**1.7 / 10  # noqa: E731
+    base = significance_matrix(
+        {"a": {"dim:x": _cells(a)}, "b": {"dim:x": _cells(b)}},
+        rank_only_metrics=frozenset({"dim:x"}),
+    )[0][0]
+    scaled = significance_matrix(
+        {
+            "a": {"dim:x": _cells([squash(v) for v in a])},
+            "b": {"dim:x": _cells([squash(v) for v in b])},
+        },
+        rank_only_metrics=frozenset({"dim:x"}),
+    )[0][0]
+    assert base["p"] == scaled["p"]
+    assert base["significant"] == scaled["significant"]
+
+
+def test_a_degenerate_paired_test_does_not_change_the_design():
+    """SPA-115. Four cases moved by exactly +1 is the strongest paired evidence a
+    matrix that size can produce, and it is exactly the case that leaves the
+    t-test with no variance. The design describes the experiment, not the
+    arithmetic, so it stays paired and the row reports a paired answer."""
+    from app.quality.experiment_report import significance_matrix
+
+    row = significance_matrix(
+        {
+            "a": {"weighted_score": _cells([8.0, 6.0, 9.0, 4.0])},
+            "b": {"weighted_score": _cells([9.0, 7.0, 10.0, 5.0])},
+        }
+    )[0][0]
+    assert row["design"] == "paired"
+    assert row["n_pairs"] == 4
+    assert row["primary_test"] == "sign"
+    assert row["paired_t"] is None, "the unavailable inference stays unavailable"
+    # The interval is the paired one and excludes zero, instead of the unpaired
+    # [-5.5, 3.5] the old fallback reported.
+    assert row["ci"]["lo"] == row["ci"]["hi"] == -1.0
+    # No spread in the differences means no detectable-effect arithmetic to do,
+    # and saying so beats inventing a number.
+    assert row["power"] is None
+    # Welch rides along as the cross-check and is visibly the weaker reading.
+    assert row["welch"]["p"] > 0.5 > row["p"]
 
 
 def test_repeated_runs_of_one_case_are_one_observation_not_many():

@@ -53,6 +53,7 @@ from app.quality.stats import (
     paired_power,
     paired_t_test,
     rank_auc,
+    sign_test,
     tost_equivalence,
     unpaired_power,
     welch_t_test,
@@ -529,66 +530,87 @@ def _compare_cells(
     on a four-case matrix it almost always does.
 
     Welch and Mann-Whitney are still computed and still reported — as the
-    unpaired cross-check, not as the verdict."""
+    unpaired cross-check, not as the verdict.
+
+    Two rules this function exists to keep, both of them learned the hard way:
+
+    * **The design is a property of the experiment, not of the inference.** If a
+      paired test cannot run, the row still says `paired` and reports the
+      unavailable inference as unavailable. Silently answering an unpaired
+      question instead does not give a weaker answer, it gives a wrong one: on
+      four cases shifted by exactly +1 — the strongest paired evidence a matrix
+      that size can produce — Welch reports p ≈ 0.55 and a CI spanning zero,
+      against a paired difference of −1 on every single case.
+    * **A rank-only axis produces no magnitudes at all.** Not a mean difference,
+      not an interval on one, not a standardised effect, not an equivalence
+      verdict in judge points. Skipping Welch is not enough — every one of those
+      is a claim about size, and a strictly monotone rescaling that preserves
+      every rank moves them freely (SPA-88)."""
     shared = sorted(set(a_cells) & set(b_cells))
     pairs = [(a_cells[c], b_cells[c]) for c in shared]
     a_vals = [a_cells[c] for c in sorted(a_cells)]
     b_vals = [b_cells[c] for c in sorted(b_cells)]
 
-    # Both tests of both designs, always: the row names which one it rests on, and
+    paired_design = len(pairs) >= MIN_SAMPLES
+
+    # Every test of both designs, always: the row names the one it rests on, and
     # the others ride along so a reader can see whether they agree.
-    p_t = paired_t_test(pairs) if len(pairs) >= MIN_SAMPLES else None
-    wilcox = wilcoxon_signed_rank(pairs) if len(pairs) >= MIN_SAMPLES else None
+    p_t = paired_t_test(pairs) if paired_design else None
+    wilcox = wilcoxon_signed_rank(pairs) if paired_design else None
+    # Uses only the SIGNS of the differences, so it survives the two degeneracies
+    # that stop the others — no variance, too few non-zero pairs — and is equally
+    # legitimate for a scale-shifted judge.
+    signs = sign_test(pairs) if paired_design else None
     # A rank-rescued axis cannot support a comparison of MEANS (SPA-88), so the
     # mean-based tests are not merely demoted for it — they are not run at all.
     welch = None if rank_only else welch_t_test(a_vals, b_vals)
     mw = mann_whitney_u(a_vals, b_vals)
 
-    design, reason, primary_test, primary = "paired", None, None, None
-    if rank_only:
-        primary_test, primary = "wilcoxon", wilcox
+    if paired_design:
+        design, reason = "paired", None
+        candidates = (
+            (("wilcoxon", wilcox), ("sign", signs))
+            if rank_only
+            else (("paired_t", p_t), ("sign", signs))
+        )
+        # Two configurations that scored identically on every shared case defeat
+        # all three paired tests — no variance, no non-zero pairs, no signs — and
+        # that is not an absence of an answer, it is the most definite answer
+        # available. Dropping the row would delete the finding.
+        if all(a == b for a, b in pairs):
+            candidates = (*candidates, ("identical", {"p": 1.0, "n_pairs": len(pairs)}))
     else:
-        primary_test, primary = "paired_t", p_t
-    if primary is None:
-        design = "unpaired"
-        if len(pairs) < MIN_SAMPLES:
-            reason = "insufficient_shared_cases"
-        elif rank_only:
-            # Wilcoxon's normal approximation needs more non-zero differences than
-            # a small matrix has; that is a sample-size limit, not a degeneracy.
-            reason = "insufficient_nonzero_pairs"
-        else:
-            # Enough pairs and the paired test still could not run: every
-            # difference was identical, so there is no variance to test against.
-            # The equivalence verdict below is the one that can speak here.
-            reason = "degenerate_differences"
-        primary_test, primary = ("mann_whitney", mw) if rank_only else ("welch", welch)
-    if primary is None and not rank_only:
-        # Both mean-based tests are unavailable (constant scores leave Welch with
-        # no denominator). The rank test asks a weaker question but can still
-        # answer; dropping the row entirely would say less than it could.
-        primary_test, primary = "mann_whitney", mw
+        design, reason = "unpaired", "insufficient_shared_cases"
+        candidates = (
+            (("mann_whitney", mw),) if rank_only else (("welch", welch), ("mann_whitney", mw))
+        )
+    primary_test, primary = next(
+        ((name, res) for name, res in candidates if res is not None), (None, None)
+    )
     if primary is None:
         return None
 
-    paired_design = design == "paired"
-    if paired_design:
+    # Magnitudes: withheld entirely on a rank-only axis, because every one of them
+    # is a statement about how big the difference is, and that is the one thing
+    # the calibration behind a rank rescue does not license.
+    effect = effect_kind = ci = power = None
+    equivalence = None
+    magnitudes_withheld = None
+    if rank_only:
+        magnitudes_withheld = "rank_only_axis"
+    elif paired_design:
         effect, effect_kind = paired_effect_size(pairs), "cohens_dz"
         ci = bootstrap_diff_ci(pairs)
         power = paired_power(pairs)
+        equivalence = (
+            tost_equivalence(pairs, equivalence_margin)
+            if equivalence_margin
+            else None
+        )
     else:
         effect, effect_kind = hedges_g(a_vals, b_vals), "hedges_g"
         ci = bootstrap_unpaired_diff_ci(a_vals, b_vals)
         power = unpaired_power(a_vals, b_vals)
-
-    # Equivalence runs on the PAIRS whenever they exist, even on a row whose
-    # primary test fell back to unpaired: the degenerate case (every case moved by
-    # the same amount, or not at all) is exactly where equivalence is decidable
-    # and the significance test is not.
-    equivalence = None
-    if len(pairs) >= MIN_SAMPLES and equivalence_margin:
-        equivalence = tost_equivalence(pairs, equivalence_margin)
-    elif len(pairs) < MIN_SAMPLES:
         equivalence = {"available": False, "reason": "insufficient_shared_cases"}
 
     p_value = primary["p"]
@@ -619,6 +641,10 @@ def _compare_cells(
         "ci": ci,
         "equivalence": equivalence,
         "power": power,
+        # Non-null names a magnitude the axis is not licensed to make. The four
+        # fields above are all null when it is set — stated, so their absence
+        # reads as a refusal rather than as missing data.
+        "magnitudes_withheld": magnitudes_withheld,
         "p": p_value,
         "rank_only": rank_only,
         # q, significant: filled in by the correction pass, which needs every row.
@@ -642,8 +668,10 @@ def significance_matrix(
     exactly where the clustering lives.
 
     Two things a reader is owed and used to get neither of. First, the design:
-    paired when the two configs share enough cases, Welch over the unpooled cell
-    values when they do not, said out loud either way. Second, the multiplicity: a
+    paired whenever the two configs share enough cases — and it stays paired even
+    when a particular paired test cannot run, because the design describes the
+    experiment, not the arithmetic. Welch appears only for a genuinely unpaired
+    slice. Second, the multiplicity: a
     matrix runs dozens of tests, and at α = 0.05 roughly one in twenty comes up
     green with nothing under it, so ``significant`` is decided on the
     Benjamini-Hochberg q-value and the uncorrected verdict is kept beside it.
