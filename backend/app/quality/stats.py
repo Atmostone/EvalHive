@@ -728,3 +728,38 @@ def unpaired_power(a: list[float], b: list[float]) -> dict | None:
         return None
     n_eff = 2 * na * nb / (na + nb)
     return _power_from_sd(math.sqrt(pooled), ma - mb, int(n_eff), paired=False)
+
+
+def sign_test(pairs: list[tuple[float, float]]) -> dict | None:
+    """Exact two-sided sign test over the within-case differences.
+
+    The paired test that survives what the others cannot. ``paired_t_test`` needs
+    variance in the differences and ``wilcoxon_signed_rank`` needs enough non-zero
+    ones; a constant shift has neither, and a constant shift is the STRONGEST
+    paired evidence a small matrix can produce. Falling back to an unpaired test
+    there does not answer a weaker version of the question — it answers a
+    different question, and on four cases shifted by exactly +1 it answers it
+    backwards (Welch p = 0.73 against a paired difference of −1 on every case).
+
+    Uses only the SIGNS of the differences, so it is also the honest primary for a
+    rank-rescued axis: nothing about the magnitude of the shift enters. Exact
+    binomial, no approximation — at these n an approximation would be the larger
+    error. Ties are dropped, which is the standard treatment."""
+    diffs = [float(a) - float(b) for a, b in pairs]
+    nonzero = [d for d in diffs if d != 0]
+    n = len(nonzero)
+    if n < MIN_SAMPLES:
+        return None
+    positive = sum(1 for d in nonzero if d > 0)
+    k = min(positive, n - positive)
+    # Two-sided exact p: both tails of Binomial(n, 1/2) at or beyond k.
+    tail = sum(math.comb(n, i) for i in range(k + 1))
+    p = min(1.0, 2.0 * tail / (2**n))
+    return {
+        "n_positive": positive,
+        "n_negative": n - positive,
+        "p": round(p, 6),
+        "n_pairs": n,
+        "n_ties": len(diffs) - n,
+        "exact": True,
+    }

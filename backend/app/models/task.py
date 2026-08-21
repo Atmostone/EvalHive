@@ -5,7 +5,7 @@ from typing import Optional
 
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -74,6 +74,18 @@ class Task(Base):
     # quality_records.failure_profile: this is what killed the process, observed,
     # not how the agent misbehaved, judged.
     failure_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # WHOSE contamination it is (SPA-115). `failure_type` says infrastructure
+    # decided the outcome; it does not say whether that verdict expires. An
+    # agent-side 429 belongs to the ATTEMPT and dies with it. A degraded
+    # orchestrator that could not reach its LLM, fell back to a substituted
+    # template and PINNED it, changed the condition the task will run under from
+    # now on — so the next attempt is not a measurement of the intended treatment
+    # either. Only `_flag_llm_contamination` sets this, because only that path
+    # degrades the condition; inferring it from `template_id` cannot work, since
+    # any orchestrated task has one.
+    condition_contaminated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     priority: Mapped[str] = mapped_column(
         String(20), default=TaskPriority.MEDIUM.value,
         server_default=TaskPriority.MEDIUM.value,

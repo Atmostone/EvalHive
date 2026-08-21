@@ -1158,6 +1158,25 @@ rather than about how it is computed:
   the same reason — so «no difference» becomes a claim that could be wrong, and
   where even that is undecidable the row reports what the design *could* have
   detected instead of shrugging.
+- **The design is a property of the experiment, not of the arithmetic** (SPA-115).
+  A paired row stays paired when a paired test cannot run, and falls through to
+  one that can — an exact sign test, which needs only the signs of the differences
+  and therefore survives both no-variance and too-few-non-zero-pairs. Substituting
+  an unpaired test there does not give a weaker answer: on four cases shifted by
+  exactly the same amount it gives the opposite one.
+- **A rank-only axis produces no magnitudes at all** (SPA-115). Barring it from
+  Welch was never enough — a mean difference, an interval on one, a standardised
+  effect and an equivalence verdict in judge points are all claims about size, and
+  a monotone rescaling that preserves every rank moves each of them freely. The
+  row withholds them and says so, because a blank reads as missing data and this
+  is a refusal. **Nor is Wilcoxon the rank-only verdict**, however rank-flavoured
+  its name: the signed-rank test ranks the *magnitudes of the differences*, which
+  a rescaling of the scores reorders — on a seven-case fixture it moves p from
+  0.0206 to 0.0225, and with the right numbers across 0.05. Only the sign test is
+  invariant, because a strictly increasing `f` gives
+  `sign(f(a) − f(b)) = sign(a − b)`; it is the primary for a paired rank-only row
+  and Wilcoxon rides along as a diagnostic. The unpaired case is already safe —
+  Mann-Whitney ranks the raw values, and a monotone map preserves those ranks.
 
 The same principle extends to the point estimates elsewhere in the report: κ, AUC
 and every rate carry intervals. The κ interval is deliberately **carried and not

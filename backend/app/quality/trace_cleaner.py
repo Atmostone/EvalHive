@@ -474,18 +474,27 @@ def clean_trajectory(
         # recorded. Resolved here, where both the pings and the tool steps are in
         # hand: a ping whose chunk never arrived is the only surviving trace of
         # that call and stays.
-        recorded = {
-            (s["attempt"], s["tool_name"]) for s in raw_steps if s["kind"] == "tool" and s["tool_name"]
-        }
+        # Counted, not merely present. Membership was enough only while a tool
+        # name appeared once per attempt: with two `search` calls of which one
+        # lost its chunk, both pings matched the single recorded call and both
+        # were dropped — erasing the call the surviving ping was the last trace
+        # of, which is the very case the exception below exists for. A ping is
+        # redundant only up to the number of calls actually recorded.
+        budget: dict[tuple, int] = {}
+        for s in raw_steps:
+            if s["kind"] == "tool" and s["tool_name"]:
+                key = (s["attempt"], s["tool_name"])
+                budget[key] = budget.get(key, 0) + 1
         before = len(raw_steps)
-        raw_steps = [
-            s
-            for s in raw_steps
-            if not (
-                s.get("_progress_echo")
-                and (s["attempt"], s["_progress_echo"]) in recorded
-            )
-        ]
+        kept: list[dict] = []
+        for s in raw_steps:
+            echo = s.get("_progress_echo")
+            key = (s["attempt"], echo) if echo else None
+            if key is not None and budget.get(key, 0) > 0:
+                budget[key] -= 1
+                continue
+            kept.append(s)
+        raw_steps = kept
         progress_echoes_dropped = before - len(raw_steps)
 
         # The same fact written twice is not two facts. The orchestrator logs one

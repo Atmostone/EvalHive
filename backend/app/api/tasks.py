@@ -47,6 +47,9 @@ class TaskOut(BaseModel):
     status: str
     priority: str
     failure_type: Optional[str]
+    # Whether that reason describes the CONDITION (survives a re-queue) or just
+    # this attempt (cleared by one). Two very different futures for the task.
+    condition_contaminated: bool = False
     template_id: Optional[str]
     agent_container_id: Optional[str]
     result_summary: Optional[str]
@@ -75,6 +78,7 @@ def task_to_dict(task: Task) -> dict:
         # the task itself did not, so an operator looking at a failed task saw
         # «failed» and nothing else (SPA-113).
         "failure_type": task.failure_type,
+        "condition_contaminated": bool(task.condition_contaminated),
         "description": task.description,
         "status": task.status,
         "priority": task.priority,
@@ -215,15 +219,20 @@ async def update_task(
         # that is no longer true, and a contaminating one silently removes a
         # successful measurement from every aggregate (SPA-113).
         #
-        # The one SPA-87 exception survives: a contamination recorded BEFORE the
-        # agent ran describes a condition pinned on the task — the orchestrator's
-        # LLM died, it fell back to a substituted template and pinned it, and the
-        # next attempt will reuse that same template. The pin IS `template_id`, so
-        # that is what the test asks about. A failure with nothing pinned (the
-        # orchestrator never got as far as choosing) leaves nothing behind to taint
-        # the next run.
+        # The one SPA-87 exception survives: a contamination that describes the
+        # CONDITION rather than the attempt — the orchestrator's LLM died, it fell
+        # back to a substituted template and pinned it, so the next attempt runs
+        # under the degraded condition too and is not a measurement of the
+        # intended treatment either.
+        #
+        # SPA-115: that used to be inferred from `template_id is not None`, which
+        # is true of every orchestrated task. An ordinary run that chose a
+        # template and then died on an agent-side 429 therefore kept its reason
+        # through the re-queue, and its next — successful — run was dropped from
+        # every aggregate by `measures_the_model()`. Only the degrade path knows
+        # which kind it is, so only the degrade path records it.
         if old_status == TaskStatus.FAILED.value and body.status in _REQUEUE_STATUSES:
-            if not (is_contaminated(task.failure_type) and task.template_id is not None):
+            if not (is_contaminated(task.failure_type) and task.condition_contaminated):
                 task.failure_type = None
 
     await db.commit()

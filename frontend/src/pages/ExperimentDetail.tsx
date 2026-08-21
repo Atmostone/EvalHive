@@ -1823,12 +1823,16 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                         <td className="px-3 py-2 whitespace-nowrap">
                           {s.design === 'unpaired' ? (
                             <span className="text-amber-700" title={
-                              s.unpaired_reason === 'degenerate_differences'
-                                ? 'Enough shared cases, but every within-case difference was identical — nothing for the paired test to weigh. See the equivalence verdict.'
-                                : `Fewer than ${significanceCorrection?.min_cases ?? 3} cases run by both configs, so the comparison falls back to Welch over the cell values.`
+                              `Fewer than ${significanceCorrection?.min_cases ?? 3} cases run by both configs, so the comparison falls back to Welch over the cell values.`
                             }>unpaired</span>
                           ) : (
-                            <span className="text-gray-600">paired n={s.n_pairs}</span>
+                            <span className="text-gray-600" title={
+                              s.primary_test === 'sign'
+                                ? 'Paired, on the signs of the within-case differences — the t-test had no variance to work with (or the rank test too few non-zero pairs). The design does not change because one inference is unavailable.'
+                                : s.primary_test === 'identical'
+                                  ? 'The two configs scored identically on every shared case. No paired test can run on that, and none is needed: see the equivalence verdict.'
+                                  : 'Compared case by case, so everything the two configs share cancels instead of drowning the effect.'
+                            }>paired n={s.n_pairs}</span>
                           )}
                           {!!(s.unpaired_cases && (s.unpaired_cases.a.length || s.unpaired_cases.b.length)) && (
                             <span className="ml-1 text-[10px] text-amber-600" title={
@@ -1841,7 +1845,14 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                           )}
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">
-                          {s.ci ? (
+                          {/* SPA-115: withheld is not the same as missing. A
+                              rank-rescued axis agrees with the human on order and
+                              not on scale, so no size may be quoted from it. */}
+                          {s.magnitudes_withheld ? (
+                            <span className="text-amber-700 text-xs" title="This axis is trusted for ORDER only: a rescaling that preserves every rank would move a mean difference, its interval, the effect size and the equivalence verdict freely. None of them is reported here.">
+                              withheld — ranks only
+                            </span>
+                          ) : s.ci ? (
                             <span title={
                               `${s.effect_kind === 'cohens_dz' ? "Cohen's d_z" : "Hedges' g"} = ${s.effect ?? '—'}. ` +
                               `95% bootstrap interval for the mean difference, resampling cases.`
@@ -1869,10 +1880,12 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                             }>≈ equivalent</span>
                           ) : (
                             <span className="text-gray-400" title={
-                              s.power?.n_required
-                                ? `Could not tell. This design could have detected a difference of ${s.power.mde.toFixed(2)}; ` +
-                                  `the ${Math.abs(s.power.observed_diff).toFixed(2)} it saw would have needed n ≈ ${s.power.n_required} cases.`
-                                : 'Could not tell — and not enough data to call it equivalent either.'
+                              s.magnitudes_withheld
+                                ? 'Could not tell. Equivalence is a claim about how small a difference is, in judge points — a rank-only axis cannot support one, so this row can never read «equivalent».'
+                                : s.power?.n_required
+                                  ? `Could not tell. This design could have detected a difference of ${s.power.mde.toFixed(2)}; ` +
+                                    `the ${Math.abs(s.power.observed_diff).toFixed(2)} it saw would have needed n ≈ ${s.power.n_required} cases.`
+                                  : 'Could not tell — and not enough data to call it equivalent either.'
                             }>? inconclusive</span>
                           )}
                           {/* A row that was green before the correction should not
