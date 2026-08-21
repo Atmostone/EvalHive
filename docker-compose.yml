@@ -19,6 +19,11 @@ services:
       - ./data/shared:/data/shared
       - ./data/workspaces:/data/workspaces
       - ./backend/app:/app/app
+      # Read-only, for tests only: nothing in agent-image/ has ever been under
+      # test, and the one place that matters — which field each vendor puts a
+      # model's reasoning in — is exactly where an unverified assumption hides
+      # (SPA-114). The API never imports from here at runtime.
+      - ./agent-image:/agent-image:ro
       - ./backend/alembic:/app/alembic
       - ./backend/tests:/app/tests
       - ./backend/benchmarks:/app/benchmarks

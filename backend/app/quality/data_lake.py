@@ -31,10 +31,16 @@ ASSEMBLER_VERSION = "1.0"
 _MAX_EVENTS = 2000
 
 
-def _tokens(token_usage: dict) -> tuple[int | None, int | None]:
+def _tokens(token_usage: dict) -> tuple[int | None, int | None, int | None]:
+    """(input, output, reasoning). Reasoning is a SUBSET of output, and absent —
+    not zero — for a model that does not reason or a provider that does not say."""
     if not token_usage:
-        return None, None
-    return token_usage.get("input_tokens"), token_usage.get("output_tokens")
+        return None, None, None
+    return (
+        token_usage.get("input_tokens"),
+        token_usage.get("output_tokens"),
+        token_usage.get("reasoning_tokens"),
+    )
 
 
 def _duration_seconds(task: Task) -> int | None:
@@ -153,7 +159,7 @@ async def assemble_record(db: AsyncSession, task: Task) -> dict:
     if task.parent_id:
         decomposition["parent_id"] = str(task.parent_id)
 
-    inp, out = _tokens(task.token_usage or {})
+    inp, out, reasoning = _tokens(task.token_usage or {})
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -176,6 +182,7 @@ async def assemble_record(db: AsyncSession, task: Task) -> dict:
             "orchestrator_usage": task.orchestrator_usage or {},
             "input_tokens": inp,
             "output_tokens": out,
+            "reasoning_tokens": reasoning,
         },
         "decomposition": decomposition,
         "execution": {
@@ -243,7 +250,7 @@ async def build_quality_record(
         )
     ).scalar_one_or_none()
 
-    inp, out = _tokens(task.token_usage or {})
+    inp, out, reasoning = _tokens(task.token_usage or {})
 
     if existing is not None:
         existing.final_status = task.status
@@ -251,6 +258,7 @@ async def build_quality_record(
         existing.orchestrator_cost_usd = task.orchestrator_cost_usd or 0
         existing.input_tokens = inp
         existing.output_tokens = out
+        existing.reasoning_tokens = reasoning
         existing.duration_seconds = _duration_seconds(task)
         if commit:
             await db.commit()
@@ -275,6 +283,7 @@ async def build_quality_record(
         orchestrator_cost_usd=task.orchestrator_cost_usd or 0,
         input_tokens=inp,
         output_tokens=out,
+        reasoning_tokens=reasoning,
         duration_seconds=_duration_seconds(task),
         tool_call_count=len(blob["execution"].get("tool_calls", [])),
         benchmark_case_id=task.benchmark_case_id,

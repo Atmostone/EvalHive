@@ -63,7 +63,11 @@ from app.quality.stats import (
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 from app.utils.failures import is_contaminated
 
-SCHEMA_VERSION = 19  # v19: the orchestrator's own LLM spend is metered and
+SCHEMA_VERSION = 20  # v20: the model's own deliberation is captured, and the
+# effort panel separates the tokens spent thinking from the tokens spent writing
+# (SPA-114) — they were one number, so a reasoning model read as expensive and
+# shallow at once
+# v19: the orchestrator's own LLM spend is metered and
 # reported as its own cost column (SPA-111), and a gate failure caused by a
 # provider that would not answer is counted apart from one the deliverable earned
 # v18: paper-grade statistics (SPA-62) — comparisons are
@@ -182,6 +186,20 @@ def _run_effort_tokens(rec) -> Optional[float]:
     if it is None and ot is None:
         return None
     return float((it or 0) + (ot or 0))
+
+
+def _run_reasoning_tokens(rec) -> Optional[float]:
+    """Output tokens the model spent thinking, or None when unrecorded (SPA-114).
+
+    A SUBSET of the output tokens `_run_effort_tokens` already counts, never an
+    addition — they are billed inside `completion_tokens`. Separated because
+    «this model thinks a lot» and «this model writes a lot» were one number, and
+    a reasoning model looked expensive and shallow at the same time.
+    """
+    if rec is None:
+        return None
+    rt = getattr(rec, "reasoning_tokens", None)
+    return None if rt is None else float(rt)
 
 
 def _run_steps(rec) -> Optional[float]:
@@ -958,7 +976,7 @@ def build_report(
                 case_tokens.setdefault(r.case_key, []).append(t)
     case_median = {ck: statistics.median(v) for ck, v in case_tokens.items() if v}
     effort_per_config = []
-    any_tokens = any_cost = False
+    any_tokens = any_cost = any_reasoning = False
     for entry in per_config:
         key = entry["config_key"]
         ratios = [
@@ -974,11 +992,36 @@ def build_report(
             any_tokens = True
         if (entry.get("cost_mean") or 0) > 0:
             any_cost = True
+        reasoning_vals = [
+            rt
+            for r in by_config.get(key, [])
+            if r.status in _SETTLED_OK
+            and (rt := _run_reasoning_tokens(records_by_task.get(r.task_id))) is not None
+        ]
+        reasoning_mean = _mean(reasoning_vals)
+        if reasoning_vals:
+            any_reasoning = True
+        # Share of OUTPUT tokens spent thinking, not of the total: reasoning tokens
+        # live inside completion_tokens, so dividing by input+output would understate
+        # it by however long the prompt happened to be.
+        out_vals = [
+            float(getattr(records_by_task.get(r.task_id), "output_tokens", 0) or 0)
+            for r in by_config.get(key, [])
+            if r.status in _SETTLED_OK
+        ]
+        out_mean = _mean([v for v in out_vals if v])
+        reasoning_share = (
+            round(reasoning_mean / out_mean, 4)
+            if reasoning_mean is not None and out_mean
+            else None
+        )
         effort_per_config.append(
             {
                 "config_key": key,
                 "label": entry["label"],
                 "tokens_mean": entry.get("tokens_mean"),
+                "reasoning_tokens_mean": reasoning_mean,
+                "reasoning_share": reasoning_share,
                 "steps_mean": entry.get("steps_mean"),
                 "cost_mean": entry.get("cost_mean"),
                 "duration_mean": entry.get("duration_mean"),  # caveated secondary
@@ -989,6 +1032,10 @@ def build_report(
     effort = {
         "available": any_tokens,
         "cost_available": any_cost,
+        # False = no run here reported a reasoning split, which is what a
+        # non-reasoning model AND a provider that does not say both look like.
+        # Not the same as a share of zero (SPA-114).
+        "reasoning_available": any_reasoning,
         "primary": "tokens",
         "per_config": effort_per_config,
     }

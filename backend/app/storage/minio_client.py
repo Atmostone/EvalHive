@@ -183,7 +183,8 @@ def encode_log_archive(chunks) -> bytes:
 
     JSON-lines, one object per chunk — so the cleaned trace (E-06) and trajectory
     matcher (E-09) keep the tool name, and now its arguments and call identity
-    (SPA-86) and its timestamp (SPA-113), after compaction instead of going blind.
+    (SPA-86), its timestamp (SPA-113) and the model's reasoning (SPA-114),
+    after compaction instead of going blind.
     `json.dumps` escapes newlines, so each chunk is one line."""
     import json
 
@@ -197,6 +198,10 @@ def encode_log_archive(chunks) -> bytes:
                 "tool_call_id": getattr(c, "tool_call_id", None),
                 "part_index": getattr(c, "part_index", 0) or 0,
                 "part_total": getattr(c, "part_total", 1) or 1,
+                # The model's own deliberation (SPA-114). Omitting it here would
+                # repeat SPA-113's mistake exactly: a field the live trace has and
+                # the archived one silently does not.
+                "reasoning": getattr(c, "reasoning", None),
                 # The chunk's own clock. Without it the archived trace cannot be
                 # put back in the order it happened (SPA-113).
                 "created_at": (
@@ -228,6 +233,11 @@ def _decoded_chunk(o: dict) -> dict:
         # so the judge read a run whose tool calls all happened after it finished.
         # Archives written before this carry None and degrade to that old order.
         "created_at": o.get("created_at"),
+        # SPA-114: absent in every archive written before the model's deliberation
+        # was captured at all — those decode to None, which is what is true of
+        # them, rather than to an empty string that would read as "it thought
+        # nothing".
+        "reasoning": o.get("reasoning"),
     }
 
 

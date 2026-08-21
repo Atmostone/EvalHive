@@ -8,6 +8,12 @@ from pydantic import BaseModel, Field, model_validator
 # 256 KB cap per chunk — agent splits longer outputs into N consecutive chunks.
 MAX_CHUNK_BYTES = 256 * 1024
 
+# The model's own deliberation (SPA-114). Verbose by construction — a reasoning
+# model can spend most of its output tokens here — so it gets its own transport
+# cap rather than sharing the output budget it would otherwise crowd out. The
+# judge's much tighter token cap is applied later by the trace cleaner.
+MAX_REASONING_BYTES = 64 * 1024
+
 # Tool-call arguments (SPA-86). The agent already clips these before sending;
 # this is the same guard applied server-side, because "the client promised" is
 # not a size limit. Kept generous — the judge's own, much tighter token cap is
@@ -63,6 +69,12 @@ class AgentLogChunkIn(BaseModel):
     tool_call_id: Optional[str] = Field(None, max_length=128)
     part_index: int = Field(0, ge=0)
     part_total: int = Field(1, ge=1)
+    # SPA-114: the deliberation that PRECEDED this step, kept out of `content`.
+    # Mixing the two would silently change what every existing consumer reads,
+    # and «what the model thought» vs «what it did» is exactly the distinction
+    # worth keeping — a reasoning model's answer to «how did it work?» lives
+    # almost entirely on this side of it.
+    reasoning: Optional[str] = Field(None, max_length=MAX_REASONING_BYTES)
     idempotency_key: str = Field(..., min_length=1, max_length=64)
 
     @model_validator(mode="after")
@@ -86,4 +98,5 @@ class AgentLogChunkOut(BaseModel):
     tool_call_id: Optional[str] = None
     part_index: int = 0
     part_total: int = 1
+    reasoning: Optional[str] = None
     created_at: datetime

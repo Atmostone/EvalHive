@@ -385,6 +385,42 @@ async def test_create_accepts_and_stamps_a_pre_registered_equivalence_margin(
 
 
 @pytest.mark.asyncio
+async def test_create_accepts_the_reasoning_visibility_switch(
+    auth_client: AsyncClient, db_session
+):
+    """SPA-114. Whether the process judge saw the model's own deliberation
+    changes what its score means, so it is a condition of the experiment rather
+    than a runtime detail — it lives in the write-once eval_config the revision
+    fingerprint covers. Shown by default: without it the judge infers intent from
+    tool calls alone, which is most of what `error_recovery` and `goal_alignment`
+    are asking about."""
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    tpl = await _template(db_session, workspace_id, name="reasoning switch")
+
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(
+            tpl.id, name="reasoning-off",
+            eval_config={"trajectory_show_reasoning": False},
+        ),
+    )
+    assert r.status_code == 201, r.text
+    detail = (await auth_client.get(f"/api/experiments/{r.json()['id']}")).json()
+    assert detail["eval_config"]["trajectory_show_reasoning"] is False
+
+    # a typo must not pass as truthy
+    r = await auth_client.post(
+        "/api/experiments",
+        json=_body(
+            tpl.id, name="reasoning-bad",
+            eval_config={"trajectory_show_reasoning": "yes"},
+        ),
+    )
+    assert r.status_code == 400, r.text
+    assert "must be a boolean" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_an_unusable_equivalence_margin(
     auth_client: AsyncClient, db_session
 ):

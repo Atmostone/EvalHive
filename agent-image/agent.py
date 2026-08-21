@@ -10,6 +10,8 @@ import uuid
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 
+import re
+
 import httpx
 import litellm
 
@@ -293,6 +295,10 @@ async def _send_progress(payload: dict) -> None:
 
 # Per-tool-call max chunk size — must stay below the backend's 256 KB Pydantic
 # cap. Larger tool outputs are split into N consecutive chunks by chunk_seq.
+# The model's own deliberation (SPA-114). Its own cap, not a share of the output
+# budget: a reasoning model can spend most of its output tokens here.
+REASONING_MAX_BYTES = 60 * 1024
+
 LOG_CHUNK_MAX_BYTES = 240 * 1024
 
 # Transport guard for tool-call arguments (SPA-86) — NOT the judge's cap, which
@@ -343,8 +349,139 @@ def _clip_arguments(args: dict) -> tuple[dict, bool]:
     return out, True
 
 
+_THINK_RE = re.compile(r"<think>\s*(.*?)\s*</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_reasoning(message) -> tuple[str | None, str | None]:
+    """The model's deliberation and what remains of its answer.
+
+    Every vendor puts this somewhere different, and the client normalizes them
+    into three DIFFERENT declared fields rather than one — verified against the
+    `Message` model actually installed here (litellm 1.96.2), which declares
+    `reasoning_content`, `thinking_blocks` and `reasoning_items` and no plain
+    `reasoning` at all:
+
+    * `reasoning_content` — MiniMax, DeepSeek, most OpenAI-compatible servers;
+    * `thinking_blocks` — Anthropic, a list of `{type: "thinking", thinking: …}`
+      (or `redacted_thinking`, which carries only opaque `data`);
+    * `reasoning_items` — OpenAI Responses, each with a `summary` of
+      `{type: "summary_text", text: …}` blocks;
+    * an inline `<think>…</think>` some endpoints emit straight into the text.
+
+    Whatever the transport, ONE field comes out, because a per-vendor column
+    would make every consumer learn the vendor list.
+
+    Returns `(reasoning, content_override)`. The override is non-None only for
+    the inline case, where the deliberation has to be lifted OUT of the text —
+    otherwise the answer keeps a blob the model never meant as its answer, and
+    the outcome judge grades it.
+    """
+
+    def _clip(text: str) -> str:
+        return text.strip()[:REASONING_MAX_BYTES]
+
+    def _field(name):
+        v = getattr(message, name, None)
+        if v is None and isinstance(getattr(message, "provider_specific_fields", None), dict):
+            v = message.provider_specific_fields.get(name)
+        return v
+
+    # 1. The single-string shape.
+    for attr in ("reasoning_content", "reasoning"):
+        v = _field(attr)
+        if isinstance(v, str) and v.strip():
+            return _clip(v), None
+
+    # 2. Anthropic thinking blocks. A redacted block is deliberation the provider
+    #    encrypted rather than deliberation that did not happen, so it is NOTED
+    #    instead of skipped — a silent drop would read as "the model thought
+    #    nothing", which is the error this whole change exists to stop.
+    blocks = _field("thinking_blocks")
+    if isinstance(blocks, (list, tuple)):
+        parts = []
+        for b in blocks:
+            b = b if isinstance(b, dict) else getattr(b, "__dict__", {}) or {}
+            if b.get("type") == "redacted_thinking":
+                parts.append("[redacted by the provider]")
+            elif (t := b.get("thinking")):
+                parts.append(str(t))
+        joined = "\n".join(p for p in parts if p).strip()
+        if joined:
+            return _clip(joined), None
+
+    # 3. OpenAI Responses reasoning items — the text lives in each item's summary.
+    items = _field("reasoning_items")
+    if isinstance(items, (list, tuple)):
+        parts = []
+        for it in items:
+            it = it if isinstance(it, dict) else getattr(it, "__dict__", {}) or {}
+            for sb in it.get("summary") or []:
+                sb = sb if isinstance(sb, dict) else getattr(sb, "__dict__", {}) or {}
+                if (t := sb.get("text")):
+                    parts.append(str(t))
+        joined = "\n".join(parts).strip()
+        if joined:
+            return _clip(joined), None
+
+    content = getattr(message, "content", None)
+
+    # 4. A content list with typed parts, for clients that pass blocks through
+    #    unnormalized rather than lifting them into thinking_blocks.
+    if isinstance(content, list):
+        thoughts = [
+            b.get("thinking") or b.get("text") or ""
+            for b in content
+            if isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+        ]
+        joined = "\n".join(t for t in thoughts if t).strip()
+        return (_clip(joined), None) if joined else (None, None)
+
+    # 5. Inline <think>…</think>.
+    if isinstance(content, str) and "<think>" in content.lower():
+        found = _THINK_RE.findall(content)
+        if found:
+            rest = _THINK_RE.sub("", content).strip()
+            return _clip("\n".join(found)), rest
+    return None, None
+
+
+def _reasoning_tokens(usage) -> int | None:
+    """Output tokens the model spent thinking rather than answering, or **None**
+    when the provider did not report the split at all.
+
+    They are already inside `completion_tokens` and are billed — so a reasoning
+    model looked expensive AND shallow at once, both halves being artefacts of
+    never separating the two (SPA-77 counts total output as effort).
+
+    None rather than 0 on purpose: «the provider said nothing about reasoning»
+    and «the model reasoned for zero tokens» are different facts, and collapsing
+    them makes the report claim a measured 0% where there is no measurement.
+    """
+    details = getattr(usage, "completion_tokens_details", None)
+    if details is None and isinstance(usage, dict):
+        details = usage.get("completion_tokens_details")
+    if details is None:
+        return None
+    v = (
+        details.get("reasoning_tokens")
+        if isinstance(details, dict)
+        else getattr(details, "reasoning_tokens", None)
+    )
+    if v is None:
+        return None
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return None
+
+
 async def _send_tool_call(
-    tool_name: str, arguments: dict, tool_call_id: str, seq_iter: list[int]
+    tool_name: str,
+    arguments: dict,
+    tool_call_id: str,
+    seq_iter: list[int],
+    *,
+    reasoning: str | None = None,
 ) -> None:
     """Record the CALL, before the tool runs.
 
@@ -358,7 +495,8 @@ async def _send_tool_call(
     same `tool_call_id` and the cleaner joins them into one step.
     """
     await _send_log_chunk(
-        "", tool_name, seq_iter, arguments=arguments, tool_call_id=tool_call_id
+        "", tool_name, seq_iter, arguments=arguments, tool_call_id=tool_call_id,
+        reasoning=reasoning,
     )
 
 
@@ -370,6 +508,7 @@ async def _send_log_chunk(
     arguments: dict | None = None,
     tool_call_id: str | None = None,
     part_offset: int = 0,
+    reasoning: str | None = None,
 ) -> None:
     """POST /api/v1/agent-log/{task_id} — full-output streaming.
 
@@ -412,6 +551,9 @@ async def _send_log_chunk(
                     "tool_call_id": tool_call_id,
                     "part_index": part_index,
                     "part_total": part_offset + len(pieces),
+                    # Only on the first part: the deliberation belongs to the turn,
+                    # not to each slice of a long output (SPA-114).
+                    "reasoning": reasoning if part_index == part_offset else None,
                     "idempotency_key": uuid.uuid4().hex,
                 }
                 seq_iter[0] += 1
@@ -548,6 +690,13 @@ async def run_agent() -> dict:
 
     total_input_tokens = 0
     total_output_tokens = 0
+    # A subset of total_output_tokens, not an addition to it — reasoning tokens are
+    # already billed inside `completion_tokens`. Reported separately so «this model
+    # thinks a lot» and «this model writes a lot» stop being one number (SPA-114).
+    # Stays None until some turn actually reports a split: a non-reasoning model
+    # must report ABSENCE, or the report shows «reasoning measured, 0%» for every
+    # run on the stand, which is a measurement claim nobody made.
+    total_reasoning_tokens: int | None = None
     # Default 20 suits short product tasks; benchmark harnesses (e.g. Toolathlon,
     # designed around ~100-step budgets) raise it via run_config.max_iterations.
     max_iterations = int(os.environ.get("AGENT_MAX_ITERATIONS", "20") or 20)
@@ -605,6 +754,7 @@ async def run_agent() -> dict:
                         "token_usage": {
                             "input_tokens": total_input_tokens,
                             "output_tokens": total_output_tokens,
+                            "reasoning_tokens": total_reasoning_tokens,
                         },
                     },
                 }
@@ -640,6 +790,7 @@ async def run_agent() -> dict:
                         "token_usage": {
                             "input_tokens": total_input_tokens,
                             "output_tokens": total_output_tokens,
+                            "reasoning_tokens": total_reasoning_tokens,
                         },
                     },
                 }
@@ -648,11 +799,20 @@ async def run_agent() -> dict:
             if usage:
                 total_input_tokens += usage.prompt_tokens or 0
                 total_output_tokens += usage.completion_tokens or 0
+                if (rt := _reasoning_tokens(usage)) is not None:
+                    total_reasoning_tokens = (total_reasoning_tokens or 0) + rt
             control_state["tokens_input"] = total_input_tokens
             control_state["tokens_output"] = total_output_tokens
 
             message = response.choices[0].message
             messages.append(message.model_dump())
+
+            # The model's own deliberation for THIS turn (SPA-114). Pulled before
+            # anything else reads the message, because the inline `<think>` shape
+            # has to come out of the text before the text is used as an answer.
+            turn_reasoning, content_override = _extract_reasoning(message)
+            if content_override is not None:
+                message.content = content_override
 
             if message.tool_calls:
                 for tool_call in message.tool_calls:
@@ -667,7 +827,14 @@ async def run_agent() -> dict:
                     # Record the call BEFORE running it: a hang, a killed container
                     # or a raising builtin otherwise erases the call from the trace
                     # entirely — exactly the runs the process judge needs to see.
-                    await _send_tool_call(fn.name, args, tool_call.id, log_chunk_seq)
+                    # The deliberation rides on the FIRST call of the turn: it
+                    # preceded the turn, not each call within it, and repeating it
+                    # per call would multiply one thought into several.
+                    await _send_tool_call(
+                        fn.name, args, tool_call.id, log_chunk_seq,
+                        reasoning=turn_reasoning,
+                    )
+                    turn_reasoning = None
 
                     try:
                         if fn.name in mcp_routing:
@@ -751,9 +918,19 @@ async def run_agent() -> dict:
                         "token_usage": {
                             "input_tokens": total_input_tokens,
                             "output_tokens": total_output_tokens,
+                            "reasoning_tokens": total_reasoning_tokens,
                         },
                     },
                 }
+
+            # The last turn has no tool call to ride on, and its deliberation is
+            # the one that decided the run was DONE — the most load-bearing
+            # thought in the trace for `goal_alignment`. Sent as a step of its own
+            # rather than dropped for want of a carrier (SPA-114).
+            if turn_reasoning:
+                await _send_log_chunk(
+                    "", None, log_chunk_seq, reasoning=turn_reasoning
+                )
 
             result_summary = message.content or "Task completed"
             logger.info(f"[{task_id}] Agent finished: {result_summary[:200]}")
@@ -772,6 +949,7 @@ async def run_agent() -> dict:
                     "token_usage": {
                         "input_tokens": total_input_tokens,
                         "output_tokens": total_output_tokens,
+                        "reasoning_tokens": total_reasoning_tokens,
                     },
                 },
             }
@@ -784,6 +962,7 @@ async def run_agent() -> dict:
                 "token_usage": {
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,
+                    "reasoning_tokens": total_reasoning_tokens,
                 },
             },
         }

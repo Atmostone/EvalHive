@@ -90,6 +90,14 @@ const STATS: Term[] = [
     desc: "A gate failure the deliverable did not earn. Every judge call asks the model to answer through a named tool; some providers treat that as advice and reply in plain prose instead. The dimension then cannot be scored at all, and a critical one fails closed — we will not certify what we did not measure. The verdict is the same either way, so the report counts these separately: a config with a low pass rate for this reason is being under-measured, not out-performed.",
   },
   {
+    name: 'Thinking vs writing (reasoning tokens)',
+    desc: "A reasoning model answers in two streams: private deliberation and the reply. The deliberation is billed inside the output token count, so before it was separated a model that thought hard looked expensive and shallow at once — both halves of that impression being artefacts of one number. The Thinking column is the share of output tokens spent deliberating; a dash means the model or the provider reported no split, which is not the same as zero.",
+  },
+  {
+    name: 'Reasoning shown (process judge)',
+    desc: "Whether the process judge was allowed to read the model's own deliberation. It matters because two of the axes — error recovery and goal alignment — are questions about intent, which the judge otherwise infers from tool calls and a final answer. The counter-argument is real too: private reasoning is not behaviour, and grading it rewards models that narrate well. So it is a per-experiment setting, and the choice is recorded with the score — a run judged with reasoning visible is not comparable to one judged without.",
+  },
+  {
     name: 'Orchestrator cost',
     desc: "What the platform spent deciding about a run — choosing a template, deciding whether to split the task, reviewing the result — as opposed to what the agent spent doing it. Reported as its own column and never folded into the agent's own tokens, because the agent's token count is what efficiency comparisons between models are built on.",
   },
