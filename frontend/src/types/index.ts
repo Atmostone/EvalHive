@@ -1775,12 +1775,16 @@ export interface ExperimentSignificanceRow {
   /** The matrix runs the same cases across configs, so the comparison is paired
    *  whenever the two sides share enough of them; Welch is the fallback. */
   design?: 'paired' | 'unpaired'
-  unpaired_reason?:
-    | 'insufficient_shared_cases'
-    | 'insufficient_nonzero_pairs'
-    | 'degenerate_differences'
-    | null
-  primary_test?: 'paired_t' | 'wilcoxon' | 'welch' | 'mann_whitney'
+  unpaired_reason?: 'insufficient_shared_cases' | null
+  /** `sign` = the paired test that survives zero variance / too few non-zero
+   *  pairs; `identical` = the two configs scored the same on every shared case,
+   *  which defeats all three paired tests and is the most definite answer there
+   *  is rather than the absence of one. */
+  primary_test?: 'paired_t' | 'wilcoxon' | 'sign' | 'identical' | 'welch' | 'mann_whitney'
+  /** Non-null names a magnitude this row is not licensed to make — a rank-rescued
+   *  axis agrees with the human on ORDER only, so effect, ci, power and
+   *  equivalence are all withheld rather than merely absent (SPA-115). */
+  magnitudes_withheld?: 'rank_only_axis' | null
   n_pairs?: number
   n_cases_a?: number
   n_cases_b?: number
