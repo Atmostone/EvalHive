@@ -1198,26 +1198,61 @@ def test_a_rank_only_row_produces_no_magnitude_of_any_kind():
 
 def test_a_rank_only_verdict_survives_rescaling_the_axis():
     """The property the whole rank-only category exists for: rescale the axis in
-    a way that preserves every ordering, and nothing the row claims may move."""
-    from app.quality.experiment_report import significance_matrix
+    a way that preserves every ordering, and nothing the row claims may move.
 
-    a = [8.0, 9.0, 10.0, 11.0]
-    b = [1.0, 2.0, 3.5, 4.0]
+    Enough pairs that Wilcoxon is genuinely available — which is the point. An
+    earlier version of this test used four, below Wilcoxon's minimum, so the row
+    fell through to the sign test and the property held for the wrong reason
+    while the code was still wrong. A test that cannot reach the branch it is
+    guarding proves nothing about it."""
+    from app.quality.experiment_report import significance_matrix
+    from app.quality.stats import MIN_WILCOXON_PAIRS, wilcoxon_signed_rank
+
+    a = [8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]
+    b = [1.0, 2.0, 3.5, 4.0, 11.5, 12.5, 13.5]
+    assert len(a) >= MIN_WILCOXON_PAIRS, "the branch under test must be reachable"
+
     # Strictly increasing, so every rank is preserved and every gap is not.
-    squash = lambda v: v**1.7 / 10  # noqa: E731
-    base = significance_matrix(
-        {"a": {"dim:x": _cells(a)}, "b": {"dim:x": _cells(b)}},
-        rank_only_metrics=frozenset({"dim:x"}),
-    )[0][0]
-    scaled = significance_matrix(
-        {
-            "a": {"dim:x": _cells([squash(v) for v in a])},
-            "b": {"dim:x": _cells([squash(v) for v in b])},
-        },
-        rank_only_metrics=frozenset({"dim:x"}),
-    )[0][0]
+    squash = lambda v: v**2 / 10  # noqa: E731
+    scaled_a, scaled_b = [squash(v) for v in a], [squash(v) for v in b]
+
+    # Wilcoxon ranks the MAGNITUDES of the differences, so it moves — which is
+    # exactly why it cannot be the verdict for an axis trusted on order alone.
+    assert (
+        wilcoxon_signed_rank(list(zip(a, b)))["p"]
+        != wilcoxon_signed_rank(list(zip(scaled_a, scaled_b)))["p"]
+    )
+
+    def row(xs, ys):
+        return significance_matrix(
+            {"a": {"dim:x": _cells(xs)}, "b": {"dim:x": _cells(ys)}},
+            rank_only_metrics=frozenset({"dim:x"}),
+        )[0][0]
+
+    base, scaled = row(a, b), row(scaled_a, scaled_b)
+    assert base["primary_test"] == "sign", "not Wilcoxon, however rank-flavoured"
     assert base["p"] == scaled["p"]
     assert base["significant"] == scaled["significant"]
+    assert base["q"] == scaled["q"]
+    # The diagnostic is still reported — it just does not decide anything.
+    assert base["wilcoxon"] is not None
+
+    # The unpaired half of the category holds too, and for a different reason:
+    # Mann-Whitney ranks the raw VALUES, which a monotone map leaves in place.
+    # Asserted rather than assumed, so the property covers the whole category.
+    def unpaired(xs, ys):
+        return significance_matrix(
+            {
+                "a": {"dim:x": {f"a{i}": v for i, v in enumerate(xs)}},
+                "b": {"dim:x": {f"b{i}": v for i, v in enumerate(ys)}},
+            },
+            rank_only_metrics=frozenset({"dim:x"}),
+        )[0][0]
+
+    u_base, u_scaled = unpaired(a, b), unpaired(scaled_a, scaled_b)
+    assert u_base["design"] == "unpaired"
+    assert u_base["primary_test"] == "mann_whitney"
+    assert u_base["p"] == u_scaled["p"]
 
 
 def test_a_degenerate_paired_test_does_not_change_the_design():

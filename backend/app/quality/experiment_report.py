@@ -557,9 +557,11 @@ def _compare_cells(
     # the others ride along so a reader can see whether they agree.
     p_t = paired_t_test(pairs) if paired_design else None
     wilcox = wilcoxon_signed_rank(pairs) if paired_design else None
-    # Uses only the SIGNS of the differences, so it survives the two degeneracies
-    # that stop the others — no variance, too few non-zero pairs — and is equally
-    # legitimate for a scale-shifted judge.
+    # Uses only the SIGNS of the differences. That makes it the one paired test
+    # that survives both degeneracies stopping the others (no variance, too few
+    # non-zero pairs) AND the only one a rank-rescued axis can rest on: under a
+    # strictly increasing rescaling of the axis, sign(f(a) − f(b)) = sign(a − b),
+    # so nothing it reports can move.
     signs = sign_test(pairs) if paired_design else None
     # A rank-rescued axis cannot support a comparison of MEANS (SPA-88), so the
     # mean-based tests are not merely demoted for it — they are not run at all.
@@ -568,8 +570,14 @@ def _compare_cells(
 
     if paired_design:
         design, reason = "paired", None
+        # Wilcoxon is NOT the rank-only primary, however rank-flavoured its name
+        # sounds: it ranks the MAGNITUDES of the differences, and a rescaling that
+        # preserves every rank of the scores still reorders those magnitudes. On a
+        # seven-case fixture it moves p from 0.0206 to 0.0225 — and with the right
+        # numbers, across 0.05. For a scale-shifted axis the verdict has to be the
+        # sign test; Wilcoxon rides along as a diagnostic only.
         candidates = (
-            (("wilcoxon", wilcox), ("sign", signs))
+            (("sign", signs),)
             if rank_only
             else (("paired_t", p_t), ("sign", signs))
         )
