@@ -1158,6 +1158,18 @@ rather than about how it is computed:
   the same reason — so «no difference» becomes a claim that could be wrong, and
   where even that is undecidable the row reports what the design *could* have
   detected instead of shrugging.
+- **The design is a property of the experiment, not of the arithmetic** (SPA-115).
+  A paired row stays paired when a paired test cannot run, and falls through to
+  one that can — an exact sign test, which needs only the signs of the differences
+  and therefore survives both no-variance and too-few-non-zero-pairs. Substituting
+  an unpaired test there does not give a weaker answer: on four cases shifted by
+  exactly the same amount it gives the opposite one.
+- **A rank-only axis produces no magnitudes at all** (SPA-115). Barring it from
+  Welch was never enough — a mean difference, an interval on one, a standardised
+  effect and an equivalence verdict in judge points are all claims about size, and
+  a monotone rescaling that preserves every rank moves each of them freely. The
+  row withholds them and says so, because a blank reads as missing data and this
+  is a refusal.
 
 The same principle extends to the point estimates elsewhere in the report: κ, AUC
 and every rate carry intervals. The κ interval is deliberately **carried and not
