@@ -85,15 +85,22 @@ def extract_tool_args(choice) -> dict:
     error instead: that one is the model's output, and retrying it can help.
     """
     tcs = getattr(choice, "tool_calls", None)
-    if tcs:
-        return loads_lenient(tcs[0].function.arguments)
-    raw = getattr(choice, "content", None)
-    try:
+    raw = tcs[0].function.arguments if tcs else None
+    if raw and raw.strip():
         return loads_lenient(raw)
+    # An EMPTY tool call is the same failure as no tool call: the provider
+    # announced the call and put the answer somewhere else. Reasoning models do
+    # this routinely — MiniMax-M3 as an E-07 judge returns a named tool call with
+    # blank arguments and the JSON in `content`. Falling through here is the
+    # behaviour E-07's private reader always had; dropping it broke every site it
+    # was lifted into, which is a thing a shared helper can do quietly.
+    content = getattr(choice, "content", None)
+    try:
+        return loads_lenient(content)
     except (ValueError, json.JSONDecodeError) as e:
         raise ProviderComplianceError(
-            "provider returned no tool call and no parseable JSON in content "
-            f"({type(e).__name__}: {e})"
+            "provider returned no usable tool-call arguments and no parseable "
+            f"JSON in content ({type(e).__name__}: {e})"
         ) from e
 
 

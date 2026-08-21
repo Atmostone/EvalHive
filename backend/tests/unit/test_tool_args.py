@@ -58,6 +58,21 @@ def test_extract_tool_args_flags_a_non_compliant_provider():
         extract_tool_args(choice)
 
 
+def test_an_empty_tool_call_falls_through_to_content():
+    """A named tool call with blank arguments is the same failure as no tool call
+    at all — the provider announced the call and put the answer somewhere else.
+    Reasoning models do it routinely: MiniMax-M3 as an E-07 judge returns exactly
+    this. E-07's private reader always fell through here; the shared one has to
+    as well, or lifting it breaks every site it was lifted into."""
+    obj = {"efficiency": {"score": 6}}
+    for empty in ("", "   ", None):
+        choice = SimpleNamespace(
+            tool_calls=[SimpleNamespace(function=SimpleNamespace(arguments=empty))],
+            content=json.dumps(obj),
+        )
+        assert extract_tool_args(choice) == obj
+
+
 def test_extract_tool_args_keeps_a_present_but_malformed_call_as_a_parse_error():
     """A tool call that IS there but carries junk is the MODEL's output, not the
     provider's compliance — it stays an ordinary parse error, which callers may
