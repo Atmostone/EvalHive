@@ -205,17 +205,30 @@ def _record(dimensions=None, failures=None, trajectory_axes=None, trajectory_mat
             human_feedback=None, cost_usd="0", quality_cost=0.0, trajectory_cost=0.0,
             gate=None, loop_detected=False, trace_stats=None, loop_analysis=None,
             input_tokens=None, output_tokens=None, tool_call_count=None,
-            orchestrator_cost_usd="0", reasoning_tokens=None):
+            orchestrator_cost_usd="0", reasoning_tokens=None,
+            loop_score=None, loop_axis_na=False):
     quality_profile = None
     if dimensions or quality_cost or gate:
         quality_profile = {"dimensions": dimensions or [], "judge_cost_usd": quality_cost}
         if gate is not None:
             quality_profile["gate"] = gate
     trajectory_profile = None
-    if trajectory_axes is not None or loop_detected or trace_stats or loop_analysis:
+    if (trajectory_axes is not None or loop_detected or trace_stats or loop_analysis
+            or loop_score is not None or loop_axis_na):
+        axes = list(trajectory_axes or [])
+        # The real judge always emits a loop_detection AXIS, and `loop_detected` is
+        # derived from its score (< _LOOP_SCORE_THRESHOLD). Passing the flag alone
+        # models the run where the judge never answered — which is a distinct case
+        # from "answered no", and the two must not be one vote (SPA-89).
+        if loop_score is not None:
+            axes.append({"key": "loop_detection", "name": "Loop detection", "score": loop_score})
+            loop_detected = loop_score < 5
+        elif loop_axis_na:
+            axes.append({"key": "loop_detection", "name": "Loop detection",
+                         "score": None, "status": "not_applicable"})
         trajectory_profile = {
             "status": "scored",
-            "axes": trajectory_axes or [],
+            "axes": axes,
             "judge_cost_usd": trajectory_cost,
             "loop_detected": loop_detected,
         }
@@ -275,7 +288,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 20
+    assert report["schema_version"] == 21
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -322,12 +335,12 @@ def test_build_report_full_shape():
 
     # SPA-76: no human calibration passed and no deterministic loop_analysis on
     # these records → every axis is an honest 'not_calibrated' (never fabricated).
-    # v11: the judge loop_detection axis is retired (counter SPA-75 carries it).
+    # SPA-89: all SIX axes are badged, the loop one included — it is only different
+    # in having a source that costs no human, and here that source did not run.
     ar = report["axis_reliability"]
     assert ar["available"] is False
     assert set(ar["axes"]) == {"efficiency", "tool_selection", "parameter_quality",
-                               "error_recovery", "goal_alignment"}
-    assert "loop_detection" not in ar["axes"]
+                               "error_recovery", "goal_alignment", "loop_detection"}
     assert all(a["status"] == "not_calibrated" and a["source"] == "none"
                for a in ar["axes"].values())
 
@@ -436,7 +449,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 20
+    assert report["schema_version"] == 21
 
     ext = report["external"]
     assert ext["available"] is True
@@ -762,15 +775,15 @@ def test_build_report_loop_detection():
     records = {
         r1.task_id: _record(
             trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": 7}],
-            loop_detected=False,
+            loop_score=8,
         ),
         r2.task_id: _record(
             trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": 2}],
-            loop_detected=True,
+            loop_score=2,
         ),
         r3.task_id: _record(
             trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": 8}],
-            loop_detected=False,
+            loop_score=8,
         ),
     }
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
@@ -780,6 +793,8 @@ def test_build_report_loop_detection():
     by = {c["config_key"]: c for c in ld["per_config"]}
     assert (by["cfg-01"]["n_scored"], by["cfg-01"]["n_loop"], by["cfg-01"]["loop_rate"]) == (2, 1, 0.5)
     assert (by["cfg-02"]["n_scored"], by["cfg-02"]["n_loop"], by["cfg-02"]["loop_rate"]) == (1, 0, 0.0)
+    # every run carried a judge verdict, so nothing was set aside
+    assert by["cfg-01"]["n_judge_unscored"] == 0 and ld["n_judge_unscored"] == 0
 
 
 def test_build_report_loop_detection_structural_anchor():
@@ -793,13 +808,13 @@ def test_build_report_loop_detection_structural_anchor():
         # judge says no loop, counter agrees (no loop) → agree
         r1.task_id: _record(
             trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": 7}],
-            loop_detected=False,
+            loop_score=8,
             loop_analysis={"loop_detected": False, "max_repeat_run": 1},
         ),
         # judge says no loop, but the counter FOUND a real loop → judge under-called
         r2.task_id: _record(
             trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": 6}],
-            loop_detected=False,
+            loop_score=8,
             loop_analysis={"loop_detected": True, "max_repeat_run": 5},
         ),
     }
@@ -822,13 +837,16 @@ def test_build_report_loop_detection_structural_anchor():
     assert ld["n_counter_only"] == 1 and ld["n_judge_only"] == 0
     assert ld["kappa"] == 0.0
     assert ld["n_structural"] == 2
-    # v11: the judge loop_detection axis is retired from axis_reliability — the SPA-75
-    # counter still carries the loop signal in the Loop detection section (asserted
-    # above), but it no longer badges a displayed E-07 axis. With no human calibration
-    # and loop gone, no real reliability source remains.
+    assert cfg1["n_paired"] == 2 and cfg1["n_judge_unscored"] == 0
+    # SPA-89: the counter BADGES the judge's loop axis. With no human anywhere, this
+    # is the only axis carrying a reliability source at all — which is the point of
+    # the anchor: it costs no annotation, so it is available on every experiment.
     ar = report["axis_reliability"]
-    assert "loop_detection" not in ar["axes"]
-    assert ar["available"] is False
+    loop_ax = ar["axes"]["loop_detection"]
+    assert loop_ax["source"] == "structural"
+    assert loop_ax["kappa"] == 0.0 and loop_ax["n"] == 2
+    assert loop_ax["rho"] is None  # binary anchor — nothing to rank-rescue with
+    assert ar["available"] is True
     assert ar["axes"]["efficiency"]["status"] == "not_calibrated"
 
 
@@ -917,16 +935,37 @@ def test_axis_reliability_sources_and_priority():
     # human dim exists but n=2 < MIN_SAMPLES → insufficient, still human-sourced
     assert (ax["error_recovery"]["status"], ax["error_recovery"]["source"]) == ("insufficient", "human")
     assert (ax["goal_alignment"]["status"], ax["goal_alignment"]["source"]) == ("not_calibrated", "none")
-    # v11: the judge loop_detection axis is retired — never badged, even with a human κ.
-    assert "loop_detection" not in ax
+    # A human who rated the loop axis outranks the structural anchor, same as on any
+    # other axis — the anchor is a fallback, not a competing gold standard.
+    assert (ax["loop_detection"]["status"], ax["loop_detection"]["source"]) == ("unreliable", "human")
+    assert ax["loop_detection"]["kappa"] == 0.05
 
-    # The structural loop anchor no longer surfaces a displayed axis (v11).
+    # THE BRANCH THIS TICKET RESTORED: with no human on the loop axis, the
+    # deterministic counter badges it anyway. Between v11 and SPA-89 this was
+    # unreachable — the axis was skipped before it could reach the fallback — so an
+    # assertion that never enters it proves nothing.
     cal2 = {"available": True, "dimensions": [
         {"key": "efficiency", "name": "Efficiency", "n": 10, "cohen_kappa": 0.72}]}
     ar2 = _axis_reliability(cal2, loop_detection, {})
-    assert "loop_detection" not in ar2["axes"]
+    loop2 = ar2["axes"]["loop_detection"]
+    assert loop2["source"] == "structural"
+    assert (loop2["kappa"], loop2["n"]) == (0.33, 50)
+    assert loop2["status"] == "unreliable"  # κ 0.33 < 0.4
+    # No ρ on a binary anchor, so a structural row can never be rank-rescued: the
+    # rescue that saves a scale-shifted human-rated axis has nothing to work with.
+    assert loop2["rho"] is None
     # a non-loop axis with no human source stays not_calibrated even when a loop anchor exists
     assert ar2["axes"]["goal_alignment"]["status"] == "not_calibrated"
+
+    # The anchor is a real source, so it moves the badge like any other: above the
+    # bar it certifies, below MIN_SAMPLES it is honest about having too little.
+    strong = _axis_reliability(cal2, {"structural_available": True, "kappa": 0.71,
+                                      "n_structural": 40}, {})
+    assert strong["axes"]["loop_detection"]["status"] == "reliable_absolute"
+    thin = _axis_reliability(cal2, {"structural_available": True, "kappa": 0.9,
+                                    "n_structural": 2}, {})
+    assert thin["axes"]["loop_detection"]["status"] == "insufficient"
+    assert thin["axes"]["loop_detection"]["source"] == "structural"
 
     # Nothing at all → honest empty state.
     ar3 = _axis_reliability(None, {"structural_available": False}, {})
@@ -1647,3 +1686,119 @@ def test_a_rank_rescued_trajectory_axis_does_not_open_an_empty_trusted_view():
     )
     assert ok["trusted"]["available"] is True
     assert ok["trusted"]["summary"]["per_config"][0]["trajectory_mean"] is not None
+
+
+# --- SPA-89: the loop axis, badged by the counter and gated like every other ---- #
+
+
+def test_the_judges_silence_on_the_loop_axis_is_not_a_no_loop_vote():
+    """A run the judge never answered the loop question on must not enter the
+    judge↔counter table. It used to: `loop_detected` is False both for "looked and
+    saw nothing" and for "never looked", so every silent run landed in the
+    both-clean cell whenever the counter also found nothing, and the anchor κ came
+    out higher than the raters had earned. Since SPA-88 the gate ACTS on that κ."""
+    r1 = _run("cfg-01", "case-a", 0, status="success", traj=7.0)
+    r2 = _run("cfg-01", "case-b", 0, status="success", traj=7.0)
+    r3 = _run("cfg-01", "case-c", 0, status="success", traj=7.0)
+    records = {
+        # answered: no loop, counter agrees
+        r1.task_id: _record(loop_score=8, loop_analysis={"loop_detected": False}),
+        # the judge declined the axis (not applicable) — silence, not a verdict
+        r2.task_id: _record(loop_axis_na=True, loop_analysis={"loop_detected": False}),
+        # the axis never came back at all — the other shape of the same silence
+        r3.task_id: _record(
+            trajectory_axes=[{"key": "efficiency", "name": "Efficiency", "score": 7}],
+            loop_analysis={"loop_detected": False},
+        ),
+    }
+    ld = build_report(_exp(CONFIGS), [r1, r2, r3], records, partial=False)["loop_detection"]
+    cfg = next(c for c in ld["per_config"] if c["config_key"] == "cfg-01")
+
+    assert cfg["n_scored"] == 3            # all three were trajectory-scored
+    assert cfg["n_judge_scored"] == 1      # exactly one carries a loop verdict
+    assert cfg["n_judge_unscored"] == 2
+    assert cfg["n_paired"] == 1            # ...so the 2×2 holds one run, not three
+    assert ld["n_structural"] == 1 and ld["n_judge_unscored"] == 2
+
+    # The counter ran on all three regardless of what the judge did, so its own
+    # rate keeps the wider denominator — the two are different questions.
+    assert (cfg["n_structural"], cfg["structural_loop_rate"]) == (3, 0.0)
+    # And the judge's rate is over the runs it actually answered.
+    assert cfg["loop_rate"] == 0.0
+
+
+def test_a_silent_judge_cannot_inflate_the_anchor_kappa():
+    """The same convention, priced. Two runs disagree and two are silent-but-clean:
+    under the old reading the silent pair joined the both-clean cell and lifted κ;
+    under SPA-89 they are set aside and κ reports what the two rated runs support."""
+    runs = [_run("cfg-01", f"case-{i}", 0, status="success", traj=7.0) for i in range(4)]
+    records = {
+        # judge flags a loop the counter did not find, and vice versa → total disagreement
+        runs[0].task_id: _record(loop_score=2, loop_analysis={"loop_detected": False}),
+        runs[1].task_id: _record(loop_score=8, loop_analysis={"loop_detected": True}),
+        # silent, and the counter says clean — the pair the old convention banked
+        runs[2].task_id: _record(loop_axis_na=True, loop_analysis={"loop_detected": False}),
+        runs[3].task_id: _record(loop_axis_na=True, loop_analysis={"loop_detected": False}),
+    }
+    ld = build_report(_exp(CONFIGS), runs, records, partial=False)["loop_detection"]
+    # {both_loop 0, judge_only 1, counter_only 1, both_clean 0}: po=0, pe=0.5 → κ=-1
+    assert ld["kappa"] == -1.0
+    assert ld["agreement"] == 0.0
+    assert (ld["n_judge_only"], ld["n_counter_only"]) == (1, 1)
+    assert ld["n_structural"] == 2 and ld["n_judge_unscored"] == 2
+
+
+def test_agreement_at_exactly_chance_is_not_reported_as_negative():
+    """Live on the stand, a judge that flagged one loop the counter did not find over
+    seven runs produced po == pe and printed κ = -0.00 — a judge doing slightly worse
+    than chance, which is not what happened. Exactly chance is zero."""
+    import math
+
+    from app.quality.experiment_report import _binary_kappa
+
+    k = _binary_kappa(both_yes=0, a_only=1, b_only=0, both_no=6)
+    assert k == 0.0
+    assert math.copysign(1, k) > 0  # +0.0, so it renders "0.00" not "-0.00"
+
+
+def test_the_loop_axis_is_weighed_by_its_badge_not_by_a_hardcoded_set():
+    """The ticket in one assertion. v11 removed the loop axis from every aggregate
+    permanently, which also made its own calibration source unreachable. Now the
+    axis is in the mean, and the gate decides — the same outcome when the anchor
+    says the judge is unreliable, but reached on the data rather than asserted."""
+    from app.quality.experiment_report import _traj_score
+
+    rec = _record(trajectory_axes=[
+        {"key": "efficiency", "name": "Efficiency", "score": 6},
+        {"key": "loop_detection", "name": "Loop detection", "score": 0},
+    ])
+    # raw: every axis the judge scored, loop included → (6 + 0) / 2
+    assert _traj_score(rec, 9.9) == 3.0
+    # the gate clears both → unchanged
+    assert _traj_score(rec, None, allowed=frozenset({"efficiency", "loop_detection"})) == 3.0
+    # the gate quarantines the loop axis → it leaves the mean, and 6.0 is what the
+    # v11 hardcode used to produce for every experiment, trustworthy anchor or not
+    assert _traj_score(rec, None, allowed=frozenset({"efficiency"})) == 6.0
+
+
+def test_an_unreliable_loop_anchor_quarantines_the_axis_end_to_end():
+    """Restoring the axis must not smuggle an untrusted number into a trusted view.
+    With the counter disagreeing with the judge, the badge lands below the bar and
+    the trusted trajectory aggregate drops the axis — the v11 outcome, earned."""
+    r1 = _run("cfg-01", "case-a", 0, status="success", traj=7.0)
+    r2 = _run("cfg-01", "case-b", 0, status="success", traj=7.0)
+    r3 = _run("cfg-01", "case-c", 0, status="success", traj=7.0)
+    records = {
+        r1.task_id: _record(loop_score=2, loop_analysis={"loop_detected": False}),
+        r2.task_id: _record(loop_score=8, loop_analysis={"loop_detected": True}),
+        r3.task_id: _record(loop_score=2, loop_analysis={"loop_detected": False}),
+    }
+    report = build_report(_exp(CONFIGS), [r1, r2, r3], records, partial=False)
+
+    loop_ax = report["axis_reliability"]["axes"]["loop_detection"]
+    assert loop_ax["source"] == "structural" and loop_ax["status"] == "unreliable"
+    # the raw heatmap still shows it — quarantine hides nothing, it de-weights
+    assert "loop_detection" in report["trajectory_heatmap"]["axes"]
+    # ...and the gate's numeric set does not contain it
+    excluded = {r["key"] for r in report["trusted"]["trajectory_axes"]["excluded"]}
+    assert "loop_detection" in excluded
