@@ -53,7 +53,10 @@ logger = logging.getLogger(__name__)
 # v3: prompt_fingerprint — the conditions the verdict was obtained under (SPA-85)
 # v4: tool-call arguments in the trace + the `trim` policy the verdict was
 #     obtained under (SPA-86)
-TRAJECTORY_SCHEMA_VERSION = 4
+# v5: reasoning_shown / n_reasoning_steps — whether the judge saw the model's own
+#     deliberation, which changes what the score means and is therefore a
+#     condition of the verdict, not a detail of it (SPA-114)
+TRAJECTORY_SCHEMA_VERSION = 5
 _MAX_SCALE = 10
 # Default cap on the judge's input (cleaned trace) tokens per task; overridable
 # via the `trajectory_judge_max_input_tokens` setting (acceptance: cost cap).
@@ -274,6 +277,11 @@ def _serialize_trace(cleaned_trace: dict, steps: list[dict] | None = None) -> st
 # trim moves on to the next kind rather than grinding them to nothing.
 _OUTPUT_FLOOR_TOKENS = 50
 _REASONING_FLOOR_TOKENS = 40
+# The MODEL's own deliberation (SPA-114), as distinct from the orchestrator's
+# one-line rationale above. A floor of its own because it is a different animal:
+# a reasoning model can spend most of its output tokens here, so a shared cap
+# would let one talkative turn evict the tool calls it is meant to explain.
+_MODEL_REASONING_FLOOR_TOKENS = 40
 
 
 def _shrink(content: str, cap: int) -> tuple[str, bool]:
@@ -287,8 +295,13 @@ def _shrink(content: str, cap: int) -> tuple[str, bool]:
 
 
 def _apply_caps(
-    steps: list[dict], *, output_cap: int, error_output_cap: int, reasoning_cap: int
-) -> tuple[list[dict], int, int]:
+    steps: list[dict],
+    *,
+    output_cap: int,
+    error_output_cap: int,
+    reasoning_cap: int,
+    model_reasoning_cap: int = 0,
+) -> tuple[list[dict], int, int, int]:
     """Shorten step contents per kind, always applied to the ORIGINAL steps.
 
     Tool calls and their arguments are never touched — only the *results* and the
@@ -305,6 +318,7 @@ def _apply_caps(
     out: list[dict] = []
     outputs_shrunk = 0
     reasoning_shrunk = 0
+    model_reasoning_shrunk = 0
     for s in steps:
         kind = s.get("kind")
         content = s.get("content") or ""
@@ -318,11 +332,14 @@ def _apply_caps(
         elif kind == "reasoning" and reasoning_cap:
             content, changed = _shrink(content, reasoning_cap)
             reasoning_shrunk += int(changed)
+        elif kind == "model_reasoning" and model_reasoning_cap:
+            content, changed = _shrink(content, model_reasoning_cap)
+            model_reasoning_shrunk += int(changed)
         else:
             out.append(s)
             continue
         out.append({**s, "content": content, "truncated": s.get("truncated") or content != (s.get("content") or "")})
-    return out, outputs_shrunk, reasoning_shrunk
+    return out, outputs_shrunk, reasoning_shrunk, model_reasoning_shrunk
 
 
 def _signature_summary(steps: list[dict]) -> str:
@@ -372,8 +389,15 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
     of the verdict — so the order is by **value**, not by position, and every
     omission leaves a marker:
 
-    1. **tool outputs** shrink first (progressively halved), error outputs last;
-    2. **reasoning** shrinks only once outputs are at the floor;
+    0. **the model's own deliberation** goes first (SPA-114). It is verbose by
+       construction — a reasoning model spends most of its output tokens there —
+       and a tool call plus its result is denser evidence per token about how the
+       agent WORKED, which is the question being asked. SPA-86 put reasoning after
+       outputs, but that was decided when «reasoning» meant the orchestrator's
+       one-line rationale, not a model's full thinking, and inheriting it would
+       let one talkative turn evict the calls it is supposed to explain;
+    1. **tool outputs** shrink next (progressively halved), error outputs last;
+    2. **the orchestrator's reasoning** shrinks only once outputs are at the floor;
     3. **whole middle steps** are dropped third, and the gap marker names the tool
        signatures that went with them;
     4. a **hard tail cut** is the last resort, and it says so in the text.
@@ -405,8 +429,10 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
         "output_cap_applied": None,
         "error_output_cap_applied": None,
         "reasoning_cap_applied": None,
+        "model_reasoning_cap_applied": None,
         "outputs_shrunk": 0,
         "reasoning_shrunk": 0,
+        "model_reasoning_shrunk": 0,
         "steps_omitted": 0,
         "omitted_signatures": "",
         "hard_cut_tokens": 0,
@@ -430,12 +456,36 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
     report["capped"] = True
     report["anything_removed"] = True
 
-    # 1) Tool outputs, halved until they fit or hit the floor. Two passes over the
-    #    ORIGINAL steps: the first spares error outputs (error_output_cap = 0), the
-    #    second gives them up too while holding the cap the first pass settled on.
     base = list(steps)
     out_cap = 0  # 0 = that class is untouched
     err_cap = 0
+    model_reason_cap = 0
+
+    # 0) The model's own deliberation, halved until it fits or hits the floor.
+    #    First in the sacrifice order: it is the cheapest evidence per token about
+    #    how the agent worked, and the most likely to be the reason the trace does
+    #    not fit at all.
+    cap = _max_content_tokens(base, "model_reasoning")
+    while cap > _MODEL_REASONING_FLOOR_TOKENS and _count_tokens(text) > max_input_tokens:
+        cap = max(_MODEL_REASONING_FLOOR_TOKENS, cap // 2)
+        trimmed, _, _, n_model = _apply_caps(
+            base, output_cap=0, error_output_cap=0, reasoning_cap=0,
+            model_reasoning_cap=cap,
+        )
+        candidate = _serialize_trace(cleaned_trace, trimmed)
+        if _count_tokens(candidate) >= _count_tokens(text):
+            break  # halving stopped buying anything
+        text = candidate
+        model_reason_cap = cap
+        report["model_reasoning_cap_applied"] = cap
+        report["model_reasoning_shrunk"] = n_model
+        steps = trimmed
+    if _count_tokens(text) <= max_input_tokens:
+        return text, report
+
+    # 1) Tool outputs, halved until they fit or hit the floor. Two passes over the
+    #    ORIGINAL steps: the first spares error outputs (error_output_cap = 0), the
+    #    second gives them up too while holding the cap the first pass settled on.
     for is_error_pass in (False, True):
         # Halve from the largest output of THIS class, never the global maximum.
         cap = _max_output_tokens(base, errors=is_error_pass)
@@ -443,8 +493,9 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
             cap = max(_OUTPUT_FLOOR_TOKENS, cap // 2)
             trial_out = out_cap if is_error_pass else cap
             trial_err = cap if is_error_pass else 0
-            trimmed, n_out, _ = _apply_caps(
-                base, output_cap=trial_out, error_output_cap=trial_err, reasoning_cap=0
+            trimmed, n_out, _, _ = _apply_caps(
+                base, output_cap=trial_out, error_output_cap=trial_err, reasoning_cap=0,
+                model_reasoning_cap=model_reason_cap,
             )
             candidate = _serialize_trace(cleaned_trace, trimmed)
             if _count_tokens(candidate) >= _count_tokens(text):
@@ -466,8 +517,9 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
     cap = _max_content_tokens(base, "reasoning")
     while cap > _REASONING_FLOOR_TOKENS and _count_tokens(text) > max_input_tokens:
         cap = max(_REASONING_FLOOR_TOKENS, cap // 2)
-        trimmed, n_out, n_reason = _apply_caps(
-            base, output_cap=out_cap, error_output_cap=err_cap, reasoning_cap=cap
+        trimmed, n_out, n_reason, _ = _apply_caps(
+            base, output_cap=out_cap, error_output_cap=err_cap, reasoning_cap=cap,
+            model_reasoning_cap=model_reason_cap,
         )
         candidate = _serialize_trace(cleaned_trace, trimmed)
         if _count_tokens(candidate) >= _count_tokens(text):
@@ -574,6 +626,7 @@ async def evaluate_task_trajectory(
     commit: bool = True,
     trace_config: TraceCleanerConfig | None = None,
     max_input_tokens: int | None = None,
+    show_reasoning: bool = True,
 ) -> dict | None:
     """Judge ``task``'s trajectory and write the profile to its quality record.
 
@@ -585,6 +638,15 @@ async def evaluate_task_trajectory(
     ``trace_config`` and ``max_input_tokens`` override the workspace settings for
     this one evaluation — an experiment can ask for an untrimmed trace
     (``max_input_tokens=0``) without changing what every other run is judged on.
+
+    ``show_reasoning`` decides whether the judge sees the model's own deliberation
+    (SPA-114). Shown by default: `error_recovery` and `goal_alignment` are
+    questions about intent, and without it the judge infers intent from tool calls
+    and a final answer. The opposite case is real — private reasoning is not
+    behaviour, and grading it rewards models that narrate well — so it is a
+    per-experiment switch, and either way the choice is recorded in the profile as
+    `reasoning_shown`. A score computed with reasoning visible is not comparable
+    to one computed without, exactly like `files_only` on the outcome judge.
     """
     judge_llm = await _resolve_judge_model(db, task.workspace_id)
     if judge_llm is None:
@@ -594,6 +656,19 @@ async def evaluate_task_trajectory(
         return None
 
     cleaned_trace = await build_cleaned_trace(db, task, config=trace_config)
+    n_reasoning_steps = sum(
+        1 for s in (cleaned_trace.get("steps") or []) if s.get("kind") == "model_reasoning"
+    )
+    if not show_reasoning:
+        # Withheld from the JUDGE only — the trace itself keeps it, so the same run
+        # can be re-judged under the other policy without re-running the agent.
+        cleaned_trace = {
+            **cleaned_trace,
+            "steps": [
+                s for s in (cleaned_trace.get("steps") or [])
+                if s.get("kind") != "model_reasoning"
+            ],
+        }
     if not (cleaned_trace.get("steps") or []):
         logger.info(f"trajectory eval skipped — empty trace for task {task.id}")
         return None
@@ -635,6 +710,12 @@ async def evaluate_task_trajectory(
         "judge_output_tokens": result.get("judge_output_tokens", 0),
         "judge_cost_usd": result.get("judge_cost_usd", 0.0),
         "input_capped": result.get("input_capped", False),
+        # A protocol condition, not a task property (SPA-114) — the same shape as
+        # `files_only` on the outcome judge. `n_reasoning_steps` counts what the
+        # RUN had, so «hidden» and «the model never emitted any» stay distinct:
+        # a non-reasoning model scores under `shown` with a count of zero.
+        "reasoning_shown": bool(show_reasoning),
+        "n_reasoning_steps": n_reasoning_steps,
         # What the judge was allowed to read, and what it cost to fit (SPA-86). An
         # E-07 score from an untrimmed run and one from a trimmed run answer
         # different questions; without this block they are silently comparable.

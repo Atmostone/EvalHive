@@ -58,6 +58,7 @@ export default function AgentLogViewer({ taskId, archived }: AgentLogViewerProps
           chunk_seq: payload.chunk_seq,
           content: payload.content,
           tool_name: payload.tool_name ?? null,
+          reasoning: payload.reasoning ?? null,
           created_at: payload.created_at ?? null,
         }
         const dupKey = chunk.id ?? `seq-${chunk.chunk_seq}`
@@ -148,9 +149,19 @@ export default function AgentLogViewer({ taskId, archived }: AgentLogViewerProps
                   #{c.chunk_seq} · {c.tool_name}
                 </div>
               )}
-              <pre className="whitespace-pre-wrap break-words leading-tight m-0">
-                {c.content}
-              </pre>
+              {c.reasoning && (
+                <div
+                  className="text-violet-300/60 italic whitespace-pre-wrap break-words leading-tight mb-1"
+                  title="the model's own deliberation before this step — stored apart from what it said"
+                >
+                  {c.reasoning}
+                </div>
+              )}
+              {c.content && (
+                <pre className="whitespace-pre-wrap break-words leading-tight m-0">
+                  {c.content}
+                </pre>
+              )}
             </div>
           )}
         />

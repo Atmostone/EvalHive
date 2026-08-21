@@ -205,7 +205,7 @@ def _record(dimensions=None, failures=None, trajectory_axes=None, trajectory_mat
             human_feedback=None, cost_usd="0", quality_cost=0.0, trajectory_cost=0.0,
             gate=None, loop_detected=False, trace_stats=None, loop_analysis=None,
             input_tokens=None, output_tokens=None, tool_call_count=None,
-            orchestrator_cost_usd="0"):
+            orchestrator_cost_usd="0", reasoning_tokens=None):
     quality_profile = None
     if dimensions or quality_cost or gate:
         quality_profile = {"dimensions": dimensions or [], "judge_cost_usd": quality_cost}
@@ -235,6 +235,7 @@ def _record(dimensions=None, failures=None, trajectory_axes=None, trajectory_mat
         human_feedback=human_feedback,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
         tool_call_count=tool_call_count,
     )
 
@@ -274,7 +275,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 19
+    assert report["schema_version"] == 20
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -435,7 +436,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 19
+    assert report["schema_version"] == 20
 
     ext = report["external"]
     assert ext["available"] is True
@@ -726,6 +727,29 @@ def test_quality_gate_separates_a_failure_nobody_earned():
     assert by["cfg-02"]["n_uncertifiable"] == 1
     assert by["cfg-01"]["n_uncertifiable"] == 0
     assert qg["n_uncertifiable"] == 1
+
+
+def test_effort_separates_thinking_from_writing():
+    """Reasoning tokens are billed inside completion_tokens, so a reasoning model
+    looked expensive AND shallow at once — both halves artefacts of one number
+    (SPA-114). The share is of OUTPUT, not of the total: dividing by input+output
+    would understate it by however long the prompt happened to be."""
+    r1 = _run("cfg-01", "case-a", 0, status="success")
+    r2 = _run("cfg-02", "case-a", 0, status="success")
+    records = {
+        r1.task_id: _record(input_tokens=1000, output_tokens=400, reasoning_tokens=300),
+        r2.task_id: _record(input_tokens=1000, output_tokens=400),  # no split reported
+    }
+    report = build_report(_exp(CONFIGS), [r1, r2], records, partial=False)
+    eff = report["effort"]
+    assert eff["reasoning_available"] is True
+    by = {c["config_key"]: c for c in eff["per_config"]}
+    assert by["cfg-01"]["reasoning_tokens_mean"] == 300
+    assert by["cfg-01"]["reasoning_share"] == 0.75  # of OUTPUT, not of 1400
+    # a model that does not reason, or a provider that does not say, is absent —
+    # not a share of zero
+    assert by["cfg-02"]["reasoning_tokens_mean"] is None
+    assert by["cfg-02"]["reasoning_share"] is None
 
 
 def test_build_report_loop_detection():

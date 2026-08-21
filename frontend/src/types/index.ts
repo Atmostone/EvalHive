@@ -1230,6 +1230,10 @@ export interface LogChunk {
   chunk_seq: number
   content: string
   tool_name?: string | null
+  // The model's own deliberation preceding this step (SPA-114). Never merged into
+  // `content` — «what it thought» and «what it did» are different things, and a
+  // reasoning model's answer to "how did it work?" lives on this side.
+  reasoning?: string | null
   created_at: string | null
 }
 
@@ -1616,6 +1620,11 @@ export interface ExperimentEffortRow {
   config_key: string
   label: string
   tokens_mean?: number | null
+  // SPA-114: a SUBSET of the output tokens, not an addition. null = this config
+  // reported no split at all (a non-reasoning model, or a provider that does not
+  // say) — which is not the same as a share of zero.
+  reasoning_tokens_mean?: number | null
+  reasoning_share?: number | null  // of OUTPUT tokens, not of input+output
   steps_mean?: number | null
   cost_mean?: number | null
   duration_mean?: number | null  // wall-clock — caveated secondary (throttling/waits)
@@ -1949,6 +1958,9 @@ export interface ExperimentReport {
   effort?: {
     available: boolean
     cost_available: boolean
+    // SPA-114: false = no run reported a reasoning split, which is what a
+    // non-reasoning model AND a silent provider both look like.
+    reasoning_available?: boolean
     primary: string
     per_config: ExperimentEffortRow[]
   } | null

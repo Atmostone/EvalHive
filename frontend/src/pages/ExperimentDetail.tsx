@@ -785,6 +785,13 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
   const stepsByConfig = new Map(
     (report.trace_stats?.per_config ?? []).map((c) => [c.config_key, c.steps_mean]),
   )
+  // SPA-114: the share of output tokens spent thinking. The column appears only
+  // when SOME run reported the split — on a corpus of non-reasoning models it
+  // would otherwise be a row of dashes claiming they thought nothing.
+  const effortByConfig = new Map(
+    (report.effort?.per_config ?? []).map((c) => [c.config_key, c]),
+  )
+  const reasoningMetered = report.effort?.reasoning_available === true
   // Executable checker pass-rate per config (ground-truth outcome on verifiable
   // benches). Folded into the Summary next to the agent Success rate (SPA-68: the
   // two differ — Success is run-completion, Pass rate is the checker verdict).
@@ -945,6 +952,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                 <th className="px-3 py-2">Trajectory</th>
                 <th className="px-3 py-2" title="Mean number of agent steps in the trace (trace cleaner; lower = more direct)">Steps avg</th>
                 <th className="px-3 py-2" title="Effort = total LLM tokens (input+output) per run — the confound-free effort signal. See the Effort section for difficulty-normalized ×median.">Effort (tok)</th>
+                {reasoningMetered && <th className="px-3 py-2" title="share of OUTPUT tokens the model spent thinking rather than writing. They are billed inside the output count, so without this split a reasoning model reads as expensive and shallow at the same time — both halves of that being artefacts">Thinking</th>}
                 <th className="px-3 py-2">Cost avg</th>
                 <th className="px-3 py-2" title="Wall-clock seconds — POLLUTED by provider throttling + sleep/waits; not a clean effort signal. Use Effort (tokens) instead.">Wall-clock ⚠</th>
               </tr>
@@ -974,6 +982,16 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                   <td className="px-3 py-2 font-medium">{fmtTokens(c.tokens_mean)}
                     {c.rel_effort != null && <span className={`ml-1 text-xs ${relEffortStyle(c.rel_effort)}`}>×{c.rel_effort.toFixed(2)}</span>}
                   </td>
+                  {reasoningMetered && (
+                    <td className="px-3 py-2 text-violet-700">
+                      {(() => {
+                        const e = effortByConfig.get(c.config_key)
+                        return e?.reasoning_share != null
+                          ? `${(e.reasoning_share * 100).toFixed(0)}%`
+                          : <span className="text-gray-300" title="this config reported no reasoning split — a model that does not reason, or a provider that does not say. Not the same as zero">—</span>
+                      })()}
+                    </td>
+                  )}
                   <td className="px-3 py-2">${fmt(c.cost_mean, 3)}</td>
                   <td className="px-3 py-2 text-gray-400">{c.duration_mean != null ? `${Math.round(c.duration_mean)}s` : '—'}</td>
                 </tr>

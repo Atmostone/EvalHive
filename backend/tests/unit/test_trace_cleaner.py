@@ -33,6 +33,7 @@ def _chunk(
     tool_call_id=None,
     part_index=0,
     part_total=1,
+    reasoning=None,
 ):
     created = _BASE + timedelta(seconds=secs) if secs is not None else None
     return SimpleNamespace(
@@ -45,6 +46,7 @@ def _chunk(
         tool_call_id=tool_call_id,
         part_index=part_index,
         part_total=part_total,
+        reasoning=reasoning,
     )
 
 

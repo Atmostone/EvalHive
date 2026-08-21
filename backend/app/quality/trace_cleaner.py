@@ -334,6 +334,8 @@ def join_tool_call_parts(log_chunks) -> list[dict]:
             prev["part_total"] = max(prev["part_total"], part_total)
             if prev["arguments"] is None:
                 prev["arguments"] = _chunk_attr(chunk, "arguments")
+            if not prev.get("reasoning"):
+                prev["reasoning"] = _chunk_attr(chunk, "reasoning")
             prev["arguments_truncated"] = prev["arguments_truncated"] or bool(
                 _chunk_attr(chunk, "arguments_truncated", False)
             )
@@ -345,6 +347,9 @@ def join_tool_call_parts(log_chunks) -> list[dict]:
                 "arguments": _chunk_attr(chunk, "arguments"),
                 "arguments_truncated": bool(_chunk_attr(chunk, "arguments_truncated", False)),
                 "created_at": _chunk_attr(chunk, "created_at"),
+                # SPA-114 — the deliberation that preceded this call. Rides on
+                # part 0 (the call record), like the arguments do.
+                "reasoning": _chunk_attr(chunk, "reasoning"),
                 "part_total": part_total,
                 "parts": [(part_index, content)],
             }
@@ -381,6 +386,43 @@ def join_tool_call_parts(log_chunks) -> list[dict]:
             )
         del entry["part_total"]
     return joined
+
+
+def _is_reasoning_carrier(chunk: dict) -> bool:
+    """A chunk that exists only to carry reasoning — no tool, no output, no call."""
+    return (
+        bool((chunk.get("reasoning") or "").strip())
+        and not chunk.get("tool_name")
+        and not chunk.get("tool_call_id")
+        and not (chunk.get("content") or "").strip()
+    )
+
+
+def _reasoning_step(chunk: dict, order: int) -> dict | None:
+    """The model's own deliberation as a step of its own (SPA-114).
+
+    Its own kind rather than a field on the tool step, for two reasons: the trim
+    policy has to be able to cap and sacrifice it independently — it is verbose
+    by construction and would otherwise crowd out the tool calls it is supposed
+    to explain — and a reader has to be able to tell «what the model thought»
+    from «what it did» at a glance. Ordered just ahead of its call, because that
+    is when it happened.
+    """
+    text = (chunk.get("reasoning") or "").strip()
+    if not text:
+        return None
+    return {
+        "kind": "model_reasoning",
+        "event_type": None,
+        "tool_name": None,
+        "arguments": None,
+        "arguments_truncated": False,
+        "parts_missing": 0,
+        "result_missing": False,
+        "content": text,
+        "_ts": _ts(chunk.get("created_at")),
+        "_order": order,
+    }
 
 
 def _chunk_step(chunk: dict, order: int) -> dict:
@@ -461,7 +503,17 @@ def clean_trajectory(
 
         raw_steps = [s for s in (_event_step(ev) for ev in events) if s is not None]
         for i, call in enumerate(calls):
-            raw_steps.append(_chunk_step(call, order=i))
+            # A pair of orders per call leaves room for the reasoning step to sit
+            # immediately ahead of the call it preceded when both share a stamp.
+            if (rs := _reasoning_step(call, order=2 * i)) is not None:
+                raw_steps.append(rs)
+            # The final turn has no tool call to ride on, so its deliberation
+            # arrives on a carrier chunk with no tool, no output and no call id.
+            # That carrier is not itself a step — emitting it would put a nameless
+            # empty tool call in the trace and count it as an action.
+            if _is_reasoning_carrier(call):
+                continue
+            raw_steps.append(_chunk_step(call, order=2 * i + 1))
 
         # Chronological merge: dated items ascending, undated (archive) last in
         # their original order (stable sort).

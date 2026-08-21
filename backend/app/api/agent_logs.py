@@ -41,6 +41,7 @@ def _chunk_to_dict(c: AgentLogChunk) -> dict:
         "tool_call_id": c.tool_call_id,
         "part_index": c.part_index,
         "part_total": c.part_total,
+        "reasoning": c.reasoning,
         "created_at": c.created_at.isoformat() if c.created_at else None,
     }
 
@@ -101,6 +102,7 @@ async def ingest_log_chunk(
         tool_call_id=body.tool_call_id,
         part_index=body.part_index,
         part_total=body.part_total,
+        reasoning=body.reasoning,
     )
     db.add(chunk)
     try:

@@ -481,6 +481,54 @@ summary bit. `fit_trace_to_budget` is shared with the hallucination (E-16), fail
   (below) is now the loop anchor, so loop signal is read from it rather than from the
   judge's `loop_detection` axis.
 
+### The model's own reasoning (SPA-114)
+
+A reasoning model returns its deliberation in a field separate from the answer,
+and until SPA-114 nothing in this repository read it: the platform stored the
+conclusion, discarded the thinking that produced it, and then asked a process
+judge how the agent worked. Measured live on MiniMax-M3 — **44 of 48 output
+tokens** on a one-word reply were reasoning, all of it thrown away and all of it
+billed. Same shape as SPA-86 (arguments were never recorded, so
+`parameter_quality` had no subject) and SPA-113 (the trace was not in the order
+things happened): the recording layer was at fault and the model was charged.
+
+- **Capture.** The agent reads `reasoning_content` → `reasoning` →
+  `provider_specific_fields` → Anthropic `thinking` blocks → an inline
+  `<think>…</think>`, and normalizes to ONE field, so a per-vendor column never
+  becomes every consumer's problem. The inline case is *lifted out* of the text:
+  otherwise the answer keeps a blob the model never meant as its answer and the
+  outcome judge grades it.
+- **Storage.** `agent_log_chunks.reasoning`, never `content`. Mixing them would
+  silently change what every existing consumer reads. It rides on the first tool
+  call of a turn (the thought preceded the turn, not each call within it); the
+  final turn, having no call to ride on, sends a carrier chunk with no tool and
+  no output — which the cleaner surfaces as reasoning and NOT as an empty tool
+  step, since the loop counter would otherwise score an action nobody took. The
+  MinIO archive carries the field too, or compaction would silently change the
+  trace, which is exactly the bug SPA-113 fixed.
+- **Trim order.** Its own step kind (`model_reasoning`) with its own cap, and it
+  is sacrificed **first** — ahead of tool outputs. SPA-86 put reasoning last, but
+  that was decided when «reasoning» meant the orchestrator's one-line rationale;
+  a model's full deliberation is verbose by construction, and a tool call plus its
+  result is denser evidence per token about how the agent *worked*.
+- **Judge visibility is a condition, not a detail.** `eval_config.trajectory_show_reasoning`
+  (default **true**) decides whether E-07 sees it, and the profile records
+  `reasoning_shown` + `n_reasoning_steps` — the same shape as `files_only` on the
+  outcome judge. Shown by default because `error_recovery` and `goal_alignment`
+  are questions about intent that the judge otherwise infers from tool calls. The
+  case against is real (private reasoning is not behaviour, and grading it rewards
+  models that narrate well), which is why it is a switch rather than a decision.
+  Withholding removes the steps from the JUDGE's input only — the trace keeps
+  them, so the same run can be re-judged the other way without re-running it.
+  **Note for the reliability gate:** E-07 scores computed over a richer input do
+  not inherit prior κ against humans. The corpus this lands before is the one that
+  establishes the new baseline.
+- **Effort.** `reasoning_tokens` is a SUBSET of the output count, never an
+  addition — they are billed inside `completion_tokens`, so SPA-77's token-effort
+  metric was already charging for work no evaluator ever saw. Reported separately
+  so «this model thinks a lot» and «this model writes a lot» stop being one
+  number.
+
 ### Structural loop counter (SPA-75)
 
 A **deterministic, LLM-free** loop detector (`app/quality/trace_loops.py::detect_loops`)
