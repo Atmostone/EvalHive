@@ -474,12 +474,17 @@ summary bit. `fit_trace_to_budget` is shared with the hallucination (E-16), fail
 - On-demand `POST /api/quality/records/{task_id}/evaluate-trajectory` + read
   `GET …/trajectory`; optional batch job `trajectory_judge_evaluate` (off by default,
   gated by `trajectory_eval_enabled`).
-- **Report aggregation caveat (v11).** The per-task profile still scores all six axes,
-  but the experiment report's **trajectory aggregate now excludes `loop_detection`**
-  (`_AGG_EXCLUDED_AXES = {'loop_detection'}` in `experiment_report.py`; `_traj_score`
-  is the mean over the five surviving axes). The deterministic SPA-75 loop counter
-  (below) is now the loop anchor, so loop signal is read from it rather than from the
-  judge's `loop_detection` axis.
+- **Which axes reach a conclusion (v11 → v21).** v11 removed `loop_detection` from the
+  report's trajectory aggregate by name, because SPA-76 promised a quarantined axis is
+  not weighed and the stored `overall_score` averaged it in regardless. That was a
+  stand-in for a gate that did not yet exist. Since SPA-88 the gate acts, so **v21
+  (SPA-89) deletes the exception**: `_traj_score` is the mean over every axis the judge
+  scored, and the only thing that removes one is the trusted view's `allowed` set —
+  i.e. the axis's own badge, recomputed per experiment. The loop axis is quarantined
+  exactly when its anchor says the judge cannot be trusted on it, which on the corpus
+  measured so far it does. The hardcoded set also had a side effect worth naming: it
+  skipped the loop axis before `_axis_reliability` could reach the structural fallback,
+  so the axis's calibration source was unreachable code for the whole of v11–v20.
 
 ### The model's own reasoning (SPA-114)
 
@@ -568,8 +573,19 @@ prose transforms, and `README.md` / `readme.md`, two commands diverging at chara
 Thresholds: `_MIN_REPEAT_RUN = 3` / `_MIN_CYCLE_REPEATS = 3`; `loop_detected` fires when
 either crosses its threshold. `LOOP_SCHEMA_VERSION = 1`. It feeds the report's
 `structural_loop_rate` and serves as the **E-07 loop anchor**: the report computes
-judge↔counter agreement (Cohen's κ ≈ 0.33 over ~715 runs) to badge how far the judge's
-`loop_detection` axis can be trusted.
+judge↔counter agreement (Cohen's κ) to badge how far the judge's `loop_detection` axis
+can be trusted. This is the only reliability badge in the platform that needs no human
+annotation — the counter runs on every trajectory-scored trace — which is why the axis
+is badged from it rather than left `not_calibrated` (SPA-89).
+
+**What enters that κ (SPA-89).** A run counts only when **both** raters answered. The
+judge's silence — the loop axis missing from the profile, or returned as not applicable
+— is not a "no loop" vote, and the derived `loop_detected` flag cannot tell the two
+apart: it is `False` for both. Folding silence into the both-clean cell moves κ toward
+agreement nobody earned; on the ~715-run corpus the anchor was validated against, the
+old convention read κ ≈ 0.33 where the runs both raters actually rated read ≈ 0.28. The
+excluded runs are reported as `n_judge_unscored` rather than dropped quietly, and
+`structural_loop_rate` keeps its own wider denominator — the counter ran on them anyway.
 
 ### Evidence bank judge (E-08)
 
@@ -1323,7 +1339,9 @@ nothing on one side makes no claim at all.
   calibration via `_classify_reliability`. v13 extended the badge from the six E-07
   trajectory axes (`_axis_reliability`) to the **outcome** rubric axes
   (`_outcome_axis_reliability`); **v17 (SPA-88) makes it act**, and splits the four
-  zones into six because they license different claims:
+  zones into six because they license different claims; **v21 (SPA-89) restores the
+  loop axis to the badged set**, sourced from the deterministic counter when no human
+  rated it — a structurally-sourced axis carries no ρ, so it can never be rank-rescued:
 
   | status | rule | may drive |
   | -- | -- | -- |

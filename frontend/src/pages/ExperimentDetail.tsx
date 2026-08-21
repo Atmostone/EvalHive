@@ -1285,8 +1285,13 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           {ld.kappa != null && (
             <p className="text-xs text-gray-500 mb-2 max-w-3xl">
               <span className="font-medium">Judge↔counter agreement:</span> Cohen's κ {ld.kappa.toFixed(2)}
-              {ld.agreement != null && <> · {(ld.agreement * 100).toFixed(0)}% raw</>} · split {ld.n_judge_only ?? 0} judge-only / {ld.n_counter_only ?? 0} counter-only.
+              {ld.agreement != null && <> · {(ld.agreement * 100).toFixed(0)}% raw</>} · split {ld.n_judge_only ?? 0} judge-only / {ld.n_counter_only ?? 0} counter-only
+              {ld.n_structural != null && <> · over {ld.n_structural} run{ld.n_structural === 1 ? '' : 's'} both rated</>}
+              {(ld.n_judge_unscored ?? 0) > 0 && (
+                <>, with <span className="font-medium">{ld.n_judge_unscored} set aside</span> where the judge never scored the loop axis — silence is not a «no loop» vote</>
+              )}.
               Framed as <span className="font-medium">different inputs</span> (trimmed + holistic judge vs full + tool-only counter), not pure miscalibration.
+              This κ is what badges the loop axis in the heatmap above — the one axis whose reliability costs no human annotation.
             </p>
           )}
           <div className="bg-white border rounded-lg overflow-x-auto">
@@ -1295,7 +1300,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                 <tr>
                   <th className="px-3 py-2">Configuration</th>
                   <th className="px-3 py-2" title="deterministic counter: repeated tool-calls counted over the FULL untrimmed trace — LLM-free; a precision-oriented structural lower bound (may miss semantic loops)">Loop rate (counted)</th>
-                  <th className="px-3 py-2" title="the LLM judge's loop_detection rate on the same runs — retired from conclusions, shown only for the judge↔counter comparison (κ above)">Loop rate (judge)</th>
+                  <th className="px-3 py-2" title="the LLM judge's loop_detection rate, over the runs it actually scored that axis on — badged and gated like every other trajectory axis (κ above)">Loop rate (judge)</th>
                   <th className="px-3 py-2">Counted</th>
                 </tr>
               </thead>
@@ -1308,7 +1313,9 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                       {c.structural_loop_rate != null ? `${(c.structural_loop_rate * 100).toFixed(0)}%` : '—'}
                     </td>
                     <td className="px-3 py-2 text-gray-600"
-                      title={(c.n_judge_only != null || c.n_counter_only != null) ? `${c.n_judge_only ?? 0} judge-only / ${c.n_counter_only ?? 0} counter-only${c.kappa != null ? ` · κ ${c.kappa.toFixed(2)}` : ''}` : 'no judge loop signal'}>
+                      title={(c.n_judge_only != null || c.n_counter_only != null)
+                        ? `${c.n_loop} of ${c.n_judge_scored ?? c.n_scored} runs the judge scored the axis on${(c.n_judge_unscored ?? 0) > 0 ? ` (${c.n_judge_unscored} more had no judge verdict — set aside, not counted as "no loop")` : ''} · ${c.n_judge_only ?? 0} judge-only / ${c.n_counter_only ?? 0} counter-only${c.kappa != null ? ` · κ ${c.kappa.toFixed(2)} over ${c.n_paired ?? 0} paired` : ''}`
+                        : 'no judge loop signal'}>
                       {c.loop_rate != null ? `${(c.loop_rate * 100).toFixed(0)}%` : '—'}
                     </td>
                     <td className="px-3 py-2 text-gray-500">{c.n_structural ?? 0}</td>
@@ -1320,10 +1327,11 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           <p className="text-[11px] text-gray-400 mt-1 max-w-3xl">
             <span className="font-medium">Loop rate (counted)</span> is a deterministic, LLM-free detector: it counts repeated
             tool-calls — consecutive identical actions or repeated multi-step tool cycles — over the FULL untrimmed trace. It is a
-            precision-oriented structural lower bound (tool-calls only; may miss semantic loops that vary their wording). The unreliable
-            judge <code>loop_detection</code> axis (κ≈0 vs humans) is retired from conclusions in favour of this counter; the
-            <span className="font-medium"> Loop rate (judge)</span> column and the judge↔counter κ above are shown only to expose that
-            disagreement (different inputs), not used in conclusions.
+            precision-oriented structural lower bound (tool-calls only; may miss semantic loops that vary their wording). Because it runs on
+            every trajectory-scored run, it also <span className="font-medium">calibrates</span> the judge's <code>loop_detection</code> axis:
+            the κ above is that axis's reliability badge in the heatmap, and it is the only badge on this page that needed no human
+            annotation to exist. Whether the axis is weighed into a conclusion is then the gate's verdict on that κ — switch to the
+            Trusted view to see the report without the axes that failed it.
           </p>
         </section>
         )

@@ -2011,6 +2011,11 @@ export interface ExperimentReport {
   // oriented lower bound) next to the judge rate. The two see different inputs/
   // scopes, so we surface the DIRECTIONAL split (judge-only vs counter-only) +
   // Cohen's κ, not just a symmetric agreement %.
+  // SPA-89: a run enters the κ table only when BOTH raters answered. The judge's
+  // silence — the loop axis absent or marked not applicable — is not a "no loop"
+  // vote; n_judge_unscored counts what used to be folded into the both-clean cell.
+  // n_structural is therefore the κ's n (runs both answered), while the per-config
+  // structural_loop_rate keeps its own wider denominator: the counter ran anyway.
   loop_detection?: {
     available: boolean
     structural_available?: boolean
@@ -2019,15 +2024,19 @@ export interface ExperimentReport {
     n_judge_only?: number
     n_counter_only?: number
     n_structural?: number
+    n_judge_unscored?: number
     per_config: {
       config_key: string
       label: string
       n_scored: number
+      n_judge_scored?: number
+      n_judge_unscored?: number
       n_loop: number
       loop_rate?: number | null
       n_structural?: number
       n_structural_loop?: number
       structural_loop_rate?: number | null
+      n_paired?: number
       n_judge_only?: number
       n_counter_only?: number
       agreement?: number | null
