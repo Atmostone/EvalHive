@@ -1290,6 +1290,7 @@ _EVAL_CONFIG_KEYS = frozenset(
         "failure_modes",
         "judge_incomplete_runs",
         "outcome_files_only",
+        "trajectory_show_reasoning",
         "audit_outcome_judge_on_verifiable",
         "judge_threshold",
         "equivalence_margin",
@@ -1302,6 +1303,7 @@ _EVAL_CONFIG_BOOL_KEYS = frozenset(
         "failure_modes",
         "judge_incomplete_runs",
         "outcome_files_only",
+        "trajectory_show_reasoning",
         "audit_outcome_judge_on_verifiable",
     }
 )
@@ -1716,6 +1718,9 @@ async def _evaluate_child(
                 commit=True,
                 trace_config=trace_config,
                 max_input_tokens=trace_max_input,
+                show_reasoning=bool(
+                    (eval_config or {}).get("trajectory_show_reasoning", True)
+                ),
             )
         except Exception as e:
             await db.rollback()

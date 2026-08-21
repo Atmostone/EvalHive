@@ -102,6 +102,9 @@ fab2c3d4e5f6  tasks.condition_contaminated — whether a contamination outlives 
 fac3d4e5f6a7  tasks.orchestrator_cost_usd + tasks.orchestrator_usage +
               quality_records.orchestrator_cost_usd — the orchestrator's own LLM
               spend, which nothing ever counted (SPA-111)
+     ↓
+fad4e5f6a7b8  agent_log_chunks.reasoning + quality_records.reasoning_tokens — the
+              model's own deliberation, which nothing ever read (SPA-114)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -411,6 +414,7 @@ placeholders filled by downstream eval features.
 | final_status | VARCHAR(50) | done / failed / awaiting_approval (reconciled by the backfill job) |
 | is_decomposition_root | bool | parent task with subtasks |
 | cost_usd | NUMERIC(10,6) | denormalized |
+| reasoning_tokens | INT | NULL | a SUBSET of `output_tokens`, not an addition — reasoning tokens are billed inside `completion_tokens` (migration `fad4e5f6a7b8`, SPA-114). NULL for a model that does not reason or a provider that does not report the split; a zero would let both read as «thought nothing». Read by the report's effort panel as `reasoning_share`, computed over OUTPUT tokens rather than the total |
 | orchestrator_cost_usd | NUMERIC(10,6) | denormalized alongside it (SPA-111) — the report's cost breakdown reads both from here, and `cost_breakdown.orchestrator_metered` says whether a zero means «spent nothing» or «never measured» |
 | input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics. `tool_call_count` counts **logical calls**, not log rows — the agent writes the call before running the tool and the result after, and a large output splits further, so a row-count double-counted every call. The grouping is the trace cleaner's `join_tool_call_parts`, imported rather than reimplemented, so this number and the judge's step list cannot drift. Read by the experiment report as `steps_mean` |
 | quality_profile | JSONB? | **slot E-02** (v3 adds `rubric_fingerprint` / `prompt_fingerprint` / `files_only` — the conditions the verdict was obtained under, SPA-85; v4 adds `error_class` on every unscored dimension and `gate.uncertifiable_dimensions`, so a critical dimension the provider refused to answer is distinguishable from one the deliverable failed, SPA-111) |

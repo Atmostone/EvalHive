@@ -58,6 +58,11 @@ class AgentLogChunk(Base):
     part_total: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
+    # SPA-114 — the model's private deliberation preceding this step. A reasoning
+    # model returns it in a field separate from the answer, and nothing in this
+    # repository read it: the platform stored the conclusion and discarded the
+    # thinking that produced it, then asked a process judge how the agent worked.
+    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

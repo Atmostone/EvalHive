@@ -9,10 +9,23 @@ SCHEMA_VERSION = "1.0"
 
 
 class TokenUsage(BaseModel):
-    """Accepts both schema names (input/output and input_tokens/output_tokens)."""
+    """Accepts both schema names (input/output and input_tokens/output_tokens).
+
+    Every field an agent reports has to be DECLARED here — `extra: "ignore"`
+    means an undeclared key is dropped between the wire and the database with no
+    error anywhere (SPA-114 was caught exactly that way, on its first live run).
+    """
 
     input_tokens: int = Field(default=0, validation_alias=AliasChoices("input_tokens", "input"))
     output_tokens: int = Field(default=0, validation_alias=AliasChoices("output_tokens", "output"))
+    # A SUBSET of output_tokens, not an addition — reasoning tokens are billed
+    # inside `completion_tokens` (SPA-114). Declared here or `extra: ignore`
+    # silently drops it on the way in, which is how the first live run reported
+    # 103 reasoning tokens in its webhook and stored a task that had none.
+    # None, not 0: a model that does not reason and a provider that does not
+    # report the split are both "unknown", and a zero would read as "thought
+    # nothing".
+    reasoning_tokens: Optional[int] = None
 
     model_config = {"populate_by_name": True, "extra": "ignore"}
 

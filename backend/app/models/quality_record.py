@@ -87,6 +87,12 @@ class QualityRecord(Base):
     )
     input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # A SUBSET of output_tokens, not an addition to it (SPA-114): reasoning tokens
+    # are billed inside `completion_tokens`. Denormalized so «this model thinks a
+    # lot» and «this model writes a lot» stop being the same number in the effort
+    # comparison. NULL for a model that does not reason, or a provider that does
+    # not report the split — which is not the same as zero.
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     tool_call_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
