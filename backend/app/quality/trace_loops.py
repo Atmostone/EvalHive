@@ -212,6 +212,7 @@ def detect_loops(steps: list[dict] | None) -> dict:
         # boundary cannot be counted as one within a run — the counter answers «did
         # this agent go in circles», and starting over is the opposite of that.
         attempts = [int(s.get("attempt") or 1) for s in tool_steps]
+        _seg_attempt: list[int] = []
         if len(set(attempts)) > 1:
             action_keys = [f"a{a}|{k}" for a, k in zip(attempts, action_keys)]
 
@@ -222,12 +223,27 @@ def detect_loops(steps: list[dict] | None) -> dict:
             run = run + 1 if a == b else 1
             max_repeat_run = max(max_repeat_run, run)
 
+        # Everything below reads a SEQUENCE, and a sequence that spans an attempt
+        # boundary is two sequences read as one. Folding the attempt into the
+        # action identity (above) fixed the identical-action run and nothing else:
+        # `search click search` followed by `click search click` concatenates into
+        # a (search, click) cycle repeated three times, so two ordinary retries
+        # were being reported as a loop — the exact reading SPA-113 set out to
+        # stop. Per-attempt segments, maximum across them.
+        segments: list[list[str]] = []
+        for tool, attempt in zip(tool_seq, attempts):
+            if not segments or attempt != _seg_attempt[-1]:
+                segments.append([])
+                _seg_attempt.append(attempt)
+            segments[-1].append(tool)
+
         # longest run of the same TOOL (content may differ) — context, not a trigger.
         max_same_tool_run = 1
-        run = 1
-        for a, b in zip(tool_seq, tool_seq[1:]):
-            run = run + 1 if a == b else 1
-            max_same_tool_run = max(max_same_tool_run, run)
+        for seg in segments:
+            run = 1
+            for a, b in zip(seg, seg[1:]):
+                run = run + 1 if a == b else 1
+                max_same_tool_run = max(max_same_tool_run, run)
 
         # 2) fraction of actions that exactly duplicate an earlier action.
         seen: set[str] = set()
@@ -239,10 +255,15 @@ def detect_loops(steps: list[dict] | None) -> dict:
                 seen.add(k)
         repeated_action_ratio = round(dup / n, 4) if n else 0.0
 
-        # 3) multi-step tandem cycles over the tool-name sequence (period ≥ 2).
-        # max_cycle_repeats is the global max over ALL candidates (phase-aware),
-        # not just the de-overlapped display cycles.
-        cycles, max_cycle_repeats = _tandem_cycles(tool_seq)
+        # 3) multi-step tandem cycles over the tool-name sequence (period ≥ 2),
+        # WITHIN an attempt. max_cycle_repeats is the global max over ALL
+        # candidates (phase-aware), not just the de-overlapped display cycles.
+        cycles: list[dict] = []
+        max_cycle_repeats = 0
+        for seg in segments:
+            seg_cycles, seg_max = _tandem_cycles(seg)
+            cycles.extend(seg_cycles)
+            max_cycle_repeats = max(max_cycle_repeats, seg_max)
 
         loop_detected = (
             max_repeat_run >= _MIN_REPEAT_RUN or max_cycle_repeats >= _MIN_CYCLE_REPEATS

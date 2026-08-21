@@ -1,5 +1,6 @@
 """Unit tests for the deterministic loop detector (E-07 anchor)."""
 
+from app.quality.trace_loops import _MIN_CYCLE_REPEATS as _MIN_CYCLE_REPEATS_FOR_TEST
 from app.quality.trace_loops import detect_loops
 
 
@@ -272,3 +273,62 @@ def test_the_same_call_in_two_attempts_is_a_retry_not_a_loop():
     within = detect_loops([call(1), call(1), call(1), call(1)])
     assert within["max_repeat_run"] > across["max_repeat_run"]
     assert across["repeated_action_ratio"] < within["repeated_action_ratio"]
+
+
+def test_two_ordinary_attempts_do_not_concatenate_into_a_cycle():
+    """SPA-115. Folding the attempt into the action identity fixed the run of
+    identical actions and nothing else — the CYCLE detector still read the
+    concatenated trace, so two perfectly ordinary attempts glued into a loop.
+
+    `search click search` followed by `click search click` is six steps that
+    contain a (search, click) cycle three times over — but only across a boundary
+    where the agent started the task again, which is the opposite of going in
+    circles, and `max_cycle_repeats` is what decides `loop_detected`."""
+    from app.quality.trace_loops import detect_loops
+
+    def call(tool, attempt):
+        return {"kind": "tool", "tool_name": tool,
+                "arguments": {"q": f"{tool}-{attempt}"}, "attempt": attempt}
+
+    two_attempts = detect_loops([
+        call("search", 1), call("click", 1), call("search", 1),
+        call("click", 2), call("search", 2), call("click", 2),
+    ])
+    assert two_attempts["max_cycle_repeats"] < _MIN_CYCLE_REPEATS_FOR_TEST
+    assert two_attempts["loop_detected"] is False
+
+    # The same six calls inside ONE attempt are a loop, and must still be caught —
+    # the fix must not be «stop looking».
+    one_attempt = detect_loops([
+        call("search", 1), call("click", 1), call("search", 1),
+        call("click", 1), call("search", 1), call("click", 1),
+    ])
+    assert one_attempt["max_cycle_repeats"] >= _MIN_CYCLE_REPEATS_FOR_TEST
+    assert one_attempt["loop_detected"] is True
+
+
+def test_the_same_tool_run_is_also_counted_within_an_attempt():
+    """`max_same_tool_run` feeds the loop score, and it read the concatenation
+    too: two attempts that each called one tool twice looked like four in a row."""
+    from app.quality.trace_loops import detect_loops
+
+    def call(attempt):
+        return {"kind": "tool", "tool_name": "bash",
+                "arguments": {"cmd": f"ls {attempt}"}, "attempt": attempt}
+
+    across = detect_loops([call(1), call(1), call(2), call(2)])
+    within = detect_loops([call(1), call(1), call(1), call(1)])
+    assert across["max_same_tool_run"] == 2
+    assert within["max_same_tool_run"] == 4
+
+
+def test_a_trace_with_no_attempt_field_is_analysed_whole():
+    """Archives written before SPA-113 carry no attempt at all. They must keep
+    behaving exactly as they did rather than fragmenting into singletons."""
+    from app.quality.trace_loops import detect_loops
+
+    plain = [
+        {"kind": "tool", "tool_name": t, "arguments": {"q": 1}}
+        for t in ("a", "b", "a", "b", "a", "b")
+    ]
+    assert detect_loops(plain)["max_cycle_repeats"] == 3
