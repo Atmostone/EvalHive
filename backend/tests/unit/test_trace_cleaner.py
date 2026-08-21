@@ -521,3 +521,61 @@ def test_two_identical_tool_calls_stay_two_actions():
     out = clean_trajectory(task, [], chunks)
     assert len([s for s in out["steps"] if s["kind"] == "tool"]) == 2
     assert out["stats"]["duplicate_steps_dropped"] == 0
+
+
+def test_only_as_many_pings_are_dropped_as_calls_were_recorded():
+    """SPA-115. The echo rule matched on membership, so a second ping of the same
+    tool in the same attempt matched the first call and vanished with it.
+
+    Two `file_write` calls, one chunk lost in transit: the surviving ping is the
+    only remaining trace of the call whose chunk never arrived — exactly the case
+    the exception exists for — and it was being deleted anyway. A ping is
+    redundant only up to the number of calls actually recorded."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [
+        _ev("agent_progress",
+            {"iteration": 1, "tool_name": "file_write", "recent_output": "a"}, secs=5),
+        _ev("agent_progress",
+            {"iteration": 2, "tool_name": "file_write", "recent_output": "b"}, secs=15),
+    ]
+    chunks = [
+        _chunk("wrote a.md", tool_name="file_write", seq=0, secs=6,
+               arguments={"path": "a.md"}, tool_call_id="c0"),
+    ]
+    out = clean_trajectory(task, events, chunks)
+    kinds = [s["kind"] for s in out["steps"]]
+    assert kinds.count("tool") == 1, "the recorded call"
+    assert kinds.count("agent") == 1, "the ping whose call was lost survives"
+    assert out["stats"]["progress_echoes_dropped"] == 1
+
+    # Both chunks present → both pings are genuinely redundant and both go.
+    chunks.append(
+        _chunk("wrote b.md", tool_name="file_write", seq=1, secs=16,
+               arguments={"path": "b.md"}, tool_call_id="c1")
+    )
+    both = clean_trajectory(task, events, chunks)
+    assert [s["kind"] for s in both["steps"]] == ["tool", "tool"]
+    assert both["stats"]["progress_echoes_dropped"] == 2
+
+
+def test_the_ping_budget_is_counted_per_attempt():
+    """A call recorded in attempt 1 must not license dropping attempt 2's ping."""
+    task = SimpleNamespace(id="t", title="T", description="d", status="done")
+    events = [
+        _ev("agent_spawned", {}, secs=0),
+        _ev("agent_progress",
+            {"iteration": 1, "tool_name": "bash", "recent_output": "ok"}, secs=5),
+        _ev("agent_failed", {"error": "rejected"}, secs=20),
+        _ev("agent_spawned", {}, secs=25),
+        _ev("agent_progress",
+            {"iteration": 1, "tool_name": "bash", "recent_output": "ok"}, secs=30),
+    ]
+    chunks = [
+        _chunk("ran", tool_name="bash", seq=0, secs=6,
+               arguments={"cmd": "ls"}, tool_call_id="c0"),
+    ]
+    out = clean_trajectory(task, events, chunks)
+    assert out["stats"]["progress_echoes_dropped"] == 1
+    assert [s["kind"] for s in out["steps"] if s["kind"] == "agent"], (
+        "attempt 2's ping has no recorded call behind it and must survive"
+    )
