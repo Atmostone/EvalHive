@@ -585,6 +585,20 @@ def test_cost_breakdown_counts_the_orchestrators_own_calls():
     assert cb["orchestrator_metered"] is True
 
 
+def test_cost_breakdown_shows_up_when_only_orchestration_cost_anything():
+    """An agent on a zero-priced model still pays for its decision calls. Hiding
+    the panel because the agent column is empty would hide the only figure it
+    has — which is exactly the state of a stand whose working model rows carry
+    no prices."""
+    r = _run("cfg-01", "case-a", 0, status="success", cost="0")
+    records = {r.task_id: _record(cost_usd="0", orchestrator_cost_usd="0.004")}
+    report = build_report(_exp(CONFIGS), [r], records, partial=False)
+    cb = report["cost_breakdown"]
+    assert cb["available"] is True
+    assert cb["totals"]["orchestrator"] == 0.004
+    assert cb["totals"]["total"] == 0.004
+
+
 def test_build_report_no_human_no_cost():
     report = build_report(_exp(CONFIGS), [], {}, partial=True)
     assert report["human_feedback"]["available"] is False

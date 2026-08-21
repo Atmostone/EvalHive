@@ -1455,7 +1455,13 @@ def build_report(
             )
         return {k: round(v, 6) for k, v in parts.items()}
 
-    any_cost = any(float(r.cost_usd or 0) > 0 for r in runs)
+    # Orchestration alone can be the only thing that cost money — a config whose
+    # agent ran on a zero-priced model still pays for its decision calls, and a
+    # breakdown that hides on that basis hides the only figure it has (SPA-111).
+    any_cost = any(float(r.cost_usd or 0) > 0 for r in runs) or any(
+        float(getattr(records_by_task.get(r.task_id), "orchestrator_cost_usd", 0) or 0) > 0
+        for r in runs
+    )
     cost_per_config = [
         {"config_key": key, "label": labels.get(key, key), **_cost_row(by_config[key])}
         for key in sorted(configs)
