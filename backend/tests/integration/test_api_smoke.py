@@ -369,7 +369,7 @@ async def test_a_manual_requeue_drops_the_failed_attempts_reason(auth_client: As
     db_session.add(tpl)
     await db_session.commit()
 
-    async def _failed(failure_type, *, template_id=None):
+    async def _failed(failure_type, *, template_id=None, condition=False):
         r = await auth_client.post(
             "/api/tasks", json={"title": f"requeue {failure_type}", "priority": "low"}
         )
@@ -378,6 +378,7 @@ async def test_a_manual_requeue_drops_the_failed_attempts_reason(auth_client: As
         task.status = TaskStatus.FAILED.value
         task.failure_type = failure_type
         task.template_id = template_id
+        task.condition_contaminated = condition
         await db_session.commit()
         return tid
 
@@ -396,8 +397,53 @@ async def test_a_manual_requeue_drops_the_failed_attempts_reason(auth_client: As
     body = (await auth_client.patch(f"/api/tasks/{tid}", json={"status": "ready"})).json()
     assert body["failure_type"] is None
 
-    # …but a contamination describing a PINNED condition survives (SPA-87): the
-    # degraded orchestrator chose this template, and the next attempt reuses it.
-    tid = await _failed(FAILURE_INFRA, template_id=tpl.id)
+    # …but a contamination describing the CONDITION survives (SPA-87): the
+    # degraded orchestrator substituted this template and pinned it, so the next
+    # attempt runs under the same substituted condition.
+    tid = await _failed(FAILURE_INFRA, template_id=tpl.id, condition=True)
     body = (await auth_client.patch(f"/api/tasks/{tid}", json={"status": "ready"})).json()
     assert body["failure_type"] == FAILURE_INFRA
+    assert body["condition_contaminated"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_template_alone_does_not_make_a_contamination_permanent(
+    auth_client: AsyncClient, db_session
+):
+    """SPA-115. The re-queue guard used to read `template_id is not None` as «the
+    orchestrator degraded and pinned a substitute». But every orchestrated task
+    has a template_id — including one that chose its template perfectly well and
+    then died on an agent-side 429.
+
+    Such a task kept `llm_rate_limit` through every re-queue, so its next run —
+    a successful one, measuring the model exactly as intended — was dropped from
+    every aggregate by `measures_the_model()`, permanently and silently. Whose
+    contamination it is has to be recorded, not guessed."""
+    import uuid as _uuid
+
+    from app.models.task import Task, TaskStatus
+    from app.models.template import Template
+    from app.utils.failures import FAILURE_LLM_RATE_LIMIT
+
+    tpl = Template(
+        name=f"ordinary-{_uuid.uuid4().hex[:6]}", description="d", soul_md="# soul",
+        tool_ids=[], tags=[],
+        workspace_id=_uuid.UUID(auth_client.headers["X-Workspace-Id"]),
+    )
+    db_session.add(tpl)
+    await db_session.commit()
+
+    r = await auth_client.post("/api/tasks", json={"title": "429 mid-run", "priority": "low"})
+    tid = r.json()["id"]
+    task = await db_session.get(Task, _uuid.UUID(tid))
+    task.status = TaskStatus.FAILED.value
+    task.failure_type = FAILURE_LLM_RATE_LIMIT
+    task.template_id = tpl.id          # chosen normally, not substituted
+    task.condition_contaminated = False
+    await db_session.commit()
+
+    body = (await auth_client.patch(f"/api/tasks/{tid}", json={"status": "ready"})).json()
+    assert body["failure_type"] is None, (
+        "the quota hit the attempt, not the condition — it must not outlive it"
+    )
+    assert body["condition_contaminated"] is False

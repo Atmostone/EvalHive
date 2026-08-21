@@ -63,6 +63,13 @@ async def _flag_llm_contamination(db, task_id, exc: Exception) -> None:
         task = await db.get(Task, task_id if isinstance(task_id, _uuid.UUID) else _uuid.UUID(str(task_id)))
         if task is not None:
             task.failure_type = merge_failure_type(task.failure_type, ft)
+            # This path does not merely fail — it SUBSTITUTES and pins a template,
+            # so the condition every later attempt inherits is the degraded one.
+            # Recorded here because here is the only place that knows (SPA-115):
+            # downstream, an orchestrator that fell back and an agent that hit a
+            # quota look identical, and the re-queue guard used to guess between
+            # them from `template_id`, which any orchestrated task has.
+            task.condition_contaminated = True
     except Exception as e:  # noqa: BLE001 — a flag must never break the run
         logger.warning(f"could not flag orchestrator LLM contamination: {e}")
 
