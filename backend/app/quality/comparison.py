@@ -26,7 +26,6 @@ agreement (E-17 linkage) is row-local.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import uuid
 from datetime import datetime
@@ -42,7 +41,9 @@ from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.orchestrator.rerun import clone_task_for_rerun
 from app.plugins.llm import get_llm_provider
-from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_response
+from app.utils.tool_args import extract_tool_args
+from app.quality.judge import _resolve_judge_model
+from app.utils.cost import llm_call_cost, tokens_from_response
 from app.quality.runs_common import (
     SUCCESS_TASK as _SUCCESS_TASK,
     ensure_child_evaluated as _ensure_child_evaluated,
@@ -199,11 +200,11 @@ async def _judge_call(judge_llm, context: str) -> dict:
         api_base=judge_llm.provider.endpoint,
     )
     choice = resp.choices[0].message
-    args = json.loads(choice.tool_calls[0].function.arguments)
+    args = extract_tool_args(choice)
     winner = str(args.get("winner") or "tie").lower()
     if winner not in _VERDICTS:
         winner = "tie"
-    inp, out = _tokens_from_response(resp)
+    inp, out = tokens_from_response(resp)
     return {
         "winner": winner,
         "reasoning": str(args.get("reasoning") or "")[:1000],
@@ -267,7 +268,7 @@ async def judge_pair_llm(
 
     detail["input_tokens"] = in_tok
     detail["output_tokens"] = out_tok
-    cost = _judge_cost(judge_llm, in_tok, out_tok)
+    cost = llm_call_cost(judge_llm, in_tok, out_tok)
     detail["cost_usd"] = cost
     return {"verdict": verdict, "detail": detail, "cost_usd": cost}
 

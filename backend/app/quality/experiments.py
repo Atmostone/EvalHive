@@ -1099,7 +1099,7 @@ async def _resettle_after_retirement(db: AsyncSession, exp: Experiment) -> None:
         for task in (
             await db.execute(select(Task).where(Task.id.in_(inflight_task_ids)))
         ).scalars().all():
-            total += Decimal(task.cost_usd or 0)
+            total += Decimal(task.cost_usd or 0) + Decimal(task.orchestrator_cost_usd or 0)
     exp.accumulated_cost_usd = total
 
     # Only re-derive a terminal verdict; a paused experiment keeps its status,
@@ -1731,7 +1731,9 @@ async def _evaluate_child(
 
 
 def _run_cost(task: Task, rec: QualityRecord | None) -> Decimal:
-    total = Decimal(task.cost_usd or 0)
+    # Agent + orchestrator + every evaluator. The orchestrator's share was missing
+    # until SPA-111, which made both this figure and the budget cap undercounts.
+    total = Decimal(task.cost_usd or 0) + Decimal(task.orchestrator_cost_usd or 0)
     if rec is not None:
         for prof in (rec.quality_profile, rec.trajectory_profile, rec.failure_profile):
             if prof:
@@ -2116,7 +2118,9 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
         ):
             task = tasks.get(r.task_id)
             if task is not None:
-                total += Decimal(task.cost_usd or 0)
+                total += Decimal(task.cost_usd or 0) + Decimal(
+                    task.orchestrator_cost_usd or 0
+                )
     exp.accumulated_cost_usd = total
     budget_hit = exp.budget_limit_usd is not None and total >= exp.budget_limit_usd
 

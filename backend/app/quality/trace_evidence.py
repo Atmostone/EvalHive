@@ -28,7 +28,6 @@ a step marked with an error and the walk continues; a final-call failure becomes
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 
@@ -38,7 +37,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
-from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_response
+from app.utils.tool_args import error_class, extract_tool_args
+from app.quality.judge import _resolve_judge_model
+from app.utils.cost import llm_call_cost, tokens_from_response
 from app.quality.trace_cleaner import (
     _count_tokens,
     _truncate_to_tokens,
@@ -238,8 +239,8 @@ async def _build_evidence_bank(
                 api_key=judge_llm.provider.api_key,
                 api_base=judge_llm.provider.endpoint,
             )
-            args = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
-            it, ot = _tokens_from_response(resp)
+            args = extract_tool_args(resp.choices[0].message)
+            it, ot = tokens_from_response(resp)
             in_tot += it
             out_tot += ot
             rec = _parse_step(s, args)
@@ -358,8 +359,8 @@ async def _score_with_evidence(
             api_key=judge_llm.provider.api_key,
             api_base=judge_llm.provider.endpoint,
         )
-        args = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
-        in_tok, out_tok = _tokens_from_response(resp)
+        args = extract_tool_args(resp.choices[0].message)
+        in_tok, out_tok = tokens_from_response(resp)
         axes, overall, loop_detected = _parse_axes_from_args(args)
         return {
             "status": "scored",
@@ -373,7 +374,12 @@ async def _score_with_evidence(
         }
     except Exception as e:  # noqa: BLE001 — the judge must not crash the request
         logger.warning(f"evidence final scoring failed: {e}")
-        return {"status": "error", "error": str(e)[:300], "input_capped": input_capped}
+        return {
+            "status": "error",
+            "error": str(e)[:300],
+            "error_class": error_class(e),
+            "input_capped": input_capped,
+        }
 
 
 async def evaluate_trajectory_with_evidence(
@@ -420,7 +426,7 @@ async def evaluate_trajectory_with_evidence(
         "judge_calls": len(assessed) + 1,
         "judge_input_tokens": total_in,
         "judge_output_tokens": total_out,
-        "judge_cost_usd": _judge_cost(judge_llm, total_in, total_out),
+        "judge_cost_usd": llm_call_cost(judge_llm, total_in, total_out),
         "input_capped": final.get("input_capped", False) or steps_capped,
         "trace_stats": {
             "original_tokens": stats.get("original_tokens"),

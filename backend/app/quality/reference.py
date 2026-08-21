@@ -19,15 +19,16 @@ yields ``status: "error"`` so one dimension can never block the others.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import re
 from difflib import SequenceMatcher
 
 from app.plugins.llm import get_llm_provider
+from app.utils.tool_args import error_class, extract_tool_args
 from app.models.task import Task
-from app.quality.judge import JUDGE_TOOL, _MAX_SCALE, _tokens_from_response
+from app.quality.judge import JUDGE_TOOL, _MAX_SCALE
+from app.utils.cost import tokens_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +110,9 @@ async def _pointwise_judge(result: str, reference: str, dim: dict, judge_llm) ->
         api_key=judge_llm.provider.api_key,
         api_base=judge_llm.provider.endpoint,
     )
-    args = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
+    args = extract_tool_args(resp.choices[0].message)
     score = max(0, min(_MAX_SCALE, int(args["score"])))
-    inp, out = _tokens_from_response(resp)
+    inp, out = tokens_from_response(resp)
     return {
         "status": "scored",
         "score": score,
@@ -155,4 +156,9 @@ async def evaluate_reference_dimension(dim: dict, task: Task, judge_llm) -> dict
         return {"status": "error", "score": None, "error": f"unknown reference_mode '{mode}'"}
     except Exception as e:  # noqa: BLE001 — one dimension must not break the rest
         logger.warning(f"reference dimension '{dim.get('key')}' failed: {e}")
-        return {"status": "error", "score": None, "error": str(e)[:300]}
+        return {
+            "status": "error",
+            "score": None,
+            "error": str(e)[:300],
+            "error_class": error_class(e),
+        }

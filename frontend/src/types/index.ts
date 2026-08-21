@@ -34,6 +34,11 @@ export interface Task {
   orchestrator_feedback?: string | null
   model_used?: string | null
   cost_usd?: number | null
+  // Overhead the platform incurred deciding about this task — template
+  // selection, decomposition, result evaluation. Kept apart from cost_usd and
+  // token_usage above, which are the AGENT's own effort (SPA-111).
+  orchestrator_cost_usd?: number | null
+  orchestrator_usage?: Record<string, unknown> | null
   depends_on?: string[] | null
   log_archive_s3_path?: string | null
   origin?: string | null
@@ -1623,6 +1628,9 @@ export interface ExperimentCostRow {
   config_key?: string
   label?: string
   agent: number
+  // The orchestrator's own decision calls (SPA-111). Zero on any run recorded
+  // before it was metered — see `orchestrator_metered` on the breakdown.
+  orchestrator: number
   judge_outcome: number
   judge_trajectory: number
   judge_evidence: number
@@ -1966,7 +1974,12 @@ export interface ExperimentReport {
       n_pass: number
       pass_rate?: number | null
       failed_dimensions: Record<string, number>
+      // Runs that failed the gate because a critical dimension could not be
+      // judged at all — the provider refused the judge's forced tool call. The
+      // verdict stands; the cause is not the deliverable (SPA-111).
+      n_uncertifiable?: number
     }[]
+    n_uncertifiable?: number
   } | null
   trajectory_heatmap: {
     axes: string[]
@@ -2102,6 +2115,9 @@ export interface ExperimentReport {
   // Where the eval money went per config (SPA-73): agent execution vs each judge.
   cost_breakdown?: {
     available: boolean
+    // False = no run here had its orchestrator turns metered, so the total is a
+    // lower bound rather than a complete figure.
+    orchestrator_metered?: boolean
     per_config: ExperimentCostRow[]
     totals: ExperimentCostRow
   } | null

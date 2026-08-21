@@ -85,6 +85,14 @@ const STATS: Term[] = [
     name: 'Bootstrap CI (confidence interval)',
     desc: "Estimates the uncertainty of a rating/metric by re-sampling the data with replacement many times and recomputing each time; the spread gives the interval (e.g. a rating's 95% CI). Shows how stable a rating is on a small sample.",
   },
+  {
+    name: 'Not measurable (vs failed)',
+    desc: "A gate failure the deliverable did not earn. Every judge call asks the model to answer through a named tool; some providers treat that as advice and reply in plain prose instead. The dimension then cannot be scored at all, and a critical one fails closed — we will not certify what we did not measure. The verdict is the same either way, so the report counts these separately: a config with a low pass rate for this reason is being under-measured, not out-performed.",
+  },
+  {
+    name: 'Orchestrator cost',
+    desc: "What the platform spent deciding about a run — choosing a template, deciding whether to split the task, reviewing the result — as opposed to what the agent spent doing it. Reported as its own column and never folded into the agent's own tokens, because the agent's token count is what efficiency comparisons between models are built on.",
+  },
 ]
 
 // Every evaluator / metric in the platform, described in plain language (no codes).

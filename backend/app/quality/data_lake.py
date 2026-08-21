@@ -172,6 +172,8 @@ async def assemble_record(db: AsyncSession, task: Task) -> dict:
             "started_at": task.started_at.isoformat() if task.started_at else None,
             "completed_at": task.completed_at.isoformat() if task.completed_at else None,
             "cost_usd": float(task.cost_usd or 0),
+            "orchestrator_cost_usd": float(task.orchestrator_cost_usd or 0),
+            "orchestrator_usage": task.orchestrator_usage or {},
             "input_tokens": inp,
             "output_tokens": out,
         },
@@ -246,6 +248,7 @@ async def build_quality_record(
     if existing is not None:
         existing.final_status = task.status
         existing.cost_usd = task.cost_usd or 0
+        existing.orchestrator_cost_usd = task.orchestrator_cost_usd or 0
         existing.input_tokens = inp
         existing.output_tokens = out
         existing.duration_seconds = _duration_seconds(task)
@@ -269,6 +272,7 @@ async def build_quality_record(
         final_status=task.status,
         is_decomposition_root=blob["decomposition"].get("is_root", False),
         cost_usd=task.cost_usd or 0,
+        orchestrator_cost_usd=task.orchestrator_cost_usd or 0,
         input_tokens=inp,
         output_tokens=out,
         duration_seconds=_duration_seconds(task),

@@ -55,6 +55,8 @@ class TaskOut(BaseModel):
     result_summary: Optional[str]
     result_files: list
     token_usage: dict
+    orchestrator_usage: dict = {}
+    orchestrator_cost_usd: float = 0.0
     retry_count: int
     max_retries: int
     user_feedback: Optional[str]
@@ -99,6 +101,10 @@ def task_to_dict(task: Task) -> dict:
         "orchestrator_feedback": task.orchestrator_feedback,
         "model_used": task.model_used,
         "cost_usd": float(task.cost_usd) if task.cost_usd is not None else 0.0,
+        # The orchestrator's own spend on this task, reported apart from the
+        # agent's so the two are never summed by accident (SPA-111).
+        "orchestrator_usage": task.orchestrator_usage or {},
+        "orchestrator_cost_usd": float(task.orchestrator_cost_usd or 0),
         "depends_on": [str(d) for d in (task.depends_on or [])],
         "created_at": task.created_at.isoformat() if task.created_at else None,
         "updated_at": task.updated_at.isoformat() if task.updated_at else None,

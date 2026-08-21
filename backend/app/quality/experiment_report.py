@@ -63,7 +63,10 @@ from app.quality.stats import (
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 from app.utils.failures import is_contaminated
 
-SCHEMA_VERSION = 18  # v18: paper-grade statistics (SPA-62) — comparisons are
+SCHEMA_VERSION = 19  # v19: the orchestrator's own LLM spend is metered and
+# reported as its own cost column (SPA-111), and a gate failure caused by a
+# provider that would not answer is counted apart from one the deliverable earned
+# v18: paper-grade statistics (SPA-62) — comparisons are
 # paired by case (the design was always paired; the test never was), `significant`
 # is decided on a Benjamini-Hochberg q within its own family, every row carries an
 # effect size with a bootstrap CI and — when it finds nothing — a TOST verdict that
@@ -1057,6 +1060,7 @@ def build_report(
     for key in sorted(configs):
         n_gated = 0
         n_pass = 0
+        n_uncertifiable = 0
         gate_failed_dims: dict[str, int] = {}
         for r in by_config[key]:
             rec = records_by_task.get(r.task_id)
@@ -1070,6 +1074,14 @@ def build_report(
                 n_pass += 1
             for d in gate.get("failed_dimensions") or []:
                 gate_failed_dims[d] = gate_failed_dims.get(d, 0) + 1
+            # A gate failure the deliverable did not earn: the provider refused
+            # the judge's forced tool call, so a critical dimension could not be
+            # scored at all and SPA-51 failed it closed. The verdict stands — we
+            # still cannot certify the requirement — but a config whose pass rate
+            # is depressed by these is not being out-performed, it is being
+            # under-measured, and the two must not read the same (SPA-111).
+            if gate.get("uncertifiable_dimensions"):
+                n_uncertifiable += 1
         gate_per_config.append(
             {
                 "config_key": key,
@@ -1078,9 +1090,14 @@ def build_report(
                 "n_pass": n_pass,
                 "pass_rate": round(n_pass / n_gated, 4) if n_gated else None,
                 "failed_dimensions": gate_failed_dims,
+                "n_uncertifiable": n_uncertifiable,
             }
         )
-    quality_gate = {"available": any_gate, "per_config": gate_per_config}
+    quality_gate = {
+        "available": any_gate,
+        "per_config": gate_per_config,
+        "n_uncertifiable": sum(c["n_uncertifiable"] for c in gate_per_config),
+    }
 
     # --- trajectory heatmap: configs × E-07 axes ------------------------------
     # The process-judging analogue of the quality heatmap: per-config mean of each
@@ -1390,11 +1407,14 @@ def build_report(
 
     # --- cost breakdown per config --------------------------------------------
     # Where the money went: agent execution (== QualityRecord.cost_usd, the task
-    # cost; includes orchestrator overhead when enabled — it is not separately
-    # metered) vs each evaluator's judge_cost_usd. Computed straight from the
-    # profiles so it stays complete even though ExperimentRun.cost_usd
-    # (_run_cost) only folds in E-02/E-07/E-14. Over settled runs (where cost was
-    # actually incurred).
+    # cost) vs the orchestrator's own decision calls vs each evaluator's
+    # judge_cost_usd. Computed straight from the profiles so it stays complete
+    # even though ExperimentRun.cost_usd (_run_cost) only folds in E-02/E-07/E-14.
+    # Over settled runs (where cost was actually incurred).
+    #
+    # The orchestrator column reads 0 for every run recorded before SPA-111, when
+    # its calls went uncosted — that is a gap in what was measured, not a config
+    # that spent nothing, and `orchestrator_metered` below says which it is.
     _JUDGE_COST_KEYS = [
         ("judge_outcome", "quality_profile"),
         ("judge_trajectory", "trajectory_profile"),
@@ -1405,7 +1425,7 @@ def build_report(
 
     def _cost_row(group: list[ExperimentRun]) -> dict:
         settled = [r for r in group if r.status in _SETTLED]
-        parts = {"agent": 0.0, "judge_total": 0.0, "total": 0.0}
+        parts = {"agent": 0.0, "orchestrator": 0.0, "judge_total": 0.0, "total": 0.0}
         for k, _ in _JUDGE_COST_KEYS:
             parts[k] = 0.0
         for r in settled:
@@ -1416,6 +1436,11 @@ def build_report(
                 else float(r.cost_usd or 0)
             )
             parts["agent"] += agent
+            parts["orchestrator"] += (
+                float(getattr(rec, "orchestrator_cost_usd", 0) or 0)
+                if rec is not None
+                else 0.0
+            )
             judges = 0.0
             for k, attr in _JUDGE_COST_KEYS:
                 prof = getattr(rec, attr, None) if rec is not None else None
@@ -1423,7 +1448,11 @@ def build_report(
                 parts[k] += c
                 judges += c
             parts["judge_total"] += judges
-            parts["total"] += agent + judges
+            parts["total"] += (
+                agent + judges + float(getattr(rec, "orchestrator_cost_usd", 0) or 0)
+                if rec is not None
+                else agent + judges
+            )
         return {k: round(v, 6) for k, v in parts.items()}
 
     any_cost = any(float(r.cost_usd or 0) > 0 for r in runs)
@@ -1434,6 +1463,13 @@ def build_report(
     cost_totals = _cost_row(runs)
     cost_breakdown = {
         "available": any_cost,
+        # Whether ANY run here had its orchestrator turns metered. False means the
+        # zero in the orchestrator column is an absence of measurement — the whole
+        # corpus predates SPA-111 — so the total is a lower bound, not a figure.
+        "orchestrator_metered": any(
+            float(getattr(records_by_task.get(r.task_id), "orchestrator_cost_usd", 0) or 0) > 0
+            for r in runs
+        ),
         "per_config": cost_per_config,
         "totals": cost_totals,
     }

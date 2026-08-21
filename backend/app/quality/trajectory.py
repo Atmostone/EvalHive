@@ -33,7 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
-from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_response
+from app.quality.judge import _resolve_judge_model
+from app.utils.cost import llm_call_cost, tokens_from_response
+from app.utils.tool_args import error_class, extract_tool_args
 from app.quality.trace_cleaner import (
     _count_tokens,
     _ERROR_RE,
@@ -516,64 +518,6 @@ def fit_trace_to_budget(cleaned_trace: dict, max_input_tokens: int) -> tuple[str
     return text + marker, report
 
 
-def _loads_lenient(raw: str | None) -> dict:
-    """Parse the judge's score_trajectory arguments, tolerating the JSON defects
-    some models emit: a ```json fence, prose before/after the object, or trailing
-    junk after a complete object. As a last resort, close a truncated object. Was
-    the cause of ~27% of E-07 evals erroring out (``Expecting value: line 1 ...``)."""
-    if not raw or not raw.strip():
-        raise ValueError("empty tool-call arguments")
-    s = raw.strip()
-    if s.startswith("```"):  # ```json ... ``` fence
-        s = s.strip("`")
-        if s[:4].lower() == "json":
-            s = s[4:]
-        s = s.strip()
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        pass
-    # Extract the first balanced {...} object via a string/escape-aware brace scan,
-    # ignoring any pre/post prose and trailing junk.
-    start = s.find("{")
-    if start == -1:
-        raise ValueError("no JSON object in tool-call arguments")
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(s)):
-        c = s[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return json.loads(s[start : i + 1])
-    # Unbalanced → the object was truncated mid-stream; best-effort close it.
-    return json.loads(s[start:] + "}" * depth)
-
-
-def _extract_tool_args(choice) -> dict:
-    """Pull the score_trajectory arguments off the judge message, tolerating
-    providers that ignore ``tool_choice`` and return the JSON in ``content``."""
-    raw = None
-    tcs = getattr(choice, "tool_calls", None)
-    if tcs:
-        raw = tcs[0].function.arguments
-    if not raw:  # provider ignored the forced tool call — JSON may be in content
-        raw = getattr(choice, "content", None)
-    return _loads_lenient(raw)
-
-
 async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens: int) -> dict:
     """Score the whole trajectory in one LLM call. Never raises — failures become
     a result dict with ``status: "error"``."""
@@ -595,8 +539,8 @@ async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens:
                 api_base=judge_llm.provider.endpoint,
             )
             choice = resp.choices[0].message
-            args = _extract_tool_args(choice)
-            in_tok, out_tok = _tokens_from_response(resp)
+            args = extract_tool_args(choice)
+            in_tok, out_tok = tokens_from_response(resp)
 
             axes, overall, loop_detected = _parse_axes_from_args(args)
             return {
@@ -607,7 +551,7 @@ async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens:
                 "summary": str(args.get("summary") or "")[:_SUMMARY_CAP],
                 "judge_input_tokens": in_tok,
                 "judge_output_tokens": out_tok,
-                "judge_cost_usd": _judge_cost(judge_llm, in_tok, out_tok),
+                "judge_cost_usd": llm_call_cost(judge_llm, in_tok, out_tok),
                 "input_capped": input_capped,
                 "trim": trim,
             }
@@ -617,6 +561,7 @@ async def _judge_trajectory(cleaned_trace: dict, judge_llm, *, max_input_tokens:
     return {
         "status": "error",
         "error": str(last_err)[:300],
+        "error_class": error_class(last_err) if last_err else "evaluation",
         "input_capped": input_capped,
         "trim": trim,
     }
