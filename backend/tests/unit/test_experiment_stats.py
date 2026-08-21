@@ -301,3 +301,48 @@ def test_power_says_what_the_design_could_and_could_not_have_seen():
     up = unpaired_power([8.0, 7.5, 9.0, 8.5], [6.0, 5.5, 7.2, 4.0])
     assert up["paired"] is False and up["n_required"] >= 2
     assert unpaired_power([1.0], [2.0, 3.0]) is None
+
+
+def test_the_sign_test_answers_where_the_others_cannot():
+    """Four cases shifted by exactly the same amount is the strongest paired
+    evidence a matrix that size can produce — and it is also the case that leaves
+    the t-test with no variance and Wilcoxon with too few pairs. Falling back to
+    an unpaired test there does not weaken the answer, it reverses it."""
+    from app.quality.stats import (
+        bootstrap_diff_ci,
+        paired_t_test,
+        sign_test,
+        welch_t_test,
+        wilcoxon_signed_rank,
+    )
+
+    pairs = [(8.0, 9.0), (6.0, 7.0), (9.0, 10.0), (4.0, 5.0)]
+    assert paired_t_test(pairs) is None, "no variance in the differences"
+    assert wilcoxon_signed_rank(pairs) is None, "too few non-zero pairs"
+
+    unpaired = welch_t_test([a for a, _ in pairs], [b for _, b in pairs])
+    assert unpaired["p"] > 0.5, "the wrong answer the fallback used to give"
+    assert bootstrap_diff_ci(pairs)["hi"] < 0, "every case moved the same way"
+
+    out = sign_test(pairs)
+    assert out["n_negative"] == 4 and out["n_positive"] == 0
+    # Unanimous over four cases cannot reach 0.05 on signs alone — that is the
+    # honest ceiling of a four-case design, not a failure of the test.
+    assert out["p"] == 0.125
+    assert out["exact"] is True
+
+
+def test_the_sign_test_ignores_magnitude_and_drops_ties():
+    from app.quality.stats import sign_test
+
+    tiny = [(1.0, 1.01), (2.0, 2.01), (3.0, 3.01), (4.0, 4.01), (5.0, 5.01)]
+    huge = [(1.0, 90.0), (2.0, 91.0), (3.0, 92.0), (4.0, 93.0), (5.0, 94.0)]
+    assert sign_test(tiny)["p"] == sign_test(huge)["p"], "signs only, by design"
+
+    ties = [(5.0, 5.0), (5.0, 5.0), (1.0, 2.0), (3.0, 4.0), (7.0, 8.0)]
+    out = sign_test(ties)
+    assert out["n_pairs"] == 3 and out["n_ties"] == 2
+    assert sign_test([(5.0, 5.0)] * 9) is None, "all ties leaves nothing to test"
+
+    even = [(1.0, 2.0), (4.0, 3.0), (5.0, 6.0), (8.0, 7.0)]
+    assert sign_test(even)["p"] == 1.0
