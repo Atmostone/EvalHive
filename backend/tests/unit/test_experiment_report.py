@@ -957,15 +957,26 @@ def test_axis_reliability_sources_and_priority():
     # a non-loop axis with no human source stays not_calibrated even when a loop anchor exists
     assert ar2["axes"]["goal_alignment"]["status"] == "not_calibrated"
 
-    # The anchor is a real source, so it moves the badge like any other: above the
-    # bar it certifies, below MIN_SAMPLES it is honest about having too little.
-    strong = _axis_reliability(cal2, {"structural_available": True, "kappa": 0.71,
+    # The anchor is a real source, so it moves the badge — but only ever as far as
+    # 'binary_only', however well the two agree: it compares two BOOLEANS, and the
+    # ceiling is a property of the evidence, not of the agreement (see the dedicated
+    # test below). Below MIN_SAMPLES it is honest about having too little.
+    strong = _axis_reliability(cal2, {"structural_available": True, "kappa": 0.95,
                                       "n_structural": 40}, {})
-    assert strong["axes"]["loop_detection"]["status"] == "reliable_absolute"
+    assert strong["axes"]["loop_detection"]["status"] == "binary_only"
+    assert strong["axes"]["loop_detection"]["evidence"] == "binary"
     thin = _axis_reliability(cal2, {"structural_available": True, "kappa": 0.9,
                                     "n_structural": 2}, {})
     assert thin["axes"]["loop_detection"]["status"] == "insufficient"
     assert thin["axes"]["loop_detection"]["source"] == "structural"
+
+    # A human rating the same axis is GRADED evidence, so it climbs normally — the
+    # ceiling follows what was measured, not which axis it is.
+    cal3 = {"available": True, "dimensions": [
+        {"key": "loop_detection", "name": "Loop detection", "n": 20, "cohen_kappa": 0.71}]}
+    human_loop = _axis_reliability(cal3, loop_detection, {})["axes"]["loop_detection"]
+    assert (human_loop["source"], human_loop["evidence"]) == ("human", "graded")
+    assert human_loop["status"] == "reliable_absolute"
 
     # Nothing at all → honest empty state.
     ar3 = _axis_reliability(None, {"structural_available": False}, {})
@@ -1802,3 +1813,101 @@ def test_an_unreliable_loop_anchor_quarantines_the_axis_end_to_end():
     # ...and the gate's numeric set does not contain it
     excluded = {r["key"] for r in report["trusted"]["trajectory_axes"]["excluded"]}
     assert "loop_detection" in excluded
+
+
+def test_a_binary_anchor_never_certifies_the_0_to_10_score():
+    """The hazard restoring the badge introduced, and the reason 'binary_only' exists.
+
+    The counter answers ONE question — did this run loop? — so judge↔counter κ says
+    the two agree on which side of the threshold each run falls. It says nothing
+    about where inside a side: a perfect binary κ is compatible with the judge
+    scoring 0 where a human would score 4, and 10 where a human would score 5. Let
+    that agreement climb to 'reliable_absolute' and the axis joins the numeric set,
+    and the judge's unvalidated 0-10 score lands in the trusted trajectory mean —
+    a magnitude certified by evidence that never looked at magnitudes."""
+    from app.quality.experiment_report import _axis_reliability, _trust_split
+
+    perfect = _axis_reliability(
+        {"available": False}, {"structural_available": True, "kappa": 1.0, "n_structural": 40}, {}
+    )
+    loop = perfect["axes"]["loop_detection"]
+    assert (loop["kappa"], loop["evidence"]) == (1.0, "binary")
+    assert loop["status"] == "binary_only"  # NOT reliable_absolute, at any κ
+
+    numeric_keys, rank_keys, block = _trust_split(perfect)
+    # neither a mean nor a rank test: a rank test on the 0-10 score would also be a
+    # claim about that score, and the anchor never examined it
+    assert "loop_detection" not in numeric_keys
+    assert "loop_detection" not in rank_keys
+    assert "loop_detection" in {r["key"] for r in block["excluded"]}
+
+    from app.quality.experiment_report import _traj_score
+
+    rec = _record(trajectory_axes=[
+        {"key": "efficiency", "name": "Efficiency", "score": 8},
+        {"key": "loop_detection", "name": "Loop detection", "score": 0},
+    ])
+    # the trusted mean is None, not 0.0 — nothing here is certified for a magnitude
+    assert _traj_score(rec, None, allowed=numeric_keys) is None
+
+
+def test_a_binary_anchor_below_the_bar_is_plainly_unreliable():
+    """The cap cuts one way only. 'binary_only' means «they agree, on a dichotomy»;
+    raters who do not even agree on the dichotomy have earned nothing at all."""
+    from app.quality.experiment_report import _axis_reliability
+
+    weak = _axis_reliability(
+        None, {"structural_available": True, "kappa": 0.12, "n_structural": 40}, {}
+    )
+    assert weak["axes"]["loop_detection"]["status"] == "unreliable"
+
+
+def test_a_counter_that_ran_but_paired_with_nothing_is_a_source_with_no_data():
+    """«The anchor produced no comparable pairs» and «nobody ever checked this axis»
+    are different claims that call for opposite actions — fix the judge, or go and
+    annotate. Reporting the first as not_calibrated hid a running mechanism."""
+    from app.quality.experiment_report import _axis_reliability
+
+    ran_but_empty = _axis_reliability(
+        None, {"structural_available": True, "kappa": None, "n_structural": 0}, {}
+    )
+    ax = ran_but_empty["axes"]["loop_detection"]
+    assert (ax["source"], ax["n"], ax["status"]) == ("structural", 0, "insufficient")
+    assert ran_but_empty["available"] is True
+
+    never_ran = _axis_reliability(None, {"structural_available": False}, {})
+    assert never_ran["axes"]["loop_detection"]["status"] == "not_calibrated"
+    assert never_ran["axes"]["loop_detection"]["source"] == "none"
+    assert never_ran["available"] is False
+
+
+def test_a_perfect_anchor_reaches_the_trusted_panel_as_binary_only():
+    """End to end, on the path the UI actually reads. Judge and counter agree on
+    every run (κ = 1.0) — the strongest the anchor can ever be — and the axis still
+    arrives in the trusted block's `excluded` list, labelled `binary_only` rather
+    than quarantined. The distinction is the panel's whole job: this axis was
+    verified, just not against anything a mean could rest on."""
+    runs = [_run("cfg-01", f"case-{i}", 0, status="success", traj=7.0) for i in range(4)]
+    records = {
+        runs[0].task_id: _record(loop_score=2, loop_analysis={"loop_detected": True}),
+        runs[1].task_id: _record(loop_score=0, loop_analysis={"loop_detected": True}),
+        runs[2].task_id: _record(loop_score=9, loop_analysis={"loop_detected": False}),
+        runs[3].task_id: _record(loop_score=10, loop_analysis={"loop_detected": False}),
+    }
+    report = build_report(_exp(CONFIGS), runs, records, partial=False)
+
+    assert report["loop_detection"]["kappa"] == 1.0
+    loop_ax = report["axis_reliability"]["axes"]["loop_detection"]
+    assert (loop_ax["source"], loop_ax["evidence"]) == ("structural", "binary")
+    assert loop_ax["status"] == "binary_only"
+
+    tt = report["trusted"]["trajectory_axes"]
+    assert "loop_detection" not in {r["key"] for r in tt["numeric"]}
+    assert "loop_detection" not in {r["key"] for r in tt["rank_only"]}
+    row = next(r for r in tt["excluded"] if r["key"] == "loop_detection")
+    # the panel splits its sentences on these two fields — they have to arrive
+    assert (row["status"], row["evidence"]) == ("binary_only", "binary")
+    # 'binary_only' drives nothing, so it is not in either published policy set
+    policy = report["trusted"]["policy"]
+    assert "binary_only" not in policy["numeric_statuses"]
+    assert "binary_only" not in policy["rank_statuses"]

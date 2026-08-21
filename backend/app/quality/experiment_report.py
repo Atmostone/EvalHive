@@ -337,6 +337,7 @@ RELIABILITY_RANK_RHO = 0.5
 TRUST_RELIABLE_ABSOLUTE = "reliable_absolute"  # numeric aggregates + absolute claims
 TRUST_MODERATE = "moderate_agreement"          # numeric aggregates, flagged
 TRUST_RANK_ONLY = "rank_only"                  # rank / paired comparisons ONLY
+TRUST_BINARY_ONLY = "binary_only"              # one dichotomy ONLY — never a score
 TRUST_INSUFFICIENT = "insufficient"            # nothing — too few pairs, or κ undefined
 TRUST_UNRELIABLE = "unreliable"                # nothing — the judge disagrees
 TRUST_NOT_CALIBRATED = "not_calibrated"        # nothing — unknown, not known-bad
@@ -349,25 +350,50 @@ TRUST_NOT_CALIBRATED = "not_calibrated"        # nothing — unknown, not known-
 # read ranks and only ranks: today that is its own Mann-Whitney row. Note that
 # "combine several rank_only axes into one score" is NOT such a method, however
 # the combination is done, unless it is done on ranks.
+# 'binary_only' is in NEITHER, and that is the whole point of the status: the loop
+# anchor compares two BOOLEANS (did the run loop?), so however well they agree it
+# can certify only that dichotomy. The judge's underlying 0-10 loop score is free
+# to be anything within each side of the threshold — a perfect binary κ is
+# compatible with the judge scoring 0 where a human would score 4 — so admitting
+# such an axis to a mean, or even to a rank test on that score, would certify a
+# magnitude on evidence that never looked at magnitudes (SPA-89).
 NUMERIC_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE})
 RANK_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE, TRUST_RANK_ONLY})
 
 
 def _classify_reliability(
-    kappa: Optional[float], n: int, *, has_source: bool, rho: Optional[float] = None
+    kappa: Optional[float],
+    n: int,
+    *,
+    has_source: bool,
+    rho: Optional[float] = None,
+    binary_evidence: bool = False,
 ) -> str:
-    """Bucket a judged axis into the six-way trust taxonomy (SPA-88).
+    """Bucket a judged axis into the trust taxonomy (SPA-88, +binary_only SPA-89).
 
     No calibration source → 'not_calibrated' (unknown, not known-bad). A live
     source with too few pairs or an undefined κ → 'insufficient' — which is a
     different claim from 'the judge half-agrees', and used to be indistinguishable
     from it. Otherwise threshold on κ, with one rescue: κ below the bar but ranks
     agreeing (Spearman ρ ≥ RELIABILITY_RANK_RHO) → 'rank_only', a scale-shifted
-    judge, trustworthy for ordering and for nothing else."""
+    judge, trustworthy for ordering and for nothing else.
+
+    ``binary_evidence`` says the reference is a BOOLEAN, not a graded rating — today
+    only the structural loop anchor. Agreement on a dichotomy, at any κ, licenses
+    that dichotomy and nothing more, so it caps at 'binary_only' rather than
+    climbing into the zones that admit an axis to a mean or a rank test."""
     if not has_source:
         return TRUST_NOT_CALIBRATED
     if kappa is None or n < MIN_SAMPLES:
         return TRUST_INSUFFICIENT
+    if binary_evidence:
+        # Below the bar the raters do not even agree on the dichotomy; above it they
+        # agree on the dichotomy and on nothing else. There is no ρ to rescue with.
+        return (
+            TRUST_BINARY_ONLY
+            if kappa >= RELIABILITY_DIRECTIONAL_KAPPA
+            else TRUST_UNRELIABLE
+        )
     if kappa >= RELIABILITY_RELIABLE_KAPPA:
         return TRUST_RELIABLE_ABSOLUTE
     if kappa >= RELIABILITY_DIRECTIONAL_KAPPA:
@@ -394,6 +420,7 @@ def _trust_split(reliability: dict) -> tuple[frozenset[str], frozenset[str], dic
             "name": ax.get("name") or key,
             "status": status,
             "source": ax.get("source"),
+            "evidence": ax.get("evidence") or "graded",
             "kappa": ax.get("kappa"),
             "kappa_ci": ax.get("kappa_ci"),
             "rho": ax.get("rho"),
@@ -446,7 +473,10 @@ def _axis_reliability(
 
     struct_kappa = None
     struct_n = 0
-    if isinstance(loop_detection, dict) and loop_detection.get("structural_available"):
+    struct_source = bool(
+        isinstance(loop_detection, dict) and loop_detection.get("structural_available")
+    )
+    if struct_source:
         struct_kappa = loop_detection.get("kappa")
         struct_n = int(loop_detection.get("n_structural") or 0)
 
@@ -457,7 +487,11 @@ def _axis_reliability(
         hd = human_dims.get(key)
         h_n = int(hd.get("n") or 0) if hd else 0
         h_kappa = hd.get("cohen_kappa") if hd else None
-        struct_ok = key == "loop_detection" and struct_n > 0
+        # The source EXISTS as soon as the counter ran, whatever it yielded. Gating
+        # on struct_n > 0 conflated "the anchor produced no comparable pairs — the
+        # judge never scored this axis" with "nobody has ever checked this axis",
+        # and those call for opposite actions: fix the judge vs go and annotate.
+        struct_ok = key == "loop_detection" and struct_source
 
         h_kappa_ci = hd.get("cohen_kappa_ci") if hd else None
         if hd is not None and h_n >= MIN_SAMPLES:
@@ -466,7 +500,7 @@ def _axis_reliability(
             source, kappa, n, kappa_ci = "structural", struct_kappa, struct_n, None
         elif hd is not None:  # human source exists but too few pairs
             source, kappa, n, kappa_ci = "human", h_kappa, h_n, h_kappa_ci
-        elif struct_ok:  # structural ran but very few runs
+        elif struct_ok:  # the counter ran, but on too few paired runs — or none
             source, kappa, n, kappa_ci = "structural", struct_kappa, struct_n, None
         else:
             source, kappa, n, kappa_ci = "none", None, 0, None
@@ -479,15 +513,23 @@ def _axis_reliability(
         rho = hd.get("spearman") if source == "human" and hd is not None else None
         has_source = source != "none"
         any_source = any_source or has_source
+        # What the reference actually measured. The counter answers one yes/no
+        # question; a human rates the same 0-10 scale the judge does. Carried on the
+        # row because it decides what the badge may certify, not just how good it is.
+        evidence = "binary" if source == "structural" else "graded"
         axes_out[key] = {
             "key": key,
             "name": label,
             "source": source,
+            "evidence": evidence,
             "kappa": kappa,
             "kappa_ci": kappa_ci,
             "rho": rho,
             "n": n,
-            "status": _classify_reliability(kappa, n, has_source=has_source, rho=rho),
+            "status": _classify_reliability(
+                kappa, n, has_source=has_source, rho=rho,
+                binary_evidence=(evidence == "binary"),
+            ),
         }
 
     return {

@@ -1725,19 +1725,30 @@ export interface ConfigDrift {
 // 'rank_only' is a scale-shifted judge — ordering only, never a mean; the rest
 // carry nothing. 'insufficient' (too few pairs) and 'unreliable' (the judge
 // disagrees) used to be the same amber light, and they are not the same claim.
+// SPA-89 adds 'binary_only': the reference itself was a BOOLEAN (the loop counter
+// says looped / did not), so however well the two agree, the agreement is about a
+// dichotomy. The judge's 0-10 score on that axis is unconstrained within each side
+// of the threshold, so such an axis drives neither a mean nor a rank test — only
+// the binary loop rate it was actually measured against.
 export type AxisTrustStatus =
   | 'reliable_absolute'
   | 'moderate_agreement'
   | 'rank_only'
+  | 'binary_only'
   | 'insufficient'
   | 'unreliable'
   | 'not_calibrated'
+
+/** What the reference measured, which decides what the badge may certify —
+ *  not how good the agreement was. 'binary' today means the loop anchor. */
+export type AxisEvidence = 'graded' | 'binary'
 
 export interface ExperimentTrustAxis {
   key: string
   name: string
   status: AxisTrustStatus
   source?: string | null
+  evidence?: AxisEvidence
   kappa?: number | null
   /** The gate classifies by the point estimate; the interval says how firmly.
    *  Carried, not acted on — where the cut-offs sit was decided in SPA-88. */
@@ -2060,6 +2071,9 @@ export interface ExperimentReport {
         key: string
         name: string
         source: 'human' | 'structural' | 'none'
+        /** Graded (a human rated the same 0-10 scale) vs binary (the loop counter
+         *  answered one yes/no question). Caps what the badge can certify. */
+        evidence?: AxisEvidence
         kappa?: number | null
         /** How firmly the point estimate stands where the gate reads it. */
         kappa_ci?: KappaCI | null
