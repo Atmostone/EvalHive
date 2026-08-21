@@ -548,7 +548,10 @@ async def evaluate_task_hallucinations(
         judge_out = res.get("judge_output_tokens", 0)
         judge_cost = res.get("judge_cost_usd", 0.0)
         if status == "error":
-            errors = [{"error": res.get("error")}]
+            errors = [{
+                "error": res.get("error"),
+                "error_class": res.get("error_class") or "evaluation",
+            }]
         else:
             summary = res.get("summary", "")
             args = res.get("args") or {}

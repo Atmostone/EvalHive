@@ -277,7 +277,10 @@ async def evaluate_task_calibration(
     confidence = None
     brier_term = None
     if status == "error":
-        errors = [{"error": res.get("error")}]
+        errors = [{
+            "error": res.get("error"),
+            "error_class": res.get("error_class") or "evaluation",
+        }]
     else:
         confidence = res.get("confidence")
         actual = 1.0 if correct else 0.0

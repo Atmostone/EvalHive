@@ -259,7 +259,11 @@ async def _build_evidence_bank(
                 "note": "",
                 "error": str(e)[:200],
             }
-            errors.append({"seq": s.get("seq"), "error": str(e)[:200]})
+            errors.append({
+                "seq": s.get("seq"),
+                "error": str(e)[:200],
+                "error_class": error_class(e),
+            })
         bank.append(rec)
         for f in rec["facts"]:
             facts.append((rec["seq"], f))
@@ -410,7 +414,10 @@ async def evaluate_trajectory_with_evidence(
     stats = cleaned_trace.get("stats") or {}
     errors = list(step_errors)
     if final.get("status") == "error":
-        errors.append({"error": final.get("error")})
+        errors.append({
+            "error": final.get("error"),
+            "error_class": final.get("error_class") or "evaluation",
+        })
 
     return {
         "schema_version": TRACE_EVIDENCE_SCHEMA_VERSION,

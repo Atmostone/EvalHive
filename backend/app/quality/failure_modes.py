@@ -368,7 +368,12 @@ async def evaluate_task_failure_modes(
         },
         "evaluated_at": datetime.utcnow().isoformat(),
         "errors": (
-            [{"error": result.get("error")}] if result.get("status") == "error" else []
+            [{
+                "error": result.get("error"),
+                "error_class": result.get("error_class") or "evaluation",
+            }]
+            if result.get("status") == "error"
+            else []
         ),
     }
 

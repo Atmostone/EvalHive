@@ -158,3 +158,73 @@ async def test_a_recovered_answer_is_scored_normally(
     assert profile["dimensions"][0]["score"] == 8
     assert profile["gate"]["passed"] is True
     assert profile["gate"]["uncertifiable_dimensions"] == []
+
+
+# --- the classification has to survive the profile ------------------------------- #
+
+
+def test_every_profile_assembler_carries_the_error_class():
+    """Computing `error_class` inside an evaluator and dropping it while building
+    the profile leaves exactly the state this ticket set out to fix: an
+    infrastructure failure that reads as bare text, indistinguishable from a
+    judge that broke on its own. E-02 carried it from the start; the other five
+    assemblers rebuilt their `errors` list by hand and lost it."""
+    import re
+    from pathlib import Path
+
+    assemblers = {
+        "trajectory.py": "E-07",
+        "failure_modes.py": "E-14",
+        "calibration.py": "E-16",
+        "hallucination.py": "E-15",
+        "trace_evidence.py": "E-08",
+    }
+    root = Path(__file__).resolve().parents[2] / "app" / "quality"
+    for fname, evaluator in assemblers.items():
+        src = (root / fname).read_text()
+        # every dict that carries an "error" key into a profile must classify it
+        bare = re.findall(r'\{\s*"error":[^}]*\}', src)
+        # Non-vacuous: a pattern that matches nothing would pass this silently,
+        # which is the failure mode a source-scanning test invites.
+        assert bare, f"{evaluator} ({fname}): the scan found no error dict to check"
+        for match in bare:
+            assert "error_class" in match, f"{evaluator} ({fname}) drops error_class: {match}"
+
+
+async def test_e07_reports_a_non_compliant_provider_as_infrastructure(
+    db_session, default_model, monkeypatch
+):
+    """The same contract, proven by running it rather than by reading the source:
+    E-07 is the assembler that matters most, since the trajectory score is one of
+    the two headline metrics."""
+    from app.quality import trajectory as traj_mod
+
+    async def _fake_trace(*_a, **_kw):
+        return {
+            "task": {"id": "t", "title": "T", "description": "D"},
+            "steps": [{"seq": 0, "kind": "tool", "tool_name": "bash",
+                       "arguments": {"cmd": "ls"}, "content": "a.txt"}],
+            "stats": {}, "config": {},
+        }
+
+    llm = SimpleNamespace(
+        model=SimpleNamespace(api_name="m", input_price_per_1m_usd=1, output_price_per_1m_usd=2),
+        provider=SimpleNamespace(api_key="k", endpoint="http://x"),
+    )
+
+    async def _fake_resolve(*_a, **_kw):
+        return llm
+
+    monkeypatch.setattr(traj_mod, "build_cleaned_trace", _fake_trace)
+    monkeypatch.setattr(traj_mod, "_resolve_judge_model", _fake_resolve)
+    monkeypatch.setattr(traj_mod, "get_llm_provider", lambda: _NonCompliantProvider())
+
+    task = Task(title="x", status=TaskStatus.DONE.value, workspace_id=WS,
+                result_summary="done", model_used="m")
+    db_session.add(task)
+    await db_session.flush()
+    profile = await traj_mod.evaluate_task_trajectory(
+        db_session, task, commit=False, max_input_tokens=0
+    )
+    assert profile["status"] == "error"
+    assert profile["errors"][0]["error_class"] == "infrastructure"

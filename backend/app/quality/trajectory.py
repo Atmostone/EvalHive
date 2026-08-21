@@ -650,8 +650,16 @@ async def evaluate_task_trajectory(
             "steps_args_truncated": stats.get("steps_args_truncated"),
         },
         "evaluated_at": datetime.utcnow().isoformat(),
+        # The classification travels with the error, or computing it was
+        # pointless: an infrastructure failure that reaches the profile as bare
+        # text is indistinguishable from a judge that broke on its own (SPA-111).
         "errors": (
-            [{"error": result.get("error")}] if result.get("status") == "error" else []
+            [{
+                "error": result.get("error"),
+                "error_class": result.get("error_class") or "evaluation",
+            }]
+            if result.get("status") == "error"
+            else []
         ),
     }
 
