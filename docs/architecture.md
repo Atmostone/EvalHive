@@ -492,12 +492,21 @@ billed. Same shape as SPA-86 (arguments were never recorded, so
 `parameter_quality` had no subject) and SPA-113 (the trace was not in the order
 things happened): the recording layer was at fault and the model was charged.
 
-- **Capture.** The agent reads `reasoning_content` → `reasoning` →
-  `provider_specific_fields` → Anthropic `thinking` blocks → an inline
-  `<think>…</think>`, and normalizes to ONE field, so a per-vendor column never
-  becomes every consumer's problem. The inline case is *lifted out* of the text:
+- **Capture.** The client normalizes vendors into three *different* declared
+  fields, not one — verified against the `Message` model actually installed
+  (litellm 1.96.2), which declares `reasoning_content` (MiniMax, DeepSeek, most
+  OpenAI-compatible servers), `thinking_blocks` (Anthropic) and `reasoning_items`
+  (OpenAI Responses, text under each item's `summary`), and **no plain
+  `reasoning`**. The agent reads all three plus the inline `<think>…</think>`
+  case and normalizes to ONE field, so a per-vendor column never becomes every
+  consumer's problem. A redacted Anthropic block is *noted*, not skipped —
+  encrypted deliberation is deliberation that happened, and dropping it reads as
+  «the model thought nothing». The inline case is *lifted out* of the text:
   otherwise the answer keeps a blob the model never meant as its answer and the
-  outcome judge grades it.
+  outcome judge grades it. `agent-image/` is mounted read-only into the api
+  container so these shapes are tested against the real module rather than a
+  copy — nothing in that directory had ever been under test, and this field list
+  is exactly the kind of assumption that survives unverified.
 - **Storage.** `agent_log_chunks.reasoning`, never `content`. Mixing them would
   silently change what every existing consumer reads. It rides on the first tool
   call of a turn (the thought preceded the turn, not each call within it); the
@@ -523,6 +532,10 @@ things happened): the recording layer was at fault and the model was charged.
   **Note for the reliability gate:** E-07 scores computed over a richer input do
   not inherit prior κ against humans. The corpus this lands before is the one that
   establishes the new baseline.
+- **Absence is not zero.** `reasoning_tokens` is None until a provider actually
+  reports the split, and the agent's running total stays None with it. Returning
+  0 for «the provider said nothing» would make the report claim a measured 0% on
+  every run by a non-reasoning model. A provider-reported zero IS kept.
 - **Effort.** `reasoning_tokens` is a SUBSET of the output count, never an
   addition — they are billed inside `completion_tokens`, so SPA-77's token-effort
   metric was already charging for work no evaluator ever saw. Reported separately

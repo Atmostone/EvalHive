@@ -12,6 +12,8 @@ import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.task import Task, TaskStatus
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.quality import trajectory as traj_mod
@@ -284,3 +286,142 @@ async def test_a_compacted_run_still_shows_its_deliberation(db_session, monkeypa
 
     restored = await tc._load_log_chunks(db_session, task)
     assert restored[0].reasoning == "I will look first."
+
+
+# --- the vendor shapes, against the REAL agent module ---------------------------- #
+#
+# Nothing in agent-image/ had ever been under test, and the one assumption that
+# mattered — which field each vendor's reasoning arrives in — was wrong. The
+# first cut checked `message.reasoning` and a typed `content` list; the `Message`
+# model actually installed (litellm 1.96.2) declares `reasoning_content`,
+# `thinking_blocks` and `reasoning_items` and NO plain `reasoning`, so Anthropic
+# and OpenAI fell through silently — indistinguishable from a model that did not
+# reason at all. These load the real file rather than a copy, because a copy kept
+# "in lockstep" is the same class of unverified assumption.
+
+import importlib.util  # noqa: E402
+import os  # noqa: E402
+import sys  # noqa: E402
+
+
+_AGENT_SRC = "/agent-image/agent.py"
+_agent_available = pytest.mark.skipif(
+    not os.path.exists(_AGENT_SRC),
+    reason="agent-image is mounted read-only into the api container for these tests",
+)
+
+
+def _agent_module():
+    if "agent_under_test" in sys.modules:
+        return sys.modules["agent_under_test"]
+    spec = importlib.util.spec_from_file_location("agent_under_test", _AGENT_SRC)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["agent_under_test"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _msg(**kw):
+    kw.setdefault("content", "the answer")
+    kw.setdefault("provider_specific_fields", None)
+    return SimpleNamespace(**kw)
+
+
+def test_the_installed_client_declares_the_fields_the_extractor_reads():
+    """A guard against the exact mistake this replaced: the extractor's field
+    list is checked against the client's model, not against documentation."""
+    from litellm.types.utils import Message
+
+    declared = set(Message.model_fields)
+    assert {"reasoning_content", "thinking_blocks", "reasoning_items"} <= declared
+
+
+@_agent_available
+def test_reasoning_content_shape():
+    agent = _agent_module()
+    r, override = agent._extract_reasoning(_msg(reasoning_content="  I should look first.  "))
+    assert r == "I should look first." and override is None
+
+
+@_agent_available
+def test_anthropic_thinking_blocks_shape():
+    agent = _agent_module()
+    r, _ = agent._extract_reasoning(
+        _msg(thinking_blocks=[
+            {"type": "thinking", "thinking": "First, read the file.", "signature": "sig"},
+            {"type": "thinking", "thinking": "Then write the answer."},
+        ])
+    )
+    assert r == "First, read the file.\nThen write the answer."
+
+
+@_agent_available
+def test_a_redacted_thinking_block_is_noted_not_dropped():
+    """Encrypted deliberation is deliberation that happened. Dropping it silently
+    would read as «the model thought nothing», which is the error this whole
+    change exists to stop."""
+    agent = _agent_module()
+    r, _ = agent._extract_reasoning(
+        _msg(thinking_blocks=[{"type": "redacted_thinking", "data": "AAAA"}])
+    )
+    assert r and "redacted" in r.lower()
+
+
+@_agent_available
+def test_openai_reasoning_items_shape():
+    agent = _agent_module()
+    r, _ = agent._extract_reasoning(
+        _msg(reasoning_items=[
+            {"type": "reasoning", "id": "rs_1",
+             "summary": [{"type": "summary_text", "text": "Plan: list, then write."}]},
+        ])
+    )
+    assert r == "Plan: list, then write."
+
+
+@_agent_available
+def test_inline_think_tags_are_lifted_out_of_the_answer():
+    agent = _agent_module()
+    r, override = agent._extract_reasoning(
+        _msg(content="<think>Let me work this out.</think>\n\n42")
+    )
+    assert r == "Let me work this out."
+    assert override == "42"  # the answer no longer carries the blob
+
+
+@_agent_available
+def test_a_model_that_does_not_reason_yields_nothing():
+    agent = _agent_module()
+    assert agent._extract_reasoning(_msg()) == (None, None)
+
+
+# --- absence vs zero ------------------------------------------------------------- #
+
+
+@_agent_available
+def test_no_usage_detail_reports_absence_not_a_measured_zero():
+    """«The provider said nothing about reasoning» and «the model reasoned for
+    zero tokens» are different facts. Collapsing them makes the report claim a
+    measured 0% on every run by a non-reasoning model."""
+    agent = _agent_module()
+    assert agent._reasoning_tokens(SimpleNamespace(completion_tokens_details=None)) is None
+    assert agent._reasoning_tokens(SimpleNamespace()) is None
+    assert agent._reasoning_tokens({"completion_tokens_details": {}}) is None
+
+
+@_agent_available
+def test_a_reported_zero_is_kept_as_a_measurement():
+    agent = _agent_module()
+    usage = SimpleNamespace(
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=0)
+    )
+    assert agent._reasoning_tokens(usage) == 0
+
+
+@_agent_available
+def test_a_reported_split_is_read_from_either_shape():
+    agent = _agent_module()
+    obj = SimpleNamespace(completion_tokens_details=SimpleNamespace(reasoning_tokens=44))
+    dct = {"completion_tokens_details": {"reasoning_tokens": 44}}
+    assert agent._reasoning_tokens(obj) == 44
+    assert agent._reasoning_tokens(dct) == 44

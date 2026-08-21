@@ -355,34 +355,78 @@ _THINK_RE = re.compile(r"<think>\s*(.*?)\s*</think>", re.DOTALL | re.IGNORECASE)
 def _extract_reasoning(message) -> tuple[str | None, str | None]:
     """The model's deliberation and what remains of its answer.
 
-    Every vendor puts this somewhere different — `reasoning_content` (MiniMax,
-    DeepSeek and most OpenAI-compatible servers), `reasoning` (OpenAI), a
-    `thinking` content block (Anthropic), or an inline `<think>…</think>` some
-    endpoints emit straight into the text. Whatever the transport, ONE field
-    comes out, because a per-vendor column would make every consumer learn the
-    vendor list.
+    Every vendor puts this somewhere different, and the client normalizes them
+    into three DIFFERENT declared fields rather than one — verified against the
+    `Message` model actually installed here (litellm 1.96.2), which declares
+    `reasoning_content`, `thinking_blocks` and `reasoning_items` and no plain
+    `reasoning` at all:
+
+    * `reasoning_content` — MiniMax, DeepSeek, most OpenAI-compatible servers;
+    * `thinking_blocks` — Anthropic, a list of `{type: "thinking", thinking: …}`
+      (or `redacted_thinking`, which carries only opaque `data`);
+    * `reasoning_items` — OpenAI Responses, each with a `summary` of
+      `{type: "summary_text", text: …}` blocks;
+    * an inline `<think>…</think>` some endpoints emit straight into the text.
+
+    Whatever the transport, ONE field comes out, because a per-vendor column
+    would make every consumer learn the vendor list.
 
     Returns `(reasoning, content_override)`. The override is non-None only for
     the inline case, where the deliberation has to be lifted OUT of the text —
     otherwise the answer keeps a blob the model never meant as its answer, and
     the outcome judge grades it.
     """
-    for attr in ("reasoning_content", "reasoning"):
-        v = getattr(message, attr, None)
-        if isinstance(v, str) and v.strip():
-            return v.strip()[:REASONING_MAX_BYTES], None
 
-    # Some clients park provider extras in a side dict rather than on the message.
-    extras = getattr(message, "provider_specific_fields", None)
-    if isinstance(extras, dict):
-        for key in ("reasoning_content", "reasoning"):
-            v = extras.get(key)
-            if isinstance(v, str) and v.strip():
-                return v.strip()[:REASONING_MAX_BYTES], None
+    def _clip(text: str) -> str:
+        return text.strip()[:REASONING_MAX_BYTES]
+
+    def _field(name):
+        v = getattr(message, name, None)
+        if v is None and isinstance(getattr(message, "provider_specific_fields", None), dict):
+            v = message.provider_specific_fields.get(name)
+        return v
+
+    # 1. The single-string shape.
+    for attr in ("reasoning_content", "reasoning"):
+        v = _field(attr)
+        if isinstance(v, str) and v.strip():
+            return _clip(v), None
+
+    # 2. Anthropic thinking blocks. A redacted block is deliberation the provider
+    #    encrypted rather than deliberation that did not happen, so it is NOTED
+    #    instead of skipped — a silent drop would read as "the model thought
+    #    nothing", which is the error this whole change exists to stop.
+    blocks = _field("thinking_blocks")
+    if isinstance(blocks, (list, tuple)):
+        parts = []
+        for b in blocks:
+            b = b if isinstance(b, dict) else getattr(b, "__dict__", {}) or {}
+            if b.get("type") == "redacted_thinking":
+                parts.append("[redacted by the provider]")
+            elif (t := b.get("thinking")):
+                parts.append(str(t))
+        joined = "\n".join(p for p in parts if p).strip()
+        if joined:
+            return _clip(joined), None
+
+    # 3. OpenAI Responses reasoning items — the text lives in each item's summary.
+    items = _field("reasoning_items")
+    if isinstance(items, (list, tuple)):
+        parts = []
+        for it in items:
+            it = it if isinstance(it, dict) else getattr(it, "__dict__", {}) or {}
+            for sb in it.get("summary") or []:
+                sb = sb if isinstance(sb, dict) else getattr(sb, "__dict__", {}) or {}
+                if (t := sb.get("text")):
+                    parts.append(str(t))
+        joined = "\n".join(parts).strip()
+        if joined:
+            return _clip(joined), None
 
     content = getattr(message, "content", None)
 
-    # Anthropic-style content blocks: a list of typed parts, thinking among them.
+    # 4. A content list with typed parts, for clients that pass blocks through
+    #    unnormalized rather than lifting them into thinking_blocks.
     if isinstance(content, list):
         thoughts = [
             b.get("thinking") or b.get("text") or ""
@@ -390,40 +434,45 @@ def _extract_reasoning(message) -> tuple[str | None, str | None]:
             if isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
         ]
         joined = "\n".join(t for t in thoughts if t).strip()
-        if joined:
-            return joined[:REASONING_MAX_BYTES], None
-        return None, None
+        return (_clip(joined), None) if joined else (None, None)
 
+    # 5. Inline <think>…</think>.
     if isinstance(content, str) and "<think>" in content.lower():
         found = _THINK_RE.findall(content)
         if found:
             rest = _THINK_RE.sub("", content).strip()
-            return "\n".join(found).strip()[:REASONING_MAX_BYTES], rest
+            return _clip("\n".join(found)), rest
     return None, None
 
 
-def _reasoning_tokens(usage) -> int:
-    """Output tokens the model spent thinking rather than answering.
+def _reasoning_tokens(usage) -> int | None:
+    """Output tokens the model spent thinking rather than answering, or **None**
+    when the provider did not report the split at all.
 
     They are already inside `completion_tokens` and are billed — so a reasoning
-    model looked expensive AND shallow at once, both halves of that impression
-    being artefacts of never separating the two (SPA-77 counts total output as
-    effort). Absent for models that do not reason; 0 is then the truth.
+    model looked expensive AND shallow at once, both halves being artefacts of
+    never separating the two (SPA-77 counts total output as effort).
+
+    None rather than 0 on purpose: «the provider said nothing about reasoning»
+    and «the model reasoned for zero tokens» are different facts, and collapsing
+    them makes the report claim a measured 0% where there is no measurement.
     """
     details = getattr(usage, "completion_tokens_details", None)
     if details is None and isinstance(usage, dict):
         details = usage.get("completion_tokens_details")
     if details is None:
-        return 0
+        return None
     v = (
         details.get("reasoning_tokens")
         if isinstance(details, dict)
         else getattr(details, "reasoning_tokens", None)
     )
+    if v is None:
+        return None
     try:
-        return max(0, int(v or 0))
+        return max(0, int(v))
     except (TypeError, ValueError):
-        return 0
+        return None
 
 
 async def _send_tool_call(
@@ -644,7 +693,10 @@ async def run_agent() -> dict:
     # A subset of total_output_tokens, not an addition to it — reasoning tokens are
     # already billed inside `completion_tokens`. Reported separately so «this model
     # thinks a lot» and «this model writes a lot» stop being one number (SPA-114).
-    total_reasoning_tokens = 0
+    # Stays None until some turn actually reports a split: a non-reasoning model
+    # must report ABSENCE, or the report shows «reasoning measured, 0%» for every
+    # run on the stand, which is a measurement claim nobody made.
+    total_reasoning_tokens: int | None = None
     # Default 20 suits short product tasks; benchmark harnesses (e.g. Toolathlon,
     # designed around ~100-step budgets) raise it via run_config.max_iterations.
     max_iterations = int(os.environ.get("AGENT_MAX_ITERATIONS", "20") or 20)
@@ -747,7 +799,8 @@ async def run_agent() -> dict:
             if usage:
                 total_input_tokens += usage.prompt_tokens or 0
                 total_output_tokens += usage.completion_tokens or 0
-                total_reasoning_tokens += _reasoning_tokens(usage)
+                if (rt := _reasoning_tokens(usage)) is not None:
+                    total_reasoning_tokens = (total_reasoning_tokens or 0) + rt
             control_state["tokens_input"] = total_input_tokens
             control_state["tokens_output"] = total_output_tokens
 

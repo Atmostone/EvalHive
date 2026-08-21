@@ -166,6 +166,7 @@ async def list_log_chunks(
                  "arguments_truncated": d.get("arguments_truncated", False),
                  "tool_call_id": d.get("tool_call_id"),
                  "part_index": d.get("part_index", 0), "part_total": d.get("part_total", 1),
+                 "reasoning": d.get("reasoning"),
                  "created_at": None}
                 for i, d in enumerate(sliced)
             ],
@@ -185,19 +186,13 @@ async def list_log_chunks(
     return {
         "archived": False,
         "archive_path": None,
+        # `_chunk_to_dict`, not a third hand-written copy of the shape: the live
+        # stream and this reload response drifted apart the moment a field was
+        # added to one of them — SPA-114 shipped reasoning to the WebSocket and
+        # not to the reload, so the viewer showed the model's thinking only until
+        # you refreshed the page.
         "chunks": [
-            {
-                "id": str(c.id),
-                "chunk_seq": c.chunk_seq,
-                "content": c.content,
-                "tool_name": c.tool_name,
-                "arguments": c.arguments,
-                "arguments_truncated": c.arguments_truncated,
-                "tool_call_id": c.tool_call_id,
-                "part_index": c.part_index,
-                "part_total": c.part_total,
-                "created_at": c.created_at.isoformat() if c.created_at else None,
-            }
+            {k: v for k, v in _chunk_to_dict(c).items() if k not in ("task_id", "workspace_id")}
             for c in chunks
         ],
     }
