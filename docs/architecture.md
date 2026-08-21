@@ -1469,6 +1469,39 @@ Consumers:
 
 If a required role has no model assigned (or the referenced model was deleted), the resolver raises HTTP 400 with an explicit "configure in Settings → System Models" message — no silent fallback to defaults (except the E-02 judge noted above).
 
+### What every platform-side call owes back (SPA-111)
+
+Two obligations are shared by every call the platform makes on a run's behalf —
+the judges, the memory extractor and the orchestrator's three decision calls —
+and until SPA-111 the orchestrator met neither.
+
+- **Read `usage` and attribute it.** `app/utils/cost.py::tokens_from_response`
+  tolerates both usage shapes and an absent block (0/0, never an exception — a
+  cost figure must not be able to fail a run); `llm_call_cost` prices it from the
+  **live model row**, unlike an agent run, which is billed against the prices
+  frozen on its Task at spawn time. The distinction is deliberate: the agent is
+  the measured subject, the platform's own calls are overhead. Orchestrator spend
+  lands in `tasks.orchestrator_usage` / `orchestrator_cost_usd`, kept out of
+  `token_usage` / `cost_usd` so the token-effort metric (SPA-77) keeps comparing
+  agents to agents. It accumulates rather than assigns: one task can pass through
+  decomposition, selection and evaluation, and a re-queue repeats some of them.
+- **Read the answer back leniently, and say so when it is not there.**
+  `app/utils/tool_args.py` is the single reader for the twelve call sites that
+  force a tool choice by name. It tolerates a fence, prose around the object and
+  a truncated tail, and falls back to `message.content` for providers that treat
+  forced tool choice as advisory — a fallback E-07 grew privately and every other
+  site lacked. When neither a tool call nor a parseable object comes back it
+  raises `ProviderComplianceError`, which `classify_llm_error` types as `infra`
+  (contaminating): nothing about the run was measured, so it is a property of the
+  endpoint, not of the work. Evaluator error dicts carry `error_class`, the E-02
+  profile carries `gate.uncertifiable_dimensions`, and the report counts those
+  runs apart — the gate still fails closed (SPA-51), but a config dragged down by
+  an endpoint that would not answer is being under-measured, not out-performed.
+  The one exception is `decide_decomposition`, the sole orchestrator call made
+  with `tool_choice="auto"`: there the ABSENCE of a tool call is a legitimate
+  answer ("execute directly"), so it reads arguments leniently but never falls
+  back to content.
+
 ## Authentication and authorisation (R1)
 
 ```

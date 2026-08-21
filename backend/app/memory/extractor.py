@@ -1,6 +1,5 @@
 """LLM-driven extraction of entities/relations from completed task results."""
 
-import json
 import logging
 import uuid
 
@@ -8,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.plugins.llm import get_llm_provider
+from app.utils.tool_args import extract_tool_args
 
 from app.api.settings import get_setting
 from app.database import async_session
@@ -105,11 +105,10 @@ async def _llm_extract(
         return {"entities": [], "relations": []}
 
     choice = resp.choices[0].message
-    if not choice.tool_calls:
-        return {"entities": [], "relations": []}
     try:
-        return json.loads(choice.tool_calls[0].function.arguments)
-    except (json.JSONDecodeError, KeyError):
+        return extract_tool_args(choice)
+    except Exception as e:  # noqa: BLE001 — memory extraction never fails a run
+        logger.warning(f"Memory extraction returned no usable facts: {e}")
         return {"entities": [], "relations": []}
 
 

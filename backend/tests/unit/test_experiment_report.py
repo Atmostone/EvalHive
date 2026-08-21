@@ -204,7 +204,8 @@ def _run(config_key, case_key, idx, *, status="success", score=None, traj=None,
 def _record(dimensions=None, failures=None, trajectory_axes=None, trajectory_match=None,
             human_feedback=None, cost_usd="0", quality_cost=0.0, trajectory_cost=0.0,
             gate=None, loop_detected=False, trace_stats=None, loop_analysis=None,
-            input_tokens=None, output_tokens=None, tool_call_count=None):
+            input_tokens=None, output_tokens=None, tool_call_count=None,
+            orchestrator_cost_usd="0"):
     quality_profile = None
     if dimensions or quality_cost or gate:
         quality_profile = {"dimensions": dimensions or [], "judge_cost_usd": quality_cost}
@@ -224,6 +225,7 @@ def _record(dimensions=None, failures=None, trajectory_axes=None, trajectory_mat
             trajectory_profile["loop_analysis"] = loop_analysis
     return SimpleNamespace(
         cost_usd=Decimal(str(cost_usd)),
+        orchestrator_cost_usd=Decimal(str(orchestrator_cost_usd)),
         quality_profile=quality_profile,
         failure_profile={"failures": failures} if failures else None,
         trajectory_profile=trajectory_profile,
@@ -272,7 +274,7 @@ def test_build_report_full_shape():
 
     report = build_report(_exp(CONFIGS), runs, records, partial=False)
 
-    assert report["schema_version"] == 18
+    assert report["schema_version"] == 19
     assert report["partial"] is False
     assert report["n_terminal_runs"] == 13
     # No executable verdicts here → external/rq2 present but unavailable.
@@ -433,7 +435,7 @@ def test_build_report_external_pass_rate_and_rq2():
         _run("cfg-02", "case-c", 0, score=None, external_verdict=True),
     ]
     report = build_report(_exp(CONFIGS), runs, {}, partial=False)
-    assert report["schema_version"] == 18
+    assert report["schema_version"] == 19
 
     ext = report["external"]
     assert ext["available"] is True
@@ -551,6 +553,50 @@ def test_build_report_cost_breakdown():
     assert totals["judge_outcome"] == 0.07
     assert totals["judge_trajectory"] == 0.04
     assert totals["total"] == 0.41
+    # These runs predate the orchestrator being metered at all: the column is
+    # zero AND the report says so, so the total reads as a lower bound rather
+    # than as a config that spent nothing on orchestration (SPA-111).
+    assert totals["orchestrator"] == 0.0
+    assert cb["orchestrator_metered"] is False
+
+
+def test_cost_breakdown_counts_the_orchestrators_own_calls():
+    """Template selection, the decomposition decision and result evaluation are
+    LLM calls the platform makes on the run's behalf. They were spent and never
+    counted, which made every cost figure an undercount of unknown size."""
+    r1 = _run("cfg-01", "case-a", 0, status="success", cost="0.10")
+    r2 = _run("cfg-02", "case-a", 0, status="success", cost="0.10")
+    records = {
+        r1.task_id: _record(cost_usd="0.10", quality_cost=0.02,
+                            orchestrator_cost_usd="0.03",
+                            dimensions=[{"key": "a", "score": 8}]),
+        # orchestrator OFF for this config — a real zero, not a missing meter
+        r2.task_id: _record(cost_usd="0.10", quality_cost=0.02,
+                            dimensions=[{"key": "a", "score": 8}]),
+    }
+    report = build_report(_exp(CONFIGS), [r1, r2], records, partial=False)
+    cb = report["cost_breakdown"]
+    by = {c["config_key"]: c for c in cb["per_config"]}
+    assert by["cfg-01"]["orchestrator"] == 0.03
+    assert by["cfg-01"]["total"] == 0.15  # 0.10 agent + 0.02 judge + 0.03 orchestrator
+    assert by["cfg-02"]["orchestrator"] == 0.0
+    assert by["cfg-02"]["total"] == 0.12
+    assert cb["totals"]["orchestrator"] == 0.03
+    assert cb["orchestrator_metered"] is True
+
+
+def test_cost_breakdown_shows_up_when_only_orchestration_cost_anything():
+    """An agent on a zero-priced model still pays for its decision calls. Hiding
+    the panel because the agent column is empty would hide the only figure it
+    has — which is exactly the state of a stand whose working model rows carry
+    no prices."""
+    r = _run("cfg-01", "case-a", 0, status="success", cost="0")
+    records = {r.task_id: _record(cost_usd="0", orchestrator_cost_usd="0.004")}
+    report = build_report(_exp(CONFIGS), [r], records, partial=False)
+    cb = report["cost_breakdown"]
+    assert cb["available"] is True
+    assert cb["totals"]["orchestrator"] == 0.004
+    assert cb["totals"]["total"] == 0.004
 
 
 def test_build_report_no_human_no_cost():
@@ -638,6 +684,48 @@ def test_build_report_quality_gate():
     assert by["cfg-01"]["failed_dimensions"] == {"correctness": 1}
     assert (by["cfg-02"]["n"], by["cfg-02"]["n_pass"], by["cfg-02"]["pass_rate"]) == (1, 1, 1.0)
     assert by["cfg-02"]["failed_dimensions"] == {}
+    assert qg["n_uncertifiable"] == 0
+
+
+def test_quality_gate_separates_a_failure_nobody_earned():
+    """A config whose pass rate is dragged down because the provider would not
+    answer is not being out-performed — it is being under-measured, and the
+    report has to be able to say which (SPA-111)."""
+    r1 = _run("cfg-01", "case-a", 0, status="success", score=8.0)
+    r2 = _run("cfg-02", "case-a", 0, status="success", score=3.0)
+    r3 = _run("cfg-02", "case-b", 0, status="success", score=None)
+    records = {
+        r1.task_id: _record(
+            dimensions=[{"key": "correctness", "score": 8}],
+            gate={"passed": True, "failed_dimensions": [], "uncertifiable_dimensions": []},
+        ),
+        # earned it: the deliverable was scored and fell short
+        r2.task_id: _record(
+            dimensions=[{"key": "correctness", "score": 3}],
+            gate={
+                "passed": False,
+                "failed_dimensions": ["correctness"],
+                "uncertifiable_dimensions": [],
+            },
+        ),
+        # did not: the judge never got a verdict out of the provider
+        r3.task_id: _record(
+            dimensions=[{"key": "correctness", "score": None}],
+            gate={
+                "passed": False,
+                "failed_dimensions": ["correctness"],
+                "uncertifiable_dimensions": ["correctness"],
+            },
+        ),
+    }
+    report = build_report(_exp(CONFIGS), [r1, r2, r3], records, partial=False)
+    qg = report["quality_gate"]
+    by = {c["config_key"]: c for c in qg["per_config"]}
+    # cfg-02 fails both runs, but only ONE of them is about the work
+    assert by["cfg-02"]["pass_rate"] == 0.0
+    assert by["cfg-02"]["n_uncertifiable"] == 1
+    assert by["cfg-01"]["n_uncertifiable"] == 0
+    assert qg["n_uncertifiable"] == 1
 
 
 def test_build_report_loop_detection():

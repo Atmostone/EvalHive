@@ -20,23 +20,27 @@ import json
 import logging
 import uuid
 from datetime import datetime
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.plugins.llm import get_llm_provider
+from app.utils.tool_args import error_class, extract_tool_args
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.quality.rubric import resolve_rubric_for_task
+from app.utils.cost import llm_call_cost, tokens_from_response
 from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
 
+# v4: error_class on every unscored dimension + gate.uncertifiable_dimensions —
+# a critical dimension the provider prevented us from judging is no longer
+# indistinguishable from one the deliverable actually failed (SPA-111).
 # v3: rubric_fingerprint + prompt_fingerprint — the conditions the verdict was
 # obtained under, so an edited rubric or prompt cannot be mistaken for the one
 # that produced a stored score (SPA-85).
-PROFILE_SCHEMA_VERSION = 3
+PROFILE_SCHEMA_VERSION = 4
 _MAX_SCALE = 10
 # Cap the result text handed to the judge to keep prompts bounded.
 _RESULT_CHAR_CAP = 8000
@@ -277,17 +281,6 @@ async def _deliverable_context(task: Task) -> str:
     return "\n\nDeliverable file contents:\n" + "\n\n".join(parts)
 
 
-def _tokens_from_response(resp) -> tuple[int, int]:
-    usage = getattr(resp, "usage", None)
-    if usage is None:
-        return 0, 0
-    if isinstance(usage, dict):
-        return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
-    return int(getattr(usage, "prompt_tokens", 0) or 0), int(
-        getattr(usage, "completion_tokens", 0) or 0
-    )
-
-
 async def _judge_dimension(
     dim: dict, context: str, judge_llm, *, mitigations: dict | None = None
 ) -> dict:
@@ -320,8 +313,8 @@ async def _judge_dimension(
             api_base=judge_llm.provider.endpoint,
         )
         choice = resp.choices[0].message
-        args = json.loads(choice.tool_calls[0].function.arguments)
-        inp, out = _tokens_from_response(resp)
+        args = extract_tool_args(choice)
+        inp, out = tokens_from_response(resp)
         if args.get("applicable") is False:
             # The dimension does not apply to this task at all — excluded from the
             # weighted aggregate and the gate (mirrors the "skipped" handling in
@@ -343,16 +336,12 @@ async def _judge_dimension(
         }
     except Exception as e:  # noqa: BLE001 — one dimension must not break the rest
         logger.warning(f"judge dimension '{dim.get('key')}' failed: {e}")
-        return {"status": "error", "score": None, "error": str(e)[:300]}
-
-
-def _judge_cost(llm, input_tokens: int, output_tokens: int) -> float:
-    in_rate = Decimal(llm.model.input_price_per_1m_usd or 0)
-    out_rate = Decimal(llm.model.output_price_per_1m_usd or 0)
-    cost = (Decimal(input_tokens) / Decimal(1_000_000)) * in_rate + (
-        Decimal(output_tokens) / Decimal(1_000_000)
-    ) * out_rate
-    return float(cost.quantize(Decimal("0.000001")))
+        return {
+            "status": "error",
+            "score": None,
+            "error": str(e)[:300],
+            "error_class": error_class(e),
+        }
 
 
 _BIAS_MITIGATION_KEYS = ("verbosity", "score_clustering", "self_preference", "position")
@@ -482,6 +471,7 @@ async def evaluate_task_quality(
     in_tok = out_tok = 0
     weighted_num = weighted_den = 0.0
     failed_critical: list[str] = []
+    uncertifiable: list[str] = []
 
     for i, d in enumerate(dims):
         evaluator = d.get("evaluator", "judge")
@@ -533,13 +523,25 @@ async def evaluate_task_quality(
             pass
         else:
             entry["error"] = res.get("error")
-            errors.append({"key": d.get("key"), "error": res.get("error")})
+            # WHY the dimension could not be scored. "infrastructure" means the
+            # provider never let the judge answer (SPA-111) — the run under test
+            # did nothing wrong. The verdict below is unchanged either way; what
+            # changes is that the report can now tell the two apart instead of
+            # showing both as a failed requirement.
+            entry["error_class"] = res.get("error_class") or "evaluation"
+            errors.append({
+                "key": d.get("key"),
+                "error": res.get("error"),
+                "error_class": entry["error_class"],
+            })
             # SPA-51: fail-CLOSED. A critical dimension we could not score (the
             # evaluator errored) must NOT silently pass the gate — we cannot
             # certify the critical requirement, so the gate fails.
             if entry["critical"]:
                 entry["passed"] = False
                 failed_critical.append(d.get("key"))
+                if entry["error_class"] == "infrastructure":
+                    uncertifiable.append(d.get("key"))
         out_dims.append(entry)
 
     weighted_score = round(weighted_num / weighted_den, 2) if weighted_den else None
@@ -558,11 +560,19 @@ async def evaluate_task_quality(
         "files_only": bool(files_only),
         "dimensions": out_dims,
         "weighted_score": weighted_score,
-        "gate": {"passed": len(failed_critical) == 0, "failed_dimensions": failed_critical},
+        "gate": {
+            "passed": len(failed_critical) == 0,
+            "failed_dimensions": failed_critical,
+            # A subset of failed_dimensions: critical dimensions that failed
+            # because the platform could not obtain a verdict, not because the
+            # deliverable fell short. The gate still fails (SPA-51), but a run
+            # that only appears here was never actually judged.
+            "uncertifiable_dimensions": uncertifiable,
+        },
         "judge_model": judge_llm.model.api_name,
         "judge_input_tokens": in_tok,
         "judge_output_tokens": out_tok,
-        "judge_cost_usd": _judge_cost(judge_llm, in_tok, out_tok),
+        "judge_cost_usd": llm_call_cost(judge_llm, in_tok, out_tok),
         "evaluated_at": datetime.utcnow().isoformat(),
         "errors": errors,
     }

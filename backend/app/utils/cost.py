@@ -35,3 +35,35 @@ def calculate_cost(task: Task, token_usage: Optional[dict] = None) -> Decimal:
         Decimal(out) / Decimal(1_000_000)
     ) * out_rate
     return cost.quantize(Decimal("0.000001"))
+
+
+def tokens_from_response(resp) -> tuple[int, int]:
+    """(prompt, completion) token counts off a completion, whatever shape it has.
+
+    Providers hand `usage` back as either an object or a plain dict, and some
+    omit it entirely — an absent usage block is 0/0, never an exception: a cost
+    figure must not be able to fail a run.
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return 0, 0
+    if isinstance(usage, dict):
+        return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
+    return int(getattr(usage, "prompt_tokens", 0) or 0), int(
+        getattr(usage, "completion_tokens", 0) or 0
+    )
+
+
+def llm_call_cost(llm, input_tokens: int, output_tokens: int) -> float:
+    """USD for one platform-side LLM call, at the resolved model's live prices.
+
+    Unlike `calculate_cost`, which bills an agent run against the prices frozen
+    on its Task row, the platform's own calls (judges, orchestrator) are priced
+    from the model row: they are not the measured subject, they are overhead.
+    """
+    in_rate = Decimal(llm.model.input_price_per_1m_usd or 0)
+    out_rate = Decimal(llm.model.output_price_per_1m_usd or 0)
+    cost = (Decimal(input_tokens) / Decimal(1_000_000)) * in_rate + (
+        Decimal(output_tokens) / Decimal(1_000_000)
+    ) * out_rate
+    return float(cost.quantize(Decimal("0.000001")))

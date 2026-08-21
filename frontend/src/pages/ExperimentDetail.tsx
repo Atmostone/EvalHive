@@ -1161,6 +1161,57 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      {report.cost_breakdown?.available && (() => {
+        const cb = report.cost_breakdown!
+        const metered = cb.orchestrator_metered !== false
+        return (
+        <section>
+          <h3 className="font-semibold text-gray-900 mb-2">
+            Cost breakdown <span className="text-xs text-gray-400 font-normal">where the money went, per config · settled runs · USD</span>
+          </h3>
+          {!metered && (
+            <p className="text-[11px] text-amber-700/90 mb-2 max-w-3xl">
+              ⚠ No run here has its orchestrator turns metered — template selection, the
+              decomposition decision and result evaluation went uncosted before SPA-111. The
+              orchestrator column is an <span className="font-medium">absence of measurement</span>,
+              not a config that spent nothing, so every total below is a lower bound.
+            </p>
+          )}
+          <div className="bg-white border rounded-lg overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase">
+                <tr>
+                  <th className="px-3 py-2">Configuration</th>
+                  <th className="px-3 py-2" title="the agent's own execution — what the run under test spent">Agent</th>
+                  <th className="px-3 py-2" title="the platform's own decision calls on this run's behalf: template selection, decomposition, result evaluation. Overhead, deliberately not folded into the agent's own effort">Orchestrator</th>
+                  <th className="px-3 py-2" title="every evaluator that scored this run (E-02 outcome, E-07 process, E-08 evidence, E-14 failure modes, E-15 hallucination)">Judges</th>
+                  <th className="px-3 py-2">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cb.per_config.map((c) => (
+                  <tr key={c.config_key} className="border-t">
+                    <td className="px-3 py-2 font-medium" title={c.config_key}>{c.label}</td>
+                    <td className="px-3 py-2">${fmt(c.agent, 4)}</td>
+                    <td className={`px-3 py-2 ${metered ? '' : 'text-gray-300'}`}>${fmt(c.orchestrator, 4)}</td>
+                    <td className="px-3 py-2">${fmt(c.judge_total, 4)}</td>
+                    <td className="px-3 py-2 font-semibold">${fmt(c.total, 4)}</td>
+                  </tr>
+                ))}
+                <tr className="border-t bg-gray-50 font-medium">
+                  <td className="px-3 py-2">All configurations</td>
+                  <td className="px-3 py-2">${fmt(cb.totals.agent, 4)}</td>
+                  <td className={`px-3 py-2 ${metered ? '' : 'text-gray-300'}`}>${fmt(cb.totals.orchestrator, 4)}</td>
+                  <td className="px-3 py-2">${fmt(cb.totals.judge_total, 4)}</td>
+                  <td className="px-3 py-2 font-semibold">${fmt(cb.totals.total, 4)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        )
+      })()}
+
       {!verifiable && report.quality_gate?.available && (
         <section>
           <h3 className="font-semibold text-gray-900 mb-2">
@@ -1174,6 +1225,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                   <th className="px-3 py-2" title="share of scored runs whose result passed every CRITICAL rubric dimension (higher is better)">Gate pass</th>
                   <th className="px-3 py-2">Passed</th>
                   <th className="px-3 py-2">Scored</th>
+                  <th className="px-3 py-2" title="runs that failed the gate because a critical dimension could not be judged at all — the provider would not answer. The verdict stands (we cannot certify what we did not measure), but the cause is not the deliverable">Not measurable</th>
                   <th className="px-3 py-2" title="rubric dimensions that most often fail the gate (count of runs)">Top failing dimensions</th>
                 </tr>
               </thead>
@@ -1186,6 +1238,11 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                       <td className="px-3 py-2 font-semibold">{c.pass_rate != null ? `${(c.pass_rate * 100).toFixed(0)}%` : '—'}</td>
                       <td className="px-3 py-2 text-green-700">{c.n_pass}</td>
                       <td className="px-3 py-2 text-gray-500">{c.n}</td>
+                      <td className="px-3 py-2">
+                        {c.n_uncertifiable
+                          ? <span className="text-amber-700" title="a provider that ignored the judge's forced tool call — infrastructure, not work quality">{c.n_uncertifiable}</span>
+                          : <span className="text-gray-300">—</span>}
+                      </td>
                       <td className="px-3 py-2 text-gray-600">
                         {failed.length
                           ? failed.map(([d, n]) => `${(report.heatmap.dimension_labels?.[d] || d).replace(/_/g, ' ')}: ${n}`).join(' · ')

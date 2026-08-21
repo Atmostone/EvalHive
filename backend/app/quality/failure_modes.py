@@ -31,7 +31,6 @@ parse failure becomes ``status: "error"`` instead of an exception.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 
@@ -41,8 +40,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
+from app.utils.tool_args import error_class, extract_tool_args
 from app.quality.capability import DEFAULT_OUTCOME_THRESHOLD, _outcome_from_profile
-from app.quality.judge import _judge_cost, _resolve_judge_model, _tokens_from_response
+from app.quality.judge import _resolve_judge_model
+from app.utils.cost import llm_call_cost, tokens_from_response
 from app.quality.trace_cleaner import _count_tokens, build_cleaned_trace
 from app.quality.trajectory import (
     AXES as TRAJECTORY_AXES,
@@ -271,8 +272,8 @@ async def _classify_failures(
             api_base=judge_llm.provider.endpoint,
         )
         choice = resp.choices[0].message
-        args = json.loads(choice.tool_calls[0].function.arguments)
-        in_tok, out_tok = _tokens_from_response(resp)
+        args = extract_tool_args(choice)
+        in_tok, out_tok = tokens_from_response(resp)
 
         return {
             "status": "scored",
@@ -280,7 +281,7 @@ async def _classify_failures(
             "summary": str(args.get("summary") or "")[:_SUMMARY_CAP],
             "judge_input_tokens": in_tok,
             "judge_output_tokens": out_tok,
-            "judge_cost_usd": _judge_cost(judge_llm, in_tok, out_tok),
+            "judge_cost_usd": llm_call_cost(judge_llm, in_tok, out_tok),
             "input_capped": input_capped,
             "used_outcome_profile": used_outcome,
             "used_trajectory_profile": used_trajectory,
@@ -290,6 +291,7 @@ async def _classify_failures(
         return {
             "status": "error",
             "error": str(e)[:300],
+            "error_class": error_class(e),
             "input_capped": input_capped,
             "used_outcome_profile": used_outcome,
             "used_trajectory_profile": used_trajectory,
@@ -366,7 +368,12 @@ async def evaluate_task_failure_modes(
         },
         "evaluated_at": datetime.utcnow().isoformat(),
         "errors": (
-            [{"error": result.get("error")}] if result.get("status") == "error" else []
+            [{
+                "error": result.get("error"),
+                "error_class": result.get("error_class") or "evaluation",
+            }]
+            if result.get("status") == "error"
+            else []
         ),
     }
 

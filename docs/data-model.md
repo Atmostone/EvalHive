@@ -95,6 +95,13 @@ f9a0b1c2d3e4  agent_log_chunks.{arguments, arguments_truncated, tool_call_id, pa
      ↓
 faa1b2c3d4e5  tasks.failure_type + experiment_runs.failure_type + experiment_attempts.failure_type —
               WHY a run failed, as a type rather than a string nobody stored (SPA-87)
+     ↓
+fab2c3d4e5f6  tasks.condition_contaminated — whether a contamination outlives the
+              attempt it describes, so a re-queue can clear the ones that do not (SPA-115)
+     ↓
+fac3d4e5f6a7  tasks.orchestrator_cost_usd + tasks.orchestrator_usage +
+              quality_records.orchestrator_cost_usd — the orchestrator's own LLM
+              spend, which nothing ever counted (SPA-111)
 ```
 
 (E-20 Reproducibility Snapshot added no migration — it reuses the
@@ -134,6 +141,8 @@ faa1b2c3d4e5  tasks.failure_type + experiment_runs.failure_type + experiment_att
 | input_price_per_1m_usd | NUMERIC(12,6) | NULL | denormalized at spawn time from `llm_models.input_price_per_1m_usd`; used by cost.py so deleting/repricing a model doesn't retro-change cost |
 | output_price_per_1m_usd | NUMERIC(12,6) | NULL | denormalized at spawn time from `llm_models.output_price_per_1m_usd` |
 | cost_usd | NUMERIC(10,6) | 0 | computed cost (input_price × input_tokens / 1M + output_price × output_tokens / 1M) |
+| orchestrator_cost_usd | NUMERIC(10,6) | 0 | what the ORCHESTRATOR spent deciding about this task — template selection, the decomposition decision, result evaluation (migration `fac3d4e5f6a7`, SPA-111). Priced from the live model row, not the task's frozen prices: this is platform overhead, not the measured subject. Deliberately **not** folded into `cost_usd`/`token_usage`, which are the agent's own effort and feed the token-effort comparison (SPA-77) |
+| orchestrator_usage | JSONB | {} | `{input_tokens, output_tokens, calls, by_decision:{template_selection?, decomposition?, result_evaluation?}}` — accumulated across every orchestrator turn the task passes through, including a re-queue's repeats. No backfill: before SPA-111 `usage` was never read at these call sites, so historical rows keep a zero, which is honestly what is known about them |
 | depends_on | UUID[] | {} | ids of dependency tasks (P9) |
 | workspace_id | UUID NOT NULL | | scoping (post-R1, FK CASCADE) |
 | created_at / updated_at / started_at / completed_at | TIMESTAMP | now() / onupdate | |
@@ -402,8 +411,9 @@ placeholders filled by downstream eval features.
 | final_status | VARCHAR(50) | done / failed / awaiting_approval (reconciled by the backfill job) |
 | is_decomposition_root | bool | parent task with subtasks |
 | cost_usd | NUMERIC(10,6) | denormalized |
+| orchestrator_cost_usd | NUMERIC(10,6) | denormalized alongside it (SPA-111) — the report's cost breakdown reads both from here, and `cost_breakdown.orchestrator_metered` says whether a zero means «spent nothing» or «never measured» |
 | input_tokens / output_tokens / duration_seconds / tool_call_count | int? | outcome metrics. `tool_call_count` counts **logical calls**, not log rows — the agent writes the call before running the tool and the result after, and a large output splits further, so a row-count double-counted every call. The grouping is the trace cleaner's `join_tool_call_parts`, imported rather than reimplemented, so this number and the judge's step list cannot drift. Read by the experiment report as `steps_mean` |
-| quality_profile | JSONB? | **slot E-02** (v3 adds `rubric_fingerprint` / `prompt_fingerprint` / `files_only` — the conditions the verdict was obtained under, SPA-85) |
+| quality_profile | JSONB? | **slot E-02** (v3 adds `rubric_fingerprint` / `prompt_fingerprint` / `files_only` — the conditions the verdict was obtained under, SPA-85; v4 adds `error_class` on every unscored dimension and `gate.uncertifiable_dimensions`, so a critical dimension the provider refused to answer is distinguishable from one the deliverable failed, SPA-111) |
 | trajectory_profile | JSONB? | **slot E-07** (v3 adds `prompt_fingerprint`; v4 adds the `trim` policy the verdict was obtained under, SPA-86) |
 | trajectory_evidence_profile | JSONB? | **slot E-08** (TRACE evidence-bank judge; added by migration `e4f5a6b7c8d9`) |
 | trajectory_match_profile | JSONB? | **slot E-09** (deterministic trajectory matcher; added by migration `a8b9c0d1e2f3`) |

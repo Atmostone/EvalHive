@@ -10,15 +10,11 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
 from app.quality import trajectory as traj
 from app.quality.trace_cleaner import _count_tokens
 from app.quality.trajectory import (
     AXES,
-    _extract_tool_args,
     _judge_trajectory,
-    _loads_lenient,
     _serialize_trace,
     fit_trace_to_budget,
 )
@@ -323,39 +319,8 @@ async def test_judge_all_axes_na_yields_none_overall(monkeypatch):
     assert all(a["score"] is None for a in out["axes"])
 
 
-# --- lenient JSON parsing + retry (E-07 robustness, ~27% of evals were erroring) ---
-
-
-def test_loads_lenient_plain_and_fenced():
-    obj = {"efficiency": {"score": 7}, "summary": "ok"}
-    assert _loads_lenient(json.dumps(obj)) == obj
-    assert _loads_lenient("```json\n" + json.dumps(obj) + "\n```") == obj
-    assert _loads_lenient("```\n" + json.dumps(obj) + "\n```") == obj
-
-
-def test_loads_lenient_strips_prose_and_trailing_junk():
-    obj = {"a": 1, "b": "x"}
-    assert _loads_lenient("Here is the score: " + json.dumps(obj)) == obj
-    assert _loads_lenient(json.dumps(obj) + "\n\nThat is my assessment.") == obj
-
-
-def test_loads_lenient_closes_cleanly_truncated_object():
-    # response cut off after a complete value — the missing braces are added back
-    out = _loads_lenient('{"efficiency": {"score": 6}, "summary": "done"')
-    assert out["efficiency"]["score"] == 6 and out["summary"] == "done"
-
-
-def test_loads_lenient_raises_on_unrecoverable():
-    for bad in ("", "   ", "no json object here"):
-        with pytest.raises((ValueError, json.JSONDecodeError)):
-            _loads_lenient(bad)
-
-
-def test_extract_tool_args_falls_back_to_content():
-    # provider ignored the forced tool call → JSON arrived in message.content
-    obj = {"efficiency": {"score": 8}}
-    choice = SimpleNamespace(tool_calls=None, content=json.dumps(obj))
-    assert _extract_tool_args(choice) == obj
+# --- retry on unparseable judge output (E-07 robustness; the reader itself
+#     is tested in test_tool_args.py, which is where it now lives) ---
 
 
 class _FlakyProvider:

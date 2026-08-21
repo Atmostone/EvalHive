@@ -1,8 +1,8 @@
 """LLM calls for orchestrator decisions via the LLMProvider plugin."""
 
-import json
 import logging
 import uuid as _uuid
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,12 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api._resolve_model import ResolvedModel
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
+from app.utils.cost import llm_call_cost, tokens_from_response
 from app.utils.events import log_event
 from app.utils.failures import (
     classify_llm_error,
     is_contaminated,
     merge_failure_type,
 )
+from app.utils.tool_args import extract_tool_args, loads_lenient
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,47 @@ async def _record_reasoning(
         )
     except Exception as e:
         logger.warning(f"reasoning log_event failed: {e}")
+
+async def _record_orchestrator_usage(db, task_id, llm, response, decision: str) -> None:
+    """Attribute one orchestrator LLM call's tokens and cost to the task.
+
+    Judges were costed and agents were costed; the orchestrator's own three calls
+    were not, so every cost figure the platform reported was an undercount by an
+    unknown margin and the experiment budget cap only counted part of the spend
+    (SPA-111).
+
+    Accumulates rather than assigns: a task can pass through decomposition,
+    template selection and evaluation, and a retry runs some of them again. The
+    tokens land in `orchestrator_usage`, kept apart from the agent's own
+    `token_usage` so the token-effort metric (SPA-77) still compares like with
+    like. Mutates without committing — the caller's own commit carries it, the
+    same way the contamination flag travels.
+    """
+    if db is None or task_id is None:
+        return
+    try:
+        in_tok, out_tok = tokens_from_response(response)
+        if not in_tok and not out_tok:
+            return  # provider returned no usage block; nothing to attribute
+        task = await db.get(
+            Task, task_id if isinstance(task_id, _uuid.UUID) else _uuid.UUID(str(task_id))
+        )
+        if task is None:
+            return
+        usage = dict(task.orchestrator_usage or {})
+        usage["input_tokens"] = int(usage.get("input_tokens") or 0) + in_tok
+        usage["output_tokens"] = int(usage.get("output_tokens") or 0) + out_tok
+        usage["calls"] = int(usage.get("calls") or 0) + 1
+        by_decision = dict(usage.get("by_decision") or {})
+        by_decision[decision] = int(by_decision.get(decision) or 0) + 1
+        usage["by_decision"] = by_decision
+        task.orchestrator_usage = usage
+        task.orchestrator_cost_usd = Decimal(str(task.orchestrator_cost_usd or 0)) + Decimal(
+            str(llm_call_cost(llm, in_tok, out_tok))
+        )
+    except Exception as e:  # noqa: BLE001 — a cost figure must never fail a run
+        logger.warning(f"could not attribute orchestrator LLM usage: {e}")
+
 
 async def _flag_llm_contamination(db, task_id, exc: Exception) -> None:
     """Mark the task when a provider outage, not the orchestrator, made the call.
@@ -157,17 +200,18 @@ async def select_template_for_task(
             api_base=llm.provider.endpoint,
         )
 
-        choice = response.choices[0].message
-        if choice.tool_calls:
-            args = json.loads(choice.tool_calls[0].function.arguments)
-            logger.info(f"LLM selected template: {args}")
-            await _record_reasoning(
-                db, task_id, "template_selected",
-                args.get("reasoning", ""),
-                {"template_id": args.get("template_id"),
-                 "alternatives": [{"id": t["id"], "name": t["name"]} for t in templates]},
-            )
-            return args
+        await _record_orchestrator_usage(
+            db, task_id, llm, response, "template_selection"
+        )
+        args = extract_tool_args(response.choices[0].message)
+        logger.info(f"LLM selected template: {args}")
+        await _record_reasoning(
+            db, task_id, "template_selected",
+            args.get("reasoning", ""),
+            {"template_id": args.get("template_id"),
+             "alternatives": [{"id": t["id"], "name": t["name"]} for t in templates]},
+        )
+        return args
 
     except Exception as e:
         logger.error(f"LLM template selection failed: {e}")
@@ -277,10 +321,16 @@ async def decide_decomposition(
             api_base=llm.provider.endpoint,
         )
 
+        await _record_orchestrator_usage(db, task_id, llm, response, "decomposition")
         choice = response.choices[0].message
+        # NOT extract_tool_args: this is the one orchestrator call made with
+        # ``tool_choice="auto"``, where the ABSENCE of a tool call is a legitimate
+        # answer ("execute directly"). Reading content as a fallback here would
+        # turn a decision into a parse error. Only the arguments get the lenient
+        # reader, for the fence/prose defects models emit.
         if choice.tool_calls:
             tc = choice.tool_calls[0]
-            args = json.loads(tc.function.arguments)
+            args = loads_lenient(tc.function.arguments)
 
             if tc.function.name == "decompose_task":
                 subtasks = args.get("subtasks", [])
@@ -375,17 +425,16 @@ async def evaluate_agent_result(
             api_base=llm.provider.endpoint,
         )
 
-        choice = response.choices[0].message
-        if choice.tool_calls:
-            args = json.loads(choice.tool_calls[0].function.arguments)
-            logger.info(f"LLM evaluation: approved={args.get('approved')}")
-            await _record_reasoning(
-                db, task_id, "evaluation_done",
-                args.get("feedback", "") or ("approved" if args.get("approved") else "rejected"),
-                {"approved": bool(args.get("approved"))},
-                commit=commit,
-            )
-            return args
+        await _record_orchestrator_usage(db, task_id, llm, response, "result_evaluation")
+        args = extract_tool_args(response.choices[0].message)
+        logger.info(f"LLM evaluation: approved={args.get('approved')}")
+        await _record_reasoning(
+            db, task_id, "evaluation_done",
+            args.get("feedback", "") or ("approved" if args.get("approved") else "rejected"),
+            {"approved": bool(args.get("approved"))},
+            commit=commit,
+        )
+        return args
 
     except Exception as e:
         logger.error(f"LLM evaluation failed: {e}")

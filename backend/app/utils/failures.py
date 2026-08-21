@@ -90,6 +90,13 @@ _TRANSIENT_EXC_NAMES = frozenset(
     }
 )
 
+# A provider that treats a forced tool call as advisory and answers in plain text
+# (SPA-111). Not a bad answer — no answer was obtainable, so nothing about the run
+# under test was measured. Infrastructure by the same bar as a dead key: it is a
+# property of the endpoint, identical on every task, and never a thing the run did.
+# Deliberately NOT retryable: the provider will do it again.
+_INFRA_EXC_NAMES = frozenset({"ProviderComplianceError"})
+
 # Everything an HTTP retry is worth attempting on, name-or-status. Kept as one
 # derived set so the retry predicate and the classifier can never disagree about
 # what «transient» means.
@@ -115,6 +122,8 @@ def classify_llm_error(exc_name: str | None, status_code: int | None) -> str:
         return FAILURE_LLM_AUTH
     if name in _TRANSIENT_EXC_NAMES:
         return FAILURE_LLM_TRANSIENT
+    if name in _INFRA_EXC_NAMES:
+        return FAILURE_INFRA
     return FAILURE_LLM_ERROR
 
 

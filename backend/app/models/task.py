@@ -127,6 +127,16 @@ class Task(Base):
     cost_usd: Mapped[Decimal] = mapped_column(
         Numeric(10, 6), default=Decimal("0"), server_default="0"
     )
+    # What the ORCHESTRATOR spent deciding about this task — template selection,
+    # the decomposition decision, result evaluation. Deliberately NOT folded into
+    # cost_usd/token_usage above: those are the agent's own effort, and SPA-77's
+    # token-effort metric reads them to compare models. Overhead the platform
+    # incurred on the run's behalf is a different quantity, and merging the two
+    # would make an orchestrated run look like a wordier agent (SPA-111).
+    orchestrator_cost_usd: Mapped[Decimal] = mapped_column(
+        Numeric(10, 6), default=Decimal("0"), server_default="0"
+    )
+    orchestrator_usage: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     depends_on: Mapped[list] = mapped_column(
         ARRAY(UUID(as_uuid=True)), default=list, server_default="{}"
     )

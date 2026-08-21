@@ -79,6 +79,12 @@ class QualityRecord(Base):
     cost_usd: Mapped[Decimal] = mapped_column(
         Numeric(10, 6), default=Decimal("0"), server_default="0"
     )
+    # The orchestrator's own spend, denormalized alongside the agent's. Separate
+    # because the report has to be able to say where the money went, and because
+    # cost_usd feeds efficiency comparisons between models (SPA-111).
+    orchestrator_cost_usd: Mapped[Decimal] = mapped_column(
+        Numeric(10, 6), default=Decimal("0"), server_default="0"
+    )
     input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
