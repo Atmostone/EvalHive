@@ -80,15 +80,17 @@ function metricJudge(metric: string): { label: string; cls: string } {
 type AxisReliability = NonNullable<ExperimentReport['axis_reliability']>['axes'][string]
 type ReliabilityStatus = AxisReliability['status']
 
-// SPA-88: six statuses, four colours. The taxonomy underneath is richer than the
+// SPA-88 + SPA-89: seven statuses, four colours. The taxonomy underneath is richer than the
 // light on top — 'insufficient' and 'not_calibrated' are both grey because both
 // mean "we do not know", and 'rank_only' shares amber with 'moderate_agreement'
 // because both mean "usable, with a caveat" — but the caveats differ, so the word
-// and the tooltip differ.
+// and the tooltip differ. 'binary_only' joins that amber pair for the same reason:
+// the loop counter's yes/no agreement is real, and real about one thing only.
 const RELIABILITY_META: Record<ReliabilityStatus, { glyph: string; cls: string; word: string }> = {
   reliable_absolute: { glyph: '✓', cls: 'text-green-700', word: 'reliable' },
   moderate_agreement: { glyph: '~', cls: 'text-amber-600', word: 'moderate agreement' },
   rank_only: { glyph: '~', cls: 'text-amber-600', word: 'rank only' },
+  binary_only: { glyph: '~', cls: 'text-amber-600', word: 'binary only' },
   insufficient: { glyph: 'n/a', cls: 'text-gray-400', word: 'insufficient data' },
   unreliable: { glyph: '⚠', cls: 'text-red-600', word: 'unreliable' },
   not_calibrated: { glyph: 'n/a', cls: 'text-gray-400', word: 'not calibrated' },
@@ -126,6 +128,8 @@ function reliabilityTooltip(a?: AxisReliability): string {
   const licence =
     a.status === 'rank_only'
       ? ' Scale-shifted judge: ranks agree with the human, absolute scores do not. It may carry a rank test on its own scores and nothing else — no mean, no frontier, no leaderboard, since all three are built from magnitudes it cannot support.'
+      : a.status === 'binary_only'
+        ? ' The reference is a BOOLEAN — the deterministic counter says looped or did not — so the two agree about one dichotomy. Where the judge puts a run INSIDE either side of the threshold was never checked, so this axis carries the binary loop rate and nothing else: no mean, no rank test on its 0-10 score.'
       : a.status === 'insufficient'
         ? ' Too few rated pairs to say anything either way — excluded from the trusted view as unknown, not as bad.'
         : a.status === 'unreliable'
@@ -192,6 +196,9 @@ function trajectoryAggregateStatus(report: ExperimentReport): ReliabilityStatus 
   if (sourced.length === 0) return 'not_calibrated'
   if (sourced.some((v) => v.status === 'unreliable')) return 'unreliable'
   if (sourced.some((v) => v.status === 'insufficient')) return 'insufficient'
+  // A binary-anchored axis supports no magnitude at all, so an aggregate containing
+  // one is worse off than an aggregate whose weakest axis merely has the ranks right.
+  if (sourced.some((v) => v.status === 'binary_only')) return 'binary_only'
   if (sourced.some((v) => v.status === 'rank_only')) return 'rank_only'
   if (sourced.some((v) => v.status === 'moderate_agreement')) return 'moderate_agreement'
   return 'reliable_absolute'
@@ -670,11 +677,16 @@ function TrustedViewToggle({ report, view, setView }: {
   const names = (rows: ExperimentTrustAxis[]) => rows.map((r) => r.name).join(', ')
   const rankOnly = [...t.outcome_axes.rank_only, ...t.trajectory_axes.rank_only]
   const dropped = [...t.outcome_axes.excluded, ...t.trajectory_axes.excluded]
-  // "The judge disagrees" and "nobody ever checked" both keep an axis out of the
-  // trusted view, and they are not the same claim about it — so they are not the
-  // same sentence either.
+  // "The judge disagrees", "nobody ever checked" and "checked, but against a yes/no"
+  // all keep an axis out of the trusted view, and they are three different claims
+  // about it — so they are three different sentences. Folding the third into
+  // "unverified" would be the flattest kind of wrong: the loop anchor DID verify
+  // that axis, just not the thing a mean would need (SPA-89).
   const disagrees = dropped.filter((a) => a.status === 'unreliable')
-  const unknown = dropped.filter((a) => a.status !== 'unreliable')
+  const binaryOnly = dropped.filter((a) => a.status === 'binary_only')
+  const unknown = dropped.filter(
+    (a) => a.status !== 'unreliable' && a.status !== 'binary_only'
+  )
   const nAxes = t.outcome_axes.n_axes + t.trajectory_axes.n_axes
   if (!t.available) {
     return (
@@ -719,6 +731,16 @@ function TrustedViewToggle({ report, view, setView }: {
             ({names(unknown)}) — no calibration source, or too few rated pairs to say anything either way.
             Unknown, not known-bad; the trusted view leaves them out because it can only stand behind what
             was checked.{' '}
+          </>
+        )}
+        {binaryOnly.length > 0 && (
+          <>
+            <span className="font-medium text-amber-700">{binaryOnly.length} binary-only</span>{' '}
+            ({names(binaryOnly)}): calibrated against the deterministic counter, which answers one
+            yes/no — did this run loop? However well the two agree, that certifies the loop RATE and
+            not the judge's 0–10 score, which is free to be anything on either side of the threshold.
+            So it carries the Loop detection panel and nothing here — not even a rank test, since
+            ordering runs by that score is a claim the anchor never examined.{' '}
           </>
         )}
         {dropped.length > 0 && (
@@ -1104,7 +1126,9 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                   {report.trajectory_heatmap.axes.map((a) => {
                     const rel = report.axis_reliability?.axes?.[a]
                     const q = rel?.status === 'unreliable'
-                    const dim = q || rel?.status === 'not_calibrated'
+                    // 'binary_only' is dimmed but not struck: the judge is not wrong
+                    // here, the cell is simply a magnitude its badge never certified.
+                    const dim = q || rel?.status === 'not_calibrated' || rel?.status === 'binary_only'
                     return (
                       <th key={a} className={`text-xs font-normal px-2 ${dim ? 'text-gray-400' : 'text-gray-500'}`}
                         title={report.trajectory_heatmap.axis_labels[a]}>
@@ -1161,7 +1185,8 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
               <span className="font-medium">Reliability gate:</span> each axis is badged by how far the process judge can be
               trusted — <span className="text-green-700 font-semibold">✓</span> reliable (κ≥{report.axis_reliability.reliable_kappa}),{' '}
               <span className="text-amber-600 font-semibold">~</span> moderate ({report.axis_reliability.directional_kappa}–{report.axis_reliability.reliable_kappa})
-              or rank-only (κ below it but rank ρ≥{report.axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: usable for a rank test, never for a mean),{' '}
+              or rank-only (κ below it but rank ρ≥{report.axis_reliability.rank_rho ?? 0.5} — a scale-shifted judge: usable for a rank test, never for a mean)
+              or binary-only (the loop axis: its reference is the counter's yes/no, so agreement there certifies the loop RATE and never the 0–10 score),{' '}
               <span className="text-red-600 font-semibold">⚠</span> unreliable,{' '}
               <span className="text-gray-400 font-semibold">n/a</span> not calibrated or too few rated pairs. κ here is chance-corrected agreement with a human
               (the loop axis instead anchors to the deterministic counter — see Loop detection). <span className="font-medium">Greyed/struck (⚠) axes are below the bar — shown for
@@ -1285,8 +1310,15 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           {ld.kappa != null && (
             <p className="text-xs text-gray-500 mb-2 max-w-3xl">
               <span className="font-medium">Judge↔counter agreement:</span> Cohen's κ {ld.kappa.toFixed(2)}
-              {ld.agreement != null && <> · {(ld.agreement * 100).toFixed(0)}% raw</>} · split {ld.n_judge_only ?? 0} judge-only / {ld.n_counter_only ?? 0} counter-only.
+              {ld.agreement != null && <> · {(ld.agreement * 100).toFixed(0)}% raw</>} · split {ld.n_judge_only ?? 0} judge-only / {ld.n_counter_only ?? 0} counter-only
+              {ld.n_structural != null && <> · over {ld.n_structural} run{ld.n_structural === 1 ? '' : 's'} both rated</>}
+              {(ld.n_judge_unscored ?? 0) > 0 && (
+                <>, with <span className="font-medium">{ld.n_judge_unscored} set aside</span> where the judge never scored the loop axis — silence is not a «no loop» vote</>
+              )}.
               Framed as <span className="font-medium">different inputs</span> (trimmed + holistic judge vs full + tool-only counter), not pure miscalibration.
+              This κ is what badges the loop axis in the heatmap above — the one axis whose reliability costs no human annotation. It is
+              agreement about a <span className="font-medium">yes/no</span>, so it certifies this loop rate and never the judge's 0–10 loop score:
+              the badge caps at «binary only» however high κ goes, and only a human rating that axis can clear it for a mean.
             </p>
           )}
           <div className="bg-white border rounded-lg overflow-x-auto">
@@ -1295,7 +1327,7 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                 <tr>
                   <th className="px-3 py-2">Configuration</th>
                   <th className="px-3 py-2" title="deterministic counter: repeated tool-calls counted over the FULL untrimmed trace — LLM-free; a precision-oriented structural lower bound (may miss semantic loops)">Loop rate (counted)</th>
-                  <th className="px-3 py-2" title="the LLM judge's loop_detection rate on the same runs — retired from conclusions, shown only for the judge↔counter comparison (κ above)">Loop rate (judge)</th>
+                  <th className="px-3 py-2" title="the LLM judge's loop_detection rate, over the runs it actually scored that axis on — badged and gated like every other trajectory axis (κ above)">Loop rate (judge)</th>
                   <th className="px-3 py-2">Counted</th>
                 </tr>
               </thead>
@@ -1308,7 +1340,9 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
                       {c.structural_loop_rate != null ? `${(c.structural_loop_rate * 100).toFixed(0)}%` : '—'}
                     </td>
                     <td className="px-3 py-2 text-gray-600"
-                      title={(c.n_judge_only != null || c.n_counter_only != null) ? `${c.n_judge_only ?? 0} judge-only / ${c.n_counter_only ?? 0} counter-only${c.kappa != null ? ` · κ ${c.kappa.toFixed(2)}` : ''}` : 'no judge loop signal'}>
+                      title={(c.n_judge_only != null || c.n_counter_only != null)
+                        ? `${c.n_loop} of ${c.n_judge_scored ?? c.n_scored} runs the judge scored the axis on${(c.n_judge_unscored ?? 0) > 0 ? ` (${c.n_judge_unscored} more had no judge verdict — set aside, not counted as "no loop")` : ''} · ${c.n_judge_only ?? 0} judge-only / ${c.n_counter_only ?? 0} counter-only${c.kappa != null ? ` · κ ${c.kappa.toFixed(2)} over ${c.n_paired ?? 0} paired` : ''}`
+                        : 'no judge loop signal'}>
                       {c.loop_rate != null ? `${(c.loop_rate * 100).toFixed(0)}%` : '—'}
                     </td>
                     <td className="px-3 py-2 text-gray-500">{c.n_structural ?? 0}</td>
@@ -1320,10 +1354,11 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           <p className="text-[11px] text-gray-400 mt-1 max-w-3xl">
             <span className="font-medium">Loop rate (counted)</span> is a deterministic, LLM-free detector: it counts repeated
             tool-calls — consecutive identical actions or repeated multi-step tool cycles — over the FULL untrimmed trace. It is a
-            precision-oriented structural lower bound (tool-calls only; may miss semantic loops that vary their wording). The unreliable
-            judge <code>loop_detection</code> axis (κ≈0 vs humans) is retired from conclusions in favour of this counter; the
-            <span className="font-medium"> Loop rate (judge)</span> column and the judge↔counter κ above are shown only to expose that
-            disagreement (different inputs), not used in conclusions.
+            precision-oriented structural lower bound (tool-calls only; may miss semantic loops that vary their wording). Because it runs on
+            every trajectory-scored run, it also <span className="font-medium">calibrates</span> the judge's <code>loop_detection</code> axis:
+            the κ above is that axis's reliability badge in the heatmap, and it is the only badge on this page that needed no human
+            annotation to exist. Whether the axis is weighed into a conclusion is then the gate's verdict on that κ — switch to the
+            Trusted view to see the report without the axes that failed it.
           </p>
         </section>
         )

@@ -121,7 +121,7 @@ const GROUPS: Group[] = [
       { name: 'The trajectory judge', desc: 'An LLM judge that scores HOW the agent worked across six axes: efficiency, tool selection, parameter quality, error recovery, goal alignment, loop detection.' },
       { name: 'The evidence-bank trace judge', desc: 'A trajectory-judge variant that walks the cleaned trace step by step against an accumulating bank of established facts, adding a groundedness signal.' },
       { name: 'The trajectory match', desc: "A deterministic, LLM-free comparison of the agent's tool-call sequence against a canonical/gold trajectory (exact, edit-distance, and graph metrics)." },
-      { name: 'The deterministic loop counter', desc: 'An LLM-free detector that counts repeated tool-calls over the full untrimmed trace — a structural lower bound on looping that replaces the unreliable judge loop signal.' },
+      { name: 'The deterministic loop counter', desc: "An LLM-free detector that counts repeated tool-calls over the full untrimmed trace — a structural lower bound on looping. Because it runs on every trace, it also calibrates the judge: agreement between the two is the loop axis's reliability badge, the only one that needs no human annotation." },
     ],
   },
   {

@@ -63,7 +63,11 @@ from app.quality.stats import (
 from app.quality.trajectory import AXES as TRAJECTORY_AXES
 from app.utils.failures import is_contaminated
 
-SCHEMA_VERSION = 20  # v20: the model's own deliberation is captured, and the
+SCHEMA_VERSION = 21  # v21: the loop axis is badged again, from the
+# deterministic counter (SPA-89) — the one axis whose reliability costs no human
+# annotation — and the gate, not a hardcoded set, decides whether it is weighed;
+# the anchor κ stops reading a judge that never scored the axis as a "no loop" vote
+# v20: the model's own deliberation is captured, and the
 # effort panel separates the tokens spent thinking from the tokens spent writing
 # (SPA-114) — they were one number, so a reasoning model read as expensive and
 # shallow at once
@@ -215,37 +219,58 @@ def _run_steps(rec) -> Optional[float]:
     return float(st) if st is not None else None
 
 
-# The judge loop_detection axis is retired from the trajectory aggregate (v11): it is
-# unreliable vs humans (κ≈0, SPA-76) and SPA-76 promises quarantined axes are "not
-# weighed in conclusions" — yet the stored overall_score averaged it in (trajectory.py
-# overall = mean of all 6 axes). The deterministic loop counter (SPA-75) carries the
-# loop signal instead.
-_AGG_EXCLUDED_AXES = {"loop_detection"}
+# There is deliberately no _AGG_EXCLUDED_AXES here any more (SPA-89). v11 named the
+# loop axis out of the aggregate as a stand-in for a gate that did not exist yet;
+# since SPA-88 the gate acts, so a permanent exception is a second, contradictory
+# rule — and it also kept the loop axis from ever reaching its own calibration
+# source in _axis_reliability below.
 
 
 def _traj_score(
     rec, stored: Optional[float], *, allowed: Optional[frozenset[str]] = None
 ) -> Optional[float]:
-    """Trajectory aggregate EXCLUDING the quarantined loop_detection axis (v11).
-    Recompute the mean from the stored per-axis scores; fall back to the stored
-    6-axis overall when the per-axis breakdown is unavailable.
+    """Trajectory aggregate over the axes the judge actually scored.
+
+    Recomputed from the stored per-axis scores; falls back to the stored overall
+    when the per-axis breakdown is unavailable.
 
     ``allowed`` restricts the mean to a set of axis keys (SPA-88, the trusted
-    view). With a restriction in force there is no fallback to ``stored``: the
-    stored overall averages every axis, including the ones the gate just removed,
-    so returning it would smuggle them back in under a trusted label."""
+    view) — since SPA-89 that restriction is the ONLY thing that removes an axis
+    here, so "this axis is not trustworthy" is a verdict the gate reaches on the
+    data rather than a property this function asserts. With a restriction in force
+    there is no fallback to ``stored``: the stored overall averages every axis,
+    including the ones the gate just removed, so returning it would smuggle them
+    back in under a trusted label."""
     axes = (getattr(rec, "trajectory_profile", None) or {}).get("axes") if rec is not None else None
     if axes:
         vals = [
             float(a["score"])
             for a in axes
-            if a.get("key") not in _AGG_EXCLUDED_AXES
-            and (allowed is None or a.get("key") in allowed)
+            if (allowed is None or a.get("key") in allowed)
             and a.get("score") is not None
         ]
         if vals:
             return sum(vals) / len(vals)
     return None if allowed is not None else stored
+
+
+def _judge_loop_verdict(tprof: dict) -> Optional[bool]:
+    """The E-07 judge's loop verdict on one run, or ``None`` if it never gave one.
+
+    ``None`` covers both shapes of silence: the loop axis missing from the profile,
+    and the judge marking it not_applicable (score ``None``). The derived
+    ``loop_detected`` flag cannot carry that distinction — it is False for "the
+    judge looked and saw no loop" AND for "the judge never looked" — so reading it
+    straight into a judge↔counter agreement table counts silence as agreement.
+    Measured on the corpus the anchor was validated against, that convention was
+    worth κ 0.328 instead of 0.276: it moves the number toward more agreement than
+    was earned, and since SPA-88 the badge ACTS on it (SPA-89)."""
+    for a in tprof.get("axes") or []:
+        if a.get("key") == "loop_detection":
+            if a.get("score") is None:
+                return None
+            return bool(tprof.get("loop_detected"))
+    return None
 
 
 def _trusted_weighted(rec, allowed: frozenset[str]) -> Optional[float]:
@@ -284,7 +309,10 @@ def _binary_kappa(both_yes: int, a_only: int, b_only: int, both_no: int) -> Opti
     pe = p_a_yes * p_b_yes + (1 - p_a_yes) * (1 - p_b_yes)
     if pe >= 1.0:
         return None
-    return round((po - pe) / (1 - pe), 4)
+    # `+ 0.0` normalizes IEEE negative zero: po == pe is exactly chance agreement,
+    # and it renders as "-0.00" in the report, which reads as a judge doing slightly
+    # WORSE than chance rather than exactly as well.
+    return round((po - pe) / (1 - pe), 4) + 0.0
 
 
 # --- SPA-76 reliability gate ------------------------------------------------ #
@@ -309,6 +337,7 @@ RELIABILITY_RANK_RHO = 0.5
 TRUST_RELIABLE_ABSOLUTE = "reliable_absolute"  # numeric aggregates + absolute claims
 TRUST_MODERATE = "moderate_agreement"          # numeric aggregates, flagged
 TRUST_RANK_ONLY = "rank_only"                  # rank / paired comparisons ONLY
+TRUST_BINARY_ONLY = "binary_only"              # one dichotomy ONLY — never a score
 TRUST_INSUFFICIENT = "insufficient"            # nothing — too few pairs, or κ undefined
 TRUST_UNRELIABLE = "unreliable"                # nothing — the judge disagrees
 TRUST_NOT_CALIBRATED = "not_calibrated"        # nothing — unknown, not known-bad
@@ -321,25 +350,50 @@ TRUST_NOT_CALIBRATED = "not_calibrated"        # nothing — unknown, not known-
 # read ranks and only ranks: today that is its own Mann-Whitney row. Note that
 # "combine several rank_only axes into one score" is NOT such a method, however
 # the combination is done, unless it is done on ranks.
+# 'binary_only' is in NEITHER, and that is the whole point of the status: the loop
+# anchor compares two BOOLEANS (did the run loop?), so however well they agree it
+# can certify only that dichotomy. The judge's underlying 0-10 loop score is free
+# to be anything within each side of the threshold — a perfect binary κ is
+# compatible with the judge scoring 0 where a human would score 4 — so admitting
+# such an axis to a mean, or even to a rank test on that score, would certify a
+# magnitude on evidence that never looked at magnitudes (SPA-89).
 NUMERIC_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE})
 RANK_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE, TRUST_RANK_ONLY})
 
 
 def _classify_reliability(
-    kappa: Optional[float], n: int, *, has_source: bool, rho: Optional[float] = None
+    kappa: Optional[float],
+    n: int,
+    *,
+    has_source: bool,
+    rho: Optional[float] = None,
+    binary_evidence: bool = False,
 ) -> str:
-    """Bucket a judged axis into the six-way trust taxonomy (SPA-88).
+    """Bucket a judged axis into the trust taxonomy (SPA-88, +binary_only SPA-89).
 
     No calibration source → 'not_calibrated' (unknown, not known-bad). A live
     source with too few pairs or an undefined κ → 'insufficient' — which is a
     different claim from 'the judge half-agrees', and used to be indistinguishable
     from it. Otherwise threshold on κ, with one rescue: κ below the bar but ranks
     agreeing (Spearman ρ ≥ RELIABILITY_RANK_RHO) → 'rank_only', a scale-shifted
-    judge, trustworthy for ordering and for nothing else."""
+    judge, trustworthy for ordering and for nothing else.
+
+    ``binary_evidence`` says the reference is a BOOLEAN, not a graded rating — today
+    only the structural loop anchor. Agreement on a dichotomy, at any κ, licenses
+    that dichotomy and nothing more, so it caps at 'binary_only' rather than
+    climbing into the zones that admit an axis to a mean or a rank test."""
     if not has_source:
         return TRUST_NOT_CALIBRATED
     if kappa is None or n < MIN_SAMPLES:
         return TRUST_INSUFFICIENT
+    if binary_evidence:
+        # Below the bar the raters do not even agree on the dichotomy; above it they
+        # agree on the dichotomy and on nothing else. There is no ρ to rescue with.
+        return (
+            TRUST_BINARY_ONLY
+            if kappa >= RELIABILITY_DIRECTIONAL_KAPPA
+            else TRUST_UNRELIABLE
+        )
     if kappa >= RELIABILITY_RELIABLE_KAPPA:
         return TRUST_RELIABLE_ABSOLUTE
     if kappa >= RELIABILITY_DIRECTIONAL_KAPPA:
@@ -366,6 +420,7 @@ def _trust_split(reliability: dict) -> tuple[frozenset[str], frozenset[str], dic
             "name": ax.get("name") or key,
             "status": status,
             "source": ax.get("source"),
+            "evidence": ax.get("evidence") or "graded",
             "kappa": ax.get("kappa"),
             "kappa_ci": ax.get("kappa_ci"),
             "rho": ax.get("rho"),
@@ -403,7 +458,13 @@ def _axis_reliability(
     anchor; everything else with no source is an honest 'not_calibrated'. (A future
     hook: back off to the workspace-global E-17 calibration when the per-experiment
     human sample is thin — skipped in v1 as the current global snapshot predates the
-    trajectory-axis fold-in.)"""
+    trajectory-axis fold-in.)
+
+    The structural fallback is what makes the loop axis different in kind from the
+    other five: they stay 'not_calibrated' until somebody rates runs by hand, while
+    this one is measured on every experiment for free. Between v11 and SPA-89 the
+    branch was unreachable — the loop axis was skipped before it could be badged —
+    so the sentence above described a mechanism that never ran."""
     human_dims: dict[str, dict] = {}
     if isinstance(calibration, dict) and calibration.get("available"):
         for d in calibration.get("dimensions") or []:
@@ -412,20 +473,25 @@ def _axis_reliability(
 
     struct_kappa = None
     struct_n = 0
-    if isinstance(loop_detection, dict) and loop_detection.get("structural_available"):
+    struct_source = bool(
+        isinstance(loop_detection, dict) and loop_detection.get("structural_available")
+    )
+    if struct_source:
         struct_kappa = loop_detection.get("kappa")
         struct_n = int(loop_detection.get("n_structural") or 0)
 
     axes_out: dict[str, dict] = {}
     any_source = False
     for key, name, _desc in TRAJECTORY_AXES:
-        if key in _AGG_EXCLUDED_AXES:
-            continue  # v11: loop axis retired — its κ no longer badges a displayed axis
         label = axis_labels.get(key) or name
         hd = human_dims.get(key)
         h_n = int(hd.get("n") or 0) if hd else 0
         h_kappa = hd.get("cohen_kappa") if hd else None
-        struct_ok = key == "loop_detection" and struct_n > 0
+        # The source EXISTS as soon as the counter ran, whatever it yielded. Gating
+        # on struct_n > 0 conflated "the anchor produced no comparable pairs — the
+        # judge never scored this axis" with "nobody has ever checked this axis",
+        # and those call for opposite actions: fix the judge vs go and annotate.
+        struct_ok = key == "loop_detection" and struct_source
 
         h_kappa_ci = hd.get("cohen_kappa_ci") if hd else None
         if hd is not None and h_n >= MIN_SAMPLES:
@@ -434,25 +500,36 @@ def _axis_reliability(
             source, kappa, n, kappa_ci = "structural", struct_kappa, struct_n, None
         elif hd is not None:  # human source exists but too few pairs
             source, kappa, n, kappa_ci = "human", h_kappa, h_n, h_kappa_ci
-        elif struct_ok:  # structural ran but very few runs
+        elif struct_ok:  # the counter ran, but on too few paired runs — or none
             source, kappa, n, kappa_ci = "structural", struct_kappa, struct_n, None
         else:
             source, kappa, n, kappa_ci = "none", None, 0, None
 
         # Rank correlation only exists for the human source (the structural loop
-        # anchor is binary — no meaningful per-run ordering to correlate).
+        # anchor is binary — no meaningful per-run ordering to correlate). So a
+        # structurally-sourced axis can never be rank-rescued into 'rank_only':
+        # with rho None, _classify_reliability has nothing to rescue it with, and a
+        # low structural κ lands on 'unreliable' with no second chance.
         rho = hd.get("spearman") if source == "human" and hd is not None else None
         has_source = source != "none"
         any_source = any_source or has_source
+        # What the reference actually measured. The counter answers one yes/no
+        # question; a human rates the same 0-10 scale the judge does. Carried on the
+        # row because it decides what the badge may certify, not just how good it is.
+        evidence = "binary" if source == "structural" else "graded"
         axes_out[key] = {
             "key": key,
             "name": label,
             "source": source,
+            "evidence": evidence,
             "kappa": kappa,
             "kappa_ci": kappa_ci,
             "rho": rho,
             "n": n,
-            "status": _classify_reliability(kappa, n, has_source=has_source, rho=rho),
+            "status": _classify_reliability(
+                kappa, n, has_source=has_source, rho=rho,
+                binary_evidence=(evidence == "binary"),
+            ),
         }
 
     return {
@@ -1161,8 +1238,6 @@ def build_report(
             key, score = ax.get("key"), ax.get("score")
             if key is None or score is None:
                 continue
-            if key in _AGG_EXCLUDED_AXES:
-                continue  # v11: judge loop axis retired from the heatmap/radar (SPA-76)
             if key not in axis_order:
                 axis_order.append(key)
                 axis_labels[key] = ax.get("name") or key
@@ -1174,8 +1249,9 @@ def build_report(
             vals = axis_samples.get(key, {}).get(ax_key) or []
             cells[ax_key] = {"mean": _mean(vals), "std": _std(vals), "n": len(vals)}
         # Success-only, consistent with the per-axis cells (success_runs) and the
-        # Summary "trajectory" column — see the weighted_score note above. v11: the
-        # aggregate excludes the retired loop axis (_traj_score).
+        # Summary "trajectory" column — see the weighted_score note above. Every
+        # axis the judge scored is in the mean; the gate removes the untrustworthy
+        # ones in the trusted view, which is where that removal belongs (SPA-89).
         overall = [
             _traj_score(records_by_task.get(r.task_id), r.trajectory_score)
             for r in by_config[key]
@@ -1212,12 +1288,20 @@ def build_report(
     # vs n_counter_only (counter found a repetition the judge missed — often in the
     # trimmed-away middle steps), plus Cohen's κ (chance-corrected) so a high
     # base-rate agreement doesn't masquerade as concordance.
+    # A run enters the 2×2 only when BOTH raters answered. The judge's silence — the
+    # loop axis absent or marked not_applicable — is not a "no loop" vote, and
+    # counting it as one inflated the anchor κ in the direction of false trust
+    # (_judge_loop_verdict, SPA-89). Those runs are counted as n_judge_unscored and
+    # named, rather than dropped quietly: the counter still ran on them, so
+    # structural_loop_rate keeps its own, wider denominator.
     loop_per_config = []
     any_loop = False
     any_structural = False
     tot_both_loop = tot_judge_only = tot_counter_only = tot_both_clean = 0
+    tot_judge_unscored = 0
     for key in sorted(configs):
         n_scored = 0
+        n_judge_scored = 0
         n_loop = 0
         n_struct = 0
         n_struct_loop = 0
@@ -1229,9 +1313,11 @@ def build_report(
                 continue
             n_scored += 1
             any_loop = True
-            llm_loop = bool(tprof.get("loop_detected"))
-            if llm_loop:
-                n_loop += 1
+            llm_loop = _judge_loop_verdict(tprof)
+            if llm_loop is not None:
+                n_judge_scored += 1
+                if llm_loop:
+                    n_loop += 1
             la = tprof.get("loop_analysis")
             if isinstance(la, dict):
                 any_structural = True
@@ -1239,6 +1325,8 @@ def build_report(
                 struct_loop = bool(la.get("loop_detected"))
                 if struct_loop:
                     n_struct_loop += 1
+                if llm_loop is None:
+                    continue  # no judge verdict — nothing to agree or disagree with
                 if struct_loop and llm_loop:
                     both_loop += 1
                 elif llm_loop:
@@ -1251,20 +1339,26 @@ def build_report(
         tot_judge_only += judge_only
         tot_counter_only += counter_only
         tot_both_clean += both_clean
+        n_judge_unscored = n_scored - n_judge_scored
+        tot_judge_unscored += n_judge_unscored
+        n_paired = both_loop + judge_only + counter_only + both_clean
         n_agree = both_loop + both_clean
         loop_per_config.append(
             {
                 "config_key": key,
                 "label": labels.get(key, key),
                 "n_scored": n_scored,
+                "n_judge_scored": n_judge_scored,
+                "n_judge_unscored": n_judge_unscored,
                 "n_loop": n_loop,
-                "loop_rate": round(n_loop / n_scored, 4) if n_scored else None,
+                "loop_rate": round(n_loop / n_judge_scored, 4) if n_judge_scored else None,
                 "n_structural": n_struct,
                 "n_structural_loop": n_struct_loop,
                 "structural_loop_rate": round(n_struct_loop / n_struct, 4) if n_struct else None,
+                "n_paired": n_paired,
                 "n_judge_only": judge_only,
                 "n_counter_only": counter_only,
-                "agreement": round(n_agree / n_struct, 4) if n_struct else None,
+                "agreement": round(n_agree / n_paired, 4) if n_paired else None,
                 "kappa": _binary_kappa(both_loop, judge_only, counter_only, both_clean),
             }
         )
@@ -1276,7 +1370,10 @@ def build_report(
         "kappa": _binary_kappa(tot_both_loop, tot_judge_only, tot_counter_only, tot_both_clean),
         "n_judge_only": tot_judge_only,
         "n_counter_only": tot_counter_only,
+        # n_structural is the κ's n: runs BOTH raters answered on. n_judge_unscored
+        # is what the old convention silently folded into "both clean".
         "n_structural": tot_struct,
+        "n_judge_unscored": tot_judge_unscored,
         "per_config": loop_per_config,
     }
     # SPA-76: per-axis reliability gate — badge each E-07 trajectory axis by how far

@@ -1725,19 +1725,30 @@ export interface ConfigDrift {
 // 'rank_only' is a scale-shifted judge — ordering only, never a mean; the rest
 // carry nothing. 'insufficient' (too few pairs) and 'unreliable' (the judge
 // disagrees) used to be the same amber light, and they are not the same claim.
+// SPA-89 adds 'binary_only': the reference itself was a BOOLEAN (the loop counter
+// says looped / did not), so however well the two agree, the agreement is about a
+// dichotomy. The judge's 0-10 score on that axis is unconstrained within each side
+// of the threshold, so such an axis drives neither a mean nor a rank test — only
+// the binary loop rate it was actually measured against.
 export type AxisTrustStatus =
   | 'reliable_absolute'
   | 'moderate_agreement'
   | 'rank_only'
+  | 'binary_only'
   | 'insufficient'
   | 'unreliable'
   | 'not_calibrated'
+
+/** What the reference measured, which decides what the badge may certify —
+ *  not how good the agreement was. 'binary' today means the loop anchor. */
+export type AxisEvidence = 'graded' | 'binary'
 
 export interface ExperimentTrustAxis {
   key: string
   name: string
   status: AxisTrustStatus
   source?: string | null
+  evidence?: AxisEvidence
   kappa?: number | null
   /** The gate classifies by the point estimate; the interval says how firmly.
    *  Carried, not acted on — where the cut-offs sit was decided in SPA-88. */
@@ -2011,6 +2022,11 @@ export interface ExperimentReport {
   // oriented lower bound) next to the judge rate. The two see different inputs/
   // scopes, so we surface the DIRECTIONAL split (judge-only vs counter-only) +
   // Cohen's κ, not just a symmetric agreement %.
+  // SPA-89: a run enters the κ table only when BOTH raters answered. The judge's
+  // silence — the loop axis absent or marked not applicable — is not a "no loop"
+  // vote; n_judge_unscored counts what used to be folded into the both-clean cell.
+  // n_structural is therefore the κ's n (runs both answered), while the per-config
+  // structural_loop_rate keeps its own wider denominator: the counter ran anyway.
   loop_detection?: {
     available: boolean
     structural_available?: boolean
@@ -2019,15 +2035,19 @@ export interface ExperimentReport {
     n_judge_only?: number
     n_counter_only?: number
     n_structural?: number
+    n_judge_unscored?: number
     per_config: {
       config_key: string
       label: string
       n_scored: number
+      n_judge_scored?: number
+      n_judge_unscored?: number
       n_loop: number
       loop_rate?: number | null
       n_structural?: number
       n_structural_loop?: number
       structural_loop_rate?: number | null
+      n_paired?: number
       n_judge_only?: number
       n_counter_only?: number
       agreement?: number | null
@@ -2051,6 +2071,9 @@ export interface ExperimentReport {
         key: string
         name: string
         source: 'human' | 'structural' | 'none'
+        /** Graded (a human rated the same 0-10 scale) vs binary (the loop counter
+         *  answered one yes/no question). Caps what the badge can certify. */
+        evidence?: AxisEvidence
         kappa?: number | null
         /** How firmly the point estimate stands where the gate reads it. */
         kappa_ci?: KappaCI | null
