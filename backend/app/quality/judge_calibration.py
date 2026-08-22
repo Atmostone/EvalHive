@@ -147,7 +147,21 @@ async def collect_judge_human_pairs(
             return []
         q = q.where(Annotation.task_id.in_(ids))
     rows = (await db.execute(q)).all()
+    return pairs_from_rows(rows)
 
+
+def pairs_from_rows(rows) -> list[dict]:
+    """The shaping half of :func:`collect_judge_human_pairs`, with no database.
+
+    Split out for SPA-90: a reproduction bundle has to recompute E-17 offline, and
+    it must do so through THIS function rather than a copy — a recompute that
+    reimplements the frozen/live/unscored rules proves the recompute works, not the
+    platform. Same shape as ``compute_report`` (I/O) around ``build_report`` (pure),
+    one module over.
+
+    ``rows`` are ``(Annotation, QualityRecord)`` pairs already narrowed to the
+    current, human-typed annotations — the two SQL predicates stay in SQL, and the
+    bundle records which rows the database chose rather than re-deriving them."""
     out: list[dict] = []
     for ann, record in rows:
         # Only a pre-ledger row may be completed from a live profile. For every

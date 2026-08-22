@@ -867,6 +867,16 @@ export const experimentsApi = {
     if (!res.ok) throw new ApiError(res.status, await res.text())
     return res.blob()
   },
+  // SPA-90 reproduction bundle: rows, profiles, typed annotations and the MinIO
+  // record archives, plus the report frozen as an expectation. Verified as it is
+  // built, so a 409 means the platform and the offline recompute disagreed and
+  // nothing was written. Agent traces are CLI-only — see the manifest.
+  bundle: async (id: string): Promise<Blob> => {
+    const headers = { ...(authHeaders() as Record<string, string>) }
+    const res = await fetch(`${BASE}/experiments/${id}/bundle`, { headers })
+    if (!res.ok) throw new ApiError(res.status, await res.text())
+    return res.blob()
+  },
 }
 
 // E-01 Data Lake — immutable execution-record corpus

@@ -11,7 +11,12 @@ services:
       - spawnhive-net
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        # Stamps the commit into the image so a reproduction bundle can name the
+        # checkout that produced it: GIT_SHA=$(git rev-parse HEAD) docker compose build api
+        GIT_SHA: ${GIT_SHA:-}
     expose:
       - "8000"
     volumes:

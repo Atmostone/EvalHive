@@ -34,9 +34,11 @@ from app.models.task import Task
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality import experiments as service
+from app.quality.bundle import BundleIncomplete, BundleMismatch, build_bundle, write_tar
 from app.quality.experiment_report import (
     SCHEMA_VERSION as REPORT_SCHEMA_VERSION,
     SELECTION_LATEST_VALID as REPORT_SELECTION_DEFAULT,
+    SELECTION_POLICIES,
     calibration_fingerprint,
     compute_report,
     config_drift,
@@ -715,6 +717,50 @@ async def clone_experiment(
         await db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "experiment name already exists")
     return serialize(clone)
+
+
+@router.get("/{experiment_id}/bundle")
+async def export_bundle(
+    experiment_id: str,
+    selection: str = Query(REPORT_SELECTION_DEFAULT),
+    method: str = Query("bt", pattern="^(bt|elo)$"),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    """A frozen reproduction bundle (SPA-90) — the archive a reader recomputes from.
+
+    Rows, profiles, typed annotations and the MinIO **record** archives, plus the
+    report frozen as an expectation. Agent log archives are CLI-only
+    (`--with-traces`): they are the bulk of the object store and no number depends
+    on them, so streaming them through HTTP would trade the whole point of the
+    endpoint — one click — for bytes nobody asked for. The manifest says which tier
+    is inside either way.
+
+    The bundle is verified as it is built: if the offline recompute disagrees with
+    this platform, nothing is written and the call fails, because a bundle that does
+    not already reproduce is a claim rather than an artifact."""
+    if selection not in SELECTION_POLICIES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown selection: {selection}")
+    exp = await _get_scoped(experiment_id, workspace, db)
+    try:
+        files, _manifest = await build_bundle(db, exp, selection=selection, method=method)
+    except BundleMismatch as e:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{e}; differing paths: {'; '.join(e.diff[:5])}",
+        )
+    except BundleIncomplete as e:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{e}: {'; '.join(e.missing[:5])}",
+        )
+    return StreamingResponse(
+        iter([write_tar(files)]),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="bundle-{exp.id}.tar.gz"'
+        },
+    )
 
 
 @router.get("/{experiment_id}/export")
