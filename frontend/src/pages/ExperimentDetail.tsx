@@ -2222,6 +2222,31 @@ export default function ExperimentDetail() {
     },
   })
 
+  // SPA-90: the archive an outside reader recomputes the numbers from. Built and
+  // VERIFIED server-side — a 409 means the offline recompute disagreed with this
+  // stand, in which case nothing was written and there is a real defect to chase.
+  const [bundling, setBundling] = useState(false)
+  const downloadBundle = async () => {
+    setBundling(true)
+    try {
+      const blob = await experimentsApi.bundle(id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `bundle-${id}.tar.gz`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      alert(
+        `Could not build the bundle: ${e instanceof Error ? e.message : String(e)}\n\n` +
+        `A bundle is only written when its numbers already reproduce, so this is a ` +
+        `failed check rather than a failed download.`
+      )
+    } finally {
+      setBundling(false)
+    }
+  }
+
   const download = async (format: 'csv' | 'json') => {
     const blob = await experimentsApi.export(id, format)
     const url = URL.createObjectURL(blob)
@@ -2308,6 +2333,22 @@ export default function ExperimentDetail() {
             className="flex items-center gap-1.5 px-3 py-2 border rounded-lg hover:bg-gray-50 text-sm">
             <Download className="h-4 w-4" /> JSON
           </button>
+          {isTerminal && (
+            <button onClick={downloadBundle} disabled={bundling}
+              title={
+                'Reproduction bundle (.tar.gz): run rows, judge profiles, typed annotations and ' +
+                'the archived quality records, plus this report frozen as an expected result with ' +
+                'its hash. Recompute it offline with: python -m app.cli.bundle verify --bundle <file> ' +
+                '— no database, no provider calls. The bundle is verified as it is built, so one ' +
+                'that downloads is one whose numbers already reproduced. Agent traces are excluded ' +
+                '(they are the bulk of the object store and no number depends on them) — export with ' +
+                '--with-traces from the CLI to include them. Best-effort INPUT replay: template ' +
+                'versions, provider endpoints and image digests are not pinned; the manifest says so.'
+              }
+              className="flex items-center gap-1.5 px-3 py-2 border rounded-lg hover:bg-gray-50 text-sm disabled:opacity-50">
+              <Download className="h-4 w-4" /> {bundling ? 'Building…' : 'Bundle'}
+            </button>
+          )}
           {detail.status !== 'running' && (
             <button onClick={() => { if (confirm('Delete this experiment? This cannot be undone.')) deleteMutation.mutate() }}
               title="Delete experiment"

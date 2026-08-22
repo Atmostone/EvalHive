@@ -143,6 +143,7 @@ const GROUPS: Group[] = [
   {
     title: 'Calibration & trust',
     terms: [
+      { name: 'The reproduction bundle', desc: "One archive per experiment holding the run rows, judge profiles, human ratings and archived records, plus the report frozen as an expected result with its hash — so anyone can recompute the numbers offline instead of trusting a database they cannot see. It pins the inputs the platform recorded, not the whole world: template versions, provider endpoints and image digests are not pinned, and the manifest says so." },
       { name: 'The human ratings', desc: "A person's per-dimension ratings plus an approve/reject verdict on a run — the ground-truth oracle used to calibrate the judges." },
       { name: 'Judge-vs-human calibration', desc: 'Compares judge scores to human ratings per axis (Pearson, Spearman, Cohen’s κ); an axis counts as reliable at κ ≥ 0.6.' },
       { name: 'Checker-vs-human agreement', desc: 'Pairs the executable checker’s pass/fail with the human approve/reject verdict — showing that even the "ground-truth" checker disagrees with the human gold sometimes (over-credits and false-negatives).' },
