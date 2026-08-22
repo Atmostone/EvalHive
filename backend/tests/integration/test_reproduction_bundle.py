@@ -109,7 +109,8 @@ async def test_a_bundle_recomputes_the_platform_s_own_numbers(auth_client, db_se
     assert "provider_endpoints" in manifest["replay"]["not_pinned"]
 
     result = B.verify_bundle(files)
-    assert result["reproduced"] is True, result["headline_diffs"]
+    assert result["ok"] is True, (result["headline_diffs"], result["blob_problems"])
+    assert result["reproduced"] is True and result["complete"] is True
     assert result["full_report_matches"] is True
     assert result["report_schema_version"]["bundle"] == result["report_schema_version"]["checkout"]
 
@@ -121,7 +122,7 @@ async def test_verification_survives_a_round_trip_through_the_archive(auth_clien
     files, _ = await B.build_bundle(db_session, exp, selection="latest_valid")
 
     blob = B.write_tar(files)
-    assert B.verify_bundle(B.read_tar(blob))["reproduced"] is True
+    assert B.verify_bundle(B.read_tar(blob))["ok"] is True
     # Deterministic on the wire, so a re-export is not mistaken for a change.
     assert B.write_tar(files) == blob
 
@@ -190,7 +191,7 @@ async def test_the_endpoint_streams_an_archive_that_verifies(auth_client, db_ses
     assert f"bundle-{exp.id}.tar.gz" in r.headers["content-disposition"]
 
     files = B.read_tar(r.content)
-    assert B.verify_bundle(files)["reproduced"] is True
+    assert B.verify_bundle(files)["ok"] is True
     manifest = json.loads(files[B.MANIFEST_NAME])
     # Traces are CLI-only, and the manifest says so rather than leaving their
     # absence to be read as "this experiment had none".
@@ -215,3 +216,43 @@ async def test_the_bundle_is_scoped_to_its_workspace(auth_client, db_session):
 
     r = await auth_client.get(f"/api/experiments/{uuid.uuid4()}/bundle")
     assert r.status_code == 404
+
+
+async def test_losing_the_object_store_is_not_a_reproduced_bundle(auth_client, db_session):
+    """The failure SPA-90 was written for, spelled out. Every number in the report
+    recomputes from Postgres alone, so an archive that shipped without its record
+    blobs still says `reproduced: true` — and would have passed as an artifact that
+    demonstrably cannot survive the loss it is meant to insure against. `ok` is the
+    verdict; `reproduced` alone is only half of one."""
+    exp = await _settled_experiment(auth_client, db_session, judged=True)
+    files, manifest = await B.build_bundle(db_session, exp, selection="latest_valid")
+    assert manifest["counts"]["expected_record_blobs"] == manifest["counts"]["record_blobs"] > 0
+
+    stripped = {k: v for k, v in files.items() if not k.startswith(B.RECORD_BLOB_DIR)}
+    result = B.verify_bundle(stripped)
+    assert result["reproduced"] is True   # the arithmetic is untouched...
+    assert result["complete"] is False    # ...and the evidence behind it is gone
+    assert result["ok"] is False
+    assert any("missing from the archive" in p for p in result["blob_problems"])
+
+
+async def test_the_bundle_carries_the_report_it_expects(auth_client, db_session):
+    """Stored, not just hashed: a digest can say THAT something moved, only the
+    report can say where. It also lets a reader see the expected numbers without
+    running anything."""
+    exp = await _settled_experiment(auth_client, db_session, judged=True)
+    files, _ = await B.build_bundle(db_session, exp, selection="latest_valid")
+
+    expected = json.loads(files[B.EXPECTED_NAME])
+    assert isinstance(expected["report"], dict)
+    assert "generated_at" not in expected["report"]
+    assert B.sha256_of(expected["report"]) == expected["full_report_sha256"]
+
+    # a drift OUTSIDE the headline: the contract holds, the tripwire names the path
+    expected["report"]["leaderboard"] = {"method": "moved"}
+    expected["full_report_sha256"] = "0" * 64
+    files[B.EXPECTED_NAME] = json.dumps(expected).encode()
+    result = B.verify_bundle(files)
+    assert result["reproduced"] is True
+    assert result["full_report_matches"] is False
+    assert any(p.startswith("leaderboard") for p in result["full_report_diff"])

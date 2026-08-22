@@ -178,3 +178,89 @@ def test_the_database_s_calibration_choice_is_carried_not_re_derived():
     rec = QualityRecord()
     pairs = B.annotation_rows(rows, selected, {keep.task_id: rec})
     assert [a.id for a, _ in pairs] == [keep.id]
+
+
+# --- the archive has to be whole, not merely arithmetically correct ----------- #
+
+
+def test_a_record_archive_that_cannot_be_read_aborts_the_export(monkeypatch):
+    """Fail-closed. Losing the object store is the failure this whole feature
+    exists for — and every number recomputes from Postgres alone, so an export
+    that logged the loss and carried on would ship the one artifact that cannot
+    survive it, and that artifact would verify clean."""
+    rec = QualityRecord()
+    rec.task_id = uuid.uuid4()
+    rec.record_s3_path = "data-lake/ws/task.json"
+
+    def _boom(_path):
+        raise RuntimeError("NoSuchKey")
+
+    monkeypatch.setattr(
+        "app.storage.minio_client.read_quality_record", _boom, raising=True
+    )
+    with pytest.raises(B.BundleIncomplete) as e:
+        B._fetch_blobs([rec], {}, with_traces=False)
+    assert "refusing to export" in str(e.value)
+    assert any("NoSuchKey" in m for m in e.value.missing)
+
+
+def test_a_missing_or_altered_blob_is_caught_by_the_manifest_index():
+    """`reproduced` and `complete` are different claims, and only `ok` is the
+    verdict — otherwise a caller reads the first and ships a bundle whose evidence
+    is gone."""
+    files = {f"{B.RECORD_BLOB_DIR}/a.json": b'{"x":1}'}
+    manifest = {
+        "blobs": B.blob_digests(files),
+        "counts": {"expected_record_blobs": 1},
+    }
+    assert B.check_blobs(files, manifest) == []
+
+    corrupted = {f"{B.RECORD_BLOB_DIR}/a.json": b'{"x":2}'}
+    assert "recorded sha256" in B.check_blobs(corrupted, manifest)[0]
+
+    problems = B.check_blobs({}, manifest)
+    assert any("missing from the archive" in p for p in problems)
+    # ...and the count check catches a bundle whose index was emptied along with it
+    assert any("1 expected" in p for p in problems)
+
+
+def test_the_checkout_is_named_from_the_build_or_honestly_unknown(monkeypatch):
+    """The original implementation shelled out to git from a container with no git
+    binary and no work tree, so this field was null on every bundle ever made —
+    indistinguishable from «this one happens not to say»."""
+    monkeypatch.setenv("SPAWNHIVE_GIT_SHA", "deadbeef")
+    assert B.platform_identity() == {"git_sha": "deadbeef", "source": "build"}
+
+    monkeypatch.setenv("SPAWNHIVE_GIT_SHA", "")
+    monkeypatch.setattr(
+        "subprocess.run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError())
+    )
+    unknown = B.platform_identity()
+    assert unknown["git_sha"] is None
+    assert unknown["source"] == "unknown"
+    # Stated, not merely absent: six months on, «unpinned» and «nobody filled this
+    # in» call for different amounts of trust.
+    assert "not pinned" in unknown["note"]
+
+
+def test_the_full_report_diff_reaches_outside_the_headline():
+    """The promise is a key-path diff. Diffing the headline values against each
+    other could only ever describe headline drift — so a change anywhere else gave
+    a mismatch with an empty diff, which is a warning nobody can act on."""
+    report = {
+        "generated_at": "now", "schema_version": 21,
+        "calibration": {}, "axis_reliability": {}, "outcome_axis_reliability": {},
+        "rq2": {}, "judge_discrimination": {}, "summary": {}, "trusted": {},
+        "leaderboard": {"method": "bt"},   # not a headline metric
+    }
+    expected_report = B.canonical_report(report)
+    moved = {**report, "leaderboard": {"method": "elo"}}
+
+    # the headline is untouched, so the contract holds...
+    assert B.compare_headline(
+        B.headline_metrics(report), B.headline_metrics(moved)
+    ) == []
+    # ...and the tripwire names where it moved
+    assert B.diff_paths(expected_report, B.canonical_report(moved)) == [
+        "leaderboard.method: 'bt' → 'elo'"
+    ]

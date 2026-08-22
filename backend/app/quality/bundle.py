@@ -56,6 +56,19 @@ logger = logging.getLogger(__name__)
 BUNDLE_SCHEMA_VERSION = 1
 
 
+class BundleIncomplete(RuntimeError):
+    """A blob the bundle promises could not be read at export time.
+
+    Fail-closed, deliberately. The failure this whole feature exists for is losing
+    the object store, so an export that quietly shipped without the record archives
+    would hand back exactly the artifact that cannot survive that loss — and it
+    would still verify, because every number recomputes from Postgres alone."""
+
+    def __init__(self, message: str, missing: list[str] | None = None):
+        super().__init__(message)
+        self.missing = missing or []
+
+
 class BundleMismatch(RuntimeError):
     """The offline recompute disagreed with the platform at export time.
 
@@ -83,6 +96,12 @@ LOG_BLOB_DIR = "blobs/logs"
 
 # What this bundle promises, in the words it promises it. Carried in the manifest
 # rather than left to a README, so it travels with the data.
+_UNPINNED_NOTE = (
+    "the checkout that produced this bundle is not pinned — the image was built "
+    "without SPAWNHIVE_GIT_SHA. The report schema version still bounds which code "
+    "can read it, but it does not identify a commit."
+)
+
 REPLAY_KIND = "best_effort_input_replay"
 REPLAY_NOT_PINNED = (
     "template_versions",
@@ -400,25 +419,44 @@ def verify_bundle(files: dict[str, bytes]) -> dict:
         method=manifest.get("method", "bt"),
         selection=manifest["selection"],
     )
+    actual = canonical_report(report)
     actual_headline = headline_metrics(report)
     headline_diffs = compare_headline(expected.get("headline") or {}, actual_headline)
-    full_matches = sha256_of(canonical_report(report)) == expected.get("full_report_sha256")
+    full_matches = sha256_of(actual) == expected.get("full_report_sha256")
 
+    # The numbers reproducing and the evidence still being here are two different
+    # claims, and an archive that lost its record blobs would satisfy the first
+    # while failing the whole purpose of the second. `ok` is the single answer a
+    # caller should read, so neither half can be mistaken for the verdict.
+    blob_problems = check_blobs(files, manifest)
     result = {
+        "ok": bool(not headline_diffs and not blob_problems),
         "reproduced": not headline_diffs,
+        "complete": not blob_problems,
         "headline_diffs": headline_diffs,
+        "blob_problems": blob_problems,
         "full_report_matches": full_matches,
         "report_schema_version": {
             "bundle": expected.get("report_schema_version"),
             "checkout": REPORT_SCHEMA_VERSION,
         },
+        "platform": {
+            "bundle": manifest.get("platform"),
+            # No subprocess here: this function promises no I/O.
+            "checkout": platform_identity(allow_git=False),
+        },
         "replay": manifest.get("replay"),
         "coverage": manifest.get("coverage"),
     }
     if not full_matches:
-        exp_values = {k: v.get("value") for k, v in (expected.get("headline") or {}).items()}
-        act_values = {k: v.get("value") for k, v in actual_headline.items()}
-        result["full_report_diff"] = diff_paths(exp_values, act_values)
+        # Diffed against the CARRIED report, not against the headline values: a
+        # drift outside the headline used to yield a mismatch with an empty diff,
+        # which is a warning nobody can act on.
+        result["full_report_diff"] = (
+            diff_paths(expected["report"], actual)
+            if isinstance(expected.get("report"), dict)
+            else ["the bundle carries no expected report to diff against"]
+        )
     return result
 
 
@@ -647,6 +685,13 @@ async def build_bundle(
 
     expected = {
         "headline": headline_metrics(offline),
+        # The whole canonical report, not only its digest. A hash can say THAT
+        # something moved; only the report itself can say where — and the promised
+        # key-path diff was previously computed over the headline values alone, so
+        # a drift outside them produced a mismatch with an empty diff. It also makes
+        # the bundle self-describing: a reader sees the expected numbers without
+        # running anything.
+        "report": off_cmp,
         "full_report_sha256": sha256_of(off_cmp),
         "report_schema_version": REPORT_SCHEMA_VERSION,
     }
@@ -654,7 +699,7 @@ async def build_bundle(
         "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
         "report_schema_version": REPORT_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "platform_git_sha": _git_sha(),
+        "platform": platform_identity(),
         "experiment": {
             "id": str(exp.id),
             "name": exp_row.get("name"),
@@ -670,9 +715,17 @@ async def build_bundle(
             "annotations": len(off_annotations),
             "annotations_selected_for_calibration": len(off_selected),
             "record_blobs": sum(1 for k in blobs if k.startswith(RECORD_BLOB_DIR)),
+            # What a complete archive MUST hold, so a verifier can tell a bundle
+            # that shipped without its records from one whose records had none.
+            "expected_record_blobs": sum(1 for r in off_records if r.record_s3_path),
             "log_blobs": sum(1 for k in blobs if k.startswith(LOG_BLOB_DIR)),
         },
+        # sha256 per blob — the manifest is the integrity index, so losing or
+        # corrupting an archive is caught rather than assumed away.
+        "blobs": blob_digests(blobs),
         "blob_tiers": {
+            # A fact, not a constant: every record that had an archive has one here,
+            # because the export refuses to write a bundle where that is not true.
             "records": True,
             # Stated either way, so "no traces in this bundle" can never be read as
             # "this experiment had no traces".
@@ -718,20 +771,26 @@ async def build_bundle(
 def _fetch_blobs(records, tasks_by_id, *, with_traces: bool) -> dict[str, bytes]:
     """MinIO objects, keyed by their path inside the bundle.
 
-    Record archives always: they are the canonical record, and exactly the half a
-    Postgres dump loses. Agent logs only on request — they are the bulk, and no
-    number depends on them (the profiles are already stored)."""
+    Record archives are **mandatory**: they are the canonical record and exactly
+    the half a Postgres dump loses, so one that cannot be read aborts the export.
+    Logging and continuing would ship the one artifact that does not survive the
+    failure this feature was built for — and it would verify clean, because every
+    number recomputes from Postgres alone.
+
+    Agent logs are optional by construction (`--with-traces`), so a missing one is
+    a warning: no number depends on them, and the manifest counts what arrived."""
     from app.storage.minio_client import read_log_archive, read_quality_record
 
     blobs: dict[str, bytes] = {}
+    missing: list[str] = []
     for rec in records:
         if rec.record_s3_path:
             try:
                 blobs[f"{RECORD_BLOB_DIR}/{rec.task_id}.json"] = read_quality_record(
                     rec.record_s3_path
                 )
-            except Exception as e:  # a missing object is reported, never silent
-                logger.warning(f"record blob unreadable for task {rec.task_id}: {e}")
+            except Exception as e:
+                missing.append(f"{rec.record_s3_path} ({rec.task_id}): {e}")
         if with_traces:
             path = getattr(tasks_by_id.get(rec.task_id), "log_archive_s3_path", None)
             if path:
@@ -739,18 +798,80 @@ def _fetch_blobs(records, tasks_by_id, *, with_traces: bool) -> dict[str, bytes]
                     blobs[f"{LOG_BLOB_DIR}/{rec.task_id}.bin"] = read_log_archive(path)
                 except Exception as e:
                     logger.warning(f"log blob unreadable for task {rec.task_id}: {e}")
+    if missing:
+        raise BundleIncomplete(
+            f"{len(missing)} record archive(s) could not be read from the object "
+            "store; refusing to export a bundle that is already missing the half a "
+            "database dump loses",
+            missing,
+        )
     return blobs
 
 
-def _git_sha() -> str | None:
-    """The checkout that produced this bundle, when there is one to name."""
+def blob_digests(files: dict[str, bytes]) -> dict[str, str]:
+    """sha256 per blob, for the manifest's integrity index.
+
+    Not tamper-proofing — the index lives inside the archive a forger could also
+    edit. It detects LOSS and CORRUPTION, which is what actually happens to object
+    stores, and it is the difference between «the numbers recompute» and «the
+    evidence behind them is still here»."""
+    return {
+        name: hashlib.sha256(data).hexdigest()
+        for name, data in files.items()
+        if name.startswith(RECORD_BLOB_DIR) or name.startswith(LOG_BLOB_DIR)
+    }
+
+
+def check_blobs(files: dict[str, bytes], manifest: dict) -> list[str]:
+    """Every blob the manifest names, present and unchanged. Problems, in words."""
+    problems: list[str] = []
+    for name, digest in sorted((manifest.get("blobs") or {}).items()):
+        data = files.get(name)
+        if data is None:
+            problems.append(f"{name}: missing from the archive")
+        elif hashlib.sha256(data).hexdigest() != digest:
+            problems.append(f"{name}: content does not match its recorded sha256")
+    expected_records = (manifest.get("counts") or {}).get("expected_record_blobs")
+    present = sum(1 for k in files if k.startswith(RECORD_BLOB_DIR))
+    if expected_records is not None and present != expected_records:
+        problems.append(
+            f"record archives: {present} present, {expected_records} expected — the "
+            "canonical records are exactly what a database dump loses"
+        )
+    return problems
+
+
+def platform_identity(*, allow_git: bool = True) -> dict:
+    """Which checkout a reader has to recompute this bundle with.
+
+    Read from ``SPAWNHIVE_GIT_SHA`` (baked in at image build), NOT by shelling out
+    to git: the api image has no git binary and ``/app`` is not a work tree, so the
+    original ``git rev-parse`` returned None every single time — a field that was
+    always null and read as «this bundle happens not to say», when in fact it could
+    never say. The subprocess remains only as a fallback for running outside the
+    image, from an actual checkout.
+
+    When it is genuinely unknown, that is **stated**, because six months from now
+    «unpinned» and «nobody filled this in» call for different amounts of trust.
+
+    ``allow_git=False`` keeps the subprocess out — used by ``verify_bundle``, which
+    promises no I/O and has to mean it. Reading one environment variable does not
+    break that promise; forking a process would."""
+    import os
     import subprocess
 
+    sha = (os.environ.get("SPAWNHIVE_GIT_SHA") or "").strip()
+    if sha:
+        return {"git_sha": sha, "source": "build"}
+    if not allow_git:
+        return {"git_sha": None, "source": "unknown", "note": _UNPINNED_NOTE}
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=5, cwd="/app",
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5
         )
-        return out.stdout.strip() or None
+        sha = out.stdout.strip()
+        if sha:
+            return {"git_sha": sha, "source": "git"}
     except Exception:
-        return None
+        pass
+    return {"git_sha": None, "source": "unknown", "note": _UNPINNED_NOTE}

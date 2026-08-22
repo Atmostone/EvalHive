@@ -1066,12 +1066,26 @@ backup was a Postgres dump. Rows without the volume point into nothing.
   reload as **detached** instances (the pattern `select_runs` already uses for archived
   attempts). A hand-listed set drifts silently the first time a migration adds a column; a
   column this checkout does not know raises rather than being ignored.
-- **Verified as it is built.** Export computes the report both through `compute_report` and
-  through the offline path, from the *serialized* form, and refuses to write an archive if they
-  disagree. A bundle that does not already reproduce is a claim, not an artifact.
+- **Verified as it is built, and fails closed.** Export computes the report both through
+  `compute_report` and through the offline path, from the *serialized* form, and refuses to write
+  an archive if they disagree. A record archive that cannot be read from MinIO aborts the export
+  outright: every number recomputes from Postgres alone, so an export that logged the loss and
+  carried on would ship the one artifact that cannot survive the failure this feature was built
+  for — and it would verify clean.
+- **`ok`, not `reproduced`, is the verdict.** `reproduced` (the numbers) and `complete` (the
+  evidence behind them) are separate claims. `manifest.blobs` carries a sha256 per archived blob
+  and `counts.expected_record_blobs` how many a whole bundle must hold, so a lost or corrupted
+  archive is caught rather than assumed away. It is not tamper-proofing — the index lives inside
+  the archive — it detects what actually happens to object stores.
+- **The checkout is named from the image, not discovered at runtime.** `SPAWNHIVE_GIT_SHA` is
+  baked in via a Dockerfile `ARG` (`GIT_SHA=$(git rev-parse HEAD) docker compose build api`). The
+  first cut shelled out to `git rev-parse` inside a container that has no git binary and where
+  `/app` is not a work tree, so the field was null on every bundle ever produced — and read as
+  «this one happens not to say». When it is genuinely unknown the manifest says so in words.
 - **Two levels of «reproduced».** The named `headline` metrics are the contract — a mismatch
   fails. `full_report_sha256` over the whole canonical report is the tripwire — a mismatch warns
-  with a key-path diff. Without the first, a `SCHEMA_VERSION` bump would retroactively make every
+  with a key-path diff against `expected.report`, the canonical report the bundle stores rather
+  than only hashes: a digest can say *that* something moved, only the report can say where. Without the first, a `SCHEMA_VERSION` bump would retroactively make every
   old bundle unreproducible though no number moved; without the second, drift outside the named
   metrics would pass unseen. `generated_at` is the only wall-clock field in a report and the only
   thing dropped before hashing; the bootstrap already runs on a fixed seed.

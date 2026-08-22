@@ -41,6 +41,7 @@ from app.database import async_session
 from app.models.experiment import Experiment
 from app.quality.bundle import (
     MANIFEST_NAME,
+    BundleIncomplete,
     BundleMismatch,
     build_bundle,
     read_tar,
@@ -72,6 +73,9 @@ async def _export(args: argparse.Namespace) -> int:
         except BundleMismatch as e:
             _print({"error": str(e), "diff": e.diff})
             return 1
+        except BundleIncomplete as e:
+            _print({"error": str(e), "missing": e.missing})
+            return 1
 
     out = args.out or f"/tmp/bundle-{exp_id}.tar.gz"
     with open(out, "wb") as fh:
@@ -93,11 +97,37 @@ async def _verify(args: argparse.Namespace) -> int:
     if not result["reproduced"]:
         print("FAILED: a headline metric did not reproduce", file=sys.stderr)
         return 1
+    if not result["complete"]:
+        # The numbers recompute from Postgres alone, so this path is precisely the
+        # one that would otherwise pass after the object store was lost.
+        print(
+            "FAILED: the archive is not whole — "
+            + "; ".join(result["blob_problems"][:5]),
+            file=sys.stderr,
+        )
+        return 1
     if not result["full_report_matches"]:
         print(
             "WARNING: the headline reproduced, but the full report moved — most "
             "likely a report schema change rather than a number. See "
             "full_report_diff.",
+            file=sys.stderr,
+        )
+    # Recomputing with a different checkout is often exactly the point — «does this
+    # still hold on today's code?» — so a mismatch is stated, not failed. What must
+    # not happen is a reader assuming the two agreed.
+    bundle_sha = (result["platform"]["bundle"] or {}).get("git_sha")
+    here_sha = (result["platform"]["checkout"] or {}).get("git_sha")
+    if bundle_sha and here_sha and bundle_sha != here_sha:
+        print(
+            f"NOTE: recomputed on a different checkout — bundle {bundle_sha[:12]}, "
+            f"here {here_sha[:12]}. The numbers above still reproduced.",
+            file=sys.stderr,
+        )
+    elif not bundle_sha:
+        print(
+            "NOTE: this bundle does not name the checkout that produced it (its "
+            "image was built without GIT_SHA), so «same code» cannot be checked.",
             file=sys.stderr,
         )
     return 0

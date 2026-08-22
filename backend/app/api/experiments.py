@@ -34,7 +34,7 @@ from app.models.task import Task
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.quality import experiments as service
-from app.quality.bundle import BundleMismatch, build_bundle, write_tar
+from app.quality.bundle import BundleIncomplete, BundleMismatch, build_bundle, write_tar
 from app.quality.experiment_report import (
     SCHEMA_VERSION as REPORT_SCHEMA_VERSION,
     SELECTION_LATEST_VALID as REPORT_SELECTION_DEFAULT,
@@ -748,6 +748,11 @@ async def export_bundle(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"{e}; differing paths: {'; '.join(e.diff[:5])}",
+        )
+    except BundleIncomplete as e:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{e}: {'; '.join(e.missing[:5])}",
         )
     return StreamingResponse(
         iter([write_tar(files)]),

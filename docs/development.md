@@ -12,6 +12,17 @@ docker compose up -d
 docker compose exec api alembic upgrade head
 ```
 
+Building the api image with `GIT_SHA=$(git rev-parse HEAD) docker compose build api` stamps the
+commit into it, so a reproduction bundle (SPA-90) can name the checkout it must be recomputed
+with. Without it a bundle still exports, and its manifest says the checkout is unpinned rather
+than leaving the field silently empty:
+
+```bash
+GIT_SHA=$(git rev-parse HEAD) docker compose build api
+docker compose exec api python -m app.cli.bundle export --experiment-id <uuid>
+docker compose exec api python -m app.cli.bundle verify --bundle /tmp/bundle-<uuid>.tar.gz
+```
+
 UI: http://localhost:3002 — Vite dev (HMR). Frontend stack: React 18 + TypeScript + Vite + Tailwind + TanStack Query + Zustand + react-router-dom + reactflow + recharts (for the Analytics page).
 API: http://localhost:8002 — FastAPI behind nginx LB.
 OpenAPI: http://localhost:8002/docs.
