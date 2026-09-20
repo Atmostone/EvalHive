@@ -99,6 +99,46 @@ async def test_transient_429_retried_then_succeeds(monkeypatch, fast_retries):
 
 
 @pytest.mark.asyncio
+async def test_every_call_carries_a_timeout(monkeypatch, fast_retries):
+    # A call with no timeout can hang forever. It did: an experiment tick sat on
+    # one open HTTPS connection for nine minutes, and since the scheduler's job
+    # runner permits a single instance, every later tick was skipped — the whole
+    # run queue frozen by one silent socket, with nothing in the logs.
+    import litellm
+
+    seen = {}
+
+    async def fake(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT", "42")
+    monkeypatch.setattr(litellm, "acompletion", fake)
+    await LiteLLMProvider().acompletion("m", [{"role": "user", "content": "x"}])
+    assert seen["timeout"] == 42.0
+
+
+@pytest.mark.asyncio
+async def test_caller_supplied_timeout_is_not_overridden(monkeypatch, fast_retries):
+    # The default is a floor for callers that say nothing, not a ceiling imposed
+    # on one that knows its own call is long.
+    import litellm
+
+    seen = {}
+
+    async def fake(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT", "42")
+    monkeypatch.setattr(litellm, "acompletion", fake)
+    await LiteLLMProvider().acompletion(
+        "m", [{"role": "user", "content": "x"}], timeout=900
+    )
+    assert seen["timeout"] == 900
+
+
+@pytest.mark.asyncio
 async def test_non_transient_error_not_retried(monkeypatch, fast_retries):
     import litellm
 
