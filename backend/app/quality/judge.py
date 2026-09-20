@@ -142,7 +142,16 @@ JUDGE_TOOL = [
                         "type": "integer",
                         "minimum": 0,
                         "maximum": _MAX_SCALE,
-                        "description": "Quality on this dimension, 0 (worst) to 10 (best). Omit when applicable=false.",
+                        # ALWAYS ask for a score, even when the dimension does not
+                        # apply. It used to say "omit when applicable=false", which
+                        # made the field optional — and a model that reads the
+                        # schema literally then omits it on EVERY call, so every
+                        # dimension errored. `applicable` alone decides exclusion;
+                        # the number is simply ignored in that case.
+                        "description": (
+                            "Quality on this dimension, 0 (worst) to 10 (best). Always provide "
+                            "a value; when applicable=false it is ignored, so 0 is fine there."
+                        ),
                     },
                     "applicable": {
                         "type": "boolean",
@@ -158,7 +167,15 @@ JUDGE_TOOL = [
                         "description": "Brief justification for the score.",
                     },
                 },
-                "required": ["reasoning"],
+                # `score` is required. With it optional the schema permitted a
+                # reply carrying only `reasoning`, and a model that honours the
+                # schema literally sends exactly that — which the reader then
+                # met with `KeyError: 'score'` on every dimension, so the whole
+                # outcome profile came back empty with the gate failing closed.
+                # The trajectory judge has always required its score (`["score",
+                # "reason"]`) and was unaffected by the same model; this brings
+                # the two into line.
+                "required": ["score", "reasoning"],
             },
         },
     }
@@ -326,7 +343,18 @@ async def _judge_dimension(
                 "input_tokens": inp,
                 "output_tokens": out,
             }
-        score = max(0, min(_MAX_SCALE, int(args["score"])))
+        raw = args.get("score")
+        if raw is None:
+            # The schema requires `score`, so this is the model disregarding it.
+            # Still fail closed — a missing score is not a zero, and inventing one
+            # would put a fabricated number into a weighted aggregate — but say so
+            # in words: the previous `KeyError: 'score'` surfaced as the literal
+            # string "'score'" in the profile, which names nothing.
+            raise ValueError(
+                "judge returned no score: the tool call omitted the required "
+                "'score' field while not marking the dimension inapplicable"
+            )
+        score = max(0, min(_MAX_SCALE, int(raw)))
         return {
             "status": "scored",
             "score": score,

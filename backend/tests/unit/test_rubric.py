@@ -420,6 +420,80 @@ async def test_all_dimensions_not_applicable_yields_no_score(
     assert profile["gate"]["failed_dimensions"] == []
 
 
+def test_judge_tool_requires_a_score():
+    # The contract, pinned: `score` must stay REQUIRED in the tool schema. While
+    # it was optional ("omit when applicable=false"), a judge that reads the
+    # schema literally replied with `reasoning` alone on every call — measured
+    # 3/3 on glm-5.3-flash — and every dimension errored. The trajectory judge
+    # has always required its score; these two must not drift apart again.
+    required = judge_mod.JUDGE_TOOL[0]["function"]["parameters"]["required"]
+    assert "score" in required and "reasoning" in required
+
+
+async def test_missing_score_errors_by_name_instead_of_keyerror(
+    db_session, default_model, monkeypatch
+):
+    # A reply with no score is still refused — a missing score is not a zero, and
+    # inventing one would put a fabricated number into a weighted aggregate. What
+    # changes is that the failure says what happened: it used to surface as the
+    # bare string "'score'" (a KeyError's repr), which names nothing.
+    rubric = _rubric("R", is_default=True, dimensions=[
+        _dim("a", weight=1.0, threshold=6, critical=True),
+    ])
+    await _flush(db_session, rubric)
+    task = Task(title="x", status=TaskStatus.DONE.value, workspace_id=WS,
+                result_summary="r", model_used="m")
+    await _flush(db_session, task)
+
+    class _NoScore:
+        calls = 0
+
+        async def acompletion(self, **kwargs):
+            _NoScore.calls += 1
+            return _resp(score=None, reasoning="thought about it")  # no score, no applicable
+
+    monkeypatch.setattr(judge_mod, "get_llm_provider", lambda: _NoScore())
+    profile = await judge_mod.evaluate_task_quality(db_session, task, commit=False)
+
+    dim = profile["dimensions"][0]
+    assert dim["status"] == "error" and dim["score"] is None
+    assert "score" in dim["error"] and dim["error"] != "'score'"
+    # A critical dimension that could not be certified fails the gate (SPA-51).
+    assert profile["gate"]["passed"] is False
+
+
+async def test_not_applicable_wins_over_a_supplied_score(
+    db_session, default_model, monkeypatch
+):
+    # Now that `score` is required, a model marking a dimension inapplicable
+    # sends BOTH — glm-5.3-flash answers `applicable=false, score=0`. The zero
+    # must not reach the aggregate: `applicable` decides exclusion, the number
+    # is ignored. Without this the axis would score 0 and drag the mean down.
+    rubric = _rubric("R", is_default=True, dimensions=[
+        _dim("keep", weight=0.5, threshold=6, critical=True),
+        _dim("drop", weight=0.5, threshold=6, critical=True),
+    ])
+    await _flush(db_session, rubric)
+    task = Task(title="x", status=TaskStatus.DONE.value, workspace_id=WS,
+                result_summary="r", model_used="m")
+    await _flush(db_session, task)
+
+    class _NAWithZero:
+        async def acompletion(self, **kwargs):
+            if "Dimension: Drop" in kwargs["messages"][1]["content"]:
+                return _resp(score=0, applicable=False, reasoning="does not apply")
+            return _resp(score=8)
+
+    monkeypatch.setattr(judge_mod, "get_llm_provider", lambda: _NAWithZero())
+    profile = await judge_mod.evaluate_task_quality(db_session, task, commit=False)
+
+    dims = {d["key"]: d for d in profile["dimensions"]}
+    assert dims["drop"]["status"] == "not_applicable" and dims["drop"]["score"] is None
+    # Renormalized over the one scored axis — NOT (8 + 0) / 2.
+    assert profile["weighted_score"] == 8.0
+    assert profile["gate"]["passed"] is True
+
+
 def test_toolathlon_rubric_in_defaults():
     # The Toolathlon tool-use/data rubric is an additive 6th default that flows
     # through iter_default_rubrics(); its weights sum to 1.0.
