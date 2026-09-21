@@ -14,7 +14,7 @@ export const useUiMode = create<UiModeState>()(
       mode: 'experiments',
       setMode: (mode) => set({ mode }),
     }),
-    { name: 'spawnhive.ui-mode' },
+    { name: 'evalhive.ui-mode' },
   ),
 )
 

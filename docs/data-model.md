@@ -341,12 +341,12 @@ content) — the durable source for the data-lake `execution` section.
 |--------|------|--|
 | id | UUID PK | |
 | filename | VARCHAR(500) | |
-| s3_path | VARCHAR(1000) | path inside the MinIO bucket `spawnhive` |
+| s3_path | VARCHAR(1000) | path inside the MinIO bucket `evalhive` |
 | chunk_count | int | how many chunks landed in Qdrant |
 | workspace_id | UUID NOT NULL | (post-R1) |
 | created_at | TIMESTAMP | |
 
-The matching chunks live in the Qdrant collection `spawnhive_docs`.
+The matching chunks live in the Qdrant collection `evalhive_docs`.
 
 ### memory_entities (P0)
 
@@ -1090,7 +1090,7 @@ parts into one step, so one call is not read as N; a gap in the part sequence is
 **marked in place** rather than spliced over, and a call that never produced a part
 ≥ 1 is reported as having no result.
 
-Indexes: `(task_id, chunk_seq)`, `workspace_id`. After event=completed/failed/aborted the orchestrator serializes rows → MinIO blob `s3://spawnhive/logs/<task_id>.log` (**JSON-lines, one `{tool_name, content, arguments, arguments_truncated, tool_call_id, part_index, part_total, created_at}` per chunk** — the call is preserved so the cleaned trace E-06 / matcher E-09 stay tool-aware post-compaction; `encode_log_archive`/`decode_log_archive` in `minio_client`, legacy `\n␞\n` plain-text archives still decode with `tool_name=None` and no arguments). `created_at` (SPA-113) is what lets the cleaned trace be put back in the order it happened — without it every tool step of an archived task sorted after every event, and the judge read a run whose calls all followed its completion. Archives written before SPA-113 decode it as `None` and keep that order., sets `tasks.log_archive_s3_path`, and DELETEs all chunks (best-effort, atomic).
+Indexes: `(task_id, chunk_seq)`, `workspace_id`. After event=completed/failed/aborted the orchestrator serializes rows → MinIO blob `s3://evalhive/logs/<task_id>.log` (**JSON-lines, one `{tool_name, content, arguments, arguments_truncated, tool_call_id, part_index, part_total, created_at}` per chunk** — the call is preserved so the cleaned trace E-06 / matcher E-09 stay tool-aware post-compaction; `encode_log_archive`/`decode_log_archive` in `minio_client`, legacy `\n␞\n` plain-text archives still decode with `tool_name=None` and no arguments). `created_at` (SPA-113) is what lets the cleaned trace be put back in the order it happened — without it every tool step of an archived task sorted after every event, and the judge read a run whose calls all followed its completion. Archives written before SPA-113 decode it as `None` and keep that order., sets `tasks.log_archive_s3_path`, and DELETEs all chunks (best-effort, atomic).
 
 ### agent_log_deliveries (Foundations Этап 1)
 

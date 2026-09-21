@@ -19,7 +19,7 @@ _lock = asyncio.Lock()
 # Redis pub/sub adapter — optional. If REDIS_URL is set, log_event publishes to
 # a channel and a subscriber task in this process delivers to local WS clients.
 # If unset, broadcast happens in-process only (single-replica fallback).
-EVENTS_CHANNEL = "spawnhive.events"
+EVENTS_CHANNEL = "evalhive.events"
 _redis_publisher: Any = None
 _redis_subscriber_task: asyncio.Task | None = None
 _redis_url: str | None = None

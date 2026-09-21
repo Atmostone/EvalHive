@@ -131,7 +131,7 @@ def execute_builtin_tool(name: str, arguments: dict) -> str:
         limit = arguments.get("limit", 5)
         try:
             with httpx.Client(timeout=30.0) as client:
-                token = os.environ.get("SPAWNHIVE_AGENT_TOKEN", "")
+                token = os.environ.get("EVALHIVE_AGENT_TOKEN", "")
                 task_id = os.environ.get("TASK_ID", "")
                 resp = client.post(
                     "http://api:8000/api/knowledge/search",
@@ -284,7 +284,7 @@ async def _send_progress(payload: dict) -> None:
         return
     payload["timestamp"] = datetime.now(timezone.utc).isoformat()
     payload["idempotency_key"] = uuid.uuid4().hex
-    token = os.environ.get("SPAWNHIVE_AGENT_TOKEN", "")
+    token = os.environ.get("EVALHIVE_AGENT_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
@@ -525,7 +525,7 @@ async def _send_log_chunk(
     """
     base_url = os.environ.get("API_BASE_URL", "http://api:8000")
     task_id = os.environ.get("TASK_ID", "")
-    token = os.environ.get("SPAWNHIVE_AGENT_TOKEN", "")
+    token = os.environ.get("EVALHIVE_AGENT_TOKEN", "")
     if not task_id or not token:
         return
 

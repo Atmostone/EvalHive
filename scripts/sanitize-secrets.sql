@@ -8,7 +8,7 @@
 --
 -- Run:
 --   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
---     exec -T postgres psql -U spawnhive -d spawnhive < scripts/sanitize-secrets.sql
+--     exec -T postgres psql -U evalhive -d evalhive < scripts/sanitize-secrets.sql
 
 BEGIN;
 

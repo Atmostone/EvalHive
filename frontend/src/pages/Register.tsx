@@ -38,7 +38,7 @@ export default function Register() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <form onSubmit={submit} className="w-full max-w-sm bg-white rounded-lg shadow p-6 space-y-4">
-        <h1 className="text-2xl font-semibold">Create your SpawnHive account</h1>
+        <h1 className="text-2xl font-semibold">Create your EvalHive account</h1>
         <input
           autoFocus
           type="email"

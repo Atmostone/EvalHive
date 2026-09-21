@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPA-78 — copy ALL local SpawnHive data to the server (Postgres, MinIO, Qdrant,
+# SPA-78 — copy ALL local EvalHive data to the server (Postgres, MinIO, Qdrant,
 # and ./data/{shared,workspaces}). This brings the tester@x.dev account and every
 # experiment/result over so the committee can view real data.
 #
@@ -17,8 +17,8 @@ cd "$(dirname "$0")/.."   # repo root
 
 # --- config (override via env) ---
 LOCAL_PROJECT="${LOCAL_PROJECT:-$(basename "$PWD" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')}"
-REMOTE_PROJECT="${REMOTE_PROJECT:-spawnhive}"
-REMOTE_DIR="${REMOTE_DIR:-/opt/spawnhive}"
+REMOTE_PROJECT="${REMOTE_PROJECT:-evalhive}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/evalhive}"
 DEPLOY_HOST="${DEPLOY_HOST:-}"        # e.g. root@203.0.113.10
 VOLS=(pgdata qdrantdata miniodata)
 GO=0; [ "${1:-}" = "--go" ] && GO=1
@@ -106,4 +106,4 @@ REMOTE
 echo
 echo "Done. Next on the server: scrub secrets ->"
 echo "  $ docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T postgres \\"
-echo "      psql -U spawnhive -d spawnhive < scripts/sanitize-secrets.sql"
+echo "      psql -U evalhive -d evalhive < scripts/sanitize-secrets.sql"

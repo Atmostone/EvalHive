@@ -15,7 +15,7 @@ from app.models.knowledge_document import KnowledgeDocument
 
 logger = logging.getLogger(__name__)
 
-COLLECTION_NAME = "spawnhive_docs"
+COLLECTION_NAME = "evalhive_docs"
 MEMORY_COLLECTION_NAME = "memory_entities"
 CHUNK_SIZE = 500  # characters
 CHUNK_OVERLAP = 50
@@ -37,7 +37,7 @@ def get_qdrant_client() -> QdrantClient:
     return QdrantClient(url=settings.qdrant_url)
 
 
-def ensure_bucket(client: Minio, bucket: str = "spawnhive"):
+def ensure_bucket(client: Minio, bucket: str = "evalhive"):
     if not client.bucket_exists(bucket):
         client.make_bucket(bucket)
 
@@ -109,7 +109,7 @@ async def process_document(
     ensure_bucket(minio_client)
 
     minio_client.put_object(
-        "spawnhive", s3_path, BytesIO(content), len(content),
+        "evalhive", s3_path, BytesIO(content), len(content),
     )
     logger.info(f"Uploaded {filename} to MinIO: {s3_path}")
 
@@ -170,7 +170,7 @@ async def delete_document_data(db: AsyncSession, doc: KnowledgeDocument):
     # MinIO
     try:
         minio_client = get_minio_client()
-        minio_client.remove_object("spawnhive", doc.s3_path)
+        minio_client.remove_object("evalhive", doc.s3_path)
     except Exception as e:
         logger.warning(f"MinIO delete failed: {e}")
 
@@ -217,8 +217,8 @@ async def reset_collection(db: AsyncSession, workspace_id: uuid.UUID) -> dict:
     s3_paths_removed = 0
     try:
         prefix = f"documents/{workspace_id}/"
-        for obj in minio_client.list_objects("spawnhive", prefix=prefix, recursive=True):
-            minio_client.remove_object("spawnhive", obj.object_name)
+        for obj in minio_client.list_objects("evalhive", prefix=prefix, recursive=True):
+            minio_client.remove_object("evalhive", obj.object_name)
             s3_paths_removed += 1
     except Exception as e:
         logger.warning(f"MinIO cleanup failed: {e}")

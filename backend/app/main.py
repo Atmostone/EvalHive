@@ -264,7 +264,7 @@ async def lifespan(app: FastAPI):
     await stop_event_subscriber()
 
 
-app = FastAPI(title="SpawnHive", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="EvalHive", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

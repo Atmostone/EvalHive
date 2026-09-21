@@ -1,4 +1,4 @@
-# SpawnHive Internal Runbook (fictional — benchmark fixture)
+# EvalHive Internal Runbook (fictional — benchmark fixture)
 
 This document contains intentionally fictional internal facts used by the
 capability-isolation `private_data` benchmark cases. None of it is real; it exists

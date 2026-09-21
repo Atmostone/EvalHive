@@ -12,11 +12,11 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: spawnhive_test
-          POSTGRES_USER: spawnhive
+          POSTGRES_DB: evalhive_test
+          POSTGRES_USER: evalhive
           POSTGRES_PASSWORD: password
         options: >-
-          --health-cmd "pg_isready -U spawnhive"
+          --health-cmd "pg_isready -U evalhive"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -24,7 +24,7 @@ jobs:
           - 5432:5432
 
     env:
-      TEST_DATABASE_URL: postgresql+asyncpg://spawnhive:password@localhost:5432/spawnhive_test
+      TEST_DATABASE_URL: postgresql+asyncpg://evalhive:password@localhost:5432/evalhive_test
       JWT_SECRET: ci-test-secret-please-rotate
 
     steps:

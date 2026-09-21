@@ -11,9 +11,9 @@ from app.models.template import Template
 
 logger = logging.getLogger(__name__)
 
-AGENT_IMAGE = "spawnhive-agent:latest"
-DOCKER_NETWORK = "spawnhive_spawnhive-net"
-LABEL_PREFIX = "spawnhive"
+AGENT_IMAGE = "evalhive-agent:latest"
+DOCKER_NETWORK = "evalhive_evalhive-net"
+LABEL_PREFIX = "evalhive"
 
 
 def get_docker_client() -> docker.DockerClient:
@@ -52,7 +52,7 @@ def spawn_agent(
 
     client = get_docker_client()
     short_id = uuid.uuid4().hex[:8]
-    container_name = f"spawnhive-{str(task_id)[:8]}-{short_id}"
+    container_name = f"evalhive-{str(task_id)[:8]}-{short_id}"
 
     # Use host paths for volume mounts (docker-py talks to host Docker daemon)
     host_data_dir = settings.host_data_dir
@@ -77,7 +77,7 @@ def spawn_agent(
         "TASK_ID": str(task_id),
         "TASK_DESCRIPTION": task_description,
         "WEBHOOK_URL": f"http://api:8000/api/agent-webhook/{task_id}",
-        "SPAWNHIVE_AGENT_TOKEN": agent_token,
+        "EVALHIVE_AGENT_TOKEN": agent_token,
         "AGENT_SOUL": template.soul_md,
         "AGENT_TOOLS": json.dumps(template.tools),
         "MCP_SERVERS": json.dumps(template.mcp_servers or []),
@@ -126,7 +126,7 @@ def _container_in_workspace(container, workspace_id: str | None) -> bool:
 def container_image_id(container_id: str) -> str | None:
     """The resolved image id a running container was started from (SPA-84).
 
-    Reads the container rather than the tag: ``spawnhive-agent:latest`` is a
+    Reads the container rather than the tag: ``evalhive-agent:latest`` is a
     moving target, and a rebuild under the same tag is exactly the confounder
     this is meant to catch. Best-effort — None means "could not tell", never
     "unchanged".
@@ -156,7 +156,7 @@ def kill_agent(container_id: str, workspace_id: str | None = None) -> bool:
 
 
 def kill_all_agents(workspace_id: str | None = None) -> int:
-    """Kill all spawnhive agent containers (optionally scoped to workspace). Returns count."""
+    """Kill all evalhive agent containers (optionally scoped to workspace). Returns count."""
     client = get_docker_client()
     filters = {"label": [f"{LABEL_PREFIX}.task_id"]}
     if workspace_id is not None:
@@ -175,7 +175,7 @@ def kill_all_agents(workspace_id: str | None = None) -> int:
 
 
 def reap_exited_agent_containers(grace_minutes: int = 5) -> int:
-    """Remove EXITED spawnhive agent containers so they don't pile up forever.
+    """Remove EXITED evalhive agent containers so they don't pile up forever.
 
     Agent containers run detached and are never auto-removed: an agent's result is
     delivered by webhook and its files live on a host-bind volume, so the container
@@ -183,7 +183,7 @@ def reap_exited_agent_containers(grace_minutes: int = 5) -> int:
     by the timeout reaper). The webhook path harvests files + archives the log before
     the container stops, so a short ``grace_minutes`` (default 5) guarantees that
     settle work is done before we delete. Only touches containers carrying our
-    ``spawnhive.task_id`` label in the ``exited`` state — never running agents, infra,
+    ``evalhive.task_id`` label in the ``exited`` state — never running agents, infra,
     or other projects' containers. Best-effort; returns how many were removed."""
     client = get_docker_client()
     containers = client.containers.list(
@@ -216,7 +216,7 @@ def reap_exited_agent_containers(grace_minutes: int = 5) -> int:
 
 
 def list_agents(workspace_id: str | None = None) -> list[dict]:
-    """List active spawnhive agent containers (optionally scoped to workspace)."""
+    """List active evalhive agent containers (optionally scoped to workspace)."""
     client = get_docker_client()
     filters = {"label": [f"{LABEL_PREFIX}.task_id"]}
     if workspace_id is not None:

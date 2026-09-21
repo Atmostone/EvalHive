@@ -57,11 +57,11 @@ logger = logging.getLogger(__name__)
 
 # Toolathlon executable-eval cases (gold.external_eval) run on a dedicated image
 # with the case's MCP servers force-enabled, and a higher iteration ceiling.
-TOOLATHLON_AGENT_IMAGE = "spawnhive-agent-toolathlon:latest"
+TOOLATHLON_AGENT_IMAGE = "evalhive-agent-toolathlon:latest"
 # The image a plain (non-executable-eval) case runs on; mirrors
 # app/orchestrator/docker_manager.AGENT_IMAGE, imported lazily there to keep the
 # docker dependency out of this module's import path.
-DEFAULT_AGENT_IMAGE = "spawnhive-agent:latest"
+DEFAULT_AGENT_IMAGE = "evalhive-agent:latest"
 
 # The two halves of "what is still part of this experiment" (SPA-84). Retiring a
 # configuration keeps its lineage but takes it out of the matrix, and every

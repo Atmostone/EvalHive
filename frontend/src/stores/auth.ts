@@ -43,7 +43,7 @@ export const useAuth = create<AuthState>()(
       setWorkspaceId: (id) => set({ workspaceId: id }),
       logout: () => set({ token: null, user: null, workspaces: [], workspaceId: null }),
     }),
-    { name: 'spawnhive.auth' },
+    { name: 'evalhive.auth' },
   ),
 )
 

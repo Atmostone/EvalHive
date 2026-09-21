@@ -98,7 +98,7 @@ LOG_BLOB_DIR = "blobs/logs"
 # rather than left to a README, so it travels with the data.
 _UNPINNED_NOTE = (
     "the checkout that produced this bundle is not pinned — the image was built "
-    "without SPAWNHIVE_GIT_SHA. The report schema version still bounds which code "
+    "without EVALHIVE_GIT_SHA. The report schema version still bounds which code "
     "can read it, but it does not identify a commit."
 )
 
@@ -844,7 +844,7 @@ def check_blobs(files: dict[str, bytes], manifest: dict) -> list[str]:
 def platform_identity(*, allow_git: bool = True) -> dict:
     """Which checkout a reader has to recompute this bundle with.
 
-    Read from ``SPAWNHIVE_GIT_SHA`` (baked in at image build), NOT by shelling out
+    Read from ``EVALHIVE_GIT_SHA`` (baked in at image build), NOT by shelling out
     to git: the api image has no git binary and ``/app`` is not a work tree, so the
     original ``git rev-parse`` returned None every single time — a field that was
     always null and read as «this bundle happens not to say», when in fact it could
@@ -860,7 +860,7 @@ def platform_identity(*, allow_git: bool = True) -> dict:
     import os
     import subprocess
 
-    sha = (os.environ.get("SPAWNHIVE_GIT_SHA") or "").strip()
+    sha = (os.environ.get("EVALHIVE_GIT_SHA") or "").strip()
     if sha:
         return {"git_sha": sha, "source": "build"}
     if not allow_git:

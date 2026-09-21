@@ -110,7 +110,7 @@ Entries below were resolved; they are archived here (rather than deleted) so the
 
 ### 6. workspace_id="shared" label on the container (P11) — RESOLVED in R1
 
-**Done:** R1 `spawn_agent` sets `spawnhive.workspace_id=<uuid>`; `list_agents/kill_*` filter on it.
+**Done:** R1 `spawn_agent` sets `evalhive.workspace_id=<uuid>`; `list_agents/kill_*` filter on it.
 
 ### 7. Audit middleware writes without user_id (P10) — RESOLVED in R1
 
@@ -118,7 +118,7 @@ Entries below were resolved; they are archived here (rather than deleted) so the
 
 ### 8. Webhook without auth — RESOLVED in R2
 
-**Done:** R2 — `/api/v1/agent-webhook` requires `Authorization: Bearer <SPAWNHIVE_AGENT_TOKEN>` + `idempotency_key`. The legacy `/api/agent-webhook` is kept as an alias with `Sunset: 2026-08-01` headers and the same requirements.
+**Done:** R2 — `/api/v1/agent-webhook` requires `Authorization: Bearer <EVALHIVE_AGENT_TOKEN>` + `idempotency_key`. The legacy `/api/agent-webhook` is kept as an alias with `Sunset: 2026-08-01` headers and the same requirements.
 
 ### 9. Orchestrator/scheduler inside the API lifespan — RESOLVED in R3
 
