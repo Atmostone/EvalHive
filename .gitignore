@@ -62,3 +62,6 @@ research_2/
 # Submitted deliverables — private, kept out of the public repo
 Описание проекта.pdf
 *.pptx
+# Endpoint audit — contains LIVE API keys. Never commit; the repo is public.
+LLM_ENDPOINTS_AUDIT.md
+LLM_ENDPOINTS_AUDIT.full-history.md

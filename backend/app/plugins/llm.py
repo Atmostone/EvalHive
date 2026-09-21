@@ -34,6 +34,32 @@ from app.utils.failures import is_transient_llm_error as _is_transient_llm_error
 logger = logging.getLogger(__name__)
 
 
+def _request_timeout() -> float:
+    """Seconds to wait for one backend LLM call before giving up.
+
+    Without this a socket that opens and then never answers blocks its caller
+    forever. That is not hypothetical: an experiment tick stalled for nine
+    minutes on a single hung HTTPS connection, and because the scheduler's job
+    runner allows one instance at a time, every later tick was skipped — one
+    silent connection froze the whole run queue with no error anywhere.
+
+    A timeout raises ``Timeout``/``APITimeoutError``, both already in the
+    transient set, so the retry loop below picks it up: a hung call costs a
+    delay and a retry instead of the pipeline.
+
+    The default is deliberately not generous. Measured first-token latencies on
+    this stand sit between 0.26 s and 1.11 s, and a judge reading a long trace
+    still answers in seconds — so a call still open after two minutes is wedged,
+    not slow. It matters because the timeout multiplies: a hung endpoint costs
+    ``(1 + LLM_TRANSIENT_RETRIES) × timeout`` before the caller gives up, which
+    at five minutes a try is twenty minutes of a frozen tick.
+    """
+    try:
+        return max(1.0, float(os.environ.get("LLM_REQUEST_TIMEOUT", "120")))
+    except ValueError:
+        return 120.0
+
+
 def _retry_config() -> tuple[int, float]:
     """(extra attempts, base delay seconds) — env-tunable, safe fallbacks."""
     try:
@@ -143,6 +169,9 @@ class LiteLLMProvider(LLMProvider):
         # with "LLM Provider NOT provided". Without an api_base, fall back to the
         # litellm provider/model convention.
         call_kwargs = dict(kwargs)
+        # A caller that knows better keeps its own value; everyone else gets a
+        # bound rather than none at all.
+        call_kwargs.setdefault("timeout", _request_timeout())
         if call_kwargs.get("api_base") and not call_kwargs.get("custom_llm_provider"):
             call_kwargs["custom_llm_provider"] = "openai"
             prefixed = model
