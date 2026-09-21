@@ -67,6 +67,53 @@ docker compose exec api alembic downgrade -1
 
 **Rule:** every PR that adds a migration must include a working `downgrade`. CI enforces a round-trip migration test.
 
+## Backup and restore
+
+A Postgres dump is **not** a backup of this stand. `quality_records.record_s3_path`,
+`tasks.log_archive_s3_path` and `knowledge_documents.s3_path` hold keys into MinIO, not
+content — traces, execution snapshots and deliverables live in the `spawnhive_miniodata`
+volume. Dump the database alone and you restore rows that point into nothing.
+
+```bash
+docker compose up -d postgres minio            # both must be up
+scripts/backup.sh                              # -> ~/spawnhive-backups/spawnhive-backup-<UTC>/
+scripts/backup.sh --out /some/where            # somewhere else
+```
+
+Each backup directory holds `db.dump` (pg_dump `-Fc`), `minio.tar.gz` (the whole volume,
+`.minio.sys` included), `annotations.json` and a `manifest.json` that pairs them: sha256
+per artifact, row counts, and the result of looking up **every** S3 key from the database
+in the volume being tarred. `blob_pairing.status` is one of `verified` (keys checked, all
+resolved), `nothing_to_check` (the stand holds no keys), `incomplete` (keys point at
+objects the volume lacks) or `suspicious` (collection disagreed with the database, so the
+check proved less than it appears to). Only the first two set `complete: true`.
+
+The backup is still written when the pairing fails — a backup is insurance, and refusing
+to preserve an imperfect stand would destroy the only copy of it — but the exit code is
+non-zero and the manifest says so. This is deliberately the opposite choice from the
+reproduction bundle (SPA-90), which refuses to write an archive that does not verify,
+because a bundle is a *claim* and a bad one should not exist.
+
+A backup that has never been restored is a hypothesis:
+
+```bash
+scripts/restore.sh --backup <dir> --scratch    # rehearse — throwaway container + volume
+scripts/restore.sh --backup <dir> --scratch --keep   # leave them up for inspection
+```
+
+The rehearsal verifies the artifacts against the manifest before touching anything,
+restores into a temporary Postgres of the same image and a temporary volume, re-asks the
+pairing question of the **restored** pair, and compares row counts against the manifest.
+It cannot reach the live stand.
+
+The disaster path replaces the real database and volume, refuses to run while `api` /
+`scheduler` / `orchestrator` / `minio` are up, and requires the phrase to be typed:
+
+```bash
+docker compose stop api scheduler orchestrator minio
+scripts/restore.sh --backup <dir> --live
+```
+
 ## Tests
 
 ```bash
