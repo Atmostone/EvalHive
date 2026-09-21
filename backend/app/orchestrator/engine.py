@@ -302,9 +302,9 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
             extra_env["PG_HOST"] = str(pg_host)
 
         # Per-run agent image override (run_config.agent_image) — only images from
-        # our own agent family are allowed (e.g. spawnhive-agent-toolathlon:latest).
+        # our own agent family are allowed (e.g. evalhive-agent-toolathlon:latest).
         agent_image = run_config.get("agent_image")
-        if agent_image is not None and not str(agent_image).startswith("spawnhive-agent"):
+        if agent_image is not None and not str(agent_image).startswith("evalhive-agent"):
             logger.warning(f"task {task.id}: ignoring non-allowlisted agent_image {agent_image!r}")
             agent_image = None
 

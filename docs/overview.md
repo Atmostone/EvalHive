@@ -1,4 +1,4 @@
-# SpawnHive — Overview
+# EvalHive — Overview
 
 ## What it is
 

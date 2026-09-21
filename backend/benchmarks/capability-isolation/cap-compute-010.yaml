@@ -3,7 +3,7 @@ suite: capability-isolation
 category: exact_compute
 input:
   title: SHA-256 of a string
-  description: 'Compute the SHA-256 hex digest of the exact ASCII string: SpawnHive
+  description: 'Compute the SHA-256 hex digest of the exact ASCII string: EvalHive
     benchmark 2026. Return only the 64-character lowercase hex digest.'
 gold:
   capability_spec:

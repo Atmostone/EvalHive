@@ -1,4 +1,4 @@
-# SpawnHive — Documentation
+# EvalHive — Documentation
 
 This folder is the single source of truth for the project. Any code change that touches architecture, API, DB schema, configuration, or processes — must be accompanied by an update to the relevant file here.
 
@@ -13,7 +13,7 @@ This folder is the single source of truth for the project. Any code change that 
 
 | File | What's inside |
 |------|---------------|
-| [`overview.md`](overview.md) | What SpawnHive is, who it's for, the value proposition. |
+| [`overview.md`](overview.md) | What EvalHive is, who it's for, the value proposition. |
 | [`architecture.md`](architecture.md) | Components, data flows, diagrams. |
 | [`data-model.md`](data-model.md) | Tables, indexes, invariants. |
 | [`api.md`](api.md) | Endpoint list, contracts. Auto-generation from OpenAPI is desirable. |

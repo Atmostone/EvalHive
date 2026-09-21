@@ -1,4 +1,4 @@
-# SpawnHive agent on top of the Toolathlon-GYM toolchain (SPA-42).
+# EvalHive agent on top of the Toolathlon-GYM toolchain (SPA-42).
 #
 # Base image must be built locally first from the toolathlon_gym clone:
 #   docker build -t toolathlon-pack:latest "$TOOLATHLON_GYM_PATH"
@@ -6,7 +6,7 @@
 # MCP servers in /opt/local_servers + a python venv at /opt/venv.
 #
 # Build this image (any working dir, context = agent-image/):
-#   docker build -f agent-image/Dockerfile.toolathlon -t spawnhive-agent-toolathlon:latest agent-image/
+#   docker build -f agent-image/Dockerfile.toolathlon -t evalhive-agent-toolathlon:latest agent-image/
 #
 # See docs/toolathlon.md for the full runbook.
 FROM toolathlon-pack:latest

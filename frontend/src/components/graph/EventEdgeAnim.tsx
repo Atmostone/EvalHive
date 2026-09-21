@@ -89,7 +89,7 @@ function EventEdgeAnimComponent(props: EdgeProps<EventEdgeData>) {
           opacity={0.35}
           style={{
             filter: 'blur(2px)',
-            animation: 'spawnhive-edge-pulse 600ms ease-out',
+            animation: 'evalhive-edge-pulse 600ms ease-out',
           }}
         />
       )}
@@ -106,7 +106,7 @@ function EventEdgeAnimComponent(props: EdgeProps<EventEdgeData>) {
         </div>
       </EdgeLabelRenderer>
       <style>{`
-        @keyframes spawnhive-edge-pulse {
+        @keyframes evalhive-edge-pulse {
           0% { opacity: 0.6; stroke-width: 8px; }
           100% { opacity: 0; stroke-width: 2px; }
         }

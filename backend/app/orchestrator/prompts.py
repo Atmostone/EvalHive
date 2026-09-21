@@ -7,7 +7,7 @@ def build_orchestrator_system_prompt(
     templates_desc: str,
     active_tasks_desc: str,
 ) -> str:
-    return f"""You are SpawnHive Orchestrator — an AI that manages a team of specialized agents.
+    return f"""You are EvalHive Orchestrator — an AI that manages a team of specialized agents.
 Your job is to help the user by creating tasks, assigning them to agents, and managing their work.
 
 # Rules

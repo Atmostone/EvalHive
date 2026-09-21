@@ -56,7 +56,7 @@ In `engine.py:process_ready_task`, just before `spawn_agent`:
 
 ## Reset
 
-`POST /api/knowledge/reset` drops both Qdrant collections (`spawnhive_docs` + `memory_entities`) and deletes documents/entities/relations. Used when switching embedding providers (different dim).
+`POST /api/knowledge/reset` drops both Qdrant collections (`evalhive_docs` + `memory_entities`) and deletes documents/entities/relations. Used when switching embedding providers (different dim).
 
 ## Known limitations
 

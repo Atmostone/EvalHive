@@ -2,7 +2,7 @@
 
 > Status: historical spike — superseded by SPA-69 (static per-lane PG containers) for the as-built Toolathlon integration.
 
-Date: 2026-06-10 · Spike for [SPA-37](https://linear.app/spawnhive/issue/SPA-37). Based on reading the
+Date: 2026-06-10 · Spike for [SPA-37](https://linear.app/evalhive/issue/SPA-37). Based on reading the
 code of [eigent-ai/toolathlon_gym](https://github.com/eigent-ai/toolathlon_gym) (clone, commit as of the
 spike date), cross-checked against our stack (`agent-image/agent.py`, the SPA-41 Registry, and the
 Benchmark Case Store from `docs/benchmarks.md`).

@@ -9,7 +9,7 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-BUCKET = "spawnhive"
+BUCKET = "evalhive"
 
 
 def get_minio_client() -> Minio:

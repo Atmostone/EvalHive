@@ -54,14 +54,14 @@ def test_get_llm_env_vars_passthrough():
 
 
 def test_container_in_workspace():
-    c = _container_mock(cid="x", labels={"spawnhive.workspace_id": "ws-A"})
+    c = _container_mock(cid="x", labels={"evalhive.workspace_id": "ws-A"})
     assert dm._container_in_workspace(c, None) is True
     assert dm._container_in_workspace(c, "ws-A") is True
     assert dm._container_in_workspace(c, "ws-B") is False
 
 
 def test_kill_agent_returns_true_on_success():
-    c = _container_mock(cid="abc", labels={"spawnhive.workspace_id": "W"})
+    c = _container_mock(cid="abc", labels={"evalhive.workspace_id": "W"})
     cli = _client_with([c])
     with patch.object(dm, "get_docker_client", return_value=cli):
         ok = dm.kill_agent("abc", workspace_id="W")
@@ -71,7 +71,7 @@ def test_kill_agent_returns_true_on_success():
 
 
 def test_kill_agent_workspace_mismatch_returns_false():
-    c = _container_mock(cid="abc", labels={"spawnhive.workspace_id": "OTHER"})
+    c = _container_mock(cid="abc", labels={"evalhive.workspace_id": "OTHER"})
     cli = _client_with([c])
     with patch.object(dm, "get_docker_client", return_value=cli):
         ok = dm.kill_agent("abc", workspace_id="MINE")
@@ -89,8 +89,8 @@ def test_kill_agent_not_found_returns_false():
 
 def test_kill_all_agents_counts_killed():
     cs = [
-        _container_mock(cid="1", labels={"spawnhive.workspace_id": "W"}),
-        _container_mock(cid="2", labels={"spawnhive.workspace_id": "W"}),
+        _container_mock(cid="1", labels={"evalhive.workspace_id": "W"}),
+        _container_mock(cid="2", labels={"evalhive.workspace_id": "W"}),
     ]
     cli = _client_with(cs)
     with patch.object(dm, "get_docker_client", return_value=cli):
@@ -107,8 +107,8 @@ def test_kill_all_agents_filter_includes_workspace_label():
         dm.kill_all_agents(workspace_id="abc")
     args, kwargs = cli.containers.list.call_args
     labels = kwargs["filters"]["label"]
-    assert "spawnhive.task_id" in labels
-    assert "spawnhive.workspace_id=abc" in labels
+    assert "evalhive.task_id" in labels
+    assert "evalhive.workspace_id=abc" in labels
 
 
 def test_list_agents_returns_dicts_per_container():
@@ -116,12 +116,12 @@ def test_list_agents_returns_dicts_per_container():
         _container_mock(
             cid="abcdef",
             labels={
-                "spawnhive.task_id": "t1",
-                "spawnhive.template_id": "tpl1",
-                "spawnhive.template_name": "T",
-                "spawnhive.workspace_id": "W",
+                "evalhive.task_id": "t1",
+                "evalhive.template_id": "tpl1",
+                "evalhive.template_name": "T",
+                "evalhive.workspace_id": "W",
             },
-            name="spawnhive-x",
+            name="evalhive-x",
         ),
     ]
     cli = _client_with(cs)
@@ -135,7 +135,7 @@ def test_list_agents_returns_dicts_per_container():
 
 
 def test_get_agent_stats_workspace_mismatch_returns_none():
-    c = _container_mock(cid="x", labels={"spawnhive.workspace_id": "OTHER"})
+    c = _container_mock(cid="x", labels={"evalhive.workspace_id": "OTHER"})
     cli = _client_with([c])
     with patch.object(dm, "get_docker_client", return_value=cli):
         assert dm.get_agent_stats("x", workspace_id="MINE") is None
@@ -145,12 +145,12 @@ def test_get_agent_stats_returns_payload():
     c = _container_mock(
         cid="xyz",
         labels={
-            "spawnhive.task_id": "t1",
-            "spawnhive.template_id": "tpl",
-            "spawnhive.template_name": "X",
-            "spawnhive.workspace_id": "W",
+            "evalhive.task_id": "t1",
+            "evalhive.template_id": "tpl",
+            "evalhive.template_name": "X",
+            "evalhive.workspace_id": "W",
         },
-        name="spawnhive-xyz",
+        name="evalhive-xyz",
     )
     cli = _client_with([c])
     with patch.object(dm, "get_docker_client", return_value=cli):
@@ -193,11 +193,11 @@ def test_spawn_agent_passes_correct_labels_and_env(tmp_path, monkeypatch):
     assert cid == "ctr-1234567890ab"
     _, kwargs = cli.containers.run.call_args
     labels = kwargs["labels"]
-    assert labels["spawnhive.task_id"] == "task-1"
-    assert labels["spawnhive.workspace_id"] == "ws-1"
-    assert labels["spawnhive.template_name"] == "alpha"
+    assert labels["evalhive.task_id"] == "task-1"
+    assert labels["evalhive.workspace_id"] == "ws-1"
+    assert labels["evalhive.template_name"] == "alpha"
     env = kwargs["environment"]
-    assert env["SPAWNHIVE_AGENT_TOKEN"] == "TKN"
+    assert env["EVALHIVE_AGENT_TOKEN"] == "TKN"
     assert env["LLM_MODEL"] == "M"
     assert env["AGENT_SOUL"] == "# soul"
     cfg.get_settings.cache_clear()

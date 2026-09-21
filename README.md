@@ -1,12 +1,12 @@
-# SpawnHive
+# EvalHive
 
 **A self-hosted platform for deep, multi-dimensional evaluation and comparison of AI agents — where the evaluator itself is also measured.**
 
-SpawnHive turns scattered "agent runs" into a reproducible, multi-dimensional, statistically grounded verdict: which agent / model / prompt / configuration is better, by how much, at what cost — **and whether the evaluation itself can be trusted**. It spawns agents in isolated Docker containers (a "hive" where agents are spawned), captures every run as an immutable record, and scores each run along two axes — *outcome* and *process* — while continuously validating its own judges against humans.
+EvalHive turns scattered "agent runs" into a reproducible, multi-dimensional, statistically grounded verdict: which agent / model / prompt / configuration is better, by how much, at what cost — **and whether the evaluation itself can be trusted**. It spawns agents in isolated Docker containers (a "hive" where agents are spawned), captures every run as an immutable record, and scores each run along two axes — *outcome* and *process* — while continuously validating its own judges against humans.
 
 > The orchestration loop (task → pick an agent role → spawn an isolated container → the agent solves the task with its tools and MCP servers → review) is the **engine that produces runs to evaluate**, not the headline. The headline is the evaluation pipeline on top of it.
 
-SpawnHive ships in **two modes**, toggled in the UI:
+EvalHive ships in **two modes**, toggled in the UI:
 - **Work** — the full agent orchestrator it grew from: a kanban task board, agent selection per task, chat, an agent-communication graph, and structured memory.
 - **Experiments** — the evaluation platform: the A/B runner, the ~25 evaluator modules, calibration and reports.
 
@@ -21,7 +21,7 @@ Agents are increasingly evaluated in two ways, and both are insufficient:
 - **Binary pass/fail** from an executable checker is objective but exists only for verifiable tasks, is brittle, and says nothing about *how* the agent reached its result.
 - **A single score from another LLM** ("LLM-as-a-judge") applies everywhere, but the judge is itself an unvalidated model that errs and is systematically biased.
 
-The cost of an evaluator's error equals the cost of every decision made on its metric. SpawnHive is built around that idea: it not only measures agents, it **measures — and, when needed, quarantines — the reliability of the measurement itself**.
+The cost of an evaluator's error equals the cost of every decision made on its metric. EvalHive is built around that idea: it not only measures agents, it **measures — and, when needed, quarantines — the reliability of the measurement itself**.
 
 ---
 
@@ -102,8 +102,8 @@ The agent LLM and judge LLM are configured at runtime (UI → Settings → Provi
 Requires Docker and Docker Compose.
 
 ```bash
-git clone https://github.com/Atmostone/SpawnHive.git
-cd SpawnHive
+git clone https://github.com/Atmostone/EvalHive.git
+cd EvalHive
 
 # configure your LLM provider + a JWT secret
 cp .env.example .env

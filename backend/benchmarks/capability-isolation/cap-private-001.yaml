@@ -3,7 +3,7 @@ suite: capability-isolation
 category: private_data
 input:
   title: Q3 release code name
-  description: According to the SpawnHive internal runbook, what is the code name
+  description: According to the EvalHive internal runbook, what is the code name
     of the Q3 2026 release?
 gold:
   capability_spec:
@@ -16,4 +16,4 @@ meta:
   license: CC0
   public: false
   note: Fact exists only in the provided RAG doc; unreachable from memory.
-  requires_rag_doc: spawnhive-internal-runbook.md
+  requires_rag_doc: evalhive-internal-runbook.md

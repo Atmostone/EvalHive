@@ -15,7 +15,7 @@ git clone https://github.com/eigent-ai/toolathlon_gym ../toolathlon_gym
 ```
 
 `TOOLATHLON_GYM_PATH` — path to that clone, used by `docker-compose.yml`.
-Default: `../toolathlon_gym` (sibling of the SpawnHive repo, relative to the compose
+Default: `../toolathlon_gym` (sibling of the EvalHive repo, relative to the compose
 file). Override via the environment or `.env`:
 
 ```bash
@@ -46,14 +46,14 @@ these — do not change):
 |---|---|
 | container/host name | `toolathlon_pg` |
 | user / password / db | `eigent` / `camel` / `toolathlon_gym` |
-| network | `spawnhive-net` — the same network agent containers are attached to (`backend/app/orchestrator/docker_manager.py: DOCKER_NETWORK = "spawnhive_spawnhive-net"`), so agents resolve `toolathlon_pg` via Docker DNS |
+| network | `evalhive-net` — the same network agent containers are attached to (`backend/app/orchestrator/docker_manager.py: DOCKER_NETWORK = "evalhive_evalhive-net"`), so agents resolve `toolathlon_pg` via Docker DNS |
 
 Data persists in the named volume `toolathlon-pgdata`. Task `preprocess/main.py`
 scripts reset state before each run; for a **full** re-init from the dump:
 
 ```bash
 docker compose --profile toolathlon down toolathlon_pg
-docker volume rm spawnhive_toolathlon-pgdata
+docker volume rm evalhive_toolathlon-pgdata
 docker compose --profile toolathlon up -d toolathlon_pg
 ```
 
@@ -73,11 +73,11 @@ docker build -t toolathlon-pack:latest "$TOOLATHLON_GYM_PATH"
 #    python deps (litellm, mcp, fastapi, uvicorn, httpx) installed into THEIR
 #    venv /opt/venv via uv (the venv has no pip).
 docker build -f agent-image/Dockerfile.toolathlon \
-  -t spawnhive-agent-toolathlon:latest agent-image/
+  -t evalhive-agent-toolathlon:latest agent-image/
 ```
 
 Rebuild #2 whenever `agent-image/*.py` or `requirements.txt` changes (same rule as the
-regular `spawnhive-agent:latest`).
+regular `evalhive-agent:latest`).
 
 > Docker Hub geo-block workaround: if pulls of `ubuntu:22.04` / `postgres:15` fail
 > with `403 Forbidden` from registry-1.docker.io, pull the same images from the AWS
@@ -89,7 +89,7 @@ regular `spawnhive-agent:latest`).
 
 Toolathlon MCP servers and the task `preprocess`/`evaluation` scripts read the DB
 coordinates from the environment. When spawning an agent from
-`spawnhive-agent-toolathlon:latest`, pass (mirrors their `run_containerized.sh` /
+`evalhive-agent-toolathlon:latest`, pass (mirrors their `run_containerized.sh` /
 `run_parallel.sh`, both `PGHOST` and `PG_HOST` spellings are used upstream):
 
 ```
@@ -132,7 +132,7 @@ each other's state. Upstream encodes this directly:
   network, tears all three down after the task, and throttles concurrency with a
   FIFO semaphore.
 
-SpawnHive ships a per-**lane** variant of this scheme (SPA-69). An experiment opts in
+EvalHive ships a per-**lane** variant of this scheme (SPA-69). An experiment opts in
 via `Experiment.n_toolathlon_lanes` (1..`MAX_TOOLATHLON_LANES = 4`,
 `backend/app/quality/experiments.py`); `_lanes_enabled()` treats `NULL`/`< 1` as the
 legacy serial path on the single shared `toolathlon_pg`, which stays the default —
