@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPA-78 — obtain the initial Let's Encrypt certificate for the SpawnHive edge.
+# SPA-78 — obtain the initial Let's Encrypt certificate for the EvalHive edge.
 # Adapted from the standard nginx-certbot bootstrap: nginx can't start on :443
 # without a cert, and the cert can't be issued without nginx serving the ACME
 # challenge on :80 — so we stand up a throwaway self-signed cert, start nginx,
@@ -9,14 +9,14 @@
 # ports 80 and 443 are open to the internet.
 #
 # Env:
-#   DOMAIN   (default spawnhive.cloud)
+#   DOMAIN   (default evalhive.cloud)
 #   EMAIL    (optional; used for expiry notices)
 #   STAGING  (set 1 to use LE staging while testing, avoids rate limits)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."   # repo root
 
-DOMAIN="${DOMAIN:-spawnhive.cloud}"
+DOMAIN="${DOMAIN:-evalhive.cloud}"
 EMAIL="${EMAIL:-}"
 STAGING="${STAGING:-0}"
 

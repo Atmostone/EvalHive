@@ -37,7 +37,7 @@ export default function Login() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <form onSubmit={submit} className="w-full max-w-sm bg-white rounded-lg shadow p-6 space-y-4">
-        <h1 className="text-2xl font-semibold">Sign in to SpawnHive</h1>
+        <h1 className="text-2xl font-semibold">Sign in to EvalHive</h1>
         <input
           autoFocus
           type="email"

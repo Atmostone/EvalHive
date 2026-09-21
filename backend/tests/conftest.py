@@ -1,4 +1,4 @@
-"""Shared fixtures for the SpawnHive test suite.
+"""Shared fixtures for the EvalHive test suite.
 
 Tests assume an externally-provided Postgres reachable via TEST_DATABASE_URL
 (e.g. a `pytest` service container in CI, or a docker-compose'd Postgres locally).
@@ -27,7 +27,7 @@ from sqlalchemy.pool import NullPool
 # Override DATABASE_URL before app.* imports so models bind to the test DB.
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://spawnhive:password@localhost:5432/spawnhive_test",
+    "postgresql+asyncpg://evalhive:password@localhost:5432/evalhive_test",
 )
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ.setdefault("JWT_SECRET", "test-secret-please-do-not-use-in-prod")

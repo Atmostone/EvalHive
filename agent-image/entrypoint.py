@@ -46,7 +46,7 @@ async def report_webhook(result: dict, *, idempotency_key: str | None = None) ->
         idempotency_key = uuid.uuid4().hex
     result["idempotency_key"] = idempotency_key
 
-    token = os.environ.get("SPAWNHIVE_AGENT_TOKEN", "")
+    token = os.environ.get("EVALHIVE_AGENT_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     delays = (2, 4, 8)

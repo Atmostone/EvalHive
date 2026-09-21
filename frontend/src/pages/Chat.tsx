@@ -210,7 +210,7 @@ export default function Chat() {
         {messages.length === 0 && !isStreaming && (
           <div className="flex flex-col items-center justify-center h-full text-gray-400">
             <Bot className="h-16 w-16 mb-4 text-gray-300" />
-            <p className="text-lg font-medium">SpawnHive Orchestrator</p>
+            <p className="text-lg font-medium">EvalHive Orchestrator</p>
             <p className="text-sm mt-1">Ask me to create tasks, check status, or explain results</p>
           </div>
         )}

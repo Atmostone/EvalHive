@@ -6,7 +6,7 @@ Requirements: Docker + docker compose v2.
 
 ```bash
 git clone <repo>
-cd SpawnHive
+cd EvalHive
 cp .env.example .env   # edit LLM_BASE_URL/API_KEY
 docker compose up -d
 docker compose exec api alembic upgrade head
@@ -44,7 +44,7 @@ OpenAPI: http://localhost:8002/docs.
 ## Agent image
 
 ```bash
-docker build -t spawnhive-agent:latest agent-image/
+docker build -t evalhive-agent:latest agent-image/
 ```
 
 Rebuild whenever `agent-image/*.py` or `requirements.txt` changes. The API uses this image through the Docker socket.
@@ -121,7 +121,7 @@ docker compose exec api pytest                 # full suite
 docker compose exec api pytest --cov=app       # with coverage
 ```
 
-CI (`.github/workflows/ci.yml`) enforces `--cov-fail-under=60`. Conftest creates `spawnhive_test` DB; if missing, run `docker compose exec postgres createdb -U spawnhive spawnhive_test` once.
+CI (`.github/workflows/ci.yml`) enforces `--cov-fail-under=60`. Conftest creates `evalhive_test` DB; if missing, run `docker compose exec postgres createdb -U evalhive evalhive_test` once.
 
 ## Useful curl commands (after R1)
 

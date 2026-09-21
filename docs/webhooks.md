@@ -10,7 +10,7 @@ Canonical path: **`POST /api/v1/agent-webhook/{task_id}`**.
 The legacy alias `POST /api/agent-webhook/{task_id}` stays around until 2026-08-01 — it returns the same status codes plus `Sunset` / `Deprecation` / `Link` headers (even on 4xx responses).
 
 Headers:
-- `Authorization: Bearer <SPAWNHIVE_AGENT_TOKEN>` — required. A missing, invalid, or expired token returns 401.
+- `Authorization: Bearer <EVALHIVE_AGENT_TOKEN>` — required. A missing, invalid, or expired token returns 401.
 - `Content-Type: application/json`.
 
 Pydantic validation runs **first**, before the Task lookup, to prevent timing-side-channel probes for valid task ids.
@@ -149,4 +149,4 @@ Available at `/openapi.json`. The discriminated union is rendered as `oneOf` wit
 
 ## Sister channel — `POST /api/v1/agent-log/{task_id}` (Foundations Этапы 1–2)
 
-Same auth model (`Authorization: Bearer <SPAWNHIVE_AGENT_TOKEN>` + `idempotency_key`), separate idempotency table (`agent_log_deliveries`). The agent posts full tool stdout/stderr in chunks here while keeping the existing `agent_progress` webhook (with the 500-char `recent_output` ticker) untouched — the dashboard live-status uses progress, the task-drawer log viewer uses log chunks. After event=completed/failed/aborted the webhook handler compacts chunks to a MinIO blob and prunes `agent_log_chunks`. See `docs/architecture.md` (`Frontend / Tasks (AgentLogViewer)`) and `docs/data-model.md` (`agent_log_chunks`, `agent_log_deliveries`, `tasks.log_archive_s3_path`).
+Same auth model (`Authorization: Bearer <EVALHIVE_AGENT_TOKEN>` + `idempotency_key`), separate idempotency table (`agent_log_deliveries`). The agent posts full tool stdout/stderr in chunks here while keeping the existing `agent_progress` webhook (with the 500-char `recent_output` ticker) untouched — the dashboard live-status uses progress, the task-drawer log viewer uses log chunks. After event=completed/failed/aborted the webhook handler compacts chunks to a MinIO blob and prunes `agent_log_chunks`. See `docs/architecture.md` (`Frontend / Tasks (AgentLogViewer)`) and `docs/data-model.md` (`agent_log_chunks`, `agent_log_deliveries`, `tasks.log_archive_s3_path`).

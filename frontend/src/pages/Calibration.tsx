@@ -12,7 +12,7 @@ import type { CalibrationQueueItem } from '@/types'
 
 type Filter = 'pending' | 'all'
 
-const BLIND_STORAGE_KEY = 'spawnhive.calibration.blind'
+const BLIND_STORAGE_KEY = 'evalhive.calibration.blind'
 
 export default function Calibration() {
   const queryClient = useQueryClient()

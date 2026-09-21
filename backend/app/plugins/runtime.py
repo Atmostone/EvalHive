@@ -57,7 +57,7 @@ class AgentRuntime(ABC):
     def image_id(self, container_id: str) -> str | None:
         """Id of the image the container is actually running (SPA-84).
 
-        A tag is not an identity: rebuilding ``spawnhive-agent:latest`` changes
+        A tag is not an identity: rebuilding ``evalhive-agent:latest`` changes
         what runs while the name stays put, and that has moved measured pass
         rates in this project before. Only the resolved id can tell those apart.
         Not abstract — a runtime that cannot answer returns None, and the caller

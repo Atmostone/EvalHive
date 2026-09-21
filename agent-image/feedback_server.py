@@ -28,7 +28,7 @@ state: dict[str, Any] = {
 
 queue: asyncio.Queue[dict] = asyncio.Queue()
 
-app = FastAPI(title="SpawnHive agent control")
+app = FastAPI(title="EvalHive agent control")
 
 
 class FeedbackBody(BaseModel):

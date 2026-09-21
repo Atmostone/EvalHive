@@ -67,7 +67,7 @@ def test_the_resolved_tool_set_changes_the_condition():
 
 def test_a_rebuilt_image_under_the_same_tag_changes_the_condition():
     """The point of hashing the resolved id rather than the tag: rebuilding
-    spawnhive-agent:latest has moved measured pass rates in this project, and the
+    evalhive-agent:latest has moved measured pass rates in this project, and the
     tag says nothing about it. Note spec.image is None on the default path."""
     before = spawn_condition_fingerprints(_spec(), MODEL, "sha256:aaa")
     after = spawn_condition_fingerprints(_spec(), MODEL, "sha256:bbb")
