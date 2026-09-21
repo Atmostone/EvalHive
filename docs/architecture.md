@@ -32,13 +32,13 @@
                │ docker.sock│  qdrant  │          │
                │            │  :6333   │          │
         ┌──────▼─────────┐  └──────────┘   ┌──────────┐
-        │ spawnhive-agent│  ┌──────────┐   │  redis   │ pubsub
-        │  containers    │  │  minio   │   │  :6379   │  spawnhive.events
+        │ evalhive-agent│  ┌──────────┐   │  redis   │ pubsub
+        │  containers    │  │  minio   │   │  :6379   │  evalhive.events
         │  (per task)    │  │  :9000   │   └──────────┘
         └────────────────┘  └──────────┘
 ```
 
-WS fan-out across api replicas goes through Redis pub/sub (`spawnhive.events`); when `REDIS_URL` is unset the broadcast falls back to in-process delivery (single-replica mode).
+WS fan-out across api replicas goes through Redis pub/sub (`evalhive.events`); when `REDIS_URL` is unset the broadcast falls back to in-process delivery (single-replica mode).
 
 api containers still mount `docker.sock` — they use the in-process `DockerRuntime`. This is the transitional workaround #13 until a `RemoteAgentRuntime` (RPC to orchestrator) lands; the call-site migration onto the `AgentRuntime` ABC is already done, what remains is the process split.
 
@@ -67,7 +67,7 @@ user moves to ready ── PATCH ──▶ api ── insert agent_events ──
                             spawn_agent(template, env)
                                   │
                                   ▼
-                       docker run spawnhive-agent
+                       docker run evalhive-agent
                             │  ENV: TASK_DESCRIPTION, AGENT_TOOLS, MCP_SERVERS,
                             │       AGENT_MEMORY_CONTEXT, OPENAI_API_KEY, …
                             │
@@ -1077,7 +1077,7 @@ backup was a Postgres dump. Rows without the volume point into nothing.
   and `counts.expected_record_blobs` how many a whole bundle must hold, so a lost or corrupted
   archive is caught rather than assumed away. It is not tamper-proofing — the index lives inside
   the archive — it detects what actually happens to object stores.
-- **The checkout is named from the image, not discovered at runtime.** `SPAWNHIVE_GIT_SHA` is
+- **The checkout is named from the image, not discovered at runtime.** `EVALHIVE_GIT_SHA` is
   baked in via a Dockerfile `ARG` (`GIT_SHA=$(git rev-parse HEAD) docker compose build api`). The
   first cut shelled out to `git rev-parse` inside a container that has no git binary and where
   `/app` is not a work tree, so the field was null on every bundle ever produced — and read as
@@ -1678,15 +1678,15 @@ and until SPA-111 the orchestrator met neither.
 
    Agent token:
      Before spawn_agent the orchestrator issues a per-task token (kind=agent) and stores its sha256.
-     The plaintext goes to the container via the SPAWNHIVE_AGENT_TOKEN env var.
+     The plaintext goes to the container via the EVALHIVE_AGENT_TOKEN env var.
      The agent uses it in Authorization for /api/knowledge/search and (post-R2) for /api/v1/agent-webhook.
 ```
 
 ### Agent isolation
 
 `docker_manager.spawn_agent` sets the labels:
-- `spawnhive.task_id`, `spawnhive.template_id`, `spawnhive.template_name`
-- `spawnhive.workspace_id` — the real workspace UUID (post-R1; previously it was `shared`).
+- `evalhive.task_id`, `evalhive.template_id`, `evalhive.template_name`
+- `evalhive.workspace_id` — the real workspace UUID (post-R1; previously it was `shared`).
 
 `list_agents(workspace_id)` / `kill_agent(... workspace_id)` / `kill_all_agents(workspace_id)` filter by that label. Cross-workspace `kill-all` is not allowed.
 
@@ -1711,7 +1711,7 @@ All routes share the `RequireAuth` wrapper in `App.tsx`; sidebar entries are def
 
 `TaskDetail.tsx` mounts `<AgentLogViewer taskId={t.id} archived={!!t.log_archive_s3_path} />` between `<ReasoningTimeline>` and the Events section, but only when the task has reached `in_progress`/`review`/`awaiting_approval`/`done`/`failed` (statuses where an agent has actually run).
 
-- **Initial load** — `GET /api/tasks/{id}/log?limit=200`. Response carries `archived: bool`. While the task is active it returns DB chunks; after `event=completed/failed/aborted` the orchestrator compacts to MinIO blob (`s3://spawnhive/logs/<task_id>.log`), DELETEs DB chunks, and the same GET transparently reads from the blob with the same per-chunk shape.
+- **Initial load** — `GET /api/tasks/{id}/log?limit=200`. Response carries `archived: bool`. While the task is active it returns DB chunks; after `event=completed/failed/aborted` the orchestrator compacts to MinIO blob (`s3://evalhive/logs/<task_id>.log`), DELETEs DB chunks, and the same GET transparently reads from the blob with the same per-chunk shape.
 - **Live updates** — opens `WebSocket(/ws/tasks/{id}/log)` via `buildWsUrl`. Frames have wire `type: "log_chunk"` and `_kind: "log_chunk"` filter so the existing `/ws/events` and `/ws/agents/{cid}` subscribers don't accidentally receive them. Component skips WS subscription entirely once `archived=true`.
 - **Virtualization** — `react-virtuoso` `<Virtuoso>` renders only viewport-visible chunks (verified ~6 of 15 rendered at any time within the 360 px container). `followOutput="auto"` auto-scrolls to bottom on append unless the user scrolls up; toggleable via `follow` checkbox.
 - **Pagination** — "Load earlier" button when initial response returned exactly `PAGE_SIZE` items; refetches `?from_seq=` to walk backward without losing append-from-bottom.

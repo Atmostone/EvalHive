@@ -70,7 +70,7 @@ export default function Sidebar() {
     <aside className="w-64 bg-gray-900 text-gray-300 flex flex-col">
       <div className="p-4 border-b border-gray-700">
         <Link to="/">
-          <h1 className="text-xl font-bold text-white">SpawnHive</h1>
+          <h1 className="text-xl font-bold text-white">EvalHive</h1>
         </Link>
         <p className="text-xs text-gray-500 mt-1">{SUBTITLE[mode]}</p>
       </div>

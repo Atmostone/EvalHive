@@ -1,4 +1,4 @@
-# Production/demo overlay for SpawnHive (SPA-78).
+# Production/demo overlay for EvalHive (SPA-78).
 #
 # Usage (from the repo root on the server, with a filled-in .env):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -28,12 +28,12 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://spawnhive:${POSTGRES_PASSWORD:-password}@postgres:5432/spawnhive
+      - DATABASE_URL=postgresql+asyncpg://evalhive:${POSTGRES_PASSWORD:-password}@postgres:5432/evalhive
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - spawnhive-net
+      - evalhive-net
     restart: "no"
     logging: *logging
 

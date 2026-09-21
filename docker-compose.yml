@@ -8,7 +8,7 @@ services:
     depends_on:
       - api
     networks:
-      - spawnhive-net
+      - evalhive-net
 
   api:
     build:
@@ -37,7 +37,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://spawnhive:${POSTGRES_PASSWORD:-password}@postgres:5432/spawnhive
+      - DATABASE_URL=postgresql+asyncpg://evalhive:${POSTGRES_PASSWORD:-password}@postgres:5432/evalhive
       - QDRANT_URL=http://qdrant:6333
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
@@ -58,7 +58,7 @@ services:
       redis:
         condition: service_started
     networks:
-      - spawnhive-net
+      - evalhive-net
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   orchestrator:
@@ -71,7 +71,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://spawnhive:${POSTGRES_PASSWORD:-password}@postgres:5432/spawnhive
+      - DATABASE_URL=postgresql+asyncpg://evalhive:${POSTGRES_PASSWORD:-password}@postgres:5432/evalhive
       - QDRANT_URL=http://qdrant:6333
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
@@ -85,7 +85,7 @@ services:
       redis:
         condition: service_started
     networks:
-      - spawnhive-net
+      - evalhive-net
     command: python -m app.workers.orchestrator_main
 
   scheduler:
@@ -102,7 +102,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://spawnhive:${POSTGRES_PASSWORD:-password}@postgres:5432/spawnhive
+      - DATABASE_URL=postgresql+asyncpg://evalhive:${POSTGRES_PASSWORD:-password}@postgres:5432/evalhive
       - REDIS_URL=redis://redis:6379/0
       - DATA_DIR=/data
       - HOST_DATA_DIR=${PWD}/data
@@ -113,7 +113,7 @@ services:
       redis:
         condition: service_started
     networks:
-      - spawnhive-net
+      - evalhive-net
     command: python -m app.workers.scheduler_main
 
   frontend:
@@ -130,30 +130,30 @@ services:
     depends_on:
       - nginx
     networks:
-      - spawnhive-net
+      - evalhive-net
 
   postgres:
     image: postgres:16
     environment:
-      - POSTGRES_DB=spawnhive
-      - POSTGRES_USER=spawnhive
+      - POSTGRES_DB=evalhive
+      - POSTGRES_USER=evalhive
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spawnhive"]
+      test: ["CMD-SHELL", "pg_isready -U evalhive"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
-      - spawnhive-net
+      - evalhive-net
 
   qdrant:
     image: qdrant/qdrant:latest
     volumes:
       - qdrantdata:/qdrant/storage
     networks:
-      - spawnhive-net
+      - evalhive-net
 
   minio:
     image: minio/minio:latest
@@ -166,12 +166,12 @@ services:
     ports:
       - "9001:9001"
     networks:
-      - spawnhive-net
+      - evalhive-net
 
   redis:
     image: redis:7-alpine
     networks:
-      - spawnhive-net
+      - evalhive-net
 
   # Toolathlon-GYM mock database (profile "toolathlon", see docs/toolathlon.md).
   # Not started by default: docker compose --profile toolathlon up -d toolathlon_pg
@@ -196,7 +196,7 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - spawnhive-net
+      - evalhive-net
 
   # SPA-69: isolated PG lanes for PARALLEL Toolathlon runs (profile "toolathlon-lanes").
   # Each lane is an independent clone of the gym DB, so concurrent cells' preprocess
@@ -221,7 +221,7 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - spawnhive-net
+      - evalhive-net
   toolathlon_pg_lane_1:
     <<: *toolathlon_lane
     container_name: toolathlon_pg_lane_1
@@ -252,5 +252,5 @@ volumes:
   toolathlon-pgdata-lane-3:
 
 networks:
-  spawnhive-net:
+  evalhive-net:
     driver: bridge

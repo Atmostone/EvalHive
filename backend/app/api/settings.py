@@ -151,5 +151,5 @@ async def export_all(
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="spawnhive_backup_{ws_id}_{ts}.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="evalhive_backup_{ws_id}_{ts}.zip"'},
     )

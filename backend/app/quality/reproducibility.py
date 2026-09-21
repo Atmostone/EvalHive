@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_SCHEMA_VERSION = 1
 _CAP = 20000  # mirror engine._FLAT_MEMORY_CAP — bound large captured text
 _FLAT_KEYS = ("rules_md", "memory_md")
-_RAG_COLLECTION = "spawnhive_docs"
+_RAG_COLLECTION = "evalhive_docs"
 
 
 # --------------------------------------------------------------------------- #

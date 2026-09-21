@@ -228,10 +228,10 @@ def test_the_checkout_is_named_from_the_build_or_honestly_unknown(monkeypatch):
     """The original implementation shelled out to git from a container with no git
     binary and no work tree, so this field was null on every bundle ever made —
     indistinguishable from «this one happens not to say»."""
-    monkeypatch.setenv("SPAWNHIVE_GIT_SHA", "deadbeef")
+    monkeypatch.setenv("EVALHIVE_GIT_SHA", "deadbeef")
     assert B.platform_identity() == {"git_sha": "deadbeef", "source": "build"}
 
-    monkeypatch.setenv("SPAWNHIVE_GIT_SHA", "")
+    monkeypatch.setenv("EVALHIVE_GIT_SHA", "")
     monkeypatch.setattr(
         "subprocess.run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError())
     )

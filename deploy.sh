@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPA-78 — bring up the SpawnHive production/demo stack on the server.
+# SPA-78 — bring up the EvalHive production/demo stack on the server.
 # Builds the agent runtime image (compose never builds it, so a first spawn would
 # otherwise fail with ImageNotFound), then starts base + prod overlay.
 # Run from the repo root, with a filled-in .env (see .env.prod.example).
@@ -14,8 +14,8 @@ fi
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 
-echo "==> Building agent runtime image (spawnhive-agent:latest)"
-docker build -t spawnhive-agent:latest agent-image/
+echo "==> Building agent runtime image (evalhive-agent:latest)"
+docker build -t evalhive-agent:latest agent-image/
 
 echo "==> Building + starting the production stack (migrations run automatically)"
 $COMPOSE up -d --build

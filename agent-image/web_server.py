@@ -73,7 +73,7 @@ async def _web_search(query: str, max_results: int) -> str:
 
 async def _web_fetch(url: str) -> str:
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        r = await client.get(url, headers={"User-Agent": "SpawnHive-agent/1.0"})
+        r = await client.get(url, headers={"User-Agent": "EvalHive-agent/1.0"})
         r.raise_for_status()
         text = r.text
     return text[:_FETCH_CAP] + ("\n…[truncated]" if len(text) > _FETCH_CAP else "")

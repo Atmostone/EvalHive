@@ -28,7 +28,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 PACK_IMAGE = "toolathlon-pack:latest"
-NETWORK = "spawnhive_spawnhive-net"
+NETWORK = "evalhive_evalhive-net"
 PG_ENV = {
     "PGHOST": "toolathlon_pg",
     "PGPORT": "5432",
@@ -138,7 +138,7 @@ def _run_pack(
         environment=env,
         working_dir=f"{GYM_MOUNT}/{task_path}",
         detach=True,
-        labels={"spawnhive.toolathlon": "1", "spawnhive.task_id": str(task_id)},
+        labels={"evalhive.toolathlon": "1", "evalhive.task_id": str(task_id)},
     )
     return container.id
 
