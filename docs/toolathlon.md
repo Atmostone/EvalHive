@@ -143,7 +143,7 @@ the host varies — db name, user and password stay identical, so the gym script
 changes; `None` falls back to `toolathlon_pg`).
 
 The lanes are N **static** per-lane `postgres:15` containers
-(`toolathlon_pg_lane_0..3` in `docker-compose.yml`), each an independent clone of the
+(`toolathlon_pg_lane_0..7` in `docker-compose.yml`), each an independent clone of the
 gym DB from the same `db/init.sql.gz` on its own named volume, behind the
 `toolathlon-lanes` compose profile:
 

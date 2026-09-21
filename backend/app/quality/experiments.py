@@ -113,8 +113,10 @@ MAX_TOTAL_RUNS = 1000
 # SPA-69: upper bound on parallel Toolathlon PG lanes — matches the number of
 # ``toolathlon_pg_lane_<i>`` containers provisioned in docker-compose (profile
 # "toolathlon-lanes"). Asking for more lanes than containers would pin a run to a
-# non-existent host, so reject it at create time.
-MAX_TOOLATHLON_LANES = 4
+# non-existent host, so reject it at create time. Raise the two together: this
+# number and the lane services in docker-compose.yml are one fact in two places,
+# and the compose side is the one that actually has to exist.
+MAX_TOOLATHLON_LANES = 8
 
 
 # --- configuration matrix ---------------------------------------------------

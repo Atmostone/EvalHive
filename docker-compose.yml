@@ -24,6 +24,10 @@ services:
       - ./data/shared:/data/shared
       - ./data/workspaces:/data/workspaces
       - ./backend/app:/app/app
+      # Read-only, for tests only: the lane cap in experiments.py and the lane
+      # services here are one fact in two files, and the test that claims to
+      # compare them can only do so if it can read this one (SPA-94).
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
       # Read-only, for tests only: nothing in agent-image/ has ever been under
       # test, and the one place that matters — which field each vendor puts a
       # model's reasoning in — is exactly where an unverified assumption hides
@@ -156,7 +160,10 @@ services:
       - evalhive-net
 
   minio:
-    image: minio/minio:latest
+    # quay.io, not Docker Hub: MinIO no longer publishes `minio/minio` there, so
+    # a fresh `compose up` fails with "pull access denied" on an image name that
+    # looks perfectly ordinary. Same upstream project, reachable registry.
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
@@ -240,6 +247,30 @@ services:
     volumes:
       - ${TOOLATHLON_GYM_PATH:-../toolathlon_gym}/db/init.sql.gz:/docker-entrypoint-initdb.d/init.sql.gz:ro
       - toolathlon-pgdata-lane-3:/var/lib/postgresql/data
+  toolathlon_pg_lane_4:
+    <<: *toolathlon_lane
+    container_name: toolathlon_pg_lane_4
+    volumes:
+      - ${TOOLATHLON_GYM_PATH:-../toolathlon_gym}/db/init.sql.gz:/docker-entrypoint-initdb.d/init.sql.gz:ro
+      - toolathlon-pgdata-lane-4:/var/lib/postgresql/data
+  toolathlon_pg_lane_5:
+    <<: *toolathlon_lane
+    container_name: toolathlon_pg_lane_5
+    volumes:
+      - ${TOOLATHLON_GYM_PATH:-../toolathlon_gym}/db/init.sql.gz:/docker-entrypoint-initdb.d/init.sql.gz:ro
+      - toolathlon-pgdata-lane-5:/var/lib/postgresql/data
+  toolathlon_pg_lane_6:
+    <<: *toolathlon_lane
+    container_name: toolathlon_pg_lane_6
+    volumes:
+      - ${TOOLATHLON_GYM_PATH:-../toolathlon_gym}/db/init.sql.gz:/docker-entrypoint-initdb.d/init.sql.gz:ro
+      - toolathlon-pgdata-lane-6:/var/lib/postgresql/data
+  toolathlon_pg_lane_7:
+    <<: *toolathlon_lane
+    container_name: toolathlon_pg_lane_7
+    volumes:
+      - ${TOOLATHLON_GYM_PATH:-../toolathlon_gym}/db/init.sql.gz:/docker-entrypoint-initdb.d/init.sql.gz:ro
+      - toolathlon-pgdata-lane-7:/var/lib/postgresql/data
 
 volumes:
   pgdata:
@@ -250,6 +281,10 @@ volumes:
   toolathlon-pgdata-lane-1:
   toolathlon-pgdata-lane-2:
   toolathlon-pgdata-lane-3:
+  toolathlon-pgdata-lane-4:
+  toolathlon-pgdata-lane-5:
+  toolathlon-pgdata-lane-6:
+  toolathlon-pgdata-lane-7:
 
 networks:
   evalhive-net:

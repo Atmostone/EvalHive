@@ -45,9 +45,9 @@ api containers still mount `docker.sock` — they use the in-process `DockerRunt
 Two **optional** profiles add Postgres sandboxes for the Toolathlon-GYM benchmark (SPA-69; neither starts by default — see [`toolathlon.md`](toolathlon.md)):
 
 - `toolathlon_pg` (profile `toolathlon`) — a single shared mock Postgres (the benchmark's "Google" stand-in) used by serial/legacy runs.
-- `toolathlon_pg_lane_0..3` (profile `toolathlon-lanes`) — four static per-run PG-isolation lanes for **parallel** Toolathlon runs; the scheduler pins each run to a lane via `Experiment.n_toolathlon_lanes`.
+- `toolathlon_pg_lane_0..7` (profile `toolathlon-lanes`) — eight static per-run PG-isolation lanes for **parallel** Toolathlon runs; the scheduler pins each run to a lane via `Experiment.n_toolathlon_lanes`.
 
-With both profiles the compose stack defines 14 services (the 9 core services above + `toolathlon_pg` + 4 lanes).
+With both profiles the compose stack defines 18 services (the 9 core services above + `toolathlon_pg` + 8 lanes).
 
 ## Main flows
 

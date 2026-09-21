@@ -5,6 +5,10 @@ Covers the scheduler's lane allocation/pin primitives in
 host override, and the opt-in gate. No DB and no Docker — just the pure logic that
 the audit flagged as untested."""
 
+import pathlib
+import re
+
+import pytest
 from types import SimpleNamespace
 
 from app.quality.experiments import (
@@ -48,6 +52,27 @@ def test_lanes_enabled_is_opt_in():
 
 
 def test_max_lanes_matches_provisioned_containers():
-    # the create-time cap must equal the number of toolathlon_pg_lane_<i>
-    # containers in docker-compose (profile "toolathlon-lanes").
-    assert MAX_TOOLATHLON_LANES == 4
+    # The create-time cap must equal the number of `toolathlon_pg_lane_<i>`
+    # containers docker-compose actually provisions: asking for more lanes than
+    # exist pins a run to a non-existent PG host.
+    #
+    # This used to assert the literal `== 4`, which is a second copy of the
+    # number rather than a comparison against it — so it would have passed
+    # unchanged while compose said anything at all. It now reads the compose
+    # file, which is mounted read-only into the api image for exactly this.
+    compose = pathlib.Path("/app/docker-compose.yml")
+    if not compose.exists():  # running outside the container
+        compose = pathlib.Path(__file__).resolve().parents[3] / "docker-compose.yml"
+    if not compose.exists():
+        pytest.skip("docker-compose.yml not reachable from here")
+
+    provisioned = set(
+        re.findall(r"container_name:\s*(toolathlon_pg_lane_\d+)", compose.read_text())
+    )
+    assert MAX_TOOLATHLON_LANES == len(provisioned), (
+        f"cap is {MAX_TOOLATHLON_LANES} but compose provisions "
+        f"{len(provisioned)} lanes: {sorted(provisioned)}"
+    )
+    # Lanes are indexed 0..n-1 by `_first_free_lane`; a gap would pin a run to a
+    # host that is not there even when the counts happen to match.
+    assert provisioned == {f"toolathlon_pg_lane_{i}" for i in range(MAX_TOOLATHLON_LANES)}

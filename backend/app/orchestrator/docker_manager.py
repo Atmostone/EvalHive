@@ -216,12 +216,26 @@ def reap_exited_agent_containers(grace_minutes: int = 5) -> int:
 
 
 def list_agents(workspace_id: str | None = None) -> list[dict]:
-    """List active evalhive agent containers (optionally scoped to workspace)."""
+    """List active evalhive AGENT containers (optionally scoped to workspace).
+
+    Toolathlon's preprocess/eval helpers carry ``{LABEL_PREFIX}.task_id`` too, so
+    a filter on that label alone counts them as agents. The orchestrator gates
+    spawning on ``len(list_active()) < max_concurrent_agents``, which turns that
+    miscount into a deadlock at high lane counts: with 8 lanes and a limit of 8,
+    the 8 preprocess containers fill every slot, no agent can start, and the
+    preprocess containers wait forever for the agent that the limit forbids.
+    Observed exactly there — 8 `tlpre-*` up, 8 cells stuck in READY, the
+    orchestrator alive and idle. It stayed hidden at 4 lanes because 4 helpers
+    plus 4 agents happens to equal the same 8.
+    """
     client = get_docker_client()
     filters = {"label": [f"{LABEL_PREFIX}.task_id"]}
     if workspace_id is not None:
         filters["label"] = filters["label"] + [f"{LABEL_PREFIX}.workspace_id={workspace_id}"]
-    containers = client.containers.list(filters=filters)
+    containers = [
+        c for c in client.containers.list(filters=filters)
+        if not c.labels.get(f"{LABEL_PREFIX}.toolathlon")
+    ]
     agents = []
     for c in containers:
         agents.append({

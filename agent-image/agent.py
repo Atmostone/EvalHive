@@ -605,12 +605,24 @@ async def _connect_mcp_servers(stack: AsyncExitStack, configs: list[dict]) -> tu
 
         for t in tools_resp.tools:
             prefixed = f"{srv_name}{MCP_SEPARATOR}{t.name}"
+            # The MCP SDK renamed this field from `inputSchema` to `input_schema`,
+            # and `mcp` is unpinned in requirements.txt — so an image built today
+            # gets the new name while one built months ago has the old. Reading
+            # only `inputSchema` crashed every Toolathlon run on a freshly built
+            # image with `AttributeError: 'Tool' object has no attribute
+            # 'inputSchema'`, killing the agent before its first tool call while
+            # the identical code kept working on the older local image. Ask the
+            # object what it actually has (the SPA-114 rule: check the installed
+            # client, not the documentation).
+            schema = getattr(t, "input_schema", None)
+            if schema is None:
+                schema = getattr(t, "inputSchema", None)
             extra_specs.append({
                 "type": "function",
                 "function": {
                     "name": prefixed,
                     "description": t.description or f"MCP tool {t.name} from {srv_name}",
-                    "parameters": t.inputSchema or {"type": "object", "properties": {}},
+                    "parameters": schema or {"type": "object", "properties": {}},
                 },
             })
             routing[prefixed] = (session, t.name)

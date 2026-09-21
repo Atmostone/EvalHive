@@ -116,10 +116,20 @@ scripts/restore.sh --backup <dir> --live
 
 ## Tests
 
+The image ships only `requirements.txt` — CI installs the dev extras on the runner, so
+`pytest` is **not** in the container until you put it there. It is also lost on every
+container restart, which is why the install is part of the command rather than a setup step
+you are assumed to remember:
+
 ```bash
-docker compose exec api pytest                 # full suite
-docker compose exec api pytest --cov=app       # with coverage
+docker compose exec api sh -c 'pip install -q -r requirements-dev.txt && \
+  TEST_DATABASE_URL=postgresql+asyncpg://evalhive:password@postgres:5432/evalhive_test \
+  pytest tests/unit -q'
 ```
+
+`TEST_DATABASE_URL` is required in the container: conftest defaults to `localhost:5432`,
+which does not resolve there, and the whole suite dies at the `_migrate` fixture with an
+unhelpful `getaddrinfo() returned empty list`.
 
 CI (`.github/workflows/ci.yml`) enforces `--cov-fail-under=60`. Conftest creates `evalhive_test` DB; if missing, run `docker compose exec postgres createdb -U evalhive evalhive_test` once.
 
