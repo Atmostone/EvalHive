@@ -71,12 +71,12 @@ docker compose exec api alembic downgrade -1
 
 A Postgres dump is **not** a backup of this stand. `quality_records.record_s3_path`,
 `tasks.log_archive_s3_path` and `knowledge_documents.s3_path` hold keys into MinIO, not
-content — traces, execution snapshots and deliverables live in the `spawnhive_miniodata`
+content — traces, execution snapshots and deliverables live in the `evalhive_miniodata`
 volume. Dump the database alone and you restore rows that point into nothing.
 
 ```bash
 docker compose up -d postgres minio            # both must be up
-scripts/backup.sh                              # -> ~/spawnhive-backups/spawnhive-backup-<UTC>/
+scripts/backup.sh                              # -> ~/evalhive-backups/evalhive-backup-<UTC>/
 scripts/backup.sh --out /some/where            # somewhere else
 ```
 

@@ -28,7 +28,7 @@ source "${REPO_ROOT}/scripts/_backup_lib.sh"
 BACKUP=""
 MODE="scratch"
 KEEP=0
-PROJECT="spawnhive"
+PROJECT="evalhive"
 
 usage() { sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -114,7 +114,7 @@ if [[ "${MODE}" == "live" ]]; then
 
     echo "==> restoring database"
     docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d postgres >/dev/null
-    until docker exec "${PROJECT}-postgres-1" pg_isready -U spawnhive >/dev/null 2>&1; do sleep 1; done
+    until docker exec "${PROJECT}-postgres-1" pg_isready -U evalhive >/dev/null 2>&1; do sleep 1; done
     PGUSER="$(docker exec "${PROJECT}-postgres-1" printenv POSTGRES_USER)"
     PGDB="$(docker exec "${PROJECT}-postgres-1" printenv POSTGRES_DB)"
     docker exec -i "${PROJECT}-postgres-1" pg_restore -U "${PGUSER}" -d "${PGDB}" \
@@ -127,10 +127,10 @@ fi
 # ===========================================================  scratch restore ==
 
 STAMP="$(date -u +%Y%m%d%H%M%S)"
-SCRATCH_PG="spawnhive-restore-rehearsal-${STAMP}"
-SCRATCH_VOL="spawnhive-restore-rehearsal-${STAMP}-minio"
-SCRATCH_USER="spawnhive"
-SCRATCH_DB="spawnhive"
+SCRATCH_PG="evalhive-restore-rehearsal-${STAMP}"
+SCRATCH_VOL="evalhive-restore-rehearsal-${STAMP}-minio"
+SCRATCH_USER="evalhive"
+SCRATCH_DB="evalhive"
 
 cleanup() {
     if [[ "${KEEP}" -eq 1 ]]; then

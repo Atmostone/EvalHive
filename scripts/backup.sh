@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# SPA-92. One command that backs up a SpawnHive stand: the Postgres dump AND the
+# SPA-92. One command that backs up a EvalHive stand: the Postgres dump AND the
 # MinIO volume, written together with a manifest that pairs them.
 #
 #     scripts/backup.sh [--out DIR] [--project NAME]
@@ -30,8 +30,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/_backup_lib.sh
 source "${REPO_ROOT}/scripts/_backup_lib.sh"
 
-OUT_DIR="${HOME}/spawnhive-backups"
-PROJECT="spawnhive"
+OUT_DIR="${HOME}/evalhive-backups"
+PROJECT="evalhive"
 
 usage() { sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -70,7 +70,7 @@ PGDB="$(docker exec "${PG_CONTAINER}" printenv POSTGRES_DB)"
 psql_q() { docker exec "${PG_CONTAINER}" psql -U "${PGUSER}" -d "${PGDB}" -At -c "$1"; }
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-DEST="${OUT_DIR}/spawnhive-backup-${STAMP}"
+DEST="${OUT_DIR}/evalhive-backup-${STAMP}"
 mkdir -p "${DEST}"
 
 echo "==> backup destination: ${DEST}"
@@ -174,7 +174,7 @@ else:
     status = "nothing_to_check"
 
 manifest = {
-    "kind": "spawnhive-stand-backup",
+    "kind": "evalhive-stand-backup",
     "version": 1,
     "created_at": os.environ["STAMP"],
     "source": {
