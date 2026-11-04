@@ -107,7 +107,16 @@ function LiveControls({ attempt }: { attempt: ExecutionAttempt }) {
 }
 
 export default function AttemptControls({ taskId }: { taskId: string }) {
+  const queryClient = useQueryClient()
   const attempts = useQuery({ queryKey: ['task-attempts', taskId], queryFn: () => attemptsApi.list(taskId), refetchInterval: 1000 })
+  const latest = attempts.data?.[0]
+  const projected = latest?.completeness.task_projection === 'committed' ? latest.id : null
+  useEffect(() => {
+    if (projected) {
+      queryClient.invalidateQueries({ queryKey: ['task', taskId] })
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+    }
+  }, [projected, taskId, queryClient])
   if (attempts.error) return <p role="alert" className="text-sm text-red-600">{attempts.error.message}</p>
   return attempts.data?.[0] ? <LiveControls key={attempts.data[0].id} attempt={attempts.data[0]} /> : null
 }

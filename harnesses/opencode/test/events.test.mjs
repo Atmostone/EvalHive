@@ -75,6 +75,27 @@ test('native replay and interleaved child tools retain stable identities', async
   assert.equal(calls[3].data.duration_ms, 20);
 });
 
+test('nested tools retain the native parent call and portable MCP aliases', async () => {
+  const {writer, events} = recorder();
+  const translator = new EventTranslator(writer, {}, {m0_fixture: 'fixture__'});
+  translator.parents.set('child', 'root');
+  translator.snapshot([{info: {id: 'root-message', sessionID: 'root', role: 'assistant'}, parts: [{
+    id: 'parent', sessionID: 'root', messageID: 'root-message', type: 'tool', tool: 'task', callID: 'parent-call',
+    state: {status: 'running', input: {}, metadata: {sessionId: 'child'}, time: {start: 1}},
+  }]}]);
+  translator.snapshot([{info: {id: 'child-message', sessionID: 'child', role: 'assistant'}, parts: [{
+    id: 'nested', sessionID: 'child', messageID: 'child-message', type: 'tool', tool: 'm0_fixture_echo', callID: 'child-call',
+    state: {status: 'completed', input: {}, output: 'Evidence', time: {start: 2, end: 3}},
+  }]}]);
+  await writer.drain();
+  const start = events.find(event => event.name === 'tool.start' && event.data.call_id === 'child-call');
+  const end = events.find(event => event.name === 'tool.end' && event.data.call_id === 'child-call');
+  assert.equal(start.data.parent_call_id, 'parent-call');
+  assert.equal(end.data.parent_call_id, 'parent-call');
+  assert(start.data.aliases.includes('fixture__echo'));
+  assert(start.data.aliases.includes('mcp__m0_fixture__echo'));
+});
+
 test('authoritative message snapshots do not duplicate normalized replay', async () => {
   const { writer, events } = recorder();
   const translator = new EventTranslator(writer);

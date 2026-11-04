@@ -997,7 +997,7 @@ async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -
             attempt_index=index,
             task_id=run.task_id,
             status=run.status,
-            cost_usd=run.cost_usd or Decimal(0),
+            cost_usd=run.cost_usd,
             weighted_score=run.weighted_score,
             trajectory_score=run.trajectory_score,
             duration_seconds=run.duration_seconds,
@@ -1809,10 +1809,12 @@ async def _evaluate_child(
             logger.warning(f"experiment: failure-mode eval failed for {task.id}: {e}")
 
 
-def _run_cost(task: Task, rec: QualityRecord | None) -> Decimal:
+def _run_cost(task: Task, rec: QualityRecord | None) -> Decimal | None:
     # Agent + orchestrator + every evaluator. The orchestrator's share was missing
     # until SPA-111, which made both this figure and the budget cap undercounts.
-    total = Decimal(task.cost_usd or 0) + Decimal(task.orchestrator_cost_usd or 0)
+    if task.cost_usd is None:
+        return None
+    total = Decimal(task.cost_usd) + Decimal(task.orchestrator_cost_usd or 0)
     if rec is not None:
         for prof in (rec.quality_profile, rec.trajectory_profile, rec.failure_profile):
             if prof:

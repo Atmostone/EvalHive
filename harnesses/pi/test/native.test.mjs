@@ -59,7 +59,7 @@ test('official Pi SDK completes with normalized provider usage', {timeout: 20000
     assert.equal(body.seed, 7);
     stream(res, index, {content: 'Completed'});
   }, {config: {temperature: 0.25, seed: 7}});
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
   assert.equal(requests.length, 1);
   assert(events.some((event) => event.event === 'native' && event.data.name === 'agent_settled'));
   const usage = events.filter((event) => event.event === 'usage').at(-1).data;
@@ -83,7 +83,7 @@ test('official Pi executes its native write tool', {timeout: 20000}, async () =>
       stream(res, index, {content: 'File created'});
     }
   });
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
   assert.equal(requests.length, 2);
   assert.equal(output, 'Engineering result\n');
   assert(observedFile);
@@ -95,7 +95,7 @@ test('official Pi executes its native write tool', {timeout: 20000}, async () =>
 
 test('absent provider usage remains unknown despite Pi numeric defaults', {timeout: 20000}, async () => {
   const {result, events} = await runFixture((body, index, res) => stream(res, index, {content: 'No usage', usage: false}));
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
   const usage = events.filter((event) => event.event === 'usage').at(-1).data;
   assert.equal(usage.input_tokens, null);
   assert.equal(usage.output_tokens, null);
@@ -108,10 +108,33 @@ test('Pi automatic retry completes before the SDK terminal event', {timeout: 200
     if (index === 1) { res.writeHead(500, {'Content-Type': 'application/json'}); res.end(JSON.stringify({error: {message: 'Temporary fixture failure'}})); }
     else stream(res, index, {content: 'Recovered'});
   }, {config: {maxRetries: 1, retryBaseDelayMs: 1}});
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
   assert.equal(requests.length, 2);
   assert(events.some((event) => event.event === 'native' && event.data.name === 'auto_retry_start'));
+  assert.equal(events.filter(event => event.event === 'failure.observed').length, 1);
+  assert.equal(events.find(event => event.event === 'failure.observed').data.facts.status_code, 500);
   assert.equal(events.at(-1).event, 'run.finished');
+});
+
+test('native compaction requests retain independent raw usage availability', {timeout: 30000}, async () => {
+  const {result, events, requests} = await runFixture((body, index, res) => {
+    if (index === 1) stream(res, index, {tool: {id: 'write-1', type: 'function', function: {
+      name: 'write', arguments: JSON.stringify({path: 'result.txt', content: 'x'.repeat(1200)}),
+    }}, usage: {prompt_tokens: 3900, completion_tokens: 20}});
+    else stream(res, index, {content: 'Completed summary or final answer',
+      usage: {prompt_tokens: 15, completion_tokens: 5, completion_tokens_details: {reasoning_tokens: 0}}});
+  }, {config: {contextWindow: 4096, maxOutputTokens: 64, compaction: {reserveTokens: 512, keepRecentTokens: 32}}});
+  assert.equal(result.status, 'success', JSON.stringify(result));
+  assert(events.some(event => event.event === 'native' && event.data.name === 'compaction_end'));
+  const usage = new Map(events.filter(event => event.event === 'usage').map(event => [event.data.usage_id, event.data]));
+  assert.equal(usage.size, requests.length);
+  assert([...usage.values()].some(value => value.purpose === 'compaction'));
+  for (const value of usage.values()) {
+    assert.equal(value.cache_read_tokens, null);
+    assert.equal(value.cache_write_tokens, null);
+    assert.equal(value.cost, null);
+    assert.equal(value.reasoning_tokens, value.usage_id === 'request-1' ? null : 0);
+  }
 });
 
 test('Pi HTTP failure does not become a successful process exit', {timeout: 20000}, async () => {
@@ -160,7 +183,7 @@ test('feedback reaches Pi before it settles', {timeout: 20000}, async () => {
     assert.equal(receipt.accepted, true);
     release();
   }});
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
   assert.equal(requests.length, 2);
   assert(feedbackInRequest);
 });
@@ -196,7 +219,7 @@ test('explicit empty toolset and memory off override native discovery', {timeout
     return [{id: 'toolset', kind: 'tools', config: {names: []}},
       {id: 'memory', kind: 'memory', config: {mode: 'off'}}];
   }});
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
 });
 
 test('explicit skills, memory and native builtin aliases reach Pi', {timeout: 20000}, async () => {
@@ -213,7 +236,7 @@ test('explicit skills, memory and native builtin aliases reach Pi', {timeout: 20
       {id: 'memory', kind: 'memory', config: {mode: 'structured', content: 'REMEMBER_FIXTURE_RULE'}},
       {id: 'skill', kind: 'skill', config: {path: skill}}];
   }});
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
 });
 
 test('official MCP client exposes calls with native names and canonical aliases', {timeout: 20000}, async () => {
@@ -228,10 +251,10 @@ test('official MCP client exposes calls with native names and canonical aliases'
   }, {resources: [{id: 'toolset', kind: 'tools', config: {names: ['search_knowledge_base']}},
     {id: 'fixture', kind: 'mcp', config: {transport: 'stdio', command: process.execPath,
       args: [fileURLToPath(new URL('../../shared/fake-mcp.mjs', import.meta.url))], aliases: {echo: 'search_knowledge_base'}}}]});
-  assert.equal(result.status, 'success');
+  assert.equal(result.status, 'success', JSON.stringify(result));
   const call = events.find((event) => event.event === 'tool.start');
   assert.equal(call.data.name, 'mcp__fixture__echo');
-  assert.deepEqual(call.data.aliases, ['search_knowledge_base']);
+  assert.deepEqual(call.data.aliases, ['search_knowledge_base', 'mcp__fixture__echo']);
   assert.equal(events.find((event) => event.event === 'tool.end').data.status, 'completed');
 });
 
@@ -257,7 +280,7 @@ test('HTTP MCP resolves private authorization and knowledge aliases', {timeout: 
       {id: 'tools', kind: 'tools', config: {names: ['search_knowledge_base']}},
       {id: 'knowledge', kind: 'mcp', config: {transport: 'http', url: mcp.url,
         aliases: {search_knowledge_base: 'search_knowledge_base'}}, credential_refs: {'headers.Authorization': 'knowledge'}}]});
-    assert.equal(result.status, 'success');
+    assert.equal(result.status, 'success', JSON.stringify(result));
     assert(!JSON.stringify(events).includes('fixture-knowledge-token'));
     assert(mcp.requests.some((request) => request.method === 'tools/call'));
   } finally { await mcp.close(); }

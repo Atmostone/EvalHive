@@ -15,6 +15,12 @@ JSONL pipes through the rootless Docker runtime. The attempt API token stays on
 the server. Only native credentials are mounted privately into the connector;
 they are excluded from the workspace and artifact tree.
 
+The initial protocol handshake has a separate bounded 30-second startup budget;
+normal commands retain their 10-second budget. A cold native process starting
+under a CPU limit must not be mistaken for an unresponsive control operation.
+Failures before the harness starts are identified explicitly and do not count as
+observed model failures. Execution deadlines begin after the start command.
+
 Install the Python SDK first, then `pip install -e runner`. Run
 `python -m pytest -c runner/pyproject.toml runner/tests` with the SDK examples
 prepared as described in `sdk/README.md`. Tests use fake connectors and no model

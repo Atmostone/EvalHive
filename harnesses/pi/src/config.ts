@@ -17,8 +17,11 @@ export function effectiveConfig(spec: RunSpec): JsonObject {
     throw new ProtocolError('UNSUPPORTED_SAMPLING', 'Unsupported model sampling option');
   const config = {...spec.config, ...sampling} as JsonObject;
   validateRun(manifest, {...spec, config});
+  const compaction = {reserveTokens: 16384, keepRecentTokens: 20000, ...object(config.compaction)};
+  if (config.autoCompaction !== false && Number(compaction.reserveTokens) >= Number(config.contextWindow ?? 128000))
+    throw new ProtocolError('INVALID_LIMITS', 'Compaction reserve must be smaller than the context window');
   return {thinkingLevel: 'off', contextWindow: 128000, maxOutputTokens: 8192,
-    autoCompaction: true, maxRetries: 2, retryBaseDelayMs: 200, reasoning: false, ...config};
+    autoCompaction: true, maxRetries: 2, retryBaseDelayMs: 200, reasoning: false, ...config, compaction};
 }
 
 export function connection(spec: RunSpec, credentials: Record<string, string>) {

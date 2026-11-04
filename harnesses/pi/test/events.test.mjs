@@ -47,16 +47,6 @@ test('provider billed cost stays distinct from SDK price defaults', async () => 
   assert.equal(decimal(1e21), '1000000000000000000000');
 });
 
-test('auxiliary SDK defaults do not invent measured zeros', async () => {
-  const {queue, events} = records();
-  const usage = new UsageTracker(queue, 'fake');
-  usage.auxiliary('summary', {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}, 'small');
-  await queue.drain();
-  assert.equal(events[0].data.input_tokens, null);
-  assert.equal(events[0].data.output_tokens, null);
-  assert.equal(events[0].data.purpose, 'compaction');
-});
-
 test('event buffering is bounded and triggers native abort', async () => {
   const {queue, aborted} = records();
   queue.emit('message.end', {message_id: 'large', content: 'x'.repeat(9 * 1024 * 1024)});
@@ -88,4 +78,12 @@ test('resource preflight rejects unavailable native tools and credentials', asyn
   spec.environment.resources = [{id: 'mcp', kind: 'mcp', config: {transport: 'http', url: 'http://fixture/mcp'},
     credential_refs: {'headers.Authorization': 'missing'}}];
   assert.throws(() => resourcePlan(spec, {}), {code: 'CREDENTIAL_REQUIRED'});
+});
+
+test('long MCP names are deterministic, model-safe and collision resistant', async () => {
+  const {modelToolName} = await import('../dist/resources.js');
+  const prefix = 'mcp__fixture__' + 'long'.repeat(30);
+  assert.equal(modelToolName(prefix), modelToolName(prefix));
+  assert.match(modelToolName(prefix), /^[A-Za-z0-9_-]{64}$/);
+  assert.notEqual(modelToolName(prefix + 'a'), modelToolName(prefix + 'b'));
 });

@@ -49,48 +49,42 @@ export class EventQueue {
 export class UsageTracker {
   private index = 0;
   private current: JsonObject | undefined;
+  private records = new Map<string, JsonObject>();
   constructor(private output: EventQueue, private model: string) {}
   get requests(): number { return this.index; }
-  begin(purpose: string): void {
+  begin(purpose: string): string {
     this.current = {usage_id: `request-${++this.index}`, mode: 'cumulative', model: this.model,
       purpose, input_tokens: null, output_tokens: null, reasoning_tokens: null,
       cache_read_tokens: null, cache_write_tokens: null, cost: null};
+    this.records.set(String(this.current.usage_id), this.current);
     this.output.emit('usage', {...this.current});
+    return String(this.current.usage_id);
   }
-  provider(data: unknown, model: string): void {
-    if (!this.current) return;
+  provider(data: unknown, model: string, identity?: string): void {
+    const current = identity ? this.records.get(identity) : this.current;
+    if (!current) return;
     const value = object(data);
     const usage = object(value.usage);
     if (!Object.keys(usage).length) return;
-    this.current.model = model;
+    current.model = model;
+    current.metadata = {model_source: 'request', reported_model: typeof value.model === 'string' ? value.model : null};
     for (const [wire, name] of [['prompt_tokens', 'input_tokens'], ['completion_tokens', 'output_tokens']] as const) {
-      if (Object.hasOwn(usage, wire)) this.current[name] = count(usage[wire]);
+      if (Object.hasOwn(usage, wire)) current[name] = count(usage[wire]);
     }
     const prompt = object(usage.prompt_tokens_details);
     const completion = object(usage.completion_tokens_details);
-    if (Object.hasOwn(prompt, 'cached_tokens')) this.current.cache_read_tokens = count(prompt.cached_tokens);
-    if (Object.hasOwn(completion, 'reasoning_tokens')) this.current.reasoning_tokens = count(completion.reasoning_tokens);
-    this.output.emit('usage', {...this.current});
+    if (Object.hasOwn(prompt, 'cached_tokens')) current.cache_read_tokens = count(prompt.cached_tokens);
+    if (Object.hasOwn(completion, 'reasoning_tokens')) current.reasoning_tokens = count(completion.reasoning_tokens);
+    this.output.emit('usage', {...current});
   }
-  assistant(usage: unknown): void {
-    if (!this.current) return;
+  assistant(usage: unknown, identity?: string): void {
+    const current = identity ? this.records.get(identity) : this.current;
+    if (!current) return;
     const value = object(usage);
     const cost = object(value.cost);
     if (cost.totalFromProvider === true && typeof cost.total === 'number' && Number.isFinite(cost.total) && cost.total >= 0)
-      this.current.cost = {amount: decimal(cost.total), currency: 'USD', source: 'provider'};
-    this.output.emit('usage', {...this.current});
-  }
-  auxiliary(identity: string, usage: unknown, model: string): void {
-    const value = object(usage);
-    const input = [value.input, value.cacheRead, value.cacheWrite].map(count);
-    const total = input.every((part) => part !== null) ? input.reduce<number>((sum, part) => sum + (part ?? 0), 0) : null;
-    const positive = (field: unknown) => typeof field === 'number' && field > 0 ? count(field) : null;
-    const cost = object(value.cost);
-    this.output.emit('usage', {usage_id: identity, mode: 'cumulative', model, purpose: 'compaction',
-      input_tokens: total && total > 0 ? total : null, output_tokens: positive(value.output),
-      reasoning_tokens: count(value.reasoning), cache_read_tokens: positive(value.cacheRead),
-      cache_write_tokens: positive(value.cacheWrite),
-      cost: cost.totalFromProvider === true && typeof cost.total === 'number' && Number.isFinite(cost.total) && cost.total >= 0 ?
-        {amount: decimal(cost.total), currency: 'USD', source: 'provider'} : null});
+      current.cost = {amount: decimal(cost.total), currency: 'USD', source: 'provider'};
+    this.output.emit('usage', {...current});
+    if (identity) this.records.delete(identity);
   }
 }

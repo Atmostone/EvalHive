@@ -101,7 +101,10 @@ async def resolve_launch(db, task, template=None):
         raise ProfileError("Model connection is unavailable in this workspace")
     if not llm.provider.endpoint or not llm.provider.api_key:
         raise ProfileError("Model connection is incomplete")
-    endpoint = urlsplit(llm.provider.endpoint)
+    try:
+        endpoint = urlsplit(llm.provider.endpoint)
+    except ValueError:
+        raise ProfileError("Model endpoint is invalid") from None
     if endpoint.scheme not in {"http", "https"} or not endpoint.netloc or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
         raise ProfileError("Model endpoint must be an HTTP URL without inline credentials")
     # Old executable overrides must not silently change the installed image or

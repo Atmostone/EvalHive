@@ -21,7 +21,7 @@ export default function TimelineChart({ data }: { data: TimelinePoint[] }) {
           date: p.date as string,
           label: format(parseISO(p.date as string), 'MMM d'),
           tasks: p.task_count,
-          cost: Number(p.total_cost_usd.toFixed(4)),
+          cost: p.total_cost_usd === null ? null : Number(p.total_cost_usd.toFixed(4)),
         })),
     [data],
   )

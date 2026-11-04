@@ -19,6 +19,7 @@ import hashlib
 import statistics
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -901,6 +902,11 @@ def _significance_cells(
     }
 
 
+def _mean_cost(runs) -> float | None:
+    values = [Decimal(str(run.cost_usd)) for run in runs if run.cost_usd is not None]
+    return float(sum(values, Decimal(0)) / len(values)) if values else None
+
+
 def _group_means(
     runs: list[ExperimentRun],
     records_by_task: dict,
@@ -932,7 +938,8 @@ def _group_means(
         "trajectory_mean": _mean(
             [_traj_score(records_by_task.get(r.task_id), r.trajectory_score) for r in success]
         ),
-        "cost_mean": _mean([float(r.cost_usd or 0) for r in settled]),
+        "cost_mean": _mean_cost(settled),
+        "n_cost": sum(r.cost_usd is not None for r in settled),
         "duration_mean": _mean([r.duration_seconds for r in settled]),
         "tokens_mean": _mean(tokens),
         "n_tokens": len(tokens),
@@ -1028,6 +1035,8 @@ def build_report(
             1 for r in runs if r.status == ExperimentRunStatus.SKIPPED.value
         ),
         "accumulated_cost_usd": float(exp.accumulated_cost_usd or 0),
+        "cost_basis": "known_subtotal",
+        "cost_unknown_runs": sum(r.cost_usd is None for r in runs if r.status in _SETTLED),
         "budget_limit_usd": float(exp.budget_limit_usd)
         if exp.budget_limit_usd is not None
         else None,
@@ -1458,7 +1467,8 @@ def build_report(
                 "trajectory_mean": _mean(
                     [_traj_score(records_by_task.get(r.task_id), r.trajectory_score) for r in succ]
                 ),
-                "cost_mean": _mean([float(r.cost_usd or 0) for r in grp]),
+                "cost_mean": _mean_cost(grp),
+                "n_cost": sum(r.cost_usd is not None for r in grp),
                 "tokens_mean": _mean(toks),  # SPA-77: token effort across repetitions
             }
         )
@@ -1568,35 +1578,40 @@ def build_report(
 
     def _cost_row(group: list[ExperimentRun]) -> dict:
         settled = [r for r in group if r.status in _SETTLED]
-        parts = {"agent": 0.0, "orchestrator": 0.0, "judge_total": 0.0, "total": 0.0}
+        parts = {"agent": Decimal(0), "orchestrator": Decimal(0), "judge_total": Decimal(0), "total": Decimal(0)}
         for k, _ in _JUDGE_COST_KEYS:
-            parts[k] = 0.0
+            parts[k] = Decimal(0)
+        unknown_agent = 0
         for r in settled:
             rec = records_by_task.get(r.task_id)
+            if (rec.cost_usd if rec is not None else r.cost_usd) is None:
+                unknown_agent += 1
             agent = (
-                float(getattr(rec, "cost_usd", 0) or 0)
+                Decimal(str(getattr(rec, "cost_usd", 0) or 0))
                 if rec is not None
-                else float(r.cost_usd or 0)
+                else Decimal(str(r.cost_usd or 0))
             )
             parts["agent"] += agent
             parts["orchestrator"] += (
-                float(getattr(rec, "orchestrator_cost_usd", 0) or 0)
+                Decimal(str(getattr(rec, "orchestrator_cost_usd", 0) or 0))
                 if rec is not None
-                else 0.0
+                else Decimal(0)
             )
-            judges = 0.0
+            judges = Decimal(0)
             for k, attr in _JUDGE_COST_KEYS:
                 prof = getattr(rec, attr, None) if rec is not None else None
-                c = float((prof or {}).get("judge_cost_usd") or 0) if prof else 0.0
+                c = Decimal(str((prof or {}).get("judge_cost_usd") or 0)) if prof else Decimal(0)
                 parts[k] += c
                 judges += c
             parts["judge_total"] += judges
             parts["total"] += (
-                agent + judges + float(getattr(rec, "orchestrator_cost_usd", 0) or 0)
+                agent + judges + Decimal(str(getattr(rec, "orchestrator_cost_usd", 0) or 0))
                 if rec is not None
                 else agent + judges
             )
-        return {k: round(v, 6) for k, v in parts.items()}
+        return {**{k: float(v) for k, v in parts.items()},
+                "cost_basis": "known_subtotal", "unknown_agent_runs": unknown_agent,
+                "measured_runs": len(settled) - unknown_agent, "settled_runs": len(settled)}
 
     # Orchestration alone can be the only thing that cost money — a config whose
     # agent ran on a zero-priced model still pays for its decision calls, and a
@@ -1611,7 +1626,7 @@ def build_report(
     ]
     cost_totals = _cost_row(runs)
     cost_breakdown = {
-        "available": any_cost,
+        "available": any_cost or any(r.cost_usd is None for r in runs if r.status in _SETTLED),
         # Whether ANY run here had its orchestrator turns metered. False means the
         # zero in the orchestrator column is an absence of measurement — the whole
         # corpus predates SPA-111 — so the total is a lower bound, not a figure.
@@ -1845,7 +1860,7 @@ def build_report(
             "status": r.status,
             "outcome": r.weighted_score,
             "trajectory": _traj_score(records_by_task.get(r.task_id), r.trajectory_score),
-            "cost": float(r.cost_usd or 0),
+            "cost": float(r.cost_usd) if r.cost_usd is not None else None,
             "duration": r.duration_seconds,
             "tokens": _run_effort_tokens(records_by_task.get(r.task_id)),
             "task_id": str(r.task_id) if r.task_id else None,

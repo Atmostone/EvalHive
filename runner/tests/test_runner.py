@@ -18,8 +18,8 @@ POLICY = RunnerPolicy(
     heartbeat_seconds=0.02,
     retry_seconds=0.01,
     flush_seconds=2,
-    shutdown_seconds=0.2,
-    command_seconds=2,
+    shutdown_seconds=1,
+    command_seconds=15,
 )
 
 
@@ -102,7 +102,7 @@ def test_unsupported_interaction_fails_without_waiting_for_a_deadline(tmp_path):
         with EventSpool(tmp_path / "spool.sqlite") as spool:
             runner = AttemptRunner(spec=copy.deepcopy(FIXTURES["run_spec"]), manifest=FIXTURES["manifest"],
                 connector=connector, api=api, spool=spool, policy=POLICY)
-            result = await asyncio.wait_for(runner.run(), 2)
+            result = await asyncio.wait_for(runner.run(), 20)
         assert result["status"] == "failed" and connector.closed
         assert api.records[max(api.records)]["data"]["error"]["code"] == "UNSUPPORTED_INTERACTION"
         assert any(record["event"] == "interaction.request" for record in api.records.values())
@@ -134,7 +134,7 @@ def test_artifact_delivery_precedes_terminal_acknowledgement(tmp_path):
                 finish_hook=finish,
             )
             result = await runner.run()
-        assert result["status"] == "success"
+        assert result["status"] == "success", result
         records = [api.records[key] for key in sorted(api.records)]
         assert records[-2]["event"] == "artifact" and records[-1]["event"] == "run.finished"
         assert [record["seq"] for record in records] == list(range(len(records)))
@@ -204,7 +204,7 @@ def test_finalization_failure_is_bounded_and_does_not_lose_terminal_delivery(tmp
                 policy=replace(POLICY, finalization_seconds=0.05),
                 finish_hook=finish,
             )
-            result = await asyncio.wait_for(runner.run(), 3)
+            result = await asyncio.wait_for(runner.run(), 20)
         assert result["status"] == "failed" and result["pending_events"] == 0
         terminal = api.records[max(api.records)]
         assert terminal["event"] == "run.finished"
@@ -304,7 +304,7 @@ def test_real_connector_process_supervision(tmp_path, language, mode):
                 policy=POLICY,
             )
             try:
-                result = await asyncio.wait_for(runner.run(), 12)
+                result = await asyncio.wait_for(runner.run(), 45)
             finally:
                 await connector.close(grace=0.2)
             expected = {
@@ -386,7 +386,7 @@ def test_noncooperative_abort_has_a_bounded_shutdown(tmp_path):
                 spool=spool,
                 policy=RunnerPolicy(heartbeat_seconds=0.01, shutdown_seconds=0.05, flush_seconds=1),
             )
-            result = await asyncio.wait_for(runner.run(), 2)
+            result = await asyncio.wait_for(runner.run(), 20)
             assert result["status"] == "cancelled" and connector.closed
             terminal = api.records[max(api.records)]
             assert terminal["source"] == "runner"

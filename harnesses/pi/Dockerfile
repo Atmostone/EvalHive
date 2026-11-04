@@ -1,15 +1,18 @@
-ARG BASE_IMAGE=node:22.23.1-bookworm-slim
-FROM node:22.23.1-bookworm-slim AS node-runtime
+ARG BASE_IMAGE=node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS node-runtime
 
 FROM ${BASE_IMAGE} AS build
+ENV npm_config_fetch_timeout=30000 npm_config_fetch_retries=2 npm_config_audit=false npm_config_fund=false
 # Environment images supply benchmark dependencies; the connector pins Node.
 COPY --from=node-runtime /usr/local/ /usr/local/
 WORKDIR /opt/evalhive
 COPY sdk/python/src/evalhive_harness/schemas sdk/python/src/evalhive_harness/schemas
 COPY sdk/typescript sdk/typescript
-RUN npm ci --prefix sdk/typescript && npm run build --prefix sdk/typescript
+RUN --mount=type=cache,id=evalhive-harness-npm,target=/root/.npm npm ci --prefix sdk/typescript && npm run build --prefix sdk/typescript
+COPY harnesses/pi/package.json harnesses/pi/package-lock.json harnesses/pi/
+RUN --mount=type=cache,id=evalhive-harness-npm,target=/root/.npm npm ci --prefix harnesses/pi
 COPY harnesses/pi harnesses/pi
-RUN npm ci --prefix harnesses/pi && npm run build --prefix harnesses/pi
+RUN npm run build --prefix harnesses/pi
 
 FROM build AS test
 COPY harnesses/shared harnesses/shared

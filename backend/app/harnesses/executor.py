@@ -35,7 +35,7 @@ from app.harnesses.attempts import (
     locked_attempt,
     mark_attempt_lost,
 )
-from app.harnesses.failures import classify_result
+from app.harnesses.failures import classify_facts, classify_result
 from app.harnesses.projection import load_attempt_view
 from app.harnesses.resources import provision_knowledge
 from app.models.execution_attempt import ExecutionAttempt
@@ -103,6 +103,11 @@ async def settle_task(db, attempt_id):
         task.failure_type = merge_failure_type(
             task.failure_type, classify_result(attempt.result, status=attempt.status)
         )
+    for observed in view["events"]:
+        if observed["event"] == "failure.observed":
+            task.failure_type = merge_failure_type(
+                task.failure_type, classify_facts(observed["data"]["facts"])
+            )
     attempt.completeness = {**view["completeness"], "task_projection": "committed"}
     if invalid_artifacts:
         attempt.completeness = {**attempt.completeness, "artifacts": "invalid"}

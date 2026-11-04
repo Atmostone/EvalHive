@@ -6,10 +6,17 @@
     "validation_result": {
       "type": "object",
       "properties": {
-        "accepted": {"const": true},
-        "effective_config": {"type": "object"}
+        "accepted": {
+          "const": true
+        },
+        "effective_config": {
+          "type": "object"
+        }
       },
-      "required": ["accepted", "effective_config"],
+      "required": [
+        "accepted",
+        "effective_config"
+      ],
       "additionalProperties": false
     },
     "error": {
@@ -727,6 +734,9 @@
               "additionalProperties": false
             }
           ]
+        },
+        "metadata": {
+          "type": "object"
         }
       },
       "required": [
@@ -833,7 +843,8 @@
             "artifact",
             "interaction.request",
             "interaction.resolved",
-            "native"
+            "native",
+            "failure.observed"
           ]
         },
         "data": {},
@@ -1057,6 +1068,16 @@
               "additionalProperties": false
             }
           }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "failure.observed"
+            },
+            "data": {
+              "$ref": "#/$defs/failure_observed"
+            }
+          }
         }
       ]
     },
@@ -1237,6 +1258,11 @@
                     "additionalProperties": {
                       "type": "string"
                     }
+                  },
+                  "alias_prefix": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 },
                 "required": [
@@ -1423,6 +1449,28 @@
           }
         }
       ]
+    },
+    "failure_observed": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "facts": {
+          "$ref": "#/$defs/failure_facts"
+        }
+      },
+      "required": [
+        "request_id",
+        "purpose",
+        "facts"
+      ],
+      "additionalProperties": false
     }
   },
   "$ref": "#/$defs/wire_message"

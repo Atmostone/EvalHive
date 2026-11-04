@@ -7,7 +7,7 @@ export function stream(res, index, {content = '', tool, usage = true} = {}) {
   const send = (value) => res.write(`data: ${JSON.stringify({...base, ...value})}\n\n`);
   send({choices: [{index: 0, delta: {role: 'assistant', ...(tool ? {tool_calls: [{index: 0, ...tool}]} : {content})}, finish_reason: null}]});
   send({choices: [{index: 0, delta: {}, finish_reason: tool ? 'tool_calls' : 'stop'}]});
-  if (usage) send({choices: [], usage: {prompt_tokens: index * 10, completion_tokens: index * 2,
+  if (usage) send({choices: [], usage: typeof usage === 'object' ? usage : {prompt_tokens: index * 10, completion_tokens: index * 2,
     total_tokens: index * 12, prompt_tokens_details: {cached_tokens: 2}, completion_tokens_details: {reasoning_tokens: 1}}});
   res.end('data: [DONE]\n\n');
 }

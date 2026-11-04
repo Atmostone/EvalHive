@@ -108,7 +108,7 @@ async def assemble_record(db: AsyncSession, task: Task) -> dict:
         events = [event for event in events if (event.data or {}).get("attempt_id") == str(task.current_attempt_id)]
         tool_calls = [
             {key: call.get(key) for key in (
-                "chunk_seq", "tool_name", "native_tool_name", "tool_call_id", "session_id",
+                "chunk_seq", "tool_name", "native_tool_name", "tool_aliases", "tool_call_id", "session_id",
                 "parent_session_id", "parent_call_id", "arguments", "arguments_truncated",
                 "result_missing", "start_missing", "tool_status",
             )}

@@ -256,7 +256,7 @@ async def update_task(
     task = await _get_scoped_task(task_id, workspace, db, lock=True)
 
     selected = body.model_dump(exclude_unset=True)
-    if any(key in selected for key in ("title", "description", "reference_answer", "canonical_trajectory", "capability_spec",
+    if any(key in selected for key in ("title", "description",
                                       "template_id", "harness_profile_id", "execution_mode")) or body.status in _REQUEUE_STATUSES:
         await _require_unarchived(db, task)
     selection = {key: selected[key] for key in ("template_id", "harness_profile_id", "execution_mode") if key in selected}
@@ -276,6 +276,13 @@ async def update_task(
         task.run_config = rc
 
     old_status = task.status
+    # Evaluation annotations may be added to historical results. They do not
+    # alter the frozen execution input, journal or archived result blob.
+    evaluation_changes = {
+        name: {"before": getattr(task, name), "after": selected[name]}
+        for name in ("reference_answer", "canonical_trajectory", "capability_spec")
+        if name in selected and selected[name] is not None and selected[name] != getattr(task, name)
+    }
     if body.title is not None:
         task.title = body.title
     if body.description is not None:
@@ -318,6 +325,9 @@ async def update_task(
     await db.commit()
     await db.refresh(task)
 
+    if evaluation_changes:
+        await log_event(db, "evaluation_spec_changed", "user", {"changes": evaluation_changes},
+                        task_id=task.id, workspace_id=workspace.id)
     if body.status and body.status != old_status:
         await log_event(
             db, "task_status_changed", "user",

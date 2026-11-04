@@ -88,13 +88,20 @@
     {
       "name": "applied configuration is explicit",
       "kind": "validation_result",
-      "value": {"accepted": true, "effective_config": {"nativeDefault": false}},
+      "value": {
+        "accepted": true,
+        "effective_config": {
+          "nativeDefault": false
+        }
+      },
       "error": null
     },
     {
       "name": "missing applied configuration is rejected",
       "kind": "validation_result",
-      "value": {"accepted": true},
+      "value": {
+        "accepted": true
+      },
       "error": "INVALID_MESSAGE"
     },
     {
@@ -1228,6 +1235,49 @@
         }
       },
       "error": null
+    },
+    {
+      "name": "recovered provider failure remains observable",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "failure.observed",
+        "data": {
+          "request_id": "request-1",
+          "purpose": "compaction",
+          "facts": {
+            "kind": "model_error",
+            "status_code": 500,
+            "exception": null
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "failure observation requires typed facts",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "failure.observed",
+        "data": {
+          "request_id": "request-1",
+          "purpose": "compaction"
+        }
+      },
+      "error": "INVALID_MESSAGE"
     }
   ]
 }

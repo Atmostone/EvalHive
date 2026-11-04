@@ -444,7 +444,7 @@ def _chunk_step(chunk: dict, order: int) -> dict:
         "kind": "message" if chunk.get("message_id") else "tool",
         **{key: chunk.get(key) for key in (
             "attempt_id", "session_id", "parent_session_id", "tool_call_id", "parent_call_id",
-            "native_tool_name", "tool_status", "start_missing", "message_id", "role",
+            "native_tool_name", "tool_aliases", "tool_status", "start_missing", "message_id", "role",
         )},
         "event_type": None,
         "tool_name": chunk.get("tool_name"),

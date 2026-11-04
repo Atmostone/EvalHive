@@ -23,6 +23,7 @@ class RunnerPolicy:
     flush_seconds: float = 30
     shutdown_seconds: float = 3
     command_seconds: float = 10
+    startup_seconds: float = 30
     finalization_seconds: float = 30
 
 
@@ -265,7 +266,7 @@ class AttemptRunner:
         failure = None
         try:
             described = await self.connector.request(
-                "describe", timeout=self.policy.command_seconds
+                "describe", timeout=self.policy.startup_seconds
             )
             for key in (
                 "id",
@@ -372,7 +373,7 @@ class AttemptRunner:
                     "status": "failed",
                     "summary": message,
                     "error": {"code": code, "message": message},
-                    "metadata": {"connector_terminal": "missing"},
+                    "metadata": {"connector_terminal": "missing", "harness_started": self._started_monotonic is not None},
                 },
             )
         if isinstance(failure, ProtocolError) and failure.code in ("DEADLINE", "SHUTDOWN_FAILED"):

@@ -33,6 +33,7 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
     mcp: NonNullable<Config['mcp']> = {},
     aliases: Record<string, string[]> = { read: ['file_read'], write: ['file_write'] };
   const selected = values.find((item) => item.kind === 'tools');
+  const aliasPrefixes: Record<string, string> = {};
   const names = selected
     ? (selected.config.names as string[]).map((name) => builtinAliases[name] ?? name)
     : undefined;
@@ -57,6 +58,7 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
     if (!/^[A-Za-z0-9_-]+$/.test(resource.id))
       throw new ProtocolError('INVALID_RESOURCE', 'MCP identity is invalid');
     const config = resourceConfig(resource, credentials);
+    if (typeof config.alias_prefix === 'string') aliasPrefixes[resource.id] = config.alias_prefix;
     for (const [tool, alias] of Object.entries(object(config.aliases)))
       aliases[`${resource.id}_${tool}`] = [String(alias)];
     const common = { enabled: names?.length !== 0, timeout: Number(config.timeout_seconds ?? 30) * 1000 };
@@ -102,5 +104,5 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
       throw new ProtocolError('UNSUPPORTED_TOOL', 'A requested tool is unavailable in OpenCode');
     selection![native] = true;
   }
-  return { mcp, aliases, selection, instructions, skills };
+  return { mcp, aliases, aliasPrefixes, selection, instructions, skills };
 }

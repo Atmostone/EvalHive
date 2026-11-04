@@ -29,4 +29,7 @@ def test_runtime_loss_and_user_intervention_do_not_measure_model_failure():
     assert classify_result(None, status="cancelled") == "infra"
     assert classify_result({"error": {"code": "DEADLINE"}}, status="failed") == "timeout"
     assert classify_result({"error": {"code": "SPOOL_FULL"}}, status="failed") == "infra"
+    assert classify_result({"error": {"code": "TIMEOUT"}}, status="failed") == "infra"
+    assert classify_result({"error": {"code": "ARBITRARY_VALIDATION"},
+                            "metadata": {"harness_started": False}}, status="failed") == "infra"
     assert classify_result({"error": {"code": "UNCLASSIFIED_NATIVE"}}, status="failed") is None

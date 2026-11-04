@@ -194,7 +194,9 @@ async def test_toolathlon_full_lifecycle_pass(auth_client, db_session, monkeypat
     assert run.launch_time == "2026-06-14 10:00:00 Saturday"
     task = await db_session.get(Task, run.task_id)
     assert task.status == TaskStatus.BACKLOG.value  # not yet spawnable
-    assert task.run_config["agent_image"] == "evalhive-agent-toolathlon:latest"
+    assert task.run_config["environment_id"] == "toolathlon"
+    assert "agent_image" not in task.run_config
+    assert task.execution_mode == "direct"
     assert task.run_config["max_iterations"] == exp_mod.TOOLATHLON_MAX_ITERATIONS
     assert task.run_config["tools_override"]["enable"]  # the toolathlon-terminal id
     assert len(fake.preprocess_calls) == 1

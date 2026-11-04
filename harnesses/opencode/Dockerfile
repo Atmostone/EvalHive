@@ -1,15 +1,16 @@
-ARG BASE_IMAGE=node:22.23.1-bookworm-slim
-FROM node:22.23.1-bookworm-slim AS node-runtime
+ARG BASE_IMAGE=node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS node-runtime
 
 FROM ${BASE_IMAGE} AS build
+ENV npm_config_fetch_timeout=30000 npm_config_fetch_retries=2 npm_config_audit=false npm_config_fund=false
 # Environment images supply benchmark dependencies; the connector pins Node.
 COPY --from=node-runtime /usr/local/ /usr/local/
 WORKDIR /opt/evalhive
 COPY sdk/python/src/evalhive_harness/schemas sdk/python/src/evalhive_harness/schemas
 COPY sdk/typescript sdk/typescript
-RUN npm ci --prefix sdk/typescript && npm run build --prefix sdk/typescript
+RUN --mount=type=cache,id=evalhive-harness-npm,target=/root/.npm npm ci --prefix sdk/typescript && npm run build --prefix sdk/typescript
 COPY harnesses/opencode/package.json harnesses/opencode/package-lock.json harnesses/opencode/
-RUN npm ci --omit=optional --prefix harnesses/opencode
+RUN --mount=type=cache,id=evalhive-harness-npm,target=/root/.npm npm ci --omit=optional --prefix harnesses/opencode
 COPY harnesses/opencode harnesses/opencode
 RUN npm run build --prefix harnesses/opencode
 

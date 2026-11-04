@@ -162,6 +162,9 @@ events alongside versioned native evidence. Provider fields determine measuremen
 availability; Pi's numeric SDK defaults do not turn absent usage into zero. Native
 provider-billed cost is distinguished from Pi's local catalog estimates. Auxiliary
 compaction usage is recorded separately, with unavailable fields left unknown.
+The connector observes the public model runtime's transport callbacks for every
+native request, including compaction calls that bypass agent extension hooks.
+Explicit provider zero counts remain zero; SDK-generated defaults stay unknown.
 An 8 MiB worker event queue aborts on overflow rather than growing indefinitely.
 
 The worker waits for `agent_settled`, including automatic retries and queued
@@ -170,6 +173,17 @@ provider stream and native tools. A configured turn budget stops before the next
 request; omitted budgets retain Pi's native behavior. Error parsing belongs to the
 connector and produces SDK failure facts. Backend classification consumes those
 facts and common runner errors, without branches naming Pi or OpenCode.
+`failure.observed` preserves provider failures recovered by native retry without
+changing a successful native result into a failed one. Infrastructure failures
+still mark the measurement as contaminated under the common classifier.
+
+Execution cost remains nullable through task, record, experiment cell and attempt
+ledger storage. Decimal storage has no fixed fractional scale. Cost means exclude
+unreported observations and expose their sample count; monetary rollups identify
+known subtotals and report missing coverage rather than inventing free requests.
+Historical execution snapshots stay frozen. Evaluation annotations can be added
+later with an `evaluation_spec_changed` audit event, without rewriting execution
+inputs or archived evidence.
 
 SPA-128 defines common tools, MCP, skills, memory and instructions resources in
 the SDK. Connectors translate them to native configuration; Pi connects explicit

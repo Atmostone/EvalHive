@@ -13,7 +13,6 @@ import io
 import json
 import statistics
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -24,11 +23,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, get_current_workspace, require_role
 from app.database import get_db
+from app.models.event import AgentEvent
 from app.models.experiment import (
     Experiment,
     ExperimentRun,
 )
-from app.models.event import AgentEvent
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.models.user import User
@@ -37,7 +36,11 @@ from app.quality import experiments as service
 from app.quality.bundle import BundleIncomplete, BundleMismatch, build_bundle, write_tar
 from app.quality.experiment_report import (
     SCHEMA_VERSION as REPORT_SCHEMA_VERSION,
+)
+from app.quality.experiment_report import (
     SELECTION_LATEST_VALID as REPORT_SELECTION_DEFAULT,
+)
+from app.quality.experiment_report import (
     SELECTION_POLICIES,
     calibration_fingerprint,
     compute_report,
@@ -50,31 +53,31 @@ router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
 class ExperimentCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    description: Optional[str] = None
+    description: str | None = None
     dataset: dict
     configurations: list[dict] = Field(default_factory=list)
-    axes: Optional[dict] = None
+    axes: dict | None = None
     n_runs_per_cell: int = Field(default=1, ge=1, le=service.MAX_N_RUNS)
-    budget_limit_usd: Optional[float] = Field(default=None, gt=0)
-    max_parallel: Optional[int] = Field(default=None, ge=1, le=10)
+    budget_limit_usd: float | None = Field(default=None, gt=0)
+    max_parallel: int | None = Field(default=None, ge=1, le=10)
     # SPA-69: isolated Toolathlon PG lanes for parallel runs (None → serial on the
     # shared toolathlon_pg). Capped at the number of provisioned lane containers.
-    n_toolathlon_lanes: Optional[int] = Field(
+    n_toolathlon_lanes: int | None = Field(
         default=None, ge=1, le=service.MAX_TOOLATHLON_LANES
     )
     eval_config: dict = Field(default_factory=dict)
 
 
 class ExperimentClone(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    changes: Optional[dict] = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    changes: dict | None = None
 
 
 def _parse_uuid(value: str) -> uuid.UUID:
     try:
         return uuid.UUID(value)
     except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid experiment id")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid experiment id") from None
 
 
 async def _get_scoped(
@@ -239,7 +242,7 @@ def _top_bottom(samples: dict[str, list[float]]) -> list[dict]:
 
 @router.get("")
 async def list_experiments(
-    status_filter: Optional[str] = Query(None, alias="status"),
+    status_filter: str | None = Query(None, alias="status"),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -271,12 +274,12 @@ async def create_experiment(
             created_by=getattr(user, "email", None) or "user",
         )
     except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from None
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"experiment '{body.name}' already exists"
-        )
+        ) from None
     return {**serialize(exp), "preview": preview}
 
 
@@ -292,7 +295,7 @@ async def preview_experiment(
             db, workspace_id=workspace.id, payload=body.model_dump()
         )
     except (ValueError, FileNotFoundError) as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from None
 
 
 @router.get("/{experiment_id}")
@@ -423,7 +426,7 @@ async def run_experiment(
     try:
         await service.start_experiment(db, exp)
     except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
     # Claim the first batch immediately; the scheduler tick takes over from here.
     await service.advance_experiment(db, exp)
     await db.refresh(exp)
@@ -441,7 +444,7 @@ async def pause_experiment(
     try:
         await service.pause_experiment(db, exp)
     except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
     return serialize(exp)
 
 
@@ -456,7 +459,7 @@ async def resume_experiment(
     try:
         await service.resume_experiment(db, exp)
     except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
     return serialize(exp)
 
 
@@ -471,7 +474,7 @@ async def cancel_experiment(
     try:
         await service.cancel_experiment(db, exp)
     except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
     return serialize(exp)
 
 
@@ -490,7 +493,7 @@ async def retry_failed_experiment(
     try:
         retried = await service.retry_failed_experiment(db, exp)
     except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
     return {**serialize(exp), "retried": retried}
 
 
@@ -508,7 +511,7 @@ async def add_config(
     try:
         result = await service.add_config_to_experiment(db, exp, body)
     except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
     return {**serialize(exp), **result}
 
 
@@ -527,7 +530,7 @@ async def remove_config(
     try:
         result = await service.remove_config_from_experiment(db, exp, config_key)
     except ValueError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from None
     return {**serialize(exp), **result}
 
 
@@ -593,9 +596,9 @@ async def experiment_report(
 @router.get("/{experiment_id}/results")
 async def experiment_results(
     experiment_id: str,
-    config: Optional[str] = None,
-    case: Optional[str] = None,
-    run_index: Optional[int] = None,
+    config: str | None = None,
+    case: str | None = None,
+    run_index: int | None = None,
     include_retired: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
@@ -678,7 +681,7 @@ async def experiment_results(
                 ),
                 "weighted_score": r.weighted_score,
                 "trajectory_score": r.trajectory_score,
-                "cost_usd": float(r.cost_usd or 0),
+                "cost_usd": float(r.cost_usd) if r.cost_usd is not None else None,
                 "duration_seconds": r.duration_seconds,
                 "quality_profile": rec.quality_profile if rec else None,
                 "trajectory_profile": rec.trajectory_profile if rec else None,
@@ -712,10 +715,10 @@ async def clone_experiment(
             created_by=getattr(user, "email", None) or "user",
         )
     except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from None
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "experiment name already exists")
+        raise HTTPException(status.HTTP_409_CONFLICT, "experiment name already exists") from None
     return serialize(clone)
 
 
@@ -748,12 +751,12 @@ async def export_bundle(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"{e}; differing paths: {'; '.join(e.diff[:5])}",
-        )
+        ) from None
     except BundleIncomplete as e:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"{e}: {'; '.join(e.missing[:5])}",
-        )
+        ) from None
     return StreamingResponse(
         iter([write_tar(files)]),
         media_type="application/gzip",
@@ -816,7 +819,7 @@ async def export_experiment(
             "contaminated": is_contaminated(r.failure_type),
             "weighted_score": r.weighted_score,
             "trajectory_score": r.trajectory_score,
-            "cost_usd": float(r.cost_usd or 0),
+            "cost_usd": float(r.cost_usd) if r.cost_usd is not None else None,
             "duration_seconds": r.duration_seconds,
             "task_id": str(r.task_id) if r.task_id else None,
             "repro_fingerprint": (rec.reproducibility or {}).get("fingerprint")

@@ -12,6 +12,7 @@ state stays clean across tests.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -34,6 +35,35 @@ os.environ.setdefault("JWT_SECRET", "test-secret-please-do-not-use-in-prod")
 
 from app import database  # noqa: E402  (must come after env override)
 from app.main import app  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _offline_embeddings(request):
+    """API/DB tests use deterministic vectors, never downloaded models.
+
+    Provider unit tests exercise their own mocked transports/constructors.
+    Individual memory/RAG tests may install a more specific fake provider.
+    """
+    if request.node.path.name == "test_plugins.py":
+        yield
+        return
+    from app.plugins import embeddings
+
+    class FixtureEmbeddings(embeddings.EmbeddingProvider):
+        @property
+        def dim(self):
+            return 384
+
+        async def embed(self, texts):
+            return [[(value - 127.5) / 127.5 for value in hashlib.sha256(text.encode()).digest()] * 12
+                    for text in texts]
+
+    previous = embeddings._provider
+    embeddings.set_embedding_provider(FixtureEmbeddings())
+    try:
+        yield
+    finally:
+        embeddings.set_embedding_provider(previous)
 
 
 @pytest.fixture(scope="session", autouse=True)

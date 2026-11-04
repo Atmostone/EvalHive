@@ -1,4 +1,5 @@
 import { accessSync, constants } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { McpClient, StdioTransport, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
 import { loadSkills, type ToolDefinition } from '@earendil-works/pi-coding-agent';
@@ -7,6 +8,12 @@ import { object } from './config.js';
 
 const builtinAliases: Record<string, string> = {file_read: 'read', file_write: 'write'};
 const builtinNames = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
+
+export function modelToolName(canonical: string): string {
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(canonical)) return canonical;
+  return canonical.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 47) + '_' +
+    createHash('sha256').update(canonical).digest('hex').slice(0, 16);
+}
 
 export function resourcePlan(spec: RunSpec, credentials: Record<string, string>) {
   const values = resources(spec);
@@ -65,12 +72,11 @@ export async function connectResources(spec: RunSpec, credentials: Record<string
       const discovered = await client.listTools({signal});
       if (discovered.length > 256) throw new ProtocolError('RESOURCE_LIMIT', 'MCP server exposes too many tools');
       for (const tool of discovered) {
-        if (!/^[A-Za-z0-9_-]+$/.test(tool.name))
-          throw new ProtocolError('INVALID_RESOURCE', 'MCP tool name is unsupported');
-        const name = `mcp__${server.id}__${tool.name}`;
-        if (name.length > 64) throw new ProtocolError('INVALID_RESOURCE', 'MCP tool name exceeds the model API limit');
+        const canonical = `mcp__${server.id}__${tool.name}`;
+        const name = modelToolName(canonical);
         const alias = object(config.aliases)[tool.name];
-        aliases[name] = typeof alias === 'string' ? [alias] : [];
+        aliases[name] = [...new Set([...(typeof alias === 'string' ? [alias] : []),
+          ...(typeof config.alias_prefix === 'string' ? [config.alias_prefix + tool.name] : []), canonical])];
         tools.push({name, label: name, description: tool.description ?? name,
           parameters: tool.inputSchema as ToolDefinition['parameters'],
           async execute(_callId, args, toolSignal) {
@@ -81,7 +87,7 @@ export async function connectResources(spec: RunSpec, credentials: Record<string
     }
     const selected = plan.tools?.flatMap((name) => {
       if (name.endsWith('*')) {
-        const matches = tools.filter((tool) => tool.name.startsWith(name.slice(0, -1))).map((tool) => tool.name);
+        const matches = tools.filter((tool) => aliases[tool.name]?.some(alias => alias.startsWith(name.slice(0, -1)))).map((tool) => tool.name);
         if (!matches.length) throw new ProtocolError('UNSUPPORTED_TOOL', 'A requested MCP namespace has no tools');
         return matches;
       }

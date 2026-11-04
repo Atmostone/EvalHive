@@ -65,9 +65,11 @@ export class EventTranslator {
   private started = new Set<string>();
   private ended = new Set<string>();
   private messageEnds = new Map<string, string>();
+  private parentCalls = new Map<string, Map<string, {session: string; call: string; start?: number; end?: number}>>();
   constructor(
     readonly output: EventWriter,
     readonly aliases: Record<string, string[]> = {},
+    readonly aliasPrefixes: Record<string, string> = {},
   ) {}
   snapshot(entries: unknown[]): void {
     for (const entry of entries) {
@@ -132,6 +134,27 @@ export class EventTranslator {
     } else if (part.type === 'tool') {
       const state = object(part.state),
         identity = `${session}/${part.callID}`;
+      const child = object(state.metadata).sessionId;
+      if (part.tool === 'task' && typeof child === 'string') {
+        const calls = this.parentCalls.get(child) ?? new Map();
+        const time = object(state.time);
+        calls.set(identity, {session, call: String(part.callID),
+          ...(typeof time.start === 'number' ? {start: time.start} : {}),
+          ...(typeof time.end === 'number' ? {end: time.end} : {})});
+        this.parentCalls.set(child, calls);
+      }
+      const start = object(state.time).start;
+      const candidates = [...(this.parentCalls.get(session)?.values() ?? [])].filter(call =>
+        typeof start !== 'number' || ((call.start === undefined || start >= call.start) &&
+          (call.end === undefined || start <= call.end)));
+      const parentCall = candidates.length === 1 ? candidates[0] : undefined;
+      const lineage: JsonObject = parentCall && parentCall.session === parent ? {parent_call_id: parentCall.call} : {};
+      const namespace = Object.keys(this.aliasPrefixes).find(prefix => String(part.tool).startsWith(prefix + '_'));
+      if (namespace) {
+        const original = String(part.tool).slice(namespace.length + 1);
+        this.aliases[String(part.tool)] = [...new Set([...(this.aliases[String(part.tool)] ?? []),
+          this.aliasPrefixes[namespace] + original, `mcp__${namespace}__${original}`])];
+      }
       if (state.status === 'pending') return;
       if (!this.started.has(identity)) {
         this.started.add(identity);
@@ -139,6 +162,7 @@ export class EventTranslator {
           'tool.start',
           {
             call_id: String(part.callID),
+            ...lineage,
             name: String(part.tool),
             arguments: object(state.input) as JsonObject,
             message_id: String(part.messageID),
@@ -158,6 +182,7 @@ export class EventTranslator {
           'tool.end',
           {
             call_id: String(part.callID),
+            ...lineage,
             status: state.status === 'error' ? 'error' : 'completed',
             result: (state.output ?? state.error ?? state.metadata ?? '') as JsonObject,
             ...(typeof time.start === 'number' && typeof time.end === 'number'

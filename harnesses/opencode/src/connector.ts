@@ -123,7 +123,7 @@ export class OpenCodeConnector implements Connector {
     const output = new EventWriter(context, () => {
       void this.interrupt();
     });
-    const translator = new EventTranslator(output, plan.aliases);
+    const translator = new EventTranslator(output, plan.aliases, plan.aliasPrefixes);
     const observer = new ProviderObserver(model.endpoint, output);
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
     let events: Promise<void> | undefined;
@@ -217,7 +217,26 @@ export class OpenCodeConnector implements Connector {
       const client = createOpencodeClient({
         baseUrl: server.url,
         directory: context.spec.cwd,
-        fetch: this.transport.fetch,
+        fetch: async (input, options) => {
+          const request = input instanceof Request ? input : undefined;
+          const method = options?.method ?? request?.method ?? 'GET';
+          for (let retry = 0; ; retry++) {
+            try { return await (this.transport.fetch ?? fetch)(input, options); }
+            catch (error) {
+              if (method === 'GET' && retry < 2 && error instanceof TypeError &&
+                  !(options?.signal ?? request?.signal)?.aborted) {
+                await delay(100 * (retry + 1));
+                continue;
+              }
+            output.native('sdk.transport_failure', {
+              path: new URL(request?.url ?? String(input)).pathname,
+              method,
+              name: error instanceof Error ? error.name : 'TransportError',
+            });
+            throw error;
+            }
+          }
+        },
       });
       this.client = client;
       const created = await client.session.create(
@@ -455,6 +474,7 @@ export class OpenCodeConnector implements Connector {
       output.native('connector.failure', {
         name: error instanceof Error ? error.name : 'SdkError',
         message: String(error instanceof Error ? error.message : JSON.stringify(error)).slice(0, 4096),
+        native_stderr: (server?.diagnostics() ?? String(object(error).nativeStderr ?? '')).slice(-16384),
       });
       await output.drain().catch(() => {});
       const failure = output.error ?? error;

@@ -7,6 +7,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { ProtocolError, type Connector, type JsonObject, type JsonValue, type RunContext, type RunResult, type RunSpec } from '@evalhive/harness-sdk';
 import { ADAPTER_VERSION, connection, effectiveConfig, manifest, object } from './config.js';
+import { observeRequests } from './transport.js';
 import { EventQueue, json, UsageTracker } from './events.js';
 import { failureFacts } from './errors.js';
 import { connectResources, resourcePlan } from './resources.js';
@@ -49,8 +50,6 @@ export class PiConnector implements Connector {
     let messageIndex = 0;
     let assistantId = '';
     let userId = '';
-    let compactions = 0;
-    let compactionRequests = 0;
     let compactionActive = false;
     let agentStarted = false;
     let responseStatus: number | undefined;
@@ -79,22 +78,18 @@ export class PiConnector implements Connector {
       queue = new EventQueue(context, sessions.getSessionId(), abort);
       const output = queue;
       const usage = new UsageTracker(output, model.name);
+      const finishObservation = observeRequests(runtime, usage, output,
+        () => compactionActive ? 'compaction' : 'agent', value => { responseStatus = value; });
       const bridge: ExtensionFactory = (api) => {
         api.on('before_provider_request', (event) => {
-          usage.begin(compactionActive ? 'compaction' : 'agent');
           const payload = object(event.payload);
           return {...payload,
             ...(config.temperature !== undefined ? {temperature: config.temperature} : {}),
             ...(config.seed !== undefined ? {seed: config.seed} : {}),
           };
         });
-        api.on('provider_stream_event', (event) => {
-          output.native('provider_stream_event', event);
-          usage.provider(event.data, event.model);
-        });
-        api.on('after_provider_response', (event) => { responseStatus = event.status; });
       };
-      const settings = SettingsManager.inMemory({compaction: {enabled: Boolean(config.autoCompaction)},
+      const settings = SettingsManager.inMemory({compaction: {...object(config.compaction), enabled: Boolean(config.autoCompaction)},
         cacheWarming: 'off', retry: {enabled: Number(config.maxRetries) > 0,
           maxRetries: Number(config.maxRetries), baseDelayMs: Number(config.retryBaseDelayMs),
           provider: {maxRetries: 0, timeoutMs: 60000}}, packages: []});
@@ -113,7 +108,6 @@ export class PiConnector implements Connector {
         throw new ProtocolError('UNSUPPORTED_THINKING', 'The configured model does not support this thinking level');
       unsubscribe = current.subscribe((event: AgentSessionEvent) => {
         output.native(event.type, event);
-        const value = object(event);
         if (event.type === 'agent_start') {
           agentStarted = true;
           for (const feedback of this.pendingFeedback.splice(0))
@@ -139,7 +133,6 @@ export class PiConnector implements Connector {
               ...(message.role === 'assistant' ? {stop_reason: String(message.stopReason ?? 'unknown')} : {})});
             const reasoning = text(message.content, 'thinking');
             if (reasoning) output.emit('message.end', {message_id: id, role: 'assistant', channel: 'reasoning', content: reasoning});
-            if (message.role === 'assistant') usage.assistant(message.usage);
           }
         } else if (event.type === 'tool_execution_start') {
           output.emit('tool.start', {call_id: event.toolCallId, name: event.toolName,
@@ -154,10 +147,8 @@ export class PiConnector implements Connector {
             result: json(event.result), ...(event.durationMs !== undefined ? {duration_ms: event.durationMs} : {}),
             ...(event.parentToolCallId ? {parent_call_id: event.parentToolCallId} : {})});
         } else if (event.type === 'compaction_start') {
-          compactionActive = true; compactionRequests = usage.requests;
+          compactionActive = true;
         } else if (event.type === 'compaction_end') {
-          if (usage.requests === compactionRequests) usage.auxiliary(`compaction-${++compactions}`,
-            object(value.result).usage, current.model?.id ?? model.name);
           compactionActive = false;
         } else if (event.type === 'agent_settled') {
           this.settled = true; complete?.();
@@ -169,13 +160,14 @@ export class PiConnector implements Connector {
       if (!agentStarted && !context.signal.aborted)
         throw new ProtocolError('PROMPT_NOT_EXECUTED', 'Pi did not start an agent run');
       if (agentStarted) await settled;
+      await finishObservation();
       await output.drain();
       if (context.signal.aborted) return {status: 'cancelled', summary: 'Run cancelled'};
       if (budgetHit) return {status: 'failed', summary: 'Pi reached the turn limit',
         error: {code: 'TURN_LIMIT', message: 'Pi reached the configured turn limit', details: {normalized_failure: {kind: 'limit'}}}};
       const last = [...current.messages].reverse().map(object).find((message) => message.role === 'assistant');
       const metadata = {harness_version: VERSION, adapter_version: ADAPTER_VERSION, session_id: sessions.getSessionId(),
-        effective_config: config, recording: {native_events: 'complete', usage: 'reported_or_unknown'}};
+        effective_config: config, recording: {native_events: 'observed_with_bounded_request_snapshots', usage: 'reported_or_unknown'}};
       if (!last || last.stopReason !== 'stop') return {status: 'failed', summary: 'Pi did not finish successfully',
         error: {code: 'PI_INCOMPLETE', message: typeof last?.errorMessage === 'string' ? last.errorMessage : 'Pi ended without a successful final answer',
           details: {normalized_failure: last ? failureFacts(last.stopReason, last.errorMessage, responseStatus) : {kind: 'harness_error'}}}, metadata};

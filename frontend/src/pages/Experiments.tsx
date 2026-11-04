@@ -697,7 +697,7 @@ export default function Experiments() {
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-gray-600">
-                    ${e.accumulated_cost_usd.toFixed(2)}
+                    Known ${e.accumulated_cost_usd.toFixed(2)}
                     {e.budget_limit_usd != null && <span className="text-gray-400"> / ${e.budget_limit_usd.toFixed(2)}</span>}
                   </td>
                   <td className="px-4 py-2.5 text-gray-500">{new Date(e.created_at).toLocaleString()}</td>

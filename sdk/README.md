@@ -66,6 +66,11 @@ connector-neutral facts: `kind` (`model_error`, `limit`, `timeout`, `harness_err
 The canonical schema validates these facts. Core consumers classify the facts;
 native error-message parsing stays in the connector. Missing facts remain unknown.
 
+`failure.observed` records a failed provider request even when the native harness
+recovers and ultimately succeeds. It carries `request_id`, `purpose` and the same
+typed failure `facts`. Core consumers preserve infrastructure contamination
+separately from the successful result. Retries remain native harness decisions.
+
 Cancellation cannot turn into success merely because a connector returned successfully during
 shutdown. A broken pipe can prevent a terminal event: the runner must record an
 explicit transport failure. Late emits after a terminal record are rejected.
@@ -98,6 +103,8 @@ zero, `source`, optional session/parent session IDs, a name and typed data:
   same measurement's cumulative updates replace prior values, not add to them.
   Cache/reasoning fields can be null or absent. Unknown is never measured zero.
   Monetary amounts are decimal strings with currency and provenance.
+  Optional metadata distinguishes the requested model from a provider-reported
+  alias. An alias must not change the identity of one cumulative measurement.
 - Artifacts announce paths; collection and path containment follow the task
   environment's policy, including failed/cancelled attempts.
 - Interaction requests have IDs and kinds; supported responses use declared

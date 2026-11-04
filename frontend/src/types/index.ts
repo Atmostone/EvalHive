@@ -1680,7 +1680,7 @@ export interface ExperimentRunResult {
   external_verdict?: 'pass' | 'fail' | null
   weighted_score?: number | null
   trajectory_score?: number | null
-  cost_usd: number
+  cost_usd: number | null
   duration_seconds?: number | null
   quality_profile?: QualityProfile | null
   trajectory_profile?: TrajectoryProfile | null
@@ -1725,6 +1725,10 @@ export interface ExperimentEffortRow {
 
 // Per-config (or experiment-total) cost decomposition in USD (SPA-73).
 export interface ExperimentCostRow {
+  cost_basis?: string
+  unknown_agent_runs?: number
+  measured_runs?: number
+  settled_runs?: number
   config_key?: string
   label?: string
   agent: number
@@ -2308,7 +2312,7 @@ export interface ExperimentReport {
     status?: string
     outcome?: number | null
     trajectory?: number | null
-    cost: number
+    cost: number | null
     duration?: number | null
     tokens?: number | null
     task_id?: string | null

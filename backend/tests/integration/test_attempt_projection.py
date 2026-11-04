@@ -15,8 +15,9 @@ from app.quality.trace_cleaner import build_cleaned_trace
 
 
 @pytest.mark.parametrize("foreign_artifact", [False, True])
+@pytest.mark.parametrize("recovered_error", [False, True])
 async def test_attempt_results_logs_trace_and_unknown_cost_are_consistent(
-    auth_client, db_session, monkeypatch, foreign_artifact
+    auth_client, db_session, monkeypatch, foreign_artifact, recovered_error
 ):
     frames = []
 
@@ -101,6 +102,9 @@ async def test_attempt_results_logs_trace_and_unknown_cost_are_consistent(
     ]
     if foreign_artifact:
         data[-2][1]["metadata"]["s3_path"] = "results/another-task/private.txt"
+    if recovered_error:
+        data.insert(1, ("failure.observed", {"request_id": "request-1", "purpose": "agent",
+                                           "facts": {"kind": "model_error", "status_code": 500}}, None))
     batch = [
         {
             "protocol_version": "1.0",
@@ -133,6 +137,8 @@ async def test_attempt_results_logs_trace_and_unknown_cost_are_consistent(
     await settle_task(db_session, attempt.id)
     await db_session.refresh(task)
     assert task.status == ("failed" if foreign_artifact else "done") and task.cost_usd is None
+    if recovered_error and not foreign_artifact:
+        assert task.failure_type == "llm_transient"
     assert task.token_usage["input_tokens"] == 7 and task.token_usage["output_tokens"] == 2
     assert len(task.result_files) == (0 if foreign_artifact else 1)
     if foreign_artifact:
@@ -166,7 +172,7 @@ async def test_attempt_results_logs_trace_and_unknown_cost_are_consistent(
 
 async def test_small_reported_cost_is_not_rounded_to_zero(auth_client, db_session):
     workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
-    amount = Decimal("0.000000000123")
+    amount = Decimal("0.000000000000000000123")
     task = Task(title="Precise execution cost", workspace_id=workspace_id, cost_usd=amount)
     db_session.add(task)
     await db_session.flush()

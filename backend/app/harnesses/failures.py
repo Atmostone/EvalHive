@@ -24,6 +24,9 @@ _RUNNER_FAILURES = frozenset(
         "RUNNER_STOPPED",
         "MANIFEST_MISMATCH",
         "ARTIFACT_DELIVERY",
+        "TIMEOUT",
+        "RUNNER_ERROR",
+        "CONFIGURATION_UNAVAILABLE",
     }
 )
 
@@ -34,12 +37,19 @@ def classify_result(result, *, status):
         return "infra"
     error = (result or {}).get("error", {})
     facts = error.get("details", {}).get("normalized_failure", {})
-    if facts.get("kind") == "model_error":
-        return classify_llm_error(facts.get("exception"), facts.get("status_code"))
-    if facts.get("kind") in _KINDS:
-        return _KINDS[facts["kind"]]
+    classification = classify_facts(facts)
+    if classification is not None:
+        return classification
     if error.get("code") == "DEADLINE":
         return "timeout"
+    if (result or {}).get("metadata", {}).get("harness_started") is False:
+        return "infra"
     if error.get("code") in _RUNNER_FAILURES:
         return "infra"
     return None
+
+
+def classify_facts(facts):
+    if facts.get("kind") == "model_error":
+        return classify_llm_error(facts.get("exception"), facts.get("status_code"))
+    return _KINDS.get(facts.get("kind"))

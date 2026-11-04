@@ -37,6 +37,7 @@ export class ProviderObserver {
       response.once('close', () => controller.abort());
       let session: string | undefined;
       let state: JsonObject | undefined;
+      let receivedResponse = false;
       try {
         const chunks: Buffer[] = [];
         let bytes = 0;
@@ -57,7 +58,7 @@ export class ProviderObserver {
         state = {
           usage_id: `request-${++this.requests}`,
           mode: 'cumulative',
-          model: null,
+          model: typeof input.model === 'string' ? input.model : null,
           purpose,
           input_tokens: null,
           output_tokens: null,
@@ -95,7 +96,12 @@ export class ProviderObserver {
           signal: controller.signal,
           redirect: 'error',
         });
+        receivedResponse = true;
         this.lastStatus = upstream.status;
+        if (upstream.status >= 400) this.output.emit('failure.observed', {
+          request_id: state.usage_id, purpose,
+          facts: {kind: 'model_error', status_code: upstream.status, exception: null},
+        }, session);
         response.writeHead(upstream.status, {
           'Content-Type': upstream.headers.get('content-type') ?? 'application/json',
         });
@@ -108,7 +114,7 @@ export class ProviderObserver {
         let buffer = '';
         const observe = (packet: unknown) => {
           const value = object(packet);
-          if (typeof value.model === 'string') state!.model = value.model;
+          if (typeof value.model === 'string') state!.metadata = {model_source: 'request', reported_model: value.model};
           const usage = object(value.usage);
           if (!Object.keys(usage).length) return;
           for (const [wire, name] of [
@@ -156,10 +162,11 @@ export class ProviderObserver {
         response.end();
       } catch {
         if (!controller.signal.aborted) {
-          this.output.fail(
-            'PROVIDER_RECORDING_FAILED',
-            'Provider transport could not be observed completely',
-          );
+          if (state && !receivedResponse) {
+            // Preserve native retry policy after an upstream connection failure.
+            this.output.emit('failure.observed', {request_id: state.usage_id, purpose: state.purpose,
+              facts: {kind: 'model_error', status_code: null, exception: 'APIConnectionError'}}, session);
+          } else this.output.fail('PROVIDER_RECORDING_FAILED', 'Provider transport could not be observed completely');
           if (!response.headersSent) response.writeHead(502, { 'Content-Type': 'application/json' });
           response.end(JSON.stringify({ error: { message: 'EvalHive provider transport failed' } }));
         }

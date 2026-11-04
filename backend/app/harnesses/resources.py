@@ -59,6 +59,7 @@ def assemble_resources(
             if server.get(key) is not None
         }
         config["transport"] = "http" if http else "stdio"
+        config["alias_prefix"] = (server.get("name") or f"server_{index}") + "__"
         refs = {}
         for section in ("headers",) if http else ("env",):
             # Registry HTTP secrets name headers; stdio secrets name env vars.

@@ -9,6 +9,41 @@ import { fakeOpenAI, stream } from '../../shared/fake-openai.mjs';
 import { fakeMcpHTTP } from '../../shared/fake-mcp-http.mjs';
 
 const entrypoint = fileURLToPath(new URL('../dist/index.js', import.meta.url));
+
+test('native retry survives a recorded upstream connection failure', {timeout: 45000}, async () => {
+  const {result, events, requests} = await runFixture((body, index, res) => {
+    if (index === 1) res.destroy();
+    else stream(res, index, {content: 'Recovered after the local transport failure'});
+  });
+  assert.equal(result.status, 'success', JSON.stringify(result));
+  assert.equal(requests.length, 2);
+  const failures = events.filter(event => event.event === 'failure.observed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].data.facts.exception, 'APIConnectionError');
+});
+
+test('native nested sessions correlate tools to their parent task call', {timeout: 60000}, async () => {
+  const {result, events, requests} = await runFixture((body, index, res) => {
+    if (index === 1) stream(res, index, {tool: {id: 'parent-task', type: 'function', function: {
+      name: 'task', arguments: JSON.stringify({description: 'Read local fixture',
+        prompt: 'Read /workspace/input.txt and report its content.', subagent_type: 'general'}),
+    }}});
+    else if (index === 2) stream(res, index, {tool: {id: 'child-read', type: 'function', function: {
+      name: 'read', arguments: JSON.stringify({filePath: '/workspace/input.txt'}),
+    }}});
+    else stream(res, index, {content: index === 3 ? 'Child read the local fixture.' : 'Nested task completed.'});
+  }, {prepare: workspace => {
+    writeFileSync(join(workspace, 'input.txt'), 'Local nested evidence');
+    return [{id: 'tools', kind: 'tools', config: {names: ['task', 'read']}}];
+  }});
+  assert.equal(result.status, 'success', JSON.stringify(result));
+  assert.equal(requests.length, 4);
+  const child = events.find(event => event.event === 'tool.start' && event.data.call_id === 'child-read');
+  assert(child?.parent_session_id);
+  assert.equal(child.data.parent_call_id, 'parent-task');
+  assert.equal(events.find(event => event.event === 'tool.end' && event.data.call_id === 'child-read').data.parent_call_id, 'parent-task');
+});
+
 async function runFixture(
   handler,
   { config = {}, resources = [], control, prepare, privateCredentials = {}, bootstrap, limits = {} } = {},

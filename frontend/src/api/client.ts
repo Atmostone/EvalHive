@@ -762,10 +762,12 @@ export interface TemplateAnalytics {
   retry_rate: number
   failure_rate: number
   avg_time_seconds: number
-  avg_input_tokens: number
-  avg_output_tokens: number
-  total_cost_usd: number
-  cost_per_task_usd: number
+  avg_input_tokens: number | null
+  avg_output_tokens: number | null
+  total_cost_usd: number | null
+  cost_known_subtotal_usd: number
+  cost_known_count: number
+  cost_per_task_usd: number | null
 }
 
 export interface ConfigAnalytics {
@@ -791,16 +793,21 @@ export interface ConfigAnalytics {
 export interface TimelinePoint {
   date: string | null
   task_count: number
-  total_cost_usd: number
-  total_tokens: number
+  total_cost_usd: number | null
+  cost_known_subtotal_usd: number
+  cost_known_count: number
+  total_tokens: number | null
+  tokens_known_count: number
 }
 
 export interface ModelAnalytics {
   model: string
   task_count: number
-  total_cost_usd: number
-  avg_input_tokens: number
-  avg_output_tokens: number
+  total_cost_usd: number | null
+  cost_known_subtotal_usd: number
+  cost_known_count: number
+  avg_input_tokens: number | null
+  avg_output_tokens: number | null
 }
 
 function analyticsQs(params: Record<string, string | number | undefined>): string {

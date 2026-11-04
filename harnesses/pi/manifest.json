@@ -101,6 +101,24 @@
             ]
           }
         }
+      },
+      "compaction": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reserveTokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1999999,
+            "default": 16384
+          },
+          "keepRecentTokens": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2000000,
+            "default": 20000
+          }
+        }
       }
     }
   },

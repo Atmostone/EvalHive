@@ -56,7 +56,7 @@ async def test_clone_task_for_rerun_copies_input_and_pins_template(db_session, d
     assert clone.description == "do it"
     assert clone.reference_answer == "gold"
     assert clone.template_id == tpl.id  # pinned to the source's template
-    assert clone.run_config == {"template_id": str(tpl.id)}
+    assert clone.run_config == {"template_id": str(tpl.id), "replay_overrides": []}
     assert clone.status == TaskStatus.READY.value
     assert clone.max_retries == 0  # a re-run is a single deliberate execution
 

@@ -60,7 +60,7 @@ export async function startServer(state: string, cwd: string, config: Config) {
     let output = '';
     const timeout = setTimeout(
       () => reject(new ProtocolError('SERVER_START_TIMEOUT', 'OpenCode did not become ready')),
-      30000,
+      60000,
     );
     const done = (error?: Error, address?: string) => {
       clearTimeout(timeout);
@@ -79,6 +79,7 @@ export async function startServer(state: string, cwd: string, config: Config) {
     });
   }).catch(async (error) => {
     await stopServer(proc);
+    if (error instanceof Error) Object.assign(error, {nativeStderr: diagnostics});
     throw error;
   });
   return { proc, url, diagnostics: () => diagnostics };

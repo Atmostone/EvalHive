@@ -1,4 +1,3 @@
-import enum
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -18,15 +17,10 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.utils.enums import HistoricalStringEnum
 
 
-class _HistoricalStringEnum(enum.StrEnum):
-    # Preserve Python 3.11+ Enum display/formatting used by historical consumers.
-    __str__ = enum.Enum.__str__
-    __format__ = enum.Enum.__format__
-
-
-class TaskStatus(_HistoricalStringEnum):
+class TaskStatus(HistoricalStringEnum):
     BACKLOG = "backlog"
     READY = "ready"
     DECOMPOSING = "decomposing"
@@ -37,7 +31,7 @@ class TaskStatus(_HistoricalStringEnum):
     FAILED = "failed"
 
 
-class TaskPriority(_HistoricalStringEnum):
+class TaskPriority(HistoricalStringEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -148,7 +142,7 @@ class Task(Base):
         Numeric(12, 6), nullable=True
     )
     cost_usd: Mapped[Decimal | None] = mapped_column(
-        Numeric(20, 12).evaluates_none(), nullable=True, default=Decimal("0"), server_default="0"
+        Numeric().evaluates_none(), nullable=True, default=Decimal("0"), server_default="0"
     )
     # What the ORCHESTRATOR spent deciding about this task — template selection,
     # the decomposition decision, result evaluation. Deliberately NOT folded into
