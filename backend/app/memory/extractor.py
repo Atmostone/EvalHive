@@ -6,15 +6,14 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.plugins.llm import get_llm_provider
-from app.utils.tool_args import extract_tool_args
-
 from app.api.settings import get_setting
 from app.database import async_session
 from app.memory.store import upsert_entity
 from app.models.memory import MemoryEntity, MemoryRelation
 from app.models.task import Task
+from app.plugins.llm import get_llm_provider
 from app.utils.events import log_event
+from app.utils.tool_args import extract_tool_args
 
 logger = logging.getLogger(__name__)
 

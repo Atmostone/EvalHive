@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -20,12 +19,12 @@ class ScheduledJob(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
-    cron_expr: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    interval_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    fire_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    cron_expr: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fire_at: Mapped[datetime | None] = mapped_column(nullable=True)
     payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    last_fired_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    last_fired_at: Mapped[datetime | None] = mapped_column(nullable=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("workspaces.id", ondelete="CASCADE"),

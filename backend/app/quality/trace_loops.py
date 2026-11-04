@@ -214,12 +214,12 @@ def detect_loops(steps: list[dict] | None) -> dict:
         attempts = [int(s.get("attempt") or 1) for s in tool_steps]
         _seg_attempt: list[int] = []
         if len(set(attempts)) > 1:
-            action_keys = [f"a{a}|{k}" for a, k in zip(attempts, action_keys)]
+            action_keys = [f"a{a}|{k}" for a, k in zip(attempts, action_keys, strict=True)]
 
         # 1) longest run of consecutive IDENTICAL actions (tool + content).
         max_repeat_run = 1
         run = 1
-        for a, b in zip(action_keys, action_keys[1:]):
+        for a, b in zip(action_keys, action_keys[1:], strict=False):
             run = run + 1 if a == b else 1
             max_repeat_run = max(max_repeat_run, run)
 
@@ -231,7 +231,7 @@ def detect_loops(steps: list[dict] | None) -> dict:
         # were being reported as a loop — the exact reading SPA-113 set out to
         # stop. Per-attempt segments, maximum across them.
         segments: list[list[str]] = []
-        for tool, attempt in zip(tool_seq, attempts):
+        for tool, attempt in zip(tool_seq, attempts, strict=True):
             if not segments or attempt != _seg_attempt[-1]:
                 segments.append([])
                 _seg_attempt.append(attempt)
@@ -241,7 +241,7 @@ def detect_loops(steps: list[dict] | None) -> dict:
         max_same_tool_run = 1
         for seg in segments:
             run = 1
-            for a, b in zip(seg, seg[1:]):
+            for a, b in zip(seg, seg[1:], strict=False):
                 run = run + 1 if a == b else 1
                 max_same_tool_run = max(max_same_tool_run, run)
 

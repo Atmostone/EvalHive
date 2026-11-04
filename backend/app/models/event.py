@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import BigInteger, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -18,10 +17,10 @@ class AgentEvent(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id"), nullable=True
     )
-    agent_container_id: Mapped[Optional[str]] = mapped_column(
+    agent_container_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
     event_type: Mapped[str] = mapped_column(String(50), nullable=False)

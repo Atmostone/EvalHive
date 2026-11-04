@@ -30,7 +30,6 @@ import uuid
 from collections import Counter
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,10 +40,20 @@ from app.models.variance_run import VarianceRun
 from app.orchestrator.rerun import clone_task_for_rerun
 from app.quality.runs_common import (
     SUCCESS_TASK as _SUCCESS_TASK,
+)
+from app.quality.runs_common import (
     TERMINAL_TASK as _TERMINAL_TASK,
+)
+from app.quality.runs_common import (
     accumulated_cost as _accumulated_cost,
+)
+from app.quality.runs_common import (
     distribution as _distribution,
+)
+from app.quality.runs_common import (
     ensure_child_evaluated as _ensure_child_evaluated,
+)
+from app.quality.runs_common import (
     inflight_target,
 )
 
@@ -113,12 +122,12 @@ async def run_variance(
     db: AsyncSession,
     *,
     workspace_id: uuid.UUID,
-    source_task_id: Optional[uuid.UUID] = None,
-    source_spec: Optional[dict] = None,
+    source_task_id: uuid.UUID | None = None,
+    source_spec: dict | None = None,
     n: int = 10,
     parallel: bool = True,
-    cost_cap_usd: Optional[Decimal] = None,
-    template_id: Optional[uuid.UUID] = None,
+    cost_cap_usd: Decimal | None = None,
+    template_id: uuid.UUID | None = None,
 ) -> VarianceRun:
     """Create a variance run and kick off the first batch of children.
 

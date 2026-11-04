@@ -1,12 +1,11 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import bcrypt
 import jwt
 
 from app.config import get_settings
-
 
 _BCRYPT_MAX_BYTES = 72
 
@@ -37,7 +36,7 @@ def _secret() -> str:
 
 def create_access_token(user_id: uuid.UUID, default_workspace_id: uuid.UUID | None = None) -> str:
     settings = get_settings()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "iat": int(now.timestamp()),

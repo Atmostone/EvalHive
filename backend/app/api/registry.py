@@ -9,7 +9,7 @@ reveals them).
 from __future__ import annotations
 
 import uuid
-from typing import Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -30,27 +30,27 @@ class EntryCreate(BaseModel):
     config: dict = Field(default_factory=dict)
     secrets: dict = Field(default_factory=dict)
     enabled: bool = True
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class EntryUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    config: Optional[dict] = None
-    secrets: Optional[dict] = None
-    enabled: Optional[bool] = None
-    description: Optional[str] = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    config: dict | None = None
+    secrets: dict | None = None
+    enabled: bool | None = None
+    description: str | None = None
 
 
 def _parse_uuid(value: str) -> uuid.UUID:
     try:
         return uuid.UUID(value)
     except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid registry entry id")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid registry entry id") from None
 
 
 @router.get("/tools")
 async def list_tools(
-    kind: Optional[str] = Query(None),
+    kind: str | None = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -81,7 +81,7 @@ async def create_tool(
             created_by=getattr(user, "email", None) or "user",
         )
     except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from None
     return service.serialize(entry)
 
 
@@ -116,7 +116,7 @@ async def update_tool(
         msg = str(e)
         raise HTTPException(
             status.HTTP_404_NOT_FOUND if "not found" in msg else status.HTTP_400_BAD_REQUEST, msg
-        )
+        ) from None
     return service.serialize(entry)
 
 
@@ -138,9 +138,9 @@ async def delete_tool(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             {"detail": "registry entry is referenced by templates", "templates": e.referencing},
-        )
+        ) from None
     except ValueError as e:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e))
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from None
 
 
 @router.post("/tools/{entry_id}/test")

@@ -61,7 +61,7 @@ async def ingest_log_chunk(
     try:
         task_uuid = uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid task id")
+        raise HTTPException(status_code=400, detail="invalid task id") from None
 
     token_row = await verify_agent_token(db, plain=plain, task_id=task_uuid)
     if token_row is None:
@@ -139,7 +139,7 @@ async def list_log_chunks(
     try:
         task_uuid = uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid task id")
+        raise HTTPException(status_code=400, detail="invalid task id") from None
 
     task = await db.get(Task, task_uuid)
     if task is None or task.workspace_id != workspace.id:

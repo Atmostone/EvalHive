@@ -65,7 +65,7 @@ async def _process_webhook(
         validated = _ADAPTER.validate_python(body)
     except ValidationError as ve:
         logger.warning(f"webhook validation failed for {task_id}: {ve}")
-        raise HTTPException(status_code=422, detail=ve.errors())
+        raise HTTPException(status_code=422, detail=ve.errors()) from None
 
     # 2. Authenticate via the per-task agent service token.
     auth = request.headers.get("Authorization", "")
@@ -75,7 +75,7 @@ async def _process_webhook(
     try:
         task_uuid = uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid task id")
+        raise HTTPException(status_code=400, detail="invalid task id") from None
     token_row = await verify_agent_token(db, plain=plain_token, task_id=task_uuid)
     if token_row is None:
         raise HTTPException(status_code=401, detail="invalid or expired agent token")
@@ -444,4 +444,4 @@ async def agent_webhook_legacy(
         return await _process_webhook(task_id, body, request, db)
     except HTTPException as exc:
         # Re-raise with the deprecation headers attached.
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=_LEGACY_HEADERS)
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=_LEGACY_HEADERS) from None

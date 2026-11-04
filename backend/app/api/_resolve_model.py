@@ -17,7 +17,6 @@ from app.models.provider import LLMModel, Provider
 from app.models.workspace import Workspace
 from app.plugins.llm import set_provider_concurrency
 
-
 SystemModelKind = Literal["orchestrator", "chat", "memory_extractor", "quality_judge"]
 
 

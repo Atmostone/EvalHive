@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import ForeignKey, Integer, Numeric, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -29,7 +28,7 @@ class Provider(Base):
     endpoint: Mapped[str] = mapped_column(String(500), nullable=False)
     # Max concurrent backend LLM calls to this provider (NULL → unbounded).
     # Subscription plans often limit simultaneous requests, not tokens (SPA-47).
-    max_concurrency: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_concurrency: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()

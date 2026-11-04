@@ -2,7 +2,6 @@
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -21,21 +20,21 @@ router = APIRouter(prefix="/api/scheduled-jobs", tags=["scheduled-jobs"])
 class ScheduledJobCreate(BaseModel):
     name: str
     kind: str  # cron | interval | once
-    cron_expr: Optional[str] = None
-    interval_seconds: Optional[int] = None
-    fire_at: Optional[datetime] = None
+    cron_expr: str | None = None
+    interval_seconds: int | None = None
+    fire_at: datetime | None = None
     payload: dict = {}
     enabled: bool = True
 
 
 class ScheduledJobUpdate(BaseModel):
-    name: Optional[str] = None
-    kind: Optional[str] = None
-    cron_expr: Optional[str] = None
-    interval_seconds: Optional[int] = None
-    fire_at: Optional[datetime] = None
-    payload: Optional[dict] = None
-    enabled: Optional[bool] = None
+    name: str | None = None
+    kind: str | None = None
+    cron_expr: str | None = None
+    interval_seconds: int | None = None
+    fire_at: datetime | None = None
+    payload: dict | None = None
+    enabled: bool | None = None
 
 
 def _to_dict(j: ScheduledJob) -> dict:

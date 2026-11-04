@@ -36,6 +36,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bias_report import BiasReport
+from app.models.task import Task
 from app.quality.judge import (
     _judge_dimension,
     _load_bias_mitigation_flags,
@@ -50,7 +51,6 @@ from app.quality.judge_calibration import (
 from app.quality.model_identity import same_model_or_family
 from app.quality.rubric import resolve_rubric_for_task
 from app.quality.stats import MIN_SAMPLES, pearson, stdev
-from app.models.task import Task
 from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
@@ -356,7 +356,7 @@ async def run_bias_report(
             task_on: list[dict] = []
             off_by_key: dict[str, int | None] = {}
             on_by_key: dict[str, int | None] = {}
-            for p, off_r, on_r in zip(rated, off_results, on_results):
+            for p, off_r, on_r in zip(rated, off_results, on_results, strict=True):
                 off_s = off_r.get("score") if off_r.get("status") == "scored" else None
                 on_s = on_r.get("score") if on_r.get("status") == "scored" else None
                 key = p["dimension_key"]

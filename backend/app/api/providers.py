@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 import uuid
 from decimal import Decimal
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -18,9 +17,7 @@ from app.auth.dependencies import get_current_workspace, require_role
 from app.database import get_db
 from app.models.provider import LLMModel, Provider
 from app.models.workspace import Workspace
-from app.plugins.llm import set_provider_concurrency
-from app.plugins.llm import get_llm_provider
-
+from app.plugins.llm import get_llm_provider, set_provider_concurrency
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 models_router = APIRouter(prefix="/api/models", tags=["providers"])
@@ -33,15 +30,15 @@ class ProviderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     api_key: str = Field(min_length=1, max_length=500)
     endpoint: str = Field(min_length=1, max_length=500)
-    max_concurrency: Optional[int] = Field(default=None, ge=1, le=1000)
+    max_concurrency: int | None = Field(default=None, ge=1, le=1000)
 
 
 class ProviderUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    api_key: Optional[str] = Field(default=None, min_length=1, max_length=500)
-    endpoint: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    api_key: str | None = Field(default=None, min_length=1, max_length=500)
+    endpoint: str | None = Field(default=None, min_length=1, max_length=500)
     # 0 clears the limit (NULL → unbounded); omitted leaves it unchanged.
-    max_concurrency: Optional[int] = Field(default=None, ge=0, le=1000)
+    max_concurrency: int | None = Field(default=None, ge=0, le=1000)
 
 
 class ModelCreate(BaseModel):
@@ -52,10 +49,10 @@ class ModelCreate(BaseModel):
 
 
 class ModelUpdate(BaseModel):
-    display_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    api_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    input_price_per_1m_usd: Optional[Decimal] = None
-    output_price_per_1m_usd: Optional[Decimal] = None
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    api_name: str | None = Field(default=None, min_length=1, max_length=255)
+    input_price_per_1m_usd: Decimal | None = None
+    output_price_per_1m_usd: Decimal | None = None
 
 
 # ---------------------------- Serializers ----------------------------
@@ -92,7 +89,7 @@ async def _scoped_provider(
     try:
         pid = uuid.UUID(provider_id)
     except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid provider id")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid provider id") from None
     p = await db.get(Provider, pid)
     if not p or p.workspace_id != workspace.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "provider not found")
@@ -105,7 +102,7 @@ async def _scoped_model(
     try:
         mid = uuid.UUID(model_id)
     except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid model id")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid model id") from None
     m = await db.get(LLMModel, mid)
     if not m:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "model not found")
@@ -152,7 +149,7 @@ async def create_provider(
         await db.rollback()
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"provider named '{body.name}' already exists"
-        )
+        ) from None
     await db.refresh(p)
     set_provider_concurrency(p.endpoint, p.api_key, p.max_concurrency)
     return provider_to_dict(p)
@@ -179,7 +176,7 @@ async def update_provider(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "provider name conflicts with existing")
+        raise HTTPException(status.HTTP_409_CONFLICT, "provider name conflicts with existing") from None
     await db.refresh(p)
     set_provider_concurrency(p.endpoint, p.api_key, p.max_concurrency)
     return provider_to_dict(p)
@@ -240,7 +237,7 @@ async def create_model(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"model '{body.api_name}' already exists for this provider",
-        )
+        ) from None
     await db.refresh(m)
     return model_to_dict(m)
 
@@ -266,7 +263,7 @@ async def update_model(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "api_name conflicts with existing model")
+        raise HTTPException(status.HTTP_409_CONFLICT, "api_name conflicts with existing model") from None
     await db.refresh(m)
     return model_to_dict(m)
 

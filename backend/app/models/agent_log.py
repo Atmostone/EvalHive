@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -41,17 +40,17 @@ class AgentLogChunk(Base):
     )
     chunk_seq: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    tool_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # SPA-86 — the call that produced `content`, not just its name. Without the
     # arguments the process judge's `parameter_quality` axis has no subject.
-    arguments: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    arguments: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     arguments_truncated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
     # A tool output over the transport cap is split across several rows; these
     # let the trace cleaner put them back together as one step instead of
     # reading one call as N.
-    tool_call_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     part_index: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -62,7 +61,7 @@ class AgentLogChunk(Base):
     # model returns it in a field separate from the answer, and nothing in this
     # repository read it: the platform stored the conclusion and discarded the
     # thinking that produced it, then asked a process judge how the agent worked.
-    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

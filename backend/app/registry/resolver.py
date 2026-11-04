@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +20,7 @@ from app.models.registry_entry import RegistryEntry
 logger = logging.getLogger(__name__)
 
 
-def _apply_override(tool_ids: list[str], override: Optional[dict]) -> list[str]:
+def _apply_override(tool_ids: list[str], override: dict | None) -> list[str]:
     """Apply ``{enable:[ids], disable:[ids]}`` to the template's id list.
 
     Finest-restriction-wins: a `disable` removes an id even if `enable` lists it;
@@ -41,7 +40,7 @@ def _apply_override(tool_ids: list[str], override: Optional[dict]) -> list[str]:
     return result
 
 
-def _materialize(entry: RegistryEntry) -> Optional[object]:
+def _materialize(entry: RegistryEntry) -> object | None:
     """A builtin entry → its tool name (str); an mcp entry → a server dict."""
     if entry.kind == "builtin":
         return entry.name
@@ -60,7 +59,7 @@ def _materialize(entry: RegistryEntry) -> Optional[object]:
 
 
 async def resolve_template_tools(
-    db: AsyncSession, template, *, run_config: Optional[dict] = None
+    db: AsyncSession, template, *, run_config: dict | None = None
 ) -> tuple[list, list]:
     """Resolve ``(tools, mcp_servers)`` for a template + optional task override.
 

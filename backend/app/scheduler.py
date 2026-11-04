@@ -25,9 +25,10 @@ def get_scheduler() -> AsyncIOScheduler | None:
 
 async def _job_runner(job_id: str):
     """Execute a job by id: dispatch on its kind/payload, log to agent_events."""
-    from app.utils.events import log_event
-    from app.plugins.runtime import get_agent_runtime
     from sqlalchemy import func
+
+    from app.plugins.runtime import get_agent_runtime
+    from app.utils.events import log_event
 
     async with async_session() as db:
         job = await db.get(ScheduledJob, uuid.UUID(job_id))
@@ -76,8 +77,8 @@ async def _job_runner(job_id: str):
             # Quality Data Lake (E-01): build records for any terminal task that
             # has none yet (e.g. user-approved → done, parents, spawn-failures),
             # and reconcile final_status of existing records. Global (all WS).
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.data_lake import build_quality_record
 
             terminal = (TaskStatus.DONE.value, TaskStatus.FAILED.value)
@@ -159,8 +160,8 @@ async def _job_runner(job_id: str):
             # gated by the `quality_eval_enabled` setting to avoid surprise
             # token spend; the on-demand API button works regardless.
             from app.api.settings import get_setting
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.judge import evaluate_task_quality
 
             if bool(await get_setting(db, "quality_eval_enabled", False)):
@@ -198,8 +199,8 @@ async def _job_runner(job_id: str):
             # `trajectory_eval_enabled` setting to avoid surprise token spend;
             # the on-demand API button works regardless.
             from app.api.settings import get_setting
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.trajectory import evaluate_task_trajectory
 
             if bool(await get_setting(db, "trajectory_eval_enabled", False)):
@@ -240,8 +241,8 @@ async def _job_runner(job_id: str):
             # the on-demand API button works regardless. Smaller batch than the
             # holistic judges — this one makes N+1 calls per task.
             from app.api.settings import get_setting
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.trace_evidence import evaluate_task_trace_evidence
 
             if bool(await get_setting(db, "trace_evidence_eval_enabled", False)):
@@ -282,8 +283,8 @@ async def _job_runner(job_id: str):
             # `capability_eval_enabled` setting (the correctness step may invoke
             # the E-02 judge); the on-demand API button works regardless.
             from app.api.settings import get_setting
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.capability import evaluate_task_capability
 
             if bool(await get_setting(db, "capability_eval_enabled", False)):
@@ -323,8 +324,8 @@ async def _job_runner(job_id: str):
             # gated by the `failure_mode_eval_enabled` setting to avoid surprise
             # token spend; the on-demand API button works regardless.
             from app.api.settings import get_setting
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.failure_modes import evaluate_task_failure_modes
 
             if bool(await get_setting(db, "failure_mode_eval_enabled", False)):
@@ -364,8 +365,8 @@ async def _job_runner(job_id: str):
             # the `hallucination_eval_enabled` setting to avoid surprise token
             # spend; the on-demand API button works regardless.
             from app.api.settings import get_setting
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.hallucination import evaluate_task_hallucinations
 
             if bool(await get_setting(db, "hallucination_eval_enabled", False)):
@@ -405,8 +406,8 @@ async def _job_runner(job_id: str):
             # `calibration_eval_enabled` setting to avoid surprise token spend;
             # the on-demand API button works regardless.
             from app.api.settings import get_setting
-            from app.models.task import Task, TaskStatus
             from app.models.quality_record import QualityRecord
+            from app.models.task import Task, TaskStatus
             from app.quality.calibration import evaluate_task_calibration
 
             if bool(await get_setting(db, "calibration_eval_enabled", False)):

@@ -6,8 +6,6 @@ import os
 import uuid
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-
-from app.plugins.llm import get_llm_provider
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,12 +13,13 @@ from app.api._resolve_model import resolve_workspace_model
 from app.api.events import _ws_authenticate
 from app.auth.dependencies import get_current_workspace
 from app.database import async_session, get_db
+from app.knowledge.rag import search_documents
 from app.models.chat_message import ChatMessage
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.models.workspace import Workspace
 from app.orchestrator.prompts import build_orchestrator_system_prompt
-from app.knowledge.rag import search_documents
+from app.plugins.llm import get_llm_provider
 from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
@@ -95,6 +94,7 @@ async def handle_slash_command(
     db: AsyncSession, raw: str, workspace_id: uuid.UUID
 ) -> str:
     from datetime import datetime, timedelta
+
     from sqlalchemy import func
 
     parts = raw[1:].split(maxsplit=1)

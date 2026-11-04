@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -49,7 +48,7 @@ class RegistryEntry(Base):
     # Credential env map {ENV_KEY: value}; plain text, masked on read.
     secrets: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str] = mapped_column(
         String(255), default="user", server_default="user"
     )

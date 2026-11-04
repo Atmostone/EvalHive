@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -45,7 +44,7 @@ class AnnotationSession(Base):
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     protocol_version: Mapped[int] = mapped_column(
@@ -67,7 +66,7 @@ class AnnotationSession(Base):
     # Single-use: one bundle vouches for one rating. Without this, a blind bundle
     # could be opened once and then vouch for ratings made much later, after the
     # annotator had looked at the judge somewhere else.
-    consumed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class Annotation(Base):
@@ -121,10 +120,10 @@ class Annotation(Base):
     annotator_type: Mapped[str] = mapped_column(String(20), nullable=False)
     # Null for the machine types and for legacy rows (the old slot only ever
     # stored a display string). Honest `n_humans` counts distinct values here.
-    annotator_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    annotator_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
-    annotator_label: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    annotator_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # The protocol this rating was collected under, recorded rather than
     # remembered. Blindness reflects what actually happened, not the intent.
@@ -144,17 +143,17 @@ class Annotation(Base):
         Boolean, default=False, server_default="false"
     )
 
-    verdict: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    overall_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    overall_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     dimensions: Mapped[list] = mapped_column(JSONB, nullable=False)
-    judge_observation: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    judge_observation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    supersedes_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("annotations.id", ondelete="SET NULL"), nullable=True
     )
     # The session that produced this rating — the evidence behind the blindness
     # flags above. Null for machine annotators, which declare their own protocol.
-    session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("annotation_sessions.id", ondelete="SET NULL"),
         nullable=True,

@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import Boolean, ForeignKey, Index, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -43,12 +42,12 @@ class PerturbationRun(Base):
         nullable=False,
     )
     # The finished scenario being probed (its input is perturbed; cleared on delete).
-    source_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    source_task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
     # Pinned template for every child (denormalized from the source / request);
     # None => children go through normal orchestrator selection each run.
-    template_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
 
@@ -61,10 +60,10 @@ class PerturbationRun(Base):
         Integer, nullable=False, default=2, server_default="2"
     )
     parallel: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    cost_cap_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6), nullable=True)
+    cost_cap_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
     # Unique marker the inject payload asks the agent to emit; its presence in a
     # child's output is the deterministic "agent followed the injection" signal.
-    injection_canary: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    injection_canary: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # pending | running | done | capped | failed
     status: Mapped[str] = mapped_column(
@@ -78,7 +77,7 @@ class PerturbationRun(Base):
     perturbed_task_ids: Mapped[dict] = mapped_column(
         JSONB, default=dict, server_default="{}"
     )
-    aggregate: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    aggregate: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     accumulated_cost_usd: Mapped[Decimal] = mapped_column(
         Numeric(10, 6), default=Decimal("0"), server_default="0"
     )
@@ -87,4 +86,4 @@ class PerturbationRun(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)

@@ -2,7 +2,6 @@
 
 import asyncio
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -31,9 +30,9 @@ class EntityCreate(BaseModel):
 
 
 class EntityUpdate(BaseModel):
-    type: Optional[str] = None
-    name: Optional[str] = None
-    attributes: Optional[dict] = None
+    type: str | None = None
+    name: str | None = None
+    attributes: dict | None = None
 
 
 class RelationCreate(BaseModel):
@@ -45,8 +44,8 @@ class RelationCreate(BaseModel):
 
 @router.get("/entities")
 async def list_entities(
-    type: Optional[str] = Query(default=None),
-    search: Optional[str] = Query(default=None),
+    type: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
@@ -146,8 +145,8 @@ async def delete_entity(
 
 @router.get("/relations")
 async def list_relations(
-    from_id: Optional[uuid.UUID] = Query(default=None),
-    to_id: Optional[uuid.UUID] = Query(default=None),
+    from_id: uuid.UUID | None = Query(default=None),
+    to_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=2000),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),

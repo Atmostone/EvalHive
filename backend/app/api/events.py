@@ -1,8 +1,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -44,12 +43,12 @@ def event_to_dict(e: AgentEvent) -> dict:
 
 @router.get("")
 async def list_events(
-    task_id: Optional[str] = None,
-    event_type: Optional[str] = None,
-    source: Optional[str] = None,
-    agent_container_id: Optional[str] = None,
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    task_id: str | None = None,
+    event_type: str | None = None,
+    source: str | None = None,
+    agent_container_id: str | None = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     limit: int = 100,
     offset: int = 0,
     workspace: Workspace = Depends(get_current_workspace),
@@ -68,18 +67,18 @@ async def list_events(
         try:
             dt = datetime.fromisoformat(from_dt.replace("Z", "+00:00"))
             if dt.tzinfo is not None:
-                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                dt = dt.astimezone(UTC).replace(tzinfo=None)
             query = query.where(AgentEvent.created_at >= dt)
         except ValueError:
-            raise HTTPException(status_code=400, detail="from_dt must be ISO-8601")
+            raise HTTPException(status_code=400, detail="from_dt must be ISO-8601") from None
     if to_dt:
         try:
             dt = datetime.fromisoformat(to_dt.replace("Z", "+00:00"))
             if dt.tzinfo is not None:
-                dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                dt = dt.astimezone(UTC).replace(tzinfo=None)
             query = query.where(AgentEvent.created_at <= dt)
         except ValueError:
-            raise HTTPException(status_code=400, detail="to_dt must be ISO-8601")
+            raise HTTPException(status_code=400, detail="to_dt must be ISO-8601") from None
     query = query.order_by(AgentEvent.created_at.desc()).offset(offset).limit(limit)
 
     result = await db.execute(query)

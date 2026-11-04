@@ -25,8 +25,6 @@ version line.
 from __future__ import annotations
 
 import logging
-import uuid
-from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -278,7 +276,7 @@ def _pooled_kappa(
         return None, None, None, 0
     kappa = cohen_kappa(a, b, labels) if n >= MIN_SAMPLES else None
     kappa_ci = bootstrap_kappa_ci(a, b, labels) if n >= MIN_SAMPLES else None
-    agreement = round(sum(1 for x, y in zip(a, b) if x == y) / n, 4)
+    agreement = round(sum(1 for x, y in zip(a, b, strict=True) if x == y) / n, 4)
     return kappa, kappa_ci, agreement, n
 
 
@@ -430,7 +428,7 @@ def _compute_report(pairs: list[dict], *, threshold_kappa: float) -> dict:
         bootstrap_kappa_ci(j_v, h_v, VERDICT_LABELS) if n_v >= MIN_SAMPLES else None
     )
     agreement_pct = (
-        round(sum(1 for a, b in zip(j_v, h_v) if a == b) / n_v, 4) if n_v else None
+        round(sum(1 for a, b in zip(j_v, h_v, strict=True) if a == b) / n_v, 4) if n_v else None
     )
     overall = {
         "n": n_v,

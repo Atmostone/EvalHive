@@ -9,7 +9,6 @@ import io
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import case, func, select
@@ -78,12 +77,12 @@ def _with_title(stmt, title_contains):
 
 @router.get("/records")
 async def list_records(
-    template_id: Optional[str] = None,
-    model_used: Optional[str] = None,
-    final_status: Optional[str] = None,
-    title_contains: Optional[str] = None,
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    template_id: str | None = None,
+    model_used: str | None = None,
+    final_status: str | None = None,
+    title_contains: str | None = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     workspace: Workspace = Depends(get_current_workspace),
@@ -130,12 +129,12 @@ async def get_record(
 @router.get("/query")
 async def query_records(
     group_by: str = Query(default="template_name"),
-    model_used: Optional[str] = None,
-    final_status: Optional[str] = None,
-    template_id: Optional[str] = None,
-    title_contains: Optional[str] = None,
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    model_used: str | None = None,
+    final_status: str | None = None,
+    template_id: str | None = None,
+    title_contains: str | None = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -184,12 +183,12 @@ async def query_records(
 @router.get("/export")
 async def export_records(
     format: str = Query(default="json"),
-    template_id: Optional[str] = None,
-    model_used: Optional[str] = None,
-    final_status: Optional[str] = None,
-    title_contains: Optional[str] = None,
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    template_id: str | None = None,
+    model_used: str | None = None,
+    final_status: str | None = None,
+    title_contains: str | None = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
     _role=Depends(require_role("owner", "admin")),
