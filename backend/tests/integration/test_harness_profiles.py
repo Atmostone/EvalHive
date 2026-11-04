@@ -56,6 +56,33 @@ async def create_fake(client, name="Custom", **extra):
     return response.json()
 
 
+async def test_opencode_registers_through_the_common_profile_api(auth_client):
+    catalog = (await auth_client.get("/api/harnesses")).json()
+    declaration = next(row for row in catalog if row["id"] == "opencode")
+    assert declaration["requirements"]["harness_version"] == "1.19.5"
+    assert declaration["capabilities"]["approval"] == "native"
+    response = await auth_client.post(
+        "/api/harness-profiles",
+        json={
+            "name": "OpenCode native",
+            "connector_id": declaration["id"],
+            "config": {"permissionMode": "ask", "maxOutputTokens": 1024},
+        },
+    )
+    assert response.status_code == 201, response.text
+    profile = response.json()
+    assert profile["connector_version"] == declaration["version"]
+    assert (
+        await auth_client.post(f"/api/harness-profiles/{profile['id']}/validate")
+    ).json() == {"valid": True}
+    rejected = await auth_client.patch(
+        f"/api/harness-profiles/{profile['id']}", json={"config": {"plugins": ["untrusted"]}}
+    )
+    assert rejected.status_code == 422
+    unchanged = (await auth_client.get(f"/api/harness-profiles/{profile['id']}")).json()
+    assert unchanged["config"] == profile["config"]
+
+
 async def test_builtin_profile_catalog_and_external_crud(auth_client, installed_fake):
     catalog = await auth_client.get("/api/harnesses")
     assert catalog.status_code == 200

@@ -4,6 +4,16 @@ Format: `YYYY-MM-DD — change — plan section / PR reference`.
 
 ## 2026-11-04
 
+- **SPA-129 — connect OpenCode through its own SDK package.** The pinned 1.19.5
+  CLI/server and official SDK use HTTP/SSE inside an isolated worker. Native
+  snapshots recover final state after reconnects without duplicate tools or
+  usage; context pruning cannot overwrite captured tool evidence. Native hooks
+  separate exact tool selection from approval permissions and enforce hard turn
+  limits before another provider call. Feedback persistence, bounded shutdown,
+  private MCP credentials and provider measurement availability are covered by
+  local native-server tests without external models. Backend execution contains
+  no OpenCode-specific branches.
+
 - **SPA-128 — translate explicit task resources inside connectors.** Shared SDK
   declarations cover tool selection, MCP, skills, memory and instructions, with
   private credential references. Pi uses the pinned official MCP client for

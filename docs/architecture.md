@@ -185,6 +185,24 @@ worker credential input. Environment image variants are registered declarations,
 prepared inputs are copied into isolated attempt workspaces, and external
 evaluation reads the selected attempt's files.
 
+SPA-129 adds OpenCode 1.19.5 as another installed package and manifest, without
+backend-specific dispatch. Its private `opencode serve` process owns the native
+agent loop. The worker uses supported session HTTP endpoints and SSE, recovers
+authoritative messages after reconnects, and settles only after the latest input
+has a completed assistant response and the native session is idle. Replayed
+snapshots do not duplicate tools or usage; unavailable stream deltas remain an
+explicit recording limitation. Captured tool outputs survive later native
+context pruning, while outputs first observed after pruning remain missing.
+
+Native hooks enforce an exact tool mask independently of permission rules and
+check hard turn budgets before additional provider calls. Feedback is acknowledged
+after its message is persisted. Permission requests use the declared approval
+command; unsupported question input fails explicitly. A local transport observer
+records available provider usage by request/model/purpose without implementing
+an LLM loop or treating native catalog estimates as billed cost. Private HOME/XDG
+state and the image's pinned plugin dependency tree avoid owner configuration and
+runtime dependency downloads.
+
 ### Creating and running a task
 
 ```

@@ -1,0 +1,115 @@
+{
+  "protocol_version": "1.0",
+  "id": "opencode",
+  "version": "0.1.0",
+  "display_name": "OpenCode",
+  "entrypoint": [
+    "node",
+    "/opt/connector/dist/index.js"
+  ],
+  "image": "evalhive-opencode:1.19.5",
+  "requirements": {
+    "node": ">=22.19.0",
+    "platform": "linux/amd64",
+    "harness_version": "1.19.5",
+    "model_api": "openai-compatible",
+    "environment_images": {
+      "toolathlon": "evalhive-opencode-toolathlon:1.19.5"
+    }
+  },
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "contextWindow": {
+        "type": "integer",
+        "minimum": 128,
+        "maximum": 2000000,
+        "default": 128000
+      },
+      "maxOutputTokens": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 128000,
+        "default": 8192
+      },
+      "autoCompaction": {
+        "type": "boolean",
+        "default": true
+      },
+      "temperature": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2
+      },
+      "reasoning": {
+        "type": "boolean",
+        "default": false
+      },
+      "topP": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "permissionMode": {
+        "enum": [
+          "allow",
+          "ask",
+          "deny"
+        ],
+        "default": "allow"
+      }
+    }
+  },
+  "capabilities": {
+    "abort": "native",
+    "feedback": "native",
+    "approval": "native"
+  },
+  "commands": {
+    "abort": {
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    "feedback": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "approval": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "decision": {
+            "enum": [
+              "once",
+              "always",
+              "reject"
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "decision"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

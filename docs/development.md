@@ -132,6 +132,24 @@ own Node runtime. This does not run a benchmark. The task environment must pass
 its MCP environment references (including per-lane database coordinates) and
 prepared inputs. Portal tasks retain their owned environment network namespace.
 
+The [OpenCode connector](../harnesses/opencode/README.md) uses the same SDK and
+resource declarations. Its CLI and official TypeScript SDK are pinned to 1.19.5.
+Build and test it serially with the same rootless endpoint and resource limits:
+
+```bash
+docker build --target test -f harnesses/opencode/Dockerfile -t evalhive-opencode-tests:harness-dev .
+docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges:true --init evalhive-opencode-tests:harness-dev
+docker build --target runtime -f harnesses/opencode/Dockerfile -t evalhive-opencode:1.19.5 .
+```
+
+These tests run the actual native server against local HTTP/MCP fixtures. They
+cover feedback persistence, approval, SSE recovery, generation/tool cancellation,
+server failure, unknown usage, exact tool selection, skills and hard turn limits.
+The initial runtime image targets Linux/amd64. No provider configuration or
+credentials are needed. The environment-image build argument also applies to
+OpenCode; a Toolathlon base must be installed separately before building that
+variant.
+
 ## Migrations
 
 Create a new one:
