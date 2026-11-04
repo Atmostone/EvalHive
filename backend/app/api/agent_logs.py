@@ -148,6 +148,17 @@ async def list_log_chunks(
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be 1..1000")
 
+    if task.current_attempt_id is not None:
+        from app.harnesses.projection import load_attempt_view
+
+        view = await load_attempt_view(db, task.current_attempt_id)
+        return {
+            "archived": False, "archive_path": None, "attempt_id": str(task.current_attempt_id),
+            "attempt_number": view["attempt"].number,
+            "completeness": view["completeness"],
+            "chunks": [row for row in view["chunks"] if row["chunk_seq"] >= from_seq][:limit],
+        }
+
     if task.log_archive_s3_path:
         try:
             from app.storage.minio_client import decode_log_archive, read_log_archive

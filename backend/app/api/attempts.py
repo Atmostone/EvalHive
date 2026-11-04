@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import suppress
 
 from evalhive_harness import ProtocolError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -184,6 +185,11 @@ async def receive_events(
     except ProtocolError as exc:
         await db.rollback()
         raise HTTPException(422, {"code": exc.code, "message": str(exc)}) from None
+    if receipt["accepted"]:
+        from app.harnesses.projection import publish_log_updates
+
+        with suppress(Exception):
+            await publish_log_updates(db, attempt_id, payload["events"])
     return receipt
 
 

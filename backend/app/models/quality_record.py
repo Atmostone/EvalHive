@@ -76,8 +76,8 @@ class QualityRecord(Base):
     benchmark_suite: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     # Outcome metrics (denormalized from the task).
-    cost_usd: Mapped[Decimal] = mapped_column(
-        Numeric(10, 6), default=Decimal("0"), server_default="0"
+    cost_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 12).evaluates_none(), nullable=True, default=Decimal("0"), server_default="0"
     )
     # The orchestrator's own spend, denormalized alongside the agent's. Separate
     # because the report has to be able to say where the money went, and because

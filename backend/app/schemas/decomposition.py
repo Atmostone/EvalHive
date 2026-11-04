@@ -21,7 +21,7 @@ class DecompositionSubtask(BaseModel):
     depends_on: list[str]
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
-    cost_usd: float
+    cost_usd: float | None
     result_files_count: int
     attempts: list[AgentAttempt]
 
@@ -32,7 +32,7 @@ class DecompositionParent(BaseModel):
     status: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
-    cost_usd: float
+    cost_usd: float | None
 
 
 class DecompositionResponse(BaseModel):

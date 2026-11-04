@@ -27,7 +27,12 @@ export interface Task {
   canonical_trajectory?: CanonicalTrajectory | null
   capability_spec?: CapabilitySpec | null
   result_files: string[]
-  token_usage: Record<string, number>
+  token_usage: {
+    input_tokens?: number | null
+    output_tokens?: number | null
+    reasoning_tokens?: number | null
+    [key: string]: unknown
+  }
   retry_count: number
   max_retries: number
   user_feedback?: string | null
@@ -645,7 +650,7 @@ export interface DataLakeRecordSummary {
   model_used: string | null
   final_status: string | null
   is_decomposition_root: boolean
-  cost_usd: number
+  cost_usd: number | null
   input_tokens: number | null
   output_tokens: number | null
   duration_seconds: number | null
@@ -658,9 +663,11 @@ export interface DataLakeRecordSummary {
 export interface DataLakeGroupRow {
   group: string | null
   count: number
-  avg_cost_usd: number
-  avg_tokens: number
-  avg_duration_s: number
+  avg_cost_usd: number | null
+  cost_known_count: number
+  avg_tokens: number | null
+  tokens_known_count: number
+  avg_duration_s: number | null
   approval_rate: number
 }
 
@@ -1228,6 +1235,7 @@ export const KANBAN_COLUMNS: TaskStatus[] = [
 export interface LogChunk {
   id: string | null
   chunk_seq: number
+  updated_seq?: number
   content: string
   tool_name?: string | null
   // The model's own deliberation preceding this step (SPA-114). Never merged into
@@ -1238,6 +1246,8 @@ export interface LogChunk {
 }
 
 export interface LogChunksResponse {
+  attempt_id?: string
+  attempt_number?: number
   archived: boolean
   archive_path: string | null
   chunks: LogChunk[]
@@ -1263,7 +1273,7 @@ export interface DecompositionSubtask {
   depends_on: string[]
   started_at: string | null
   completed_at: string | null
-  cost_usd: number
+  cost_usd: number | null
   result_files_count: number
   attempts: AgentAttempt[]
 }
@@ -1275,7 +1285,7 @@ export interface DecompositionResponse {
     status: TaskStatus
     started_at: string | null
     completed_at: string | null
-    cost_usd: number
+    cost_usd: number | null
   }
   subtasks: DecompositionSubtask[]
 }

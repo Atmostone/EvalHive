@@ -125,6 +125,29 @@ cannot bypass runner fencing. SDK startup capacity keeps tasks queued, and the
 orchestrator cannot overwrite a fast terminal result with an in-progress status.
 The temporary connector and bridge are removed in SPA-134.
 
+SPA-126 projects the immutable journal into existing task logs, traces and data
+lake records. Call identity includes the session; nested/interleaved calls retain
+their own arguments, final result and parent links. Final message/tool snapshots
+replace deltas instead of being concatenated twice. Missing starts/results and
+unavailable measurements remain explicit. Native evidence stays in the journal.
+Cumulative usage replaces earlier samples of the same identity; delta usage adds
+exact decimal costs. Totals stay unknown if a contributing call omits a metric.
+
+After worker shutdown the server collects files according to the frozen task
+environment policy, on success, failure and cancellation. Private input siblings
+and symlinks are never harvested. Files have attempt-specific storage paths and
+SHA-256 metadata; upload errors make delivery incomplete and preserve the native
+outcome separately. Artifact events precede terminal acknowledgement. Finalization
+has a deadline and a record-size fallback, so collecting files cannot keep the
+task running indefinitely. The terminal projection updates task results/usage,
+recording completeness, lifecycle events and parent completion idempotently.
+
+Live compatibility rows retain their original position and a latest event
+sequence. REST snapshots and WebSocket updates merge by identity/version, and
+older attempts cannot replace a newer attempt in the viewer. Historical legacy
+archives retain their original read path. Data Lake summaries permit unknown
+costs and expose known sample counts alongside grouped averages.
+
 ### Creating and running a task
 
 ```

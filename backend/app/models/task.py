@@ -125,8 +125,8 @@ class Task(Base):
     output_price_per_1m_usd: Mapped[Decimal | None] = mapped_column(
         Numeric(12, 6), nullable=True
     )
-    cost_usd: Mapped[Decimal] = mapped_column(
-        Numeric(10, 6), default=Decimal("0"), server_default="0"
+    cost_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 12).evaluates_none(), nullable=True, default=Decimal("0"), server_default="0"
     )
     # What the ORCHESTRATOR spent deciding about this task — template selection,
     # the decomposition decision, result evaluation. Deliberately NOT folded into

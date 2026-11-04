@@ -100,7 +100,7 @@ def task_to_dict(task: Task) -> dict:
         "user_feedback": task.user_feedback,
         "orchestrator_feedback": task.orchestrator_feedback,
         "model_used": task.model_used,
-        "cost_usd": float(task.cost_usd) if task.cost_usd is not None else 0.0,
+        "cost_usd": float(task.cost_usd) if task.cost_usd is not None else None,
         # The orchestrator's own spend on this task, reported apart from the
         # agent's so the two are never summed by accident (SPA-111).
         "orchestrator_usage": task.orchestrator_usage or {},
@@ -405,7 +405,7 @@ async def get_task_decomposition(
             "depends_on": [str(d) for d in (s.depends_on or [])],
             "started_at": s.started_at.isoformat() if s.started_at else None,
             "completed_at": s.completed_at.isoformat() if s.completed_at else None,
-            "cost_usd": float(s.cost_usd) if s.cost_usd is not None else 0.0,
+            "cost_usd": float(s.cost_usd) if s.cost_usd is not None else None,
             "result_files_count": len(s.result_files or []),
             "attempts": _attempts_for(s.id),
         })
@@ -417,7 +417,7 @@ async def get_task_decomposition(
             "status": parent.status,
             "started_at": parent.started_at.isoformat() if parent.started_at else None,
             "completed_at": parent.completed_at.isoformat() if parent.completed_at else None,
-            "cost_usd": float(parent.cost_usd) if parent.cost_usd is not None else 0.0,
+            "cost_usd": float(parent.cost_usd) if parent.cost_usd is not None else None,
         },
         "subtasks": subtasks,
     }
@@ -437,12 +437,22 @@ async def download_task_file(
     s3_path = f"results/{task_id}/{file_name}"
 
     try:
+        from pathlib import PurePosixPath
+        from urllib.parse import quote
+
         from app.storage.minio_client import get_file_stream
         stream = get_file_stream(s3_path)
+        def content():
+            try:
+                yield from stream.stream(amt=65536)
+            finally:
+                stream.close()
+                stream.release_conn()
+
         return StreamingResponse(
-            stream,
+            content(),
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+            headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(PurePosixPath(file_name).name, safe="")},
         )
     except Exception:
         raise HTTPException(status_code=404, detail="File not found")
@@ -468,7 +478,8 @@ async def download_task_files_zip(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for s3_path in files:
-            arcname = s3_path.split("/", 2)[-1] if "/" in s3_path else s3_path
+            prefix = f"results/{task.id}/attempts/{task.current_attempt_id}/"
+            arcname = s3_path[len(prefix):] if s3_path.startswith(prefix) else s3_path.split("/", 2)[-1]
             try:
                 stream = get_file_stream(s3_path)
                 try:
@@ -477,8 +488,7 @@ async def download_task_files_zip(
                     stream.close()
                     stream.release_conn()
             except Exception:
-                # Skip missing/unreadable files rather than failing the whole archive.
-                continue
+                raise HTTPException(502, "Unable to download all task files") from None
     buf.seek(0)
 
     fname = f"task_{task_id[:8]}_files.zip"

@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,136 @@ class API:
             self.ack_dropped = True
             raise RetryableDeliveryError("Command receipt committed but response was lost")
         return {"duplicate": False}
+
+
+def test_artifact_delivery_precedes_terminal_acknowledgement(tmp_path):
+    async def scenario():
+        connector = await ConnectorClient.launch(
+            [sys.executable, str(ROOT / "sdk/examples/fake/connector.py")]
+        )
+        spec = copy.deepcopy(FIXTURES["run_spec"])
+        api = API(drop_ack=True)
+
+        async def finish(result, emit):
+            assert connector.process.returncode == 0
+            emit("artifact", {"path": "result.txt", "metadata": {"delivery": "complete"}})
+            return {**result, "metadata": {"artifact_delivery": "complete"}}
+
+        with EventSpool(tmp_path / "spool.sqlite") as spool:
+            runner = AttemptRunner(
+                spec=spec,
+                manifest=FIXTURES["manifest"],
+                connector=connector,
+                api=api,
+                spool=spool,
+                policy=POLICY,
+                finish_hook=finish,
+            )
+            result = await runner.run()
+        assert result["status"] == "success"
+        records = [api.records[key] for key in sorted(api.records)]
+        assert records[-2]["event"] == "artifact" and records[-1]["event"] == "run.finished"
+        assert [record["seq"] for record in records] == list(range(len(records)))
+        assert records[-1]["data"]["metadata"]["artifact_delivery"] == "complete"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["timeout", "oversized"])
+def test_finalization_failure_is_bounded_and_does_not_lose_terminal_delivery(tmp_path, mode):
+    async def scenario():
+        connector = await ConnectorClient.launch(
+            [sys.executable, str(ROOT / "sdk/examples/fake/connector.py")]
+        )
+        api = API()
+
+        async def finish(result, emit):
+            if mode == "timeout":
+                await asyncio.sleep(10)
+            return {**result, "metadata": {"large": "x" * (1024 * 1024)}}
+
+        with EventSpool(tmp_path / "spool.sqlite") as spool:
+            runner = AttemptRunner(
+                spec=copy.deepcopy(FIXTURES["run_spec"]),
+                manifest=FIXTURES["manifest"],
+                connector=connector,
+                api=api,
+                spool=spool,
+                policy=replace(POLICY, finalization_seconds=0.05),
+                finish_hook=finish,
+            )
+            result = await asyncio.wait_for(runner.run(), 3)
+        assert result["status"] == "failed" and result["pending_events"] == 0
+        terminal = api.records[max(api.records)]
+        assert terminal["event"] == "run.finished"
+        assert terminal["data"]["error"]["code"] == (
+            "ARTIFACT_DELIVERY" if mode == "timeout" else "TERMINAL_RECORD_LIMIT"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_native_artifact_cannot_claim_server_delivery(tmp_path):
+    class Connector:
+        def __init__(self, spec):
+            self.spec = spec
+            self.started = asyncio.Event()
+
+        async def request(self, method, *args, **kwargs):
+            if method == "describe":
+                return FIXTURES["manifest"]
+            if method == "start":
+                self.started.set()
+            return {"accepted": True}
+
+        async def events(self):
+            await self.started.wait()
+            data = [
+                ("run.started", {}),
+                (
+                    "artifact",
+                    {
+                        "path": "result.txt",
+                        "metadata": {
+                            "delivery": "complete",
+                            "s3_path": "results/foreign-task/private.txt",
+                        },
+                    },
+                ),
+                ("run.finished", {"status": "success", "summary": "Done"}),
+            ]
+            for seq, (name, payload) in enumerate(data):
+                yield {
+                    "protocol_version": "1.0",
+                    "type": "event",
+                    "attempt_id": self.spec["attempt_id"],
+                    "event_id": str(seq),
+                    "seq": seq,
+                    "source": "runner",
+                    "event": name,
+                    "data": payload,
+                }
+
+        async def close(self, **kwargs):
+            return None
+
+    async def scenario():
+        spec = copy.deepcopy(FIXTURES["run_spec"])
+        api = API()
+        with EventSpool(tmp_path / "spool.sqlite") as spool:
+            runner = AttemptRunner(
+                spec=spec,
+                manifest=FIXTURES["manifest"],
+                connector=Connector(spec),
+                api=api,
+                spool=spool,
+                policy=POLICY,
+            )
+            assert (await runner.run())["status"] == "success"
+        artifact = api.records[1]["data"]["metadata"]
+        assert artifact["delivery"] == "announced" and "s3_path" not in artifact
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("language", ["python", "typescript"])

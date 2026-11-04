@@ -23,6 +23,7 @@ class RunnerPolicy:
     flush_seconds: float = 30
     shutdown_seconds: float = 3
     command_seconds: float = 10
+    finalization_seconds: float = 30
 
 
 class AttemptRunner:
@@ -36,7 +37,7 @@ class AttemptRunner:
         spool: EventSpool,
         redactor: Redactor | None = None,
         policy: RunnerPolicy | None = None,
-        finish_hook: Callable[[dict], Awaitable[dict]] | None = None,
+        finish_hook: Callable[[dict, Callable[[str, dict], None]], Awaitable[dict]] | None = None,
     ):
         self.spec, self.manifest, self.connector, self.api, self.spool = (
             spec,
@@ -59,6 +60,7 @@ class AttemptRunner:
         self.connector_closed = False
         self._started_monotonic = None
         self._elapsed = None
+        self._artifact_paths = set()
 
     def append(self, event):
         event = {"observed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"), **event}
@@ -105,6 +107,20 @@ class AttemptRunner:
                 self._terminal = event
                 self._terminal_received.set()
                 return
+            if event["event"] == "artifact":
+                self._artifact_paths.add(event["data"]["path"])
+                if len(self._artifact_paths) > 10000:
+                    raise ProtocolError("ARTIFACT_LIMIT", "Connector announced too many artifacts")
+                event = {
+                    **event,
+                    "data": {
+                        **event["data"],
+                        "metadata": {
+                            "delivery": "announced",
+                            "native_metadata": event["data"].get("metadata", {}),
+                        },
+                    },
+                }
             self.append(event)
         raise ProtocolError("CONNECTOR_EXIT", "Connector exited without a terminal event")
 
@@ -378,8 +394,29 @@ class AttemptRunner:
                 },
             }
         if self.finish_hook is not None:
+            terminal = {
+                **terminal,
+                "data": {
+                    **terminal["data"],
+                    "metadata": {
+                        **terminal["data"].get("metadata", {}),
+                        "declared_artifacts": sorted(self._artifact_paths),
+                    },
+                },
+            }
             try:
-                terminal = {**terminal, "data": await self.finish_hook(terminal["data"])}
+
+                def emit(name, data):
+                    if name in ("run.started", "run.finished"):
+                        raise ValueError("Finalization cannot emit lifecycle events")
+                    self.append(self.synthetic(name, data))
+
+                terminal = {
+                    **terminal,
+                    "data": await asyncio.wait_for(
+                        self.finish_hook(terminal["data"], emit), self.policy.finalization_seconds
+                    ),
+                }
             except Exception:
                 terminal = {
                     **terminal,
@@ -396,6 +433,7 @@ class AttemptRunner:
                 }
         terminal = {
             **terminal,
+            "seq": self.spool.next_seq,
             "data": {
                 **terminal["data"],
                 "metadata": {
@@ -406,7 +444,24 @@ class AttemptRunner:
                 },
             },
         }
-        self.append(terminal)
+        try:
+            self.append(terminal)
+        except (ProtocolError, SpoolFull):
+            # A large native result can fit the wire before finalization adds
+            # metadata. Preserve preceding evidence and commit a bounded failure.
+            terminal = self.synthetic(
+                "run.finished",
+                {
+                    "status": "failed",
+                    "summary": "Final result could not fit the journal",
+                    "error": {
+                        "code": "TERMINAL_RECORD_LIMIT",
+                        "message": "Final result exceeds the record budget",
+                    },
+                    "metadata": {"connector_terminal": "not_preserved"},
+                },
+            )
+            self.append(terminal)
         self._done = True
         self._wake.set()
         try:

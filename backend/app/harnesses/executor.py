@@ -8,6 +8,8 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import timedelta
+from decimal import Decimal
+from pathlib import PurePosixPath
 
 import httpx
 from evalhive_harness import validate_run
@@ -22,6 +24,7 @@ from sqlalchemy import func, select, text
 from app import database
 from app.auth.tokens import _utcnow_naive, issue_runner_token
 from app.config import get_settings
+from app.harnesses.artifacts import artifact_policy, collect_artifacts
 from app.harnesses.attempts import (
     FENCED_ERRORS,
     TERMINAL,
@@ -32,12 +35,14 @@ from app.harnesses.attempts import (
     locked_attempt,
     mark_attempt_lost,
 )
+from app.harnesses.projection import load_attempt_view
 from app.models.execution_attempt import ExecutionAttempt
 from app.models.task import Task, TaskStatus
 from app.runtime import get_process_runtime
 from app.runtime.attach import DockerAttachedProcess
 from app.runtime.spec import BindMount, NetworkSpec, ProcessSpec, ResourceLimits
 from app.runtime.workspace import prepare_layout, write_private_json
+from app.utils.failures import merge_failure_type
 
 _jobs: dict = {}
 
@@ -46,13 +51,79 @@ async def settle_task(db, attempt_id):
     attempt = await locked_attempt(db, attempt_id)
     if attempt.status not in TERMINAL:
         return
+    if attempt.completeness.get("task_projection") == "committed":
+        await db.commit()
+        return
     task = await db.get(Task, attempt.task_id)
-    task.status = TaskStatus.DONE.value if attempt.status == "success" else TaskStatus.FAILED.value
+    view = await load_attempt_view(db, attempt_id)
+    usage = view["usage"]
+    task.token_usage = usage
+    task.cost_usd = Decimal(usage["cost_usd"]) if usage["cost_usd"] is not None else None
+    prefix = f"results/{task.id}/attempts/{attempt.id}/"
+    files, invalid_artifacts = [], False
+    for event in view["events"]:
+        metadata = event["data"].get("metadata", {}) if event["event"] == "artifact" else {}
+        if metadata.get("delivery") != "complete":
+            continue
+        uri = metadata.get("s3_path")
+        if (
+            event["source"] != "runner"
+            or not isinstance(uri, str)
+            or not uri.startswith(prefix)
+            or len(uri) == len(prefix)
+            or ".." in PurePosixPath(uri).parts
+        ):
+            invalid_artifacts = True
+        else:
+            files.append(uri)
+    task.result_files = list(dict.fromkeys(files))
+    invalid_usage = view["completeness"].get("usage") == "invalid"
+    task.status = (
+        TaskStatus.DONE.value
+        if attempt.status == "success" and not invalid_usage and not invalid_artifacts
+        else TaskStatus.FAILED.value
+    )
     task.result_summary = (attempt.result or {}).get("summary", "Execution ended")
+    if invalid_artifacts:
+        task.result_summary = "Execution ended with invalid artifact delivery evidence"
+    elif invalid_usage:
+        task.result_summary = "Execution ended with invalid usage recording"
+    task.started_at = attempt.started_at
     task.completed_at = attempt.finished_at
-    if attempt.status == "lost":
-        task.failure_type = "infra"
+    if (
+        attempt.status == "lost"
+        or invalid_usage
+        or invalid_artifacts
+        or (attempt.result or {}).get("error", {}).get("code") == "ARTIFACT_DELIVERY"
+    ):
+        task.failure_type = merge_failure_type(task.failure_type, "infra")
+    attempt.completeness = {**view["completeness"], "task_projection": "committed"}
+    if invalid_artifacts:
+        attempt.completeness = {**attempt.completeness, "artifacts": "invalid"}
+    from app.utils.events import broadcast_committed_event, log_event
+
+    event = await log_event(
+        db,
+        "agent_completed" if task.status == TaskStatus.DONE.value else "agent_failed",
+        "runner",
+        {
+            "attempt_id": str(attempt.id),
+            "result_summary": task.result_summary,
+            "completeness": attempt.completeness,
+        },
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        agent_container_id=attempt.container_id,
+        commit=False,
+    )
+    from app.orchestrator.engine import check_parent_task_completion
+
+    parent_event = await check_parent_task_completion(db, task, commit=False)
     await db.commit()
+    for committed in (event, parent_event):
+        if committed is not None:
+            with suppress(Exception):
+                await broadcast_committed_event(committed)
 
 
 async def launch_attempt(
@@ -91,6 +162,10 @@ async def launch_attempt(
         "image_id": image_id,
         "runner_version": RUNNER_VERSION,
         "runner_policy": asdict(policy),
+    }
+    spec["environment"] = {
+        **spec.get("environment", {"id": "workspace"}),
+        "artifact_policy": artifact_policy(spec),
     }
     attempt = await create_attempt(
         db,
@@ -161,6 +236,13 @@ async def launch_attempt(
         owns_client = http_client is None
         client = http_client or httpx.AsyncClient()
         runner = None
+
+        async def finalize(result, emit):
+            result, announcements = await asyncio.to_thread(collect_artifacts, layout, spec, result)
+            for artifact in announcements:
+                emit("artifact", artifact)
+            return await finish_hook(result, emit) if finish_hook is not None else result
+
         try:
             with EventSpool(layout.private / "spool.sqlite") as spool:
                 runner = AttemptRunner(
@@ -171,7 +253,7 @@ async def launch_attempt(
                     spool=spool,
                     redactor=Redactor([token, *credentials.values()]),
                     policy=policy,
-                    finish_hook=finish_hook,
+                    finish_hook=finalize,
                 )
                 await runner.run()
         finally:

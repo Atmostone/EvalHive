@@ -4,6 +4,16 @@
 
 ## 2026-11-04
 
+- **SPA-126 — connect execution evidence to results and existing viewers.** The
+  journal projects nested/interleaved tools, messages and per-model/purpose usage
+  without multiplying cumulative samples or final snapshots. Unknown costs stay
+  NULL through task/Data Lake storage and grouped averages name their known sample
+  counts. Files are collected after shutdown according to environment policy for
+  every outcome, with attempt-specific paths and digests; failed delivery remains
+  explicit. Finalization is bounded and artifact events precede completion. Live
+  rows merge by identity/version, preserving new results when REST/WS messages
+  race. Historical archives keep their existing read path.
+
 - **SPA-125 — adapt the old loop through the same SDK boundary.** A temporary
   connector reuses the original agent implementation and translates its native
   records, tool identities, messages and per-turn usage. Credentials stay in a

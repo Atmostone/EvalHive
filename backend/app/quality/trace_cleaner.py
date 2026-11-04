@@ -324,12 +324,24 @@ def join_tool_call_parts(log_chunks) -> list[dict]:
     (part 0 alone: the tool hung, raised, or the container died) says so."""
     joined: list[dict] = []
     for chunk in log_chunks:
+        if isinstance(chunk, dict) and chunk.get("attempt_id"):
+            # The journal projection has already correlated sessions and calls,
+            # applied authoritative tool snapshots, and kept missing results
+            # explicit. Legacy chunk adjacency rules do not apply to this data.
+            entry = {**chunk, "parts_missing": 0, "_journal_projection": True}
+            entry.setdefault("result_missing", False)
+            if entry["result_missing"]:
+                entry["content"] += "\n…[no final result recorded for this call]…"
+            if entry.get("start_missing"):
+                entry["content"] = "…[tool call start was not recorded]…\n" + entry["content"]
+            joined.append(entry)
+            continue
         call_id = _chunk_attr(chunk, "tool_call_id")
         content = _chunk_attr(chunk, "content", "") or ""
         part_index = _chunk_attr(chunk, "part_index", 0)
         part_total = _chunk_attr(chunk, "part_total", 1)
         prev = joined[-1] if joined else None
-        if call_id and prev is not None and prev["tool_call_id"] == call_id:
+        if call_id and prev is not None and not prev.get("_journal_projection") and prev["tool_call_id"] == call_id:
             prev["parts"].append((part_index, content))
             prev["part_total"] = max(prev["part_total"], part_total)
             if prev["arguments"] is None:
@@ -356,6 +368,8 @@ def join_tool_call_parts(log_chunks) -> list[dict]:
         )
 
     for entry in joined:
+        if entry.pop("_journal_projection", False):
+            continue
         parts = sorted(entry.pop("parts"), key=lambda p: p[0])
         seen = {i for i, _ in parts}
         expected = max(entry["part_total"], max(seen) + 1)
@@ -427,7 +441,11 @@ def _reasoning_step(chunk: dict, order: int) -> dict | None:
 
 def _chunk_step(chunk: dict, order: int) -> dict:
     return {
-        "kind": "tool",
+        "kind": "message" if chunk.get("message_id") else "tool",
+        **{key: chunk.get(key) for key in (
+            "attempt_id", "session_id", "parent_session_id", "tool_call_id", "parent_call_id",
+            "native_tool_name", "tool_status", "start_missing", "message_id", "role",
+        )},
         "event_type": None,
         "tool_name": chunk.get("tool_name"),
         "arguments": chunk.get("arguments"),
@@ -735,6 +753,10 @@ async def _load_log_chunks(db: AsyncSession, task: Task) -> list:
     the chunk's timestamp; legacy plain-text archives lose them (degrade
     gracefully). An archive written before SPA-113 has no timestamp, and its tool
     steps sort last, exactly as they did then."""
+    if task.current_attempt_id is not None:
+        from app.harnesses.projection import load_attempt_view
+
+        return (await load_attempt_view(db, task.current_attempt_id))["chunks"]
     if task.log_archive_s3_path:
         try:
             from app.storage.minio_client import decode_log_archive, read_log_archive

@@ -164,6 +164,10 @@ async def create_attempt(
         db.add(attempt)
         await db.flush()
         task.current_attempt_id = attempt.id
+        task.cost_usd = None
+        task.token_usage = {}
+        task.result_summary = None
+        task.result_files = []
         await db.flush()
     return attempt
 

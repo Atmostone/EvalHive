@@ -79,7 +79,10 @@ def convert_spec(task, spec, *, timeout_seconds):
         "limits": limits,
         "environment": {
             "id": "toolathlon" if identity.endswith("toolathlon") else "workspace",
-            "artifact_policy": {"root": "." if config.get("benchmark_mode") else "output"},
+            "artifact_policy": {
+                "root": "." if config.get("benchmark_mode") else "output",
+                "recursive": not config.get("benchmark_mode", False),
+            },
         },
         "metadata": {"transition": "legacy", "template_id": spec.template_id},
     }

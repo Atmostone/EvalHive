@@ -86,6 +86,18 @@ Toolathlon environment image as `evalhive-legacy-toolathlon:harness-0.1.0`.
 Neither build launches a model. These transitional images and their adapters are
 removed when Pi becomes the default; they are not an alternative installation API.
 
+Artifact policy belongs to `RunSpec.environment`, independently of the connector:
+`root` is workspace-relative, `recursive` and `include_hidden` control traversal,
+`max_files`/`max_bytes` bound collection, and `preserve_on` selects terminal outcomes.
+The default preserves ordinary workspace files on success, failure and cancel.
+The resolved policy is frozen before execution. Collection never follows symlinks
+or traverses the private input directory. Delivery errors remain visible in the
+terminal result and journal, alongside any successfully retained files.
+
+Run frontend state-merge checks with `npm test --prefix frontend` on Node 22.23.1.
+They cover interleaved tools, delayed snapshots and duplicate delivery without a
+browser or model connection. The frontend CI job also checks the production build.
+
 ## Migrations
 
 Create a new one:

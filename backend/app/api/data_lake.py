@@ -42,7 +42,7 @@ def _record_summary(r: QualityRecord) -> dict:
         "model_used": r.model_used,
         "final_status": r.final_status,
         "is_decomposition_root": r.is_decomposition_root,
-        "cost_usd": float(r.cost_usd or 0),
+        "cost_usd": float(r.cost_usd) if r.cost_usd is not None else None,
         "input_tokens": r.input_tokens,
         "output_tokens": r.output_tokens,
         "duration_seconds": r.duration_seconds,
@@ -146,16 +146,16 @@ async def query_records(
         )
     col = _GROUP_COLUMNS[group_by]
     approved = case((QualityRecord.final_status == TaskStatus.DONE.value, 1), else_=0)
-    tokens = func.coalesce(QualityRecord.input_tokens, 0) + func.coalesce(
-        QualityRecord.output_tokens, 0
-    )
+    tokens = QualityRecord.input_tokens + QualityRecord.output_tokens
 
     stmt = select(
         col.label("group"),
         func.count(QualityRecord.id).label("count"),
-        func.coalesce(func.avg(QualityRecord.cost_usd), 0).label("avg_cost_usd"),
-        func.coalesce(func.avg(tokens), 0).label("avg_tokens"),
-        func.coalesce(func.avg(QualityRecord.duration_seconds), 0).label("avg_duration_s"),
+        func.avg(QualityRecord.cost_usd).label("avg_cost_usd"),
+        func.count(QualityRecord.cost_usd).label("cost_known_count"),
+        func.avg(tokens).label("avg_tokens"),
+        func.count(tokens).label("tokens_known_count"),
+        func.avg(QualityRecord.duration_seconds).label("avg_duration_s"),
         func.avg(approved).label("approval_rate"),
     ).where(QualityRecord.workspace_id == workspace.id)
     stmt = _apply_filters(
@@ -170,9 +170,11 @@ async def query_records(
         {
             "group": r.group,
             "count": int(r.count),
-            "avg_cost_usd": float(r.avg_cost_usd or 0),
-            "avg_tokens": float(r.avg_tokens or 0),
-            "avg_duration_s": float(r.avg_duration_s or 0),
+            "avg_cost_usd": float(r.avg_cost_usd) if r.avg_cost_usd is not None else None,
+            "cost_known_count": int(r.cost_known_count),
+            "avg_tokens": float(r.avg_tokens) if r.avg_tokens is not None else None,
+            "tokens_known_count": int(r.tokens_known_count),
+            "avg_duration_s": float(r.avg_duration_s) if r.avg_duration_s is not None else None,
             "approval_rate": float(r.approval_rate or 0),
         }
         for r in rows

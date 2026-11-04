@@ -148,6 +148,18 @@ Legacy agent-webhook and agent-log write routes reject any task with a current
 attempt (`409`), including callers holding an otherwise valid legacy service
 token. Historical log reads remain supported.
 
+Attempt log responses include `attempt_id`, `attempt_number`, `completeness` and
+compatibility chunks with `updated_seq`. A tool row keeps its original
+`chunk_seq` while updates replace its content. Clients must merge by ID and latest
+`updated_seq`, rather than dropping every repeated ID. Live log messages include
+the attempt number so delayed updates cannot switch the viewer back to an older
+execution. Full normalized/native evidence is still available through the attempt
+event endpoint.
+
+Unreported execution `cost_usd` is `null` in task and Data Lake responses. Grouped
+Data Lake results include `cost_known_count` and `tokens_known_count`; averages
+use only reported measurements and remain `null` when none were reported.
+
 ### Tasks (`/api/tasks`)
 
 | Method | Path | Description |

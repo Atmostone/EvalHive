@@ -207,8 +207,11 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             <div className="space-y-1">
               {t.result_files.map((f: string) => {
                 const fileName = f.split('/').pop() || f
+                const prefix = `results/${t.id}/`
+                const relative = f.startsWith(prefix) ? f.slice(prefix.length) : f
+                const filePath = relative.split('/').map(encodeURIComponent).join('/')
                 return (
-                  <a key={f} href={`/api/tasks/${t.id}/files/${fileName}`} download
+                  <a key={f} href={`/api/tasks/${t.id}/files/${filePath}`} download
                     className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
                     <Download className="h-4 w-4" />
                     {fileName}
@@ -220,9 +223,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         )}
 
         {/* Token usage */}
-        {t.token_usage && (t.token_usage.input_tokens || t.token_usage.output_tokens) && (
+        {t.token_usage && (t.token_usage.input_tokens != null || t.token_usage.output_tokens != null) && (
           <div className="text-xs text-gray-400">
-            Tokens: {(t.token_usage.input_tokens || 0).toLocaleString()} in / {(t.token_usage.output_tokens || 0).toLocaleString()} out
+            Tokens: {t.token_usage.input_tokens?.toLocaleString() ?? '—'} in / {t.token_usage.output_tokens?.toLocaleString() ?? '—'} out
           </div>
         )}
 

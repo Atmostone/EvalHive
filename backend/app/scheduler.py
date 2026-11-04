@@ -110,7 +110,7 @@ async def _job_runner(job_id: str):
             ).all()
             for rec, t in reconciled:
                 rec.final_status = t.status
-                rec.cost_usd = t.cost_usd or 0
+                rec.cost_usd = t.cost_usd
             await db.commit()
             if built or reconciled:
                 await log_event(

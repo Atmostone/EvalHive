@@ -597,18 +597,21 @@ async def process_ready_task(db: AsyncSession, task: Task):
     await _spawn_agent_for_template(db, task, template)
 
 
-async def check_parent_task_completion(db: AsyncSession, task: Task):
+async def check_parent_task_completion(db: AsyncSession, task: Task, *, commit: bool = True):
     """Check if all subtasks of a parent are done, and update parent accordingly."""
     if not task.parent_id:
         return
 
-    parent = await db.get(Task, task.parent_id)
+    parent = await db.scalar(
+        select(Task).where(Task.id == task.parent_id).with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if not parent:
         return
 
     # Get all sibling subtasks
     result = await db.execute(
-        select(Task).where(Task.parent_id == parent.id)
+        select(Task).where(Task.parent_id == parent.id).execution_options(populate_existing=True)
     )
     subtasks = result.scalars().all()
 
@@ -647,12 +650,13 @@ async def check_parent_task_completion(db: AsyncSession, task: Task):
             parts.append(f"## {s.title} [{s.status}]\n{summary}")
         parent.result_summary = "\n\n".join(parts)[:20000]
     parent.completed_at = datetime.utcnow()
-    await db.commit()
+    if commit:
+        await db.commit()
 
-    await log_event(
+    return await log_event(
         db, "task_status_changed", "system",
         {"new_status": parent.status, "reason": "all subtasks completed"},
-        task_id=parent.id,
+        task_id=parent.id, workspace_id=parent.workspace_id, commit=commit,
     )
 
 
