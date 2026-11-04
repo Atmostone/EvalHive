@@ -84,6 +84,11 @@ def test_redaction_handles_nested_values_json_and_url_encoding():
     assert redactor.text("test-key%20with%20spaces%2Fand-symbols") == "[REDACTED]"
 
 
+def test_structured_credentials_redact_individually_echoed_values():
+    redactor = Redactor([json.dumps({"env": {"MCP_PASSWORD": "private-mcp-value"}})])
+    assert redactor.text("echo private-mcp-value") == "echo [REDACTED]"
+
+
 def test_short_credentials_do_not_corrupt_protocol_or_usage_metadata():
     from evalhive_harness import validate
 

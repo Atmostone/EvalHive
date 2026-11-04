@@ -80,10 +80,12 @@ async def _process_webhook(
     if token_row is None:
         raise HTTPException(status_code=401, detail="invalid or expired agent token")
 
-    task = await db.get(Task, task_uuid)
+    task = await db.scalar(select(Task).where(Task.id == task_uuid).with_for_update())
     if not task:
         logger.warning(f"Task {task_id} not found for webhook")
         return {"status": "error", "detail": "Task not found"}
+    if task.current_attempt_id is not None:
+        raise HTTPException(409, "Attempt tasks accept writes only through the runner protocol")
 
     event = validated.event
     data = validated.data.model_dump()

@@ -7,7 +7,25 @@ from urllib.parse import quote
 class Redactor:
     def __init__(self, values=()):
         variants = set()
-        for value in values:
+        candidates = list(values)
+        for value in list(candidates):
+            # Some native launchers consume a structured credential (for
+            # example a private MCP configuration). Its leaf values must also
+            # be removed when the native process echoes only part of that input.
+            if isinstance(value, str) and value.lstrip().startswith(("{", "[")):
+                try:
+                    pending = [json.loads(value)]
+                    while pending:
+                        item = pending.pop()
+                        if isinstance(item, dict):
+                            pending.extend(item.values())
+                        elif isinstance(item, list):
+                            pending.extend(item)
+                        elif isinstance(item, str):
+                            candidates.append(item)
+                except (ValueError, RecursionError):
+                    pass
+        for value in candidates:
             if isinstance(value, str) and value:
                 variants.update(
                     (value, quote(value, safe=""), json.dumps(value, ensure_ascii=True)[1:-1])

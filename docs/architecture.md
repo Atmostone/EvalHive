@@ -59,9 +59,9 @@ and TypeScript packages validate the same fixtures and communicate over bounded
 UTF-8 JSONL process pipes. A connector owns native configuration and the harness
 loop; runtime owns containers and environments; runner owns attempt lifecycle,
 durable delivery, control deadlines and artifacts. The SDK is independent of
-backend and LLM libraries. This first change supplies the contract and external
-fake workers; catalog, execution attempts and runtime integration follow in
-SPA-121–SPA-124. Existing production agent execution is unchanged at this stage.
+backend and LLM libraries. SPA-120–SPA-124 supply the contract, catalog, attempts,
+runtime and shared runner. SPA-125 moves existing agent execution through that
+boundary; Pi and OpenCode replace the temporary connector before release.
 
 SPA-121 adds the server-installed manifest catalog (`HARNESS_MANIFEST_DIR`) and
 workspace profiles. Catalog loading validates JSON/schema/protocol without
@@ -107,6 +107,23 @@ then enforces bounded shutdown; missing terminal records or unconfirmed shutdown
 cannot become success. The server replays an orphaned spool after heartbeat loss
 and declares interrupted evidence explicitly. Image ID and runner policy are
 frozen before execution; one runner slot is the default server resource policy.
+
+SPA-125 wraps `agent-image/agent.py` without copying its completion loop. The
+temporary worker translates native messages, tool IDs and per-turn usage into
+SDK events and retains native records with its adapter version. Unknown cache,
+reasoning and cost details stay unknown. Native feedback enters the original
+queue; cancellation interrupts the loop and the runner stops the whole container.
+Unsupported model switching and native settings fail explicitly. An explicit
+empty tool list stays empty.
+
+The transition bridge converts the old AgentSpec at the connector boundary,
+including the registered Toolathlon environment image and portal namespace. MCP
+credentials use private references rather than public RunSpec values. Existing
+feedback/abort/health routes wrap attempt control. Legacy webhook/log write routes
+reject attempt-backed tasks under the task lock, so a read-only knowledge token
+cannot bypass runner fencing. SDK startup capacity keeps tasks queued, and the
+orchestrator cannot overwrite a fast terminal result with an in-progress status.
+The temporary connector and bridge are removed in SPA-134.
 
 ### Creating and running a task
 

@@ -680,11 +680,11 @@ async def run_agent() -> dict:
         enabled_tools = json.loads(os.environ.get("AGENT_TOOLS", "[]"))
     except json.JSONDecodeError:
         enabled_tools = []
-    if enabled_tools:
+    if enabled_tools or os.environ.get("AGENT_TOOLS_EXPLICIT") == "1":
         tools = [t for t in BUILTIN_TOOLS if t["function"]["name"] in enabled_tools]
     else:
         tools = list(BUILTIN_TOOLS)
-    if not tools:
+    if not tools and os.environ.get("AGENT_TOOLS_EXPLICIT") != "1":
         tools = list(BUILTIN_TOOLS)
 
     # MCP servers

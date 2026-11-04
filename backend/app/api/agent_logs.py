@@ -67,9 +67,11 @@ async def ingest_log_chunk(
     if token_row is None:
         raise HTTPException(status_code=401, detail="invalid or expired agent token")
 
-    task = await db.get(Task, task_uuid)
+    task = await db.scalar(select(Task).where(Task.id == task_uuid).with_for_update())
     if task is None:
         return {"status": "error", "detail": "Task not found"}
+    if task.current_attempt_id is not None:
+        raise HTTPException(409, "Attempt tasks accept writes only through the runner protocol")
 
     existing_delivery = await db.execute(
         select(AgentLogDelivery).where(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from evalhive_harness import ProtocolError, validate_run
+from evalhive_harness import ProtocolError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from app.harnesses.attempts import (
     acknowledge_command,
     ingest_events,
     locked_attempt,
+    queue_command,
 )
 from app.models.execution_attempt import ExecutionAttempt, ExecutionCommand, ExecutionEvent
 from app.models.task import Task
@@ -211,39 +212,11 @@ async def enqueue_command(
     if request.state.role == "member" and body["name"] != "feedback":
         raise HTTPException(403, "This command requires owner or admin")
     try:
-        attempt = await locked_attempt(db, attempt_id)
-        previous = await db.get(ExecutionCommand, command_id)
-        if previous is not None:
-            if (
-                previous.attempt_id != attempt_id
-                or previous.name != body["name"]
-                or previous.payload != body.get("payload", {})
-            ):
-                raise AttemptError("COMMAND_CONFLICT", "Command ID was already used")
-            return {"id": str(previous.id), "status": previous.status, "duplicate": True}
-        if attempt.status in TERMINAL:
-            raise AttemptError("ATTEMPT_FINISHED", "Attempt has finished")
-        name, payload = body["name"], body.get("payload", {})
-        if name != "abort" and attempt.manifest["capabilities"].get(name) not in (
-            "native",
-            "emulated",
-        ):
-            raise ProtocolError("UNSUPPORTED_CAPABILITY", "Command is unavailable")
-        schema = attempt.manifest.get("commands", {}).get(name, {}).get("input_schema")
-        if name == "abort" and schema is None:
-            schema = {"type": "object", "additionalProperties": False}
-        if schema is None:
-            raise ProtocolError("UNSUPPORTED_CAPABILITY", "Command has no declared input schema")
-        validate_run(
-            {**attempt.manifest, "config_schema": schema},
-            {**attempt.run_spec, "config": payload, "required_capabilities": []},
+        receipt = await queue_command(
+            db, attempt_id, body["name"], body.get("payload", {}), command_id=command_id
         )
-        command = ExecutionCommand(id=command_id, attempt_id=attempt_id, name=name, payload=payload)
-        db.add(command)
-        if name == "abort":
-            attempt.status = "stopping"
         await db.commit()
-        return {"id": str(command.id), "status": command.status, "duplicate": False}
+        return receipt
     except (AttemptError, ProtocolError) as error:
         await db.rollback()
         raise attempt_error(error) from None

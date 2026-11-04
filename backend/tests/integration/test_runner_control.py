@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from app.auth.tokens import _utcnow_naive, issue_runner_token
+from app.auth.tokens import _utcnow_naive, issue_agent_token, issue_runner_token
 from app.config import get_settings
 from app.harnesses import executor
 from app.harnesses.attempts import create_attempt
@@ -266,3 +266,44 @@ async def test_recovery_preserves_command_receipt_after_terminal_event(
     assert stored[0]["status"] == "acknowledged" and stored[0]["result"] == ack
     with EventSpool(path) as spool:
         assert spool.pending_count == 0 and spool.completed_commands() == []
+
+
+@pytest.mark.parametrize("kind", ["webhook", "log"])
+async def test_legacy_write_token_cannot_bypass_attempt_journal(
+    auth_client, db_session, attempt, kind
+):
+    row, _ = attempt
+    token = await issue_agent_token(db_session, task_id=row.task_id, workspace_id=row.workspace_id)
+    await db_session.commit()
+    if kind == "webhook":
+        path = f"/api/v1/agent-webhook/{row.task_id}"
+        payload = {
+            "task_id": str(row.task_id),
+            "event": "progress",
+            "data": {"current_step": "fake"},
+        }
+    else:
+        path = f"/api/v1/agent-log/{row.task_id}"
+        payload = {"chunk_seq": 0, "content": "fake", "idempotency_key": "fake"}
+    result = await auth_client.post(path, headers=headers(token), json=payload)
+    assert result.status_code == 409
+    assert (await auth_client.get(f"/api/attempts/{row.id}")).json()["next_seq"] == 0
+
+
+async def test_legacy_control_routes_queue_attempt_commands(auth_client, db_session, attempt):
+    row, _ = attempt
+    row.container_id = "sdk-container"
+    await db_session.commit()
+    health = await auth_client.get("/api/agents/sdk-container/health")
+    assert health.status_code == 200 and health.json()["attempt_id"] == str(row.id)
+    feedback = await auth_client.post("/api/agents/sdk-container/feedback", json={"message": "Go"})
+    assert feedback.status_code == 200 and feedback.json()["command_id"]
+    switch = await auth_client.post(
+        "/api/agents/sdk-container/switch_model", json={"model_id": "unused"}
+    )
+    assert switch.status_code == 422 and switch.json()["detail"]["code"] == "UNSUPPORTED_CAPABILITY"
+    abort = await auth_client.post("/api/agents/sdk-container/abort", json={"reason": "Stop"})
+    assert abort.status_code == 200 and abort.json()["command_id"]
+    commands = (await auth_client.get(f"/api/attempts/{row.id}/commands")).json()
+    assert {item["name"] for item in commands} == {"feedback", "abort"}
+    assert (await auth_client.get(f"/api/attempts/{row.id}")).json()["status"] == "stopping"

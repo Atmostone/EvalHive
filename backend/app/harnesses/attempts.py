@@ -51,6 +51,40 @@ async def acknowledge_command(db, attempt_id, command_id, body):
     return {"duplicate": False}
 
 
+async def queue_command(db, attempt_id, name, payload, *, command_id=None):
+    """Queue a declared command; both current and compatibility APIs use this."""
+    command_id = command_id or uuid.uuid4()
+    attempt = await locked_attempt(db, attempt_id)
+    previous = await db.get(ExecutionCommand, command_id)
+    if previous is not None:
+        if (
+            previous.attempt_id != attempt_id
+            or previous.name != name
+            or previous.payload != payload
+        ):
+            raise AttemptError("COMMAND_CONFLICT", "Command ID was already used")
+        return {"id": str(previous.id), "status": previous.status, "duplicate": True}
+    if attempt.status in TERMINAL:
+        raise AttemptError("ATTEMPT_FINISHED", "Attempt has finished")
+    if name != "abort" and attempt.manifest["capabilities"].get(name) not in ("native", "emulated"):
+        raise ProtocolError("UNSUPPORTED_CAPABILITY", "Command is unavailable")
+    schema = attempt.manifest.get("commands", {}).get(name, {}).get("input_schema")
+    if name == "abort" and schema is None:
+        schema = {"type": "object", "additionalProperties": False}
+    if schema is None:
+        raise ProtocolError("UNSUPPORTED_CAPABILITY", "Command has no declared input schema")
+    validate_run(
+        {**attempt.manifest, "config_schema": schema},
+        {**attempt.run_spec, "config": payload, "required_capabilities": []},
+    )
+    command = ExecutionCommand(id=command_id, attempt_id=attempt_id, name=name, payload=payload)
+    db.add(command)
+    if name == "abort":
+        attempt.status = "stopping"
+    await db.flush()
+    return {"id": str(command.id), "status": command.status, "duplicate": False}
+
+
 async def create_attempt(
     db: AsyncSession,
     *,

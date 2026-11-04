@@ -73,11 +73,18 @@ The runner's own API token stays outside the worker. Native credentials use a
 separate read-only file named by `EVALHIVE_CREDENTIALS_FILE`; worker code resolves
 the RunSpec references from that map and must not discover global auth caches.
 
+During the SDK transition the existing orchestrator uses the temporary legacy
+connector through the common runner. Build it from the repository root using the
+EvalHive rootless Docker endpoint:
+
 ```bash
-docker build -t evalhive-agent:latest agent-image/
+docker build -f harnesses/legacy/Dockerfile -t evalhive-legacy:harness-0.1.0 .
 ```
 
-Rebuild whenever `agent-image/*.py` or `requirements.txt` changes. The API uses this image through the Docker socket.
+The optional `harnesses/legacy-toolathlon/Dockerfile` wraps the already installed
+Toolathlon environment image as `evalhive-legacy-toolathlon:harness-0.1.0`.
+Neither build launches a model. These transitional images and their adapters are
+removed when Pi becomes the default; they are not an alternative installation API.
 
 ## Migrations
 

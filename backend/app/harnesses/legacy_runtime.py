@@ -29,6 +29,7 @@ class AgentSpec:
     # Share another container's network namespace (e.g. "container:tlpre-1234abcd")
     # so a Toolathlon portal-case agent reaches the mock server on localhost:PORT.
     network_mode: str | None = None
+    memory_mode: str = "flat"
 
 
 class AgentRuntime(ABC):
@@ -67,6 +68,11 @@ class AgentRuntime(ABC):
 
 class DockerRuntime(AgentRuntime):
     """Thin adapter over the existing app.orchestrator.docker_manager helpers."""
+
+    async def spawn_attempt(self, db, task, spec, *, timeout_seconds):
+        from app.harnesses.legacy_bridge import launch_legacy
+
+        return await launch_legacy(db, task, spec, timeout_seconds=timeout_seconds)
 
     def spawn(self, spec: AgentSpec) -> str:
         # docker_manager.spawn_agent currently accepts a Template object directly.

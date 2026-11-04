@@ -141,6 +141,13 @@ receipt. Terminal metadata includes `runner_elapsed_seconds` measured with a
 monotonic clock; missing terminal observations remain null. Delivery retries and
 artifact collection do not turn into measured model execution time.
 
+For attempt-backed tasks, existing `/api/agents/{container_id}/feedback` and
+`/abort` routes queue SDK commands and return their `command_id`. `/health` reads
+attempt liveness. Model switching is explicitly unavailable for these attempts.
+Legacy agent-webhook and agent-log write routes reject any task with a current
+attempt (`409`), including callers holding an otherwise valid legacy service
+token. Historical log reads remain supported.
+
 ### Tasks (`/api/tasks`)
 
 | Method | Path | Description |

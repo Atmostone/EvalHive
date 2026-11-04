@@ -305,15 +305,13 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
         # our own agent family are allowed (e.g. evalhive-agent-toolathlon:latest).
         agent_image = run_config.get("agent_image")
         if agent_image is not None and not str(agent_image).startswith("evalhive-agent"):
-            logger.warning(f"task {task.id}: ignoring non-allowlisted agent_image {agent_image!r}")
-            agent_image = None
+            raise ValueError("Requested agent image is not registered")
 
         # Per-run network namespace share (Toolathlon portal cases) — only the
         # "container:<name>" form for our own preprocess containers is allowed.
         network_mode = run_config.get("network_mode")
         if network_mode is not None and not str(network_mode).startswith("container:tlpre-"):
-            logger.warning(f"task {task.id}: ignoring non-allowlisted network_mode {network_mode!r}")
-            network_mode = None
+            raise ValueError("Requested network namespace is not a task environment")
 
         runtime = get_agent_runtime()
         spec = AgentSpec(
@@ -339,8 +337,32 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
             extra_env=extra_env,
             image=agent_image,
             network_mode=network_mode,
+            memory_mode=memory_mode,
         )
-        container_id = runtime.spawn(spec)
+        task.model_used = agent_llm.model.api_name
+        task.input_price_per_1m_usd = agent_llm.model.input_price_per_1m_usd
+        task.output_price_per_1m_usd = agent_llm.model.output_price_per_1m_usd
+        if getattr(type(runtime), "spawn_attempt", None) is not None:
+            from app.harnesses.attempts import AttemptError
+
+            try:
+                attempt = await runtime.spawn_attempt(
+                    db, task, spec, timeout_seconds=int(template.timeout_minutes or 60) * 60
+                )
+            except AttemptError as error:
+                if error.code != "CAPACITY":
+                    raise
+                await db.rollback()
+                await db.refresh(task)
+                task.status = TaskStatus.READY.value
+                await db.commit()
+                return
+            container_id = attempt.container_id
+        else:
+            container_id = runtime.spawn(spec)
+            task.agent_container_id = container_id
+            task.status = TaskStatus.IN_PROGRESS.value
+            task.started_at = datetime.utcnow()
         # Record what this run ACTUALLY ran under, from the spec that was just
         # spawned — not from a re-resolution elsewhere (SPA-84).
         await _record_run_condition(
@@ -350,12 +372,6 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
                 spec, agent_llm.model.api_name, runtime.image_id(container_id)
             ),
         )
-        task.agent_container_id = container_id
-        task.model_used = agent_llm.model.api_name
-        task.input_price_per_1m_usd = agent_llm.model.input_price_per_1m_usd
-        task.output_price_per_1m_usd = agent_llm.model.output_price_per_1m_usd
-        task.status = TaskStatus.IN_PROGRESS.value
-        task.started_at = datetime.utcnow()
         await db.commit()
 
         await log_event(

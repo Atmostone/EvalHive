@@ -112,6 +112,68 @@ async def test_process_ready_task_spawns_when_template_picked(db_session, defaul
 
 
 @pytest.mark.asyncio
+async def test_sdk_spawn_does_not_overwrite_a_fast_terminal_result(db_session, default_model, monkeypatch):
+    from app.harnesses.attempts import create_attempt
+    from app.harnesses.legacy_bridge import convert_spec
+
+    template = Template(
+        name="SDK role", description="SDK test role", soul_md="Instructions", model_id=default_model.id,
+        tool_ids=[], workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    task = Task(title="Fast SDK task", status="ready", workspace_id=DEFAULT_WORKSPACE_ID)
+    db_session.add_all([template, task])
+    await db_session.commit()
+
+    class FastRuntime:
+        async def spawn_attempt(self, db, task, spec, *, timeout_seconds):
+            manifest, run, _ = convert_spec(task, spec, timeout_seconds=timeout_seconds)
+            attempt = await create_attempt(
+                db, workspace_id=task.workspace_id, task_id=task.id,
+                manifest=manifest, run_spec=run,
+            )
+            attempt.container_id = task.agent_container_id = "fast-sdk-container"
+            attempt.status = "success"
+            task.status = "done"
+            task.result_summary = "Already finished"
+            await db.commit()
+            return attempt
+
+        def image_id(self, container_id):
+            return "sha256:fake-image"
+
+        def spawn(self, spec):
+            raise AssertionError("SDK runs must use the common runner path")
+
+    monkeypatch.setattr(engine, "get_agent_runtime", FastRuntime)
+    await engine._spawn_agent_for_template(db_session, task, template)
+    await db_session.refresh(task)
+    assert task.current_attempt_id is not None
+    assert task.status == "done" and task.result_summary == "Already finished"
+
+
+@pytest.mark.asyncio
+async def test_sdk_capacity_keeps_task_queued(db_session, default_model, monkeypatch):
+    from app.harnesses.attempts import AttemptError
+
+    template = Template(
+        name="SDK role", description="SDK test role", soul_md="Instructions", model_id=default_model.id,
+        tool_ids=[], workspace_id=DEFAULT_WORKSPACE_ID,
+    )
+    task = Task(title="Queued SDK task", status="ready", workspace_id=DEFAULT_WORKSPACE_ID)
+    db_session.add_all([template, task])
+    await db_session.commit()
+
+    class BusyRuntime:
+        async def spawn_attempt(self, *args, **kwargs):
+            raise AttemptError("CAPACITY", "Runner capacity is exhausted")
+
+    monkeypatch.setattr(engine, "get_agent_runtime", BusyRuntime)
+    await engine._spawn_agent_for_template(db_session, task, template)
+    await db_session.refresh(task)
+    assert task.status == "ready" and task.current_attempt_id is None
+
+
+@pytest.mark.asyncio
 async def test_process_ready_task_skips_decomposition_when_disabled(
     db_session, default_model, monkeypatch
 ):

@@ -4,6 +4,16 @@
 
 ## 2026-11-04
 
+- **SPA-125 — adapt the old loop through the same SDK boundary.** A temporary
+  connector reuses the original agent implementation and translates its native
+  records, tool identities, messages and per-turn usage. Credentials stay in a
+  private mount; the transition bridge preserves the Toolathlon environment and
+  portal namespace. Feedback/abort compatibility routes use attempt commands;
+  legacy write routes cannot mutate attempt-backed tasks. Explicit empty tools
+  stay empty and unsupported options fail. The orchestrator preserves fast
+  terminal results and leaves capacity-limited tasks queued. The entire legacy
+  implementation remains scheduled for deletion when Pi becomes the default.
+
 - **SPA-124 — supervise execution independently of the harness.** The shared
   runner journals unacknowledged events and command receipts before delivery,
   retries lost acknowledgements without duplicating records or feedback, tracks
