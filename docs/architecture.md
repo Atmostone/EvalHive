@@ -203,6 +203,19 @@ an LLM loop or treating native catalog estimates as billed cost. Private HOME/XD
 state and the image's pinned plugin dependency tree avoid owner configuration and
 runtime dependency downloads.
 
+SPA-130 exposes installed connector declarations and workspace profiles in
+Settings. The browser renders common schema fields, offers structured JSON for
+other native settings and validates with the same JSON Schema dialect without
+mutating values or applying defaults. Credentials are entered separately and
+only their names/references return to the browser. Owner/admin permissions govern
+profile/credential changes; installation remains a server operation.
+
+Templates select a profile or inherit the workspace default, and retain a direct
+or orchestrated execution preference. These choices are versioned with the role.
+Profile references are workspace scoped and prevent deletion while a template
+uses them. Restoring a version whose profile is gone fails explicitly rather than
+substituting a different execution condition.
+
 ### Creating and running a task
 
 ```

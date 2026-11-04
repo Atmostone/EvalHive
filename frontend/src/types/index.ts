@@ -88,6 +88,8 @@ export interface Template {
   model_api_name: string | null
   provider_name: string | null
   rubric_id: string | null
+  harness_profile_id: string | null
+  execution_mode: 'direct' | 'orchestrated'
   tool_ids: string[]
   max_ram: string
   max_cpu: number
@@ -95,6 +97,46 @@ export interface Template {
   tags: string[]
   created_at: string
   updated_at: string
+}
+
+export type JsonSchema = Record<string, unknown> & {
+  type?: string | string[]
+  title?: string
+  description?: string
+  properties?: Record<string, JsonSchema>
+  required?: string[]
+  enum?: unknown[]
+  default?: unknown
+  minimum?: number
+  maximum?: number
+  writeOnly?: boolean
+}
+
+export interface HarnessManifest {
+  id: string
+  version: string
+  display_name: string
+  protocol_version: string
+  config_schema: JsonSchema
+  capabilities: Record<string, 'native' | 'emulated' | 'unsupported'>
+  commands?: Record<string, { input_schema: JsonSchema }>
+}
+
+export interface HarnessProfile {
+  id: string
+  name: string
+  connector_id: string
+  connector_version: string
+  config: Record<string, unknown>
+  secret_refs: Record<string, string>
+  model_id: string | null
+  is_default: boolean
+}
+
+export interface HarnessSecret {
+  id: string
+  name: string
+  configured: boolean
 }
 
 export interface Provider {

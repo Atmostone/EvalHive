@@ -2,6 +2,25 @@ import { authHeaders, useAuth } from '../stores/auth'
 
 const BASE = '/api'
 
+import type { HarnessManifest, HarnessProfile, HarnessSecret } from '@/types'
+
+export const harnessesApi = {
+  list: () => request<HarnessManifest[]>('/harnesses'),
+  profiles: () => request<HarnessProfile[]>('/harness-profiles'),
+  create: (data: Omit<HarnessProfile, 'id'>) =>
+    request<HarnessProfile>('/harness-profiles', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<Omit<HarnessProfile, 'id' | 'connector_id'>>) =>
+    request<HarnessProfile>(`/harness-profiles/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/harness-profiles/${id}`, { method: 'DELETE' }),
+  validate: (id: string) => request<{ valid: boolean }>(`/harness-profiles/${id}/validate`, { method: 'POST' }),
+  secrets: () => request<HarnessSecret[]>('/harness-secrets'),
+  createSecret: (name: string, value: string) =>
+    request<HarnessSecret>('/harness-secrets', { method: 'POST', body: JSON.stringify({ name, value }) }),
+  updateSecret: (id: string, name: string, value: string) =>
+    request<HarnessSecret>(`/harness-secrets/${id}`, { method: 'PUT', body: JSON.stringify({ name, value }) }),
+  deleteSecret: (id: string) => request<void>(`/harness-secrets/${id}`, { method: 'DELETE' }),
+}
+
 class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {

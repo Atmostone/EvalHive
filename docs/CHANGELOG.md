@@ -4,6 +4,14 @@ Format: `YYYY-MM-DD — change — plan section / PR reference`.
 
 ## 2026-11-04
 
+- **SPA-130 — edit installed harness profiles in Settings and select them in
+  Templates.** Schema-based fields and a structured JSON editor validate native
+  configuration before saving without silently applying defaults. Capabilities
+  and unavailable connector versions are visible. Credentials are stored through
+  separate write-only inputs and referenced by name. Template profile/mode choices
+  survive version rollback; cross-workspace references and deletion of a referenced
+  profile are rejected. Migration `ha04` adds these fields without changing history.
+
 - **SPA-129 — connect OpenCode through its own SDK package.** The pinned 1.19.5
   CLI/server and official SDK use HTTP/SSE inside an isolated worker. Native
   snapshots recover final state after reconnects without duplicate tools or
