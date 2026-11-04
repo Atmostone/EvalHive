@@ -6,6 +6,36 @@ on:
   pull_request:
 
 jobs:
+  harness-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.1"
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: Install SDK dependencies
+        run: |
+          python -m pip install -e sdk/python pytest ruff build
+          npm ci --prefix sdk/typescript
+          npm run build --prefix sdk/typescript
+          npm ci --prefix sdk/examples/fake
+      - name: SDK lint and cross-language process conformance
+        run: |
+          ruff check sdk/python sdk/fixtures/peer.py sdk/examples/fake/connector.py
+          python -m pytest -c sdk/python/pyproject.toml sdk/python/tests
+          EH_TEST_PYTHON="$(command -v python)" npm test --prefix sdk/typescript
+      - name: Build distributable SDK packages
+        run: |
+          mkdir -p /tmp/evalhive-sdk-packages
+          python -m build sdk/python --outdir /tmp/evalhive-sdk-packages
+          cd sdk/typescript
+          npm pack --pack-destination /tmp/evalhive-sdk-packages
+
   test:
     runs-on: ubuntu-latest
     services:

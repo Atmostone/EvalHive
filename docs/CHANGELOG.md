@@ -2,6 +2,20 @@
 
 Формат: `YYYY-MM-DD — что изменилось — ссылка на блок плана / PR`.
 
+## 2026-11-04
+
+- **SPA-120 — define the harness boundary before replacing the agent loop.** One
+  JSON Schema governs manifests, RunSpec, command acknowledgements, normalized
+  events and terminal results. Independent Python/TypeScript packages validate
+  the same fixtures, launch connector processes and expose feedback/cancellation
+  without importing the backend or an LLM client. Separate fake connector workers
+  demonstrate a native setting added outside the core. IDs correlate responses
+  independently of order; queue overflow, invalid streams and unsupported
+  versions fail explicitly. Usage retains unknown values, native evidence names
+  its adapter version, and concurrent tools carry identity rather than adjacency.
+  Existing production execution is unchanged; attempts, durable delivery and real
+  Pi/OpenCode integration follow in the remaining Harness SDK epic tasks.
+
 ## 2026-09-21 (2)
 
 - **SPA-94 — the stand moves to a shared experiment server, and the move breaks three things that only break at scale.** A 348-cell run took ~18 hours on a laptop and was interrupted twice by the machine sleeping. The target has 192 cores and 1.4 TiB free, which lifts the constraint the corpus design was written around — four Toolathlon PG lanes — so the lane count goes to **eight** and the run finishes in about four hours instead of eighteen. `MAX_TOOLATHLON_LANES` and the lane services in `docker-compose.yml` are one fact in two files; both move together, and the test that claims to compare them now actually does (it asserted the literal `== 4`, so it would have passed no matter what compose said — a second copy of the number rather than a check on it).

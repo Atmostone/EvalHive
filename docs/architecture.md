@@ -51,6 +51,18 @@ With both profiles the compose stack defines 18 services (the 9 core services ab
 
 ## Main flows
 
+### Harness boundary (SPA-120, protocol 1.0)
+
+The language-independent [Harness SDK](../sdk/README.md) defines the manifest,
+RunSpec, commands, normalized/native events and result in one JSON Schema. Python
+and TypeScript packages validate the same fixtures and communicate over bounded
+UTF-8 JSONL process pipes. A connector owns native configuration and the harness
+loop; runtime owns containers and environments; runner owns attempt lifecycle,
+durable delivery, control deadlines and artifacts. The SDK is independent of
+backend and LLM libraries. This first change supplies the contract and external
+fake workers; catalog, execution attempts and runtime integration follow in
+SPA-121–SPA-124. Existing production agent execution is unchanged at this stage.
+
 ### Creating and running a task
 
 ```

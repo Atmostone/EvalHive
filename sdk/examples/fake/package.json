@@ -1,0 +1,7 @@
+{
+  "name": "evalhive-example-connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {"@evalhive/harness-sdk": "file:../../typescript"}
+}

@@ -43,6 +43,11 @@ OpenAPI: http://localhost:8002/docs.
 
 ## Agent image
 
+The independent Python/TypeScript connector SDK and its shared protocol checks
+are documented in [sdk/README.md](../sdk/README.md). They run without Docker,
+database services or model credentials. Run both process suites before changing
+the canonical schema; an incompatible change requires a new protocol version.
+
 ```bash
 docker build -t evalhive-agent:latest agent-image/
 ```
