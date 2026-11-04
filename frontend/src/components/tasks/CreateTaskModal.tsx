@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { tasksApi } from '@/api/client'
 import { X } from 'lucide-react'
+import type { Task } from '@/types'
+import TaskExecutionFields from './TaskExecutionFields'
 
 interface CreateTaskModalProps {
   onClose: () => void
@@ -13,6 +15,9 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
   const [description, setDescription] = useState('')
   const [priority, setPriority] = useState('medium')
   const [referenceAnswer, setReferenceAnswer] = useState('')
+  const [selection, setSelection] = useState<Pick<Task, 'execution_mode' | 'harness_profile_id' | 'template_id'>>({
+    execution_mode: 'direct', harness_profile_id: null, template_id: null,
+  })
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -21,6 +26,7 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
         description,
         priority,
         reference_answer: referenceAnswer.trim() || undefined,
+        ...selection,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
@@ -30,7 +36,7 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full max-w-md p-6 shadow-xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 shadow-xl" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">New Task</h2>
           <button onClick={onClose} className="p-1 rounded hover:bg-gray-100">
@@ -87,6 +93,8 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
             />
           </div>
 
+          <TaskExecutionFields value={selection} onChange={change => setSelection(previous => ({ ...previous, ...change }))} />
+          {createMutation.error && <p role="alert" className="text-sm text-red-600">{createMutation.error.message}</p>}
           <button
             onClick={() => createMutation.mutate()}
             disabled={!title.trim() || createMutation.isPending}

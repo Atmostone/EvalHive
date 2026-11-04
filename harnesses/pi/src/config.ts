@@ -9,9 +9,16 @@ export function object(value: unknown): Record<string, unknown> {
 }
 
 export function effectiveConfig(spec: RunSpec): JsonObject {
-  validateRun(manifest, spec);
+  const rawSampling = object(spec.model).sampling;
+  if (rawSampling !== undefined && (rawSampling === null || typeof rawSampling !== 'object' || Array.isArray(rawSampling)))
+    throw new ProtocolError('UNSUPPORTED_SAMPLING', 'Model sampling must be an object');
+  const sampling = object(object(spec.model).sampling);
+  if (Object.keys(sampling).some(name => !['temperature', 'seed'].includes(name)))
+    throw new ProtocolError('UNSUPPORTED_SAMPLING', 'Unsupported model sampling option');
+  const config = {...spec.config, ...sampling} as JsonObject;
+  validateRun(manifest, {...spec, config});
   return {thinkingLevel: 'off', contextWindow: 128000, maxOutputTokens: 8192,
-    autoCompaction: true, maxRetries: 2, retryBaseDelayMs: 200, reasoning: false, ...spec.config};
+    autoCompaction: true, maxRetries: 2, retryBaseDelayMs: 200, reasoning: false, ...config};
 }
 
 export function connection(spec: RunSpec, credentials: Record<string, string>) {

@@ -122,6 +122,15 @@ class AttemptRunner:
                     },
                 }
             self.append(event)
+            if event["event"] == "interaction.request":
+                kind = event["data"]["kind"]
+                if (
+                    self.manifest.get("capabilities", {}).get(kind) not in ("native", "emulated")
+                    or kind not in self.manifest.get("commands", {})
+                ):
+                    raise ProtocolError(
+                        "UNSUPPORTED_INTERACTION", "Connector requested unsupported interaction"
+                    )
         raise ProtocolError("CONNECTOR_EXIT", "Connector exited without a terminal event")
 
     async def _deliver(self):

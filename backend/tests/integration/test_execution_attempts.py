@@ -177,6 +177,12 @@ async def test_gap_rolls_back_whole_batch_and_ack_loss_is_recoverable(auth_clien
     assert (
         await auth_client.get(f"/api/attempts/{attempt.id}/events?after_seq=0&limit=1")
     ).json() == [missing]
+    assert (
+        await auth_client.get(f"/api/attempts/{attempt.id}/events?event_type=message.end")
+    ).json() == [missing]
+    assert (
+        await auth_client.get(f"/api/attempts/{attempt.id}/events?event_type=interaction.request&event_type=interaction.resolved")
+    ).json() == []
 
 
 async def test_retry_fences_previous_attempt_even_for_a_valid_old_token(

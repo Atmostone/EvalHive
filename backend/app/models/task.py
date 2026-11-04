@@ -3,14 +3,30 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
 
-class TaskStatus(str, enum.Enum):
+class _HistoricalStringEnum(enum.StrEnum):
+    # Preserve Python 3.11+ Enum display/formatting used by historical consumers.
+    __str__ = enum.Enum.__str__
+    __format__ = enum.Enum.__format__
+
+
+class TaskStatus(_HistoricalStringEnum):
     BACKLOG = "backlog"
     READY = "ready"
     DECOMPOSING = "decomposing"
@@ -21,7 +37,7 @@ class TaskStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class TaskPriority(str, enum.Enum):
+class TaskPriority(_HistoricalStringEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -31,6 +47,7 @@ class TaskPriority(str, enum.Enum):
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
+        CheckConstraint("execution_mode IN ('direct', 'orchestrated')", name="ck_task_execution_mode"),
         Index("idx_tasks_status", "status"),
         Index("idx_tasks_parent", "parent_id"),
         Index("idx_tasks_workspace_origin", "workspace_id", "origin"),
@@ -91,6 +108,11 @@ class Task(Base):
     template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("templates.id"), nullable=True
     )
+    harness_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("harness_profiles.id", ondelete="RESTRICT"), nullable=True
+    )
+    # None inherits the selected template, then the orchestrated workspace flow.
+    execution_mode: Mapped[str | None] = mapped_column(String(20), nullable=True)
     agent_container_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )

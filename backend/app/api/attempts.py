@@ -136,16 +136,20 @@ async def read_events(
     attempt_id: uuid.UUID,
     after_seq: int = Query(-1, ge=-1),
     limit: int = Query(100, ge=1, le=500),
+    event_type: list[str] | None = Query(None, max_length=20),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
     await scoped_attempt(db, workspace, attempt_id)
-    rows = await db.scalars(
+    query = (
         select(ExecutionEvent)
         .where(ExecutionEvent.attempt_id == attempt_id, ExecutionEvent.seq > after_seq)
         .order_by(ExecutionEvent.seq)
         .limit(limit)
     )
+    if event_type:
+        query = query.where(ExecutionEvent.payload["event"].astext.in_(event_type))
+    rows = await db.scalars(query)
     return [row.payload for row in rows]
 
 
@@ -247,6 +251,7 @@ async def read_commands(
             "status": command.status,
             "result": command.result,
             "error": command.error,
+            "request_id": command.payload.get("request_id"),
         }
         for command in commands
     ]

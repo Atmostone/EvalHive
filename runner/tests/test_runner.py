@@ -65,6 +65,45 @@ class API:
         return {"duplicate": False}
 
 
+def test_unsupported_interaction_fails_without_waiting_for_a_deadline(tmp_path):
+    class Connector:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.closed = False
+
+        async def request(self, method, *args, **kwargs):
+            if method == "describe":
+                return FIXTURES["manifest"]
+            if method == "start":
+                self.started.set()
+            return {"accepted": True}
+
+        async def events(self):
+            await self.started.wait()
+            for seq, (name, data) in enumerate([
+                ("run.started", {}),
+                ("interaction.request", {"request_id": "input-1", "kind": "question", "payload": {}}),
+            ]):
+                yield {"protocol_version": "1.0", "type": "event", "attempt_id": FIXTURES["run_spec"]["attempt_id"],
+                       "event_id": str(seq), "seq": seq, "source": "fixture", "event": name, "data": data}
+            await asyncio.Event().wait()
+
+        async def close(self, **kwargs):
+            self.closed = True
+
+    async def scenario():
+        connector, api = Connector(), API()
+        with EventSpool(tmp_path / "spool.sqlite") as spool:
+            runner = AttemptRunner(spec=copy.deepcopy(FIXTURES["run_spec"]), manifest=FIXTURES["manifest"],
+                connector=connector, api=api, spool=spool, policy=POLICY)
+            result = await asyncio.wait_for(runner.run(), 2)
+        assert result["status"] == "failed" and connector.closed
+        assert api.records[max(api.records)]["data"]["error"]["code"] == "UNSUPPORTED_INTERACTION"
+        assert any(record["event"] == "interaction.request" for record in api.records.values())
+
+    asyncio.run(scenario())
+
+
 def test_artifact_delivery_precedes_terminal_acknowledgement(tmp_path):
     async def scenario():
         connector = await ConnectorClient.launch(

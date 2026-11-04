@@ -21,6 +21,9 @@ export interface Task {
    *  but only readable in SQL until SPA-113. */
   failure_type?: string | null
   template_id?: string | null
+  harness_profile_id?: string | null
+  execution_mode?: 'direct' | 'orchestrated' | null
+  current_attempt_id?: string | null
   agent_container_id?: string | null
   result_summary?: string | null
   reference_answer?: string | null
@@ -137,6 +140,35 @@ export interface HarnessSecret {
   id: string
   name: string
   configured: boolean
+}
+
+export interface ExecutionAttempt {
+  id: string
+  number: number
+  connector_id: string
+  connector_version: string
+  profile_id: string | null
+  status: 'created' | 'running' | 'stopping' | 'success' | 'failed' | 'cancelled' | 'lost'
+  capabilities: Record<string, string>
+  commands: Record<string, { input_schema: JsonSchema }>
+  completeness: Record<string, unknown>
+  result: { summary: string; status: string } | null
+}
+
+export interface AttemptEvent {
+  event_id: string
+  seq: number
+  event: string
+  data: { request_id?: string; kind?: string; payload?: Record<string, unknown>; [key: string]: unknown }
+}
+
+export interface AttemptCommand {
+  id: string
+  name: string
+  status: string
+  error: string | null
+  request_id?: string | null
+  result: { ok: boolean; result?: unknown } | null
 }
 
 export interface Provider {

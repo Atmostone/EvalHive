@@ -216,6 +216,22 @@ Profile references are workspace scoped and prevent deletion while a template
 uses them. Restoring a version whose profile is gone fails explicitly rather than
 substituting a different execution condition.
 
+SPA-131 adds direct execution through the existing Work board. A task chooses a
+profile explicitly, inherits its role's profile, or uses the workspace default.
+The direct path resolves the model from the chosen profile or optional role and
+does not call the orchestrator or an automatic evaluator. A shared launch service
+builds neutral resources/limits/network/artifact policy and passes the resulting
+RunSpec to the runner. Model sampling overrides are translated and validated
+inside each connector, including explicit rejection of unsupported options.
+
+The task start endpoint validates selection and model availability before queuing.
+Active attempts fence task reconfiguration and requeueing. Work shows live logs,
+attempt status, control receipts, feedback, cancellation and schema-declared
+interaction actions. Control retries reuse command identity until acknowledged.
+An unsupported interaction fails in the runner rather than waiting indefinitely.
+File downloads send the caller's authorization/workspace headers and retain the
+environment's paths; no connector-specific output directory is imposed.
+
 ### Creating and running a task
 
 ```

@@ -192,6 +192,9 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
     any spawn error, mirroring the previous inline behavior.
     """
     task.template_id = template.id
+    if getattr(task, "harness_profile_id", None) or getattr(template, "harness_profile_id", None):
+        await _spawn_sdk_task(db, task, template)
+        return
     run_config = task.run_config or {}
     try:
         # Build description with feedback if this is a retry after rejection
@@ -419,9 +422,51 @@ def _subtask_run_config(run_config: dict | None) -> dict | None:
     return inherited or None
 
 
+async def _spawn_sdk_task(db, task, template=None):
+    from app.harnesses.attempts import AttemptError
+    from app.harnesses.launch import launch_task
+
+    try:
+        await launch_task(db, task, template)
+    except Exception as error:
+        if isinstance(error, AttemptError) and error.code == "CAPACITY":
+            await db.rollback()
+            await db.refresh(task)
+            task.status = TaskStatus.READY.value
+            await db.commit()
+            return
+        # Public diagnostics must not expose resolved provider/resource values.
+        await db.rollback()
+        await db.refresh(task)
+        task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
+        task.result_summary = "Execution configuration could not be launched"
+        task.completed_at = datetime.utcnow()
+        await db.commit()
+        await log_event(db, "agent_failed", "runner", {"reason": "launch_configuration"},
+                        task_id=task.id, workspace_id=task.workspace_id)
+        await check_parent_task_completion(db, task)
+
+
 async def process_ready_task(db: AsyncSession, task: Task):
     """Process a single Ready task: decompose or select template + spawn agent."""
     logger.info(f"Processing task {task.id}: {task.title}")
+
+    from app.harnesses.launch import execution_mode, selected_template
+
+    try:
+        pinned = await selected_template(db, task)
+    except ValueError:
+        task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
+        task.result_summary = "Role template is unavailable in this workspace"
+        task.completed_at = datetime.utcnow()
+        await db.commit()
+        await check_parent_task_completion(db, task)
+        return
+    if execution_mode(task, pinned) == "direct":
+        await _spawn_sdk_task(db, task, pinned)
+        return
 
     # Mark as decomposing while we decide
     task.status = TaskStatus.DECOMPOSING.value

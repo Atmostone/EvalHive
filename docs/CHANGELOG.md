@@ -4,6 +4,15 @@ Format: `YYYY-MM-DD — change — plan section / PR reference`.
 
 ## 2026-11-04
 
+- **SPA-131 — run direct work through a selected harness profile.** Work accepts
+  an optional role and explicit profile, shows live attempt control/receipts and
+  schema-declared interactions, and sends feedback or cancellation to that attempt.
+  Direct execution skips orchestration and automatic evaluation. Model/profile
+  validation precedes queuing; active attempts reject reconfiguration/restarts.
+  Unsupported interactions fail explicitly. Authorized file downloads now carry
+  workspace headers. Migration `ha05` adds task selection without rewriting history;
+  shared sampling parameters are translated and checked by the connector.
+
 - **SPA-130 — edit installed harness profiles in Settings and select them in
   Templates.** Schema-based fields and a structured JSON editor validate native
   configuration before saving without silently applying defaults. Capabilities

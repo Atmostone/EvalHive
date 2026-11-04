@@ -18,6 +18,7 @@ from app.database import get_db
 from app.harnesses.catalog import CatalogError, get_manifest, load_catalog
 from app.harnesses.profiles import ProfileError, validate_profile
 from app.models.harness_profile import HarnessProfile, HarnessSecret
+from app.models.task import Task
 from app.models.template import Template
 from app.models.workspace import Workspace
 
@@ -273,6 +274,8 @@ async def delete_profile(
         raise HTTPException(409, "Select another default profile before deleting this one")
     if await db.scalar(select(Template.id).where(Template.harness_profile_id == profile.id).limit(1)):
         raise HTTPException(409, "Harness profile is referenced by a template")
+    if await db.scalar(select(Task.id).where(Task.harness_profile_id == profile.id).limit(1)):
+        raise HTTPException(409, "Harness profile is referenced by a task")
     await db.delete(profile)
     await _commit(db)
 

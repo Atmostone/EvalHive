@@ -4,6 +4,15 @@ import { EventTranslator, EventWriter } from '../dist/events.js';
 import { resourcePlan } from '../dist/resources.js';
 import { connection, effectiveConfig } from '../dist/config.js';
 
+test('common sampling is translated and unsupported settings fail before execution', () => {
+  const spec = {protocol_version: '1.0', workspace_id: 'w', task_id: 't', attempt_id: 'a',
+    task: {prompt: 'Fixture'}, cwd: '/workspace', config: {temperature: 1},
+    model: {sampling: {temperature: 0}}};
+  assert.equal(effectiveConfig(spec).temperature, 0);
+  for (const sampling of [null, [], {seed: 42}, {temperature: 3}])
+    assert.throws(() => effectiveConfig({...spec, model: {sampling}}));
+});
+
 function recorder() {
   const events = [];
   let stopped = false;

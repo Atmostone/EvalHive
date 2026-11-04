@@ -4,6 +4,16 @@ import { EventQueue, UsageTracker, decimal } from '../dist/events.js';
 import { failureFacts } from '../dist/errors.js';
 import { connection, effectiveConfig } from '../dist/config.js';
 
+test('common sampling is translated and unsupported settings fail before execution', () => {
+  const spec = {protocol_version: '1.0', workspace_id: 'w', task_id: 't', attempt_id: 'a',
+    task: {prompt: 'Fixture'}, cwd: '/workspace', config: {temperature: 1},
+    model: {sampling: {temperature: 0, seed: 42}}};
+  assert.equal(effectiveConfig(spec).temperature, 0);
+  assert.equal(effectiveConfig(spec).seed, 42);
+  for (const sampling of [null, [], {ignoredOption: true}, {temperature: 3}])
+    assert.throws(() => effectiveConfig({...spec, model: {sampling}}));
+});
+
 function records() {
   const events = [];
   let aborted = false;

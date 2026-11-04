@@ -3,6 +3,18 @@ import { authHeaders, useAuth } from '../stores/auth'
 const BASE = '/api'
 
 import type { HarnessManifest, HarnessProfile, HarnessSecret } from '@/types'
+import type { ExecutionAttempt, AttemptEvent, AttemptCommand } from '@/types'
+
+export const attemptsApi = {
+  list: (taskId: string) => request<ExecutionAttempt[]>(`/tasks/${taskId}/attempts?limit=1`),
+  events: (id: string, after: number) => request<AttemptEvent[]>(
+    `/attempts/${id}/events?after_seq=${after}&limit=500&event_type=interaction.request&event_type=interaction.resolved`),
+  commands: (id: string) => request<AttemptCommand[]>(`/attempts/${id}/commands`),
+  control: (id: string, name: string, payload: Record<string, unknown>, commandId: string) =>
+    request<{ id: string; status: string }>(`/attempts/${id}/commands`, {
+      method: 'POST', body: JSON.stringify({ id: commandId, name, payload }),
+    }),
+}
 
 export const harnessesApi = {
   list: () => request<HarnessManifest[]>('/harnesses'),
@@ -100,6 +112,12 @@ export const authApi = {
 
 // Tasks
 export const tasksApi = {
+  download: async (id: string, path?: string): Promise<Blob> => {
+    const relative = path ? `/files/${path.split('/').map(encodeURIComponent).join('/')}` : '/files.zip'
+    const response = await fetch(`${BASE}/tasks/${id}${relative}`, { headers: authHeaders() })
+    if (!response.ok) throw new ApiError(response.status, extractErrorMessage(await response.text(), response.status))
+    return response.blob()
+  },
   list: (params?: { status?: string; parent_id?: string; include_experiments?: boolean }) => {
     const qs = new URLSearchParams()
     if (params?.status) qs.set('status', params.status)
@@ -109,10 +127,12 @@ export const tasksApi = {
     return request<Task[]>(`/tasks${s ? `?${s}` : ''}`)
   },
   get: (id: string) => request<Task & { subtasks: Task[] }>(`/tasks/${id}`),
-  create: (data: { title: string; description?: string; priority?: string; reference_answer?: string }) =>
+  create: (data: { title: string; description?: string; priority?: string; reference_answer?: string;
+    template_id?: string | null; harness_profile_id?: string | null; execution_mode?: 'direct' | 'orchestrated' | null }) =>
     request<Task>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: string, data: Partial<Task>) =>
     request<Task>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  start: (id: string) => request<Task>(`/tasks/${id}/start`, { method: 'POST' }),
   approve: (id: string) =>
     request<Task>(`/tasks/${id}/approve`, { method: 'PATCH' }),
   reject: (id: string, feedback: string) =>
