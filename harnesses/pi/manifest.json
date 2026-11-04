@@ -10,13 +10,96 @@
   "image": "evalhive-pi:1.5.0",
   "requirements": {
     "node": ">=22.19.0",
-    "harness_version": "1.5.0"
+    "harness_version": "1.5.0",
+    "model_api": "openai-compatible"
   },
   "config_schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "properties": {},
-    "additionalProperties": false
+    "additionalProperties": false,
+    "properties": {
+      "thinkingLevel": {
+        "type": "string",
+        "enum": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "off"
+      },
+      "contextWindow": {
+        "type": "integer",
+        "minimum": 128,
+        "maximum": 2000000,
+        "default": 128000
+      },
+      "maxOutputTokens": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 128000,
+        "default": 8192
+      },
+      "autoCompaction": {
+        "type": "boolean",
+        "default": true
+      },
+      "maxRetries": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5,
+        "default": 2
+      },
+      "retryBaseDelayMs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30000,
+        "default": 200
+      },
+      "temperature": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2
+      },
+      "seed": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "reasoning": {
+        "type": "boolean",
+        "default": false
+      },
+      "compat": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "supportsUsageInStreaming": {
+            "type": "boolean"
+          },
+          "supportsReasoningEffort": {
+            "type": "boolean"
+          },
+          "maxTokensField": {
+            "enum": [
+              "max_tokens",
+              "max_completion_tokens"
+            ]
+          },
+          "thinkingFormat": {
+            "enum": [
+              "deepseek",
+              "openai",
+              "qwen",
+              "qwen-chat-template",
+              "zai"
+            ]
+          }
+        }
+      }
+    }
   },
   "capabilities": {
     "abort": "native",

@@ -51,7 +51,13 @@ unresponsive process tree; the SDK does not claim to supervise container childre
 The SDK emits `run.started` and exactly one `run.finished` on the normal transport
 path. Connectors emit only harness events and return `{status, summary, error?}`;
 `failed` requires an error. An exception produces a sanitized failure. Cancellation
-cannot turn into success merely because a connector returned successfully during
+is distinct from failure. Optional `error.details.normalized_failure` supplies
+connector-neutral facts: `kind` (`model_error`, `limit`, `timeout`, `harness_error`,
+`recording_error`, `agent_error`), nullable HTTP `status_code` and exception class.
+The canonical schema validates these facts. Core consumers classify the facts;
+native error-message parsing stays in the connector. Missing facts remain unknown.
+
+Cancellation cannot turn into success merely because a connector returned successfully during
 shutdown. A broken pipe can prevent a terminal event: the runner must record an
 explicit transport failure. Late emits after a terminal record are rejected.
 

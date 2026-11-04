@@ -98,6 +98,24 @@ Run frontend state-merge checks with `npm test --prefix frontend` on Node 22.23.
 They cover interleaved tools, delayed snapshots and duplicate delivery without a
 browser or model connection. The frontend CI job also checks the production build.
 
+Build the Pi connector from the repository root. Its Node/Pi/SDK dependency
+versions are pinned by the package lockfile. Native tests use the actual Pi SDK
+with an in-container local OpenAI-compatible fixture; the container needs no
+external network and no model credentials:
+
+```bash
+docker build --target test -f harnesses/pi/Dockerfile -t evalhive-pi-tests:harness-dev .
+docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges:true --init evalhive-pi-tests:harness-dev
+docker build --target runtime -f harnesses/pi/Dockerfile -t evalhive-pi:1.5.0 .
+```
+
+Use the EvalHive rootless Docker endpoint on the VPS. Tests run serially. The
+runtime stage includes production dependencies only. Pi requires an explicit
+OpenAI-compatible `RunSpec.model` (`name`, `endpoint`, `credential_ref`); the key is
+looked up only in the private credential input. Agent/session/auth state stays in
+an isolated temporary directory, outside artifacts. Native resource/MCP/skill
+translation is added at the connector boundary in SPA-128.
+
 ## Migrations
 
 Create a new one:

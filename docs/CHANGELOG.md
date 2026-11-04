@@ -4,6 +4,15 @@
 
 ## 2026-11-04
 
+- **SPA-127 — execute the official Pi SDK through the Harness SDK.** A pinned
+  TypeScript worker uses Pi's native session, tools, retries and control, waits
+  for final settlement and checks the assistant stop reason. Explicit state stores
+  avoid global discovery. Provider stream fields preserve unknown usage rather
+  than reporting SDK default zeros; native/provider records retain adapter version.
+  Feedback, generation/tool cancellation and turn limits are exercised with the
+  actual SDK against a local fixture. Connector-neutral failure facts distinguish
+  provider/auth/transport problems from model limits and recording failures.
+
 - **SPA-126 — connect execution evidence to results and existing viewers.** The
   journal projects nested/interleaved tools, messages and per-model/purpose usage
   without multiplying cumulative samples or final snapshots. Unknown costs stay

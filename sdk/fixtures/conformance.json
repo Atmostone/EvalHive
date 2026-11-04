@@ -67,7 +67,7 @@
       "Do the task"
     ],
     "config": {
-      "prefix": "Hello world 🌍"
+      "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
     },
     "model": null,
     "credential_refs": {},
@@ -161,7 +161,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello world 🌍"
+          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
         },
         "model": null,
         "credential_refs": {},
@@ -214,7 +214,7 @@
               "Do the task"
             ],
             "config": {
-              "prefix": "Hello world 🌍"
+              "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
             },
             "model": null,
             "credential_refs": {},
@@ -257,7 +257,7 @@
               "Do the task"
             ],
             "config": {
-              "prefix": "Hello world 🌍"
+              "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
             },
             "model": null,
             "credential_refs": {},
@@ -470,7 +470,7 @@
         "event": "message.delta",
         "data": {
           "message_id": "m1",
-          "delta": "Thinking…",
+          "delta": "Thinking\u2026",
           "channel": "reasoning"
         }
       },
@@ -792,7 +792,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello world 🌍"
+          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
         },
         "model": null,
         "credential_refs": {},
@@ -828,7 +828,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello world 🌍"
+          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
         },
         "model": null,
         "credential_refs": {},
@@ -863,7 +863,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello world 🌍"
+          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
         },
         "model": null,
         "credential_refs": {},
@@ -1053,6 +1053,51 @@
         "event": "run.started",
         "data": {},
         "observed_at": 42
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "model HTTP failure facts",
+      "kind": "error",
+      "value": {
+        "code": "MODEL_FAILED",
+        "message": "Model request failed",
+        "details": {
+          "normalized_failure": {
+            "kind": "model_error",
+            "status_code": 401,
+            "exception": null
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "unknown normalized failure kind",
+      "kind": "error",
+      "value": {
+        "code": "MODEL_FAILED",
+        "message": "Model request failed",
+        "details": {
+          "normalized_failure": {
+            "kind": "pi_only"
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid normalized HTTP status",
+      "kind": "error",
+      "value": {
+        "code": "MODEL_FAILED",
+        "message": "Model request failed",
+        "details": {
+          "normalized_failure": {
+            "kind": "model_error",
+            "status_code": 700
+          }
+        }
       },
       "error": "INVALID_MESSAGE"
     }

@@ -5,6 +5,8 @@
 !sdk/
 !sdk/python/
 !sdk/python/**
+!sdk/typescript/
+!sdk/typescript/**
 !harnesses/
 !harnesses/**
 !runner/

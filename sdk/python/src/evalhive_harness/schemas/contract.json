@@ -17,7 +17,12 @@
           "type": "boolean"
         },
         "details": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "normalized_failure": {
+              "$ref": "#/$defs/failure_facts"
+            }
+          }
         }
       },
       "required": [
@@ -1070,6 +1075,39 @@
           "$ref": "#/$defs/event"
         }
       ]
+    },
+    "failure_facts": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "model_error",
+            "limit",
+            "timeout",
+            "harness_error",
+            "recording_error",
+            "agent_error"
+          ]
+        },
+        "status_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 100,
+          "maximum": 599
+        },
+        "exception": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
     }
   },
   "$ref": "#/$defs/wire_message"

@@ -150,6 +150,27 @@ older attempts cannot replace a newer attempt in the viewer. Historical legacy
 archives retain their original read path. Data Lake summaries permit unknown
 costs and expose known sample counts alongside grouped averages.
 
+SPA-127 embeds the pinned official Pi 1.5.0 SDK in a TypeScript worker. It uses
+`createAgentSession`; EvalHive supplies no replacement LLM/tool loop. Each worker
+has explicit isolated model/auth, settings, session and resource directories.
+Global credentials and project extension discovery are disabled; a profile cannot
+install executable extensions. Native settings are schema-checked, including
+sampling overrides applied through Pi's provider-request extension hook.
+
+Pi messages/tool execution events and provider stream usage become normalized
+events alongside versioned native evidence. Provider fields determine measurement
+availability; Pi's numeric SDK defaults do not turn absent usage into zero. Native
+provider-billed cost is distinguished from Pi's local catalog estimates. Auxiliary
+compaction usage is recorded separately, with unavailable fields left unknown.
+An 8 MiB worker event queue aborts on overflow rather than growing indefinitely.
+
+The worker waits for `agent_settled`, including automatic retries and queued
+feedback, and checks the final assistant stop reason. Abort reaches both a live
+provider stream and native tools. A configured turn budget stops before the next
+request; omitted budgets retain Pi's native behavior. Error parsing belongs to the
+connector and produces SDK failure facts. Backend classification consumes those
+facts and common runner errors, without branches naming Pi or OpenCode.
+
 ### Creating and running a task
 
 ```

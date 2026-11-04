@@ -21,6 +21,11 @@ export type RunResult = JsonObject & {
   status: 'success' | 'failed' | 'cancelled'; summary: string; error?: ErrorData;
 }
 export interface ErrorData extends JsonObject { code: string; message: string }
+export type NormalizedFailure = JsonObject & {
+  kind: 'model_error' | 'limit' | 'timeout' | 'harness_error' | 'recording_error' | 'agent_error';
+  status_code?: number | null;
+  exception?: string | null;
+}
 export interface Command extends JsonObject {
   protocol_version: '1.0'; type: 'command'; id: string;
   method: 'describe' | 'validate' | 'start' | 'control' | 'shutdown'; params: JsonObject;

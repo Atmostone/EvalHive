@@ -333,3 +333,36 @@ async def test_restart_finishes_task_after_terminal_receipt_before_projection(
     assert row.completeness["task_projection"] == "committed"
     await executor.reconcile_attempts(db_session)
     assert row.next_seq == 2
+
+
+@pytest.mark.parametrize(
+    ("facts", "expected"),
+    [
+        ({"kind": "model_error", "status_code": 401}, "llm_auth"),
+        ({"kind": "model_error", "status_code": 429}, "llm_rate_limit"),
+        ({"kind": "limit"}, "cap_hit"),
+        ({"kind": "recording_error"}, "infra"),
+    ],
+)
+async def test_sdk_failure_facts_reach_task_without_native_harness_branches(
+    auth_client, db_session, attempt, facts, expected
+):
+    row, token = attempt
+    batch = events(row)
+    batch[-1]["data"] = {
+        "status": "failed",
+        "summary": "Expected engineering failure",
+        "error": {
+            "code": "ARBITRARY_CONNECTOR_CODE",
+            "message": "Failure",
+            "details": {"normalized_failure": facts},
+        },
+    }
+    accepted = await auth_client.post(
+        f"/api/v1/attempts/{row.id}/events", json={"events": batch}, headers=headers(token)
+    )
+    assert accepted.status_code == 200
+    await executor.settle_task(db_session, row.id)
+    task = await db_session.get(Task, row.task_id)
+    await db_session.refresh(task)
+    assert task.status == "failed" and task.failure_type == expected

@@ -1,0 +1,209 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, VERSION,
+  type AgentSession, type AgentSessionEvent, type ExtensionFactory,
+} from '@earendil-works/pi-coding-agent';
+import { ProtocolError, type Connector, type JsonObject, type JsonValue, type RunContext, type RunResult, type RunSpec } from '@evalhive/harness-sdk';
+import { ADAPTER_VERSION, connection, effectiveConfig, manifest, object } from './config.js';
+import { EventQueue, json, UsageTracker } from './events.js';
+import { failureFacts } from './errors.js';
+
+function text(content: unknown, kind: string): string {
+  return Array.isArray(content) ? content.map(object).filter((part) => part.type === kind)
+    .map((part) => typeof part[kind] === 'string' ? part[kind] as string : '').join('') : '';
+}
+
+export class PiConnector implements Connector {
+  readonly manifest = manifest;
+  private session: AgentSession | undefined;
+  private settled = false;
+  private pendingFeedback: string[] = [];
+
+  constructor(private credentials: Record<string, string>) {}
+
+  async validate(spec: RunSpec): Promise<JsonValue> {
+    if (VERSION !== '1.5.0') throw new ProtocolError('NATIVE_VERSION_MISMATCH', 'Installed Pi version does not match the connector');
+    const config = effectiveConfig(spec);
+    connection(spec, this.credentials);
+    if (Number(config.maxOutputTokens) > Number(config.contextWindow))
+      throw new ProtocolError('INVALID_LIMITS', 'Output limit cannot exceed the context window');
+    if (config.thinkingLevel !== 'off' && !config.reasoning)
+      throw new ProtocolError('INVALID_THINKING', 'Enable the model reasoning capability before selecting a thinking level');
+    return {accepted: true, effective_config: config};
+  }
+
+  async run(context: RunContext): Promise<RunResult> {
+    const config = effectiveConfig(context.spec);
+    const model = connection(context.spec, this.credentials);
+    const state = mkdtempSync(join(tmpdir(), 'evalhive-pi-'));
+    mkdirSync(join(state, 'sessions'), {mode: 0o700});
+    let session: AgentSession | undefined;
+    let unsubscribe: (() => void) | undefined;
+    let queue: EventQueue | undefined;
+    let budgetHit = false;
+    let turns = 0;
+    let messageIndex = 0;
+    let assistantId = '';
+    let userId = '';
+    let compactions = 0;
+    let compactionRequests = 0;
+    let compactionActive = false;
+    let agentStarted = false;
+    let responseStatus: number | undefined;
+    let complete: (() => void) | undefined;
+    const settled = new Promise<void>((resolve) => { complete = resolve; });
+    const abort = () => { void session?.abort().catch(() => {}); };
+    context.signal.addEventListener('abort', abort);
+    try {
+      const runtime = await ModelRuntime.create({authPath: join(state, 'auth.json'), modelsPath: null,
+        modelsStorePath: join(state, 'models.sqlite'), allowModelNetwork: false, refreshOnCreate: false});
+      runtime.registerProvider('evalhive', {
+        api: 'openai-completions', baseUrl: model.endpoint,
+        headers: {'User-Agent': 'evalhive/0.1', 'x-opencode-session': context.spec.attempt_id},
+        models: [{id: model.name, name: model.name, reasoning: Boolean(config.reasoning), input: ['text'],
+          contextWindow: Number(config.contextWindow), maxTokens: Number(config.maxOutputTokens),
+          cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+          compat: {...object(config.compat), supportsUsageInStreaming: object(config.compat).supportsUsageInStreaming !== false},
+        }],
+      });
+      await runtime.setRuntimeApiKey('evalhive', model.key);
+      const selected = runtime.getModel('evalhive', model.name);
+      if (!selected) throw new ProtocolError('MODEL_UNAVAILABLE', 'Configured Pi model is unavailable');
+      const sessions = SessionManager.create(context.spec.cwd, join(state, 'sessions'));
+      queue = new EventQueue(context, sessions.getSessionId(), abort);
+      const output = queue;
+      const usage = new UsageTracker(output, model.name);
+      const bridge: ExtensionFactory = (api) => {
+        api.on('before_provider_request', (event) => {
+          usage.begin(compactionActive ? 'compaction' : 'agent');
+          const payload = object(event.payload);
+          return {...payload,
+            ...(config.temperature !== undefined ? {temperature: config.temperature} : {}),
+            ...(config.seed !== undefined ? {seed: config.seed} : {}),
+          };
+        });
+        api.on('provider_stream_event', (event) => {
+          output.native('provider_stream_event', event);
+          usage.provider(event.data, event.model);
+        });
+        api.on('after_provider_response', (event) => { responseStatus = event.status; });
+      };
+      const settings = SettingsManager.inMemory({compaction: {enabled: Boolean(config.autoCompaction)},
+        cacheWarming: 'off', retry: {enabled: Number(config.maxRetries) > 0,
+          maxRetries: Number(config.maxRetries), baseDelayMs: Number(config.retryBaseDelayMs),
+          provider: {maxRetries: 0, timeoutMs: 60000}}, packages: []});
+      const loader = new DefaultResourceLoader({cwd: context.spec.cwd, agentDir: state, settingsManager: settings,
+        noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+        extensionFactories: [bridge], appendSystemPrompt: Array.isArray(context.spec.instructions) ?
+          context.spec.instructions.filter((value): value is string => typeof value === 'string') : []});
+      await loader.reload();
+      ({session} = await createAgentSession({cwd: context.spec.cwd, agentDir: state, modelRuntime: runtime,
+        model: selected, thinkingLevel: config.thinkingLevel as 'off', sessionManager: sessions,
+        settingsManager: settings, resourceLoader: loader}));
+      this.session = session;
+      const current = session;
+      if (current.thinkingLevel !== config.thinkingLevel)
+        throw new ProtocolError('UNSUPPORTED_THINKING', 'The configured model does not support this thinking level');
+      unsubscribe = current.subscribe((event: AgentSessionEvent) => {
+        output.native(event.type, event);
+        const value = object(event);
+        if (event.type === 'agent_start') {
+          agentStarted = true;
+          for (const feedback of this.pendingFeedback.splice(0))
+            void current.steer(feedback).catch(() => abort());
+        } else if (event.type === 'turn_start') {
+          turns++;
+          if (turns > Number(object(context.spec.limits).max_turns ?? Infinity)) { budgetHit = true; abort(); }
+        } else if (event.type === 'message_start') {
+          const message = object(event.message);
+          if (message.role === 'assistant') assistantId = `message-${++messageIndex}`;
+          if (message.role === 'user') userId = `message-${++messageIndex}`;
+        } else if (event.type === 'message_update') {
+          const update = object(event.assistantMessageEvent);
+          if (update.type === 'text_delta' || update.type === 'thinking_delta')
+            output.emit('message.delta', {message_id: assistantId, role: 'assistant',
+              channel: update.type === 'thinking_delta' ? 'reasoning' : 'text', delta: String(update.delta ?? '')});
+        } else if (event.type === 'message_end') {
+          const message = object(event.message);
+          if (message.role === 'assistant' || message.role === 'user') {
+            const id = message.role === 'assistant' ? assistantId : userId;
+            output.emit('message.end', {message_id: id || `message-${++messageIndex}`, role: message.role,
+              content: typeof message.content === 'string' ? message.content : text(message.content, 'text'),
+              ...(message.role === 'assistant' ? {stop_reason: String(message.stopReason ?? 'unknown')} : {})});
+            const reasoning = text(message.content, 'thinking');
+            if (reasoning) output.emit('message.end', {message_id: id, role: 'assistant', channel: 'reasoning', content: reasoning});
+            if (message.role === 'assistant') usage.assistant(message.usage);
+          }
+        } else if (event.type === 'tool_execution_start') {
+          output.emit('tool.start', {call_id: event.toolCallId, name: event.toolName,
+            arguments: json(event.args) as JsonObject, ...(assistantId ? {message_id: assistantId} : {}),
+            ...(event.parentToolCallId ? {parent_call_id: event.parentToolCallId} : {})});
+        } else if (event.type === 'tool_execution_update') {
+          output.emit('tool.update', {call_id: event.toolCallId, mode: 'snapshot', content: json(event.partialResult),
+            ...(event.parentToolCallId ? {parent_call_id: event.parentToolCallId} : {})});
+        } else if (event.type === 'tool_execution_end') {
+          output.emit('tool.end', {call_id: event.toolCallId, status: event.isError ? 'error' : 'completed',
+            result: json(event.result), ...(event.durationMs !== undefined ? {duration_ms: event.durationMs} : {}),
+            ...(event.parentToolCallId ? {parent_call_id: event.parentToolCallId} : {})});
+        } else if (event.type === 'compaction_start') {
+          compactionActive = true; compactionRequests = usage.requests;
+        } else if (event.type === 'compaction_end') {
+          if (usage.requests === compactionRequests) usage.auxiliary(`compaction-${++compactions}`,
+            object(value.result).usage, current.model?.id ?? model.name);
+          compactionActive = false;
+        } else if (event.type === 'agent_settled') {
+          this.settled = true; complete?.();
+        }
+      });
+      await current.bindExtensions({});
+      if (context.signal.aborted) return {status: 'cancelled', summary: 'Run cancelled'};
+      await current.prompt(context.spec.task.prompt, {expandPromptTemplates: false, source: 'rpc'});
+      if (!agentStarted && !context.signal.aborted)
+        throw new ProtocolError('PROMPT_NOT_EXECUTED', 'Pi did not start an agent run');
+      if (agentStarted) await settled;
+      await output.drain();
+      if (context.signal.aborted) return {status: 'cancelled', summary: 'Run cancelled'};
+      if (budgetHit) return {status: 'failed', summary: 'Pi reached the turn limit',
+        error: {code: 'TURN_LIMIT', message: 'Pi reached the configured turn limit', details: {normalized_failure: {kind: 'limit'}}}};
+      const last = [...current.messages].reverse().map(object).find((message) => message.role === 'assistant');
+      const metadata = {harness_version: VERSION, adapter_version: ADAPTER_VERSION, session_id: sessions.getSessionId(),
+        effective_config: config, recording: {native_events: 'complete', usage: 'reported_or_unknown'}};
+      if (!last || last.stopReason !== 'stop') return {status: 'failed', summary: 'Pi did not finish successfully',
+        error: {code: 'PI_INCOMPLETE', message: typeof last?.errorMessage === 'string' ? last.errorMessage : 'Pi ended without a successful final answer',
+          details: {normalized_failure: last ? failureFacts(last.stopReason, last.errorMessage, responseStatus) : {kind: 'harness_error'}}}, metadata};
+      return {status: 'success', summary: text(last.content, 'text') || 'Pi completed', metadata};
+    } catch (error) {
+      if (context.signal.aborted) return {status: 'cancelled', summary: 'Run cancelled'};
+      if (error instanceof ProtocolError) return {status: 'failed', summary: error.message,
+        error: {...error.asData(), details: {normalized_failure: {kind: queue?.error ? 'recording_error' : 'harness_error'}}}};
+      throw error;
+    } finally {
+      context.signal.removeEventListener('abort', abort);
+      unsubscribe?.();
+      session?.dispose();
+      this.session = undefined;
+      rmSync(state, {recursive: true, force: true});
+    }
+  }
+
+  async control(context: RunContext, name: string, payload: JsonObject): Promise<JsonValue> {
+    if (this.settled) throw new ProtocolError('ATTEMPT_NOT_ACTIVE', 'Pi has already settled');
+    if (name === 'abort') {
+      context.abort.abort();
+      await this.session?.abort();
+      return {accepted: true};
+    }
+    if (name === 'feedback') {
+      if (typeof payload.text !== 'string' || !payload.text.trim()) throw new ProtocolError('INVALID_FEEDBACK', 'Feedback must contain text');
+      if (!this.session) {
+        if (this.pendingFeedback.length >= 32) throw new ProtocolError('FEEDBACK_QUEUE_FULL', 'Pi feedback queue is full');
+        this.pendingFeedback.push(payload.text);
+        return {accepted: true, disposition: 'queued'};
+      }
+      return {accepted: true, disposition: await this.session.steer(payload.text)};
+    }
+    throw new ProtocolError('UNSUPPORTED_CAPABILITY', 'Pi command is unavailable');
+  }
+}
