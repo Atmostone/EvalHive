@@ -4,6 +4,14 @@
 
 ## 2026-11-04
 
+- **SPA-123 — run a registered process rather than an agent-shaped Docker call.**
+  The new process runtime accepts argv, opaque environment, mounts, cwd, resource
+  limits and network mode. It requires rootless Docker, resolves registered images
+  to immutable IDs, isolates attempt work trees and keeps private inputs outside
+  artifacts. Namespace sharing checks task/workspace/environment ownership; the
+  Toolathlon helpers now provide those labels. Agent-specific prompt/model/HTTP
+  behavior stays in a temporary legacy adapter while the common runner is wired.
+
 - **SPA-121 — register harnesses without teaching the backend their code.** A
   server-owned manifest directory supplies the catalog and configuration schemas.
   Workspace profiles pin connector versions, validate native settings and reject

@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     host_data_dir: str = "./data"  # host path for agent container volume mounts
     # Administrator-installed manifests; loading never imports connector code.
     harness_manifest_dir: str = str(Path(__file__).resolve().parents[2] / "harnesses")
+    runtime_network: str = "evalhive_evalhive-net"
+    runtime_max_cpu_quota: int = 200000
+    runtime_max_memory_mb: int = 2048
+    # Server-owned task environments may expose additional dependency trees read-only.
+    runtime_readonly_roots: list[str] = []
     # Absolute HOST path of the toolathlon_gym clone, used by the Experiment
     # Runner to bind-mount the gym into preprocess/eval containers (docker-py
     # talks to the host daemon). Empty unless running Toolathlon experiments.

@@ -1794,6 +1794,7 @@ async def _start_toolathlon_run(
             long_lt,
             keep_alive=portal,
             pg_host=_pg_host_for_lane(run.lane_index),
+            workspace_id=exp.workspace_id,
         )
         # Portal case: the agent shares the (kept-alive) preprocess container's
         # netns so it can reach the mock localhost:PORT server.
@@ -1890,6 +1891,7 @@ async def _advance_preprocessing(
                 short_lt,
                 keep_alive=_requires_portal(case),
                 pg_host=_pg_host_for_lane(run.lane_index),
+                workspace_id=exp.workspace_id,
             )
         except Exception as e:
             run.preprocess_log = f"preprocess retry failed: {e}"[:4000]
@@ -1921,6 +1923,7 @@ async def _start_eval(
             case["external_eval"].get("groundtruth_path"),
             run.launch_time,
             pg_host=_pg_host_for_lane(run.lane_index),
+            workspace_id=exp.workspace_id,
         )
         run.status = ExperimentRunStatus.EVALUATING.value
     except Exception as e:

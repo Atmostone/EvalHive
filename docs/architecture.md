@@ -72,6 +72,17 @@ on the workspace row. Backend builds use the repository root as context to insta
 the independent Python SDK and copy declarations; `.dockerignore` limits that
 context to the application, SDK and harness directories.
 
+SPA-123 introduces `app.runtime.ProcessRuntime`: opaque argv/environment, bind
+mounts, cwd, CPU/memory/PID limits and a task-environment network. Docker execution
+requires rootless mode and selects an installed catalog image by connector/version,
+then starts its resolved immutable image ID. Writable mounts stay within the
+attempt tree; shared/environment dependencies are read-only and server registered.
+Private inputs live beside the work tree, outside artifact collection. A portal
+namespace must belong to the same task/workspace and carry the environment role.
+Toolathlon helpers now declare that scope. The old AgentSpec/DockerRuntime remain
+temporary compatibility exports; their implementation moved to the legacy boundary
+and is removed in SPA-134. New runner code uses the neutral runtime directly.
+
 ### Creating and running a task
 
 ```

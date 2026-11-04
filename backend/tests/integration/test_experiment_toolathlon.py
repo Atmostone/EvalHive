@@ -35,22 +35,25 @@ class FakeExt:
         self.eval_responses = list(ev or [])
         self.removed: list[str] = []
         self.preprocess_calls: list[tuple] = []
+        self.preprocess_workspaces: list = []
         self.eval_calls: list[tuple] = []
 
     def launch_time_pair(self):
         return ("2026-06-14 10:00:00 Saturday", "2026-06-14 10:00:00")
 
     def start_preprocess(
-        self, task_id, task_path, cmd, launch_time, *, keep_alive=False, pg_host=None
+        self, task_id, task_path, cmd, launch_time, *, keep_alive=False, pg_host=None,
+        workspace_id=None,
     ):
         # pg_host: SPA-69 per-lane PG routing (None for the shared/serial path).
         self.preprocess_calls.append((str(task_id), launch_time, keep_alive, pg_host))
+        self.preprocess_workspaces.append(workspace_id)
         return f"pre-{str(task_id)[:8]}"
 
     def preprocess_container_name(self, task_id):
         return f"tlpre-{str(task_id)[:8]}"
 
-    def start_eval(self, task_id, task_path, cmd, gt, launch_time, *, pg_host=None):
+    def start_eval(self, task_id, task_path, cmd, gt, launch_time, *, pg_host=None, workspace_id=None):
         self.eval_calls.append((str(task_id), launch_time, pg_host))
         return f"eval-{str(task_id)[:8]}"
 
@@ -334,6 +337,7 @@ async def test_toolathlon_portal_case_shares_preprocess_netns(
     assert run.status == ExperimentRunStatus.PREPROCESSING.value
     # preprocess started with keep_alive=True (3rd tuple element)
     assert fake.preprocess_calls and fake.preprocess_calls[-1][2] is True
+    assert fake.preprocess_workspaces[-1] == ws
     # the BACKLOG task carries the netns share so the agent reaches localhost:PORT
     task = await db_session.get(Task, run.task_id)
     assert task.run_config["network_mode"] == f"container:tlpre-{str(task.id)[:8]}"
