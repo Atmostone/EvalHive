@@ -19,7 +19,7 @@ from evalhive_runner.api import HTTPAttemptAPI
 from evalhive_runner.redaction import Redactor
 from evalhive_runner.runner import AttemptRunner, RunnerPolicy
 from evalhive_runner.spool import EventSpool
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 
 from app import database
 from app.auth.tokens import _utcnow_naive, issue_runner_token
@@ -364,7 +364,18 @@ async def reconcile_attempts(db):
                 ExecutionAttempt.workspace_id,
                 ExecutionAttempt.container_id,
                 ExecutionAttempt.last_heartbeat_at,
-            ).where(ExecutionAttempt.status.in_(["created", "running", "stopping"]))
+            )
+            .join(Task, Task.current_attempt_id == ExecutionAttempt.id)
+            .where(
+                or_(
+                    ExecutionAttempt.status.in_(["created", "running", "stopping"]),
+                    ExecutionAttempt.status.in_(TERMINAL)
+                    & (
+                        func.coalesce(ExecutionAttempt.completeness["task_projection"].astext, "")
+                        != "committed"
+                    ),
+                )
+            )
         )
     )
     for attempt in attempts:

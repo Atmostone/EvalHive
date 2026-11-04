@@ -307,3 +307,29 @@ async def test_legacy_control_routes_queue_attempt_commands(auth_client, db_sess
     commands = (await auth_client.get(f"/api/attempts/{row.id}/commands")).json()
     assert {item["name"] for item in commands} == {"feedback", "abort"}
     assert (await auth_client.get(f"/api/attempts/{row.id}")).json()["status"] == "stopping"
+
+
+async def test_restart_finishes_task_after_terminal_receipt_before_projection(
+    auth_client, db_session, attempt, tmp_path, monkeypatch
+):
+    row, token = attempt
+    monkeypatch.setattr(get_settings(), "data_dir", str(tmp_path))
+    monkeypatch.setattr(
+        executor, "get_process_runtime", lambda: SimpleNamespace(list_active=lambda: [])
+    )
+    task = await db_session.get(Task, row.task_id)
+    task.status = "in_progress"
+    await db_session.commit()
+    accepted = await auth_client.post(
+        f"/api/v1/attempts/{row.id}/events", json={"events": events(row)}, headers=headers(token)
+    )
+    assert accepted.status_code == 200
+    row.last_heartbeat_at = _utcnow_naive() - timedelta(seconds=120)
+    await db_session.commit()
+    await executor.reconcile_attempts(db_session)
+    await db_session.refresh(row)
+    await db_session.refresh(task)
+    assert row.status == "success" and task.status == "done"
+    assert row.completeness["task_projection"] == "committed"
+    await executor.reconcile_attempts(db_session)
+    assert row.next_seq == 2

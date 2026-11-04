@@ -141,6 +141,8 @@ outcome separately. Artifact events precede terminal acknowledgement. Finalizati
 has a deadline and a record-size fallback, so collecting files cannot keep the
 task running indefinitely. The terminal projection updates task results/usage,
 recording completeness, lifecycle events and parent completion idempotently.
+Recovery also finds terminal attempts whose task projection was not committed:
+a restart after the final event receipt cannot strand an in-progress task.
 
 Live compatibility rows retain their original position and a latest event
 sequence. REST snapshots and WebSocket updates merge by identity/version, and
