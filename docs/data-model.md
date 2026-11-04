@@ -14,6 +14,19 @@ and are write-only through the API; serializers expose only ID/name/configured.
 The migration seeds a Pi declaration per existing workspace and its downgrade
 drops only these new tables. Historical tasks and results are not rewritten.
 
+`ha02` (SPA-122) adds `execution_attempts`, `execution_events` and
+`execution_commands`, plus nullable `tasks.current_attempt_id` and
+`service_tokens.attempt_id`. Attempts retain the applied RunSpec/manifest and
+connector/protocol versions independently of mutable profiles. Attempt numbers
+are unique per task; a partial index permits one active attempt. Events are
+unique by `(attempt_id, seq)` and a bounded hash of event identity; the full
+original ID and payload remain in JSONB and are compared on replay. Commands
+have their own IDs and belong to one attempt. Runner token verification checks
+workspace/task/attempt together; existing agent tokens retain their legacy scope.
+Mutations lock task then attempt to serialize retries and event delivery. The
+downgrade removes dependent token/task FKs before the attempt tables. No historical
+results or agent logs are backfilled or rewritten.
+
 Revision chain:
 
 ```

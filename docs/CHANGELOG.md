@@ -4,6 +4,15 @@
 
 ## 2026-11-04
 
+- **SPA-122 — give each execution its own evidence boundary.** Explicit attempts
+  retain their specification and connector identity. Runner tokens bind the
+  workspace, task and attempt; a newer retry fences late events from its
+  predecessor. Event batches commit atomically and in order, acknowledge exact
+  duplicates and reject conflicting identities or gaps. Terminal delivery cannot
+  outrun earlier evidence. Read APIs expose attempts, control declarations and
+  ordered normalized/native records. Recording loss is declared independently of
+  model quality, and historical agent logs remain readable without backfill.
+
 - **SPA-121 — register harnesses without teaching the backend their code.** A
   server-owned manifest directory supplies the catalog and configuration schemas.
   Workspace profiles pin connector versions, validate native settings and reject

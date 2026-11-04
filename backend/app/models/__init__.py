@@ -2,6 +2,7 @@ from app.models.annotation import Annotation, AnnotationSession
 from app.models.bias_report import BiasReport
 from app.models.chat_message import ChatMessage
 from app.models.event import AgentEvent
+from app.models.execution_attempt import ExecutionAttempt, ExecutionCommand, ExecutionEvent
 from app.models.experiment import Experiment, ExperimentAttempt, ExperimentRun
 from app.models.harness_profile import HarnessProfile, HarnessSecret
 from app.models.judge_calibration import JudgeCalibration
@@ -59,4 +60,7 @@ __all__ = [
     "ExperimentRun",
     "HarnessProfile",
     "HarnessSecret",
+    "ExecutionAttempt",
+    "ExecutionEvent",
+    "ExecutionCommand",
 ]

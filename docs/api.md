@@ -89,6 +89,37 @@ version fails validation explicitly. Catalog registration does not assert that
 its image is built or that a model is connected; runtime preflight verifies those
 before a real attempt. This change alone does not switch legacy task execution.
 
+### Execution attempts and event delivery (SPA-122)
+
+| Method | Path | Authentication / behavior |
+| --- | --- | --- |
+| GET | `/api/tasks/{task_id}/attempts?limit=&before_number=` | Workspace JWT; newest attempts first, paginated by attempt number |
+| GET | `/api/attempts/{id}` | Workspace JWT; lifecycle, connector identity, recording completeness and control declarations |
+| GET | `/api/attempts/{id}/events?after_seq=&limit=` | Workspace JWT; ordered original protocol records, including native evidence |
+| POST | `/api/v1/attempts/{id}/events` | Runner token scoped to workspace, task and attempt; body `{events: [...]}` |
+
+Event batches contain 1–128 records, at most 4 MiB total; each protocol record is
+limited to 1 MiB. The API authenticates before reading a bounded UTF-8 JSON body.
+User JWTs and legacy per-task tokens cannot write attempt events. Every event
+must identify the authenticated attempt. A task's current-attempt pointer fences
+earlier attempts, including valid unexpired tokens: a late batch gets 409
+`STALE_ATTEMPT` and cannot change either journal or current result.
+
+Sequence numbers start at zero with `run.started`. New records must be contiguous;
+409 `EVENT_GAP` asks the sender to deliver earlier records first. The entire batch
+rolls back on any error. Identical prior records are acknowledged as duplicates;
+a changed payload, reused event ID or reused sequence fails with `EVENT_CONFLICT`.
+The receipt is `{accepted, duplicates, next_seq, acked_through}`. Losing a receipt
+and resending the local unacknowledged journal is safe. A terminal event commits
+only with all its predecessors. Subsequent new records are rejected; exact
+terminal replays do not change finish time.
+
+`completeness.event_delivery=contiguous` certifies delivery order only. Tool,
+native-event and reasoning completeness remain unknown until independently
+established. Transport loss becomes an explicit `lost` attempt with interrupted
+recording; it never invents a successful terminal record. Historical task logs
+remain on their existing read path until journal projections are connected.
+
 ### Tasks (`/api/tasks`)
 
 | Method | Path | Description |

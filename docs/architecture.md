@@ -72,6 +72,15 @@ on the workspace row. Backend builds use the repository root as context to insta
 the independent Python SDK and copy declarations; `.dockerignore` limits that
 context to the application, SDK and harness directories.
 
+SPA-122 adds explicit attempts and an atomic event journal. A task points to its
+current attempt; runner tokens bind workspace/task/attempt, and late prior-attempt
+delivery is rejected under the same task lock used for retries. Event sequences
+are contiguous and immutable after completion, with identical retries acknowledged
+without duplication. Snapshotted declarations/specifications belong to the attempt;
+normalized and versioned native records retain their original payloads. A lost
+transport records interrupted evidence rather than synthesizing success. The
+existing task/result projection is connected in SPA-126.
+
 ### Creating and running a task
 
 ```

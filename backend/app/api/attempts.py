@@ -1,0 +1,146 @@
+"""Attempt reads use workspace JWTs; event writes require a scoped runner token."""
+
+from __future__ import annotations
+
+import json
+import uuid
+
+from evalhive_harness import ProtocolError
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.harnesses import SafeValidationRoute
+from app.auth.dependencies import get_current_workspace
+from app.auth.tokens import verify_runner_token
+from app.database import get_db
+from app.harnesses.attempts import AttemptError, ingest_events
+from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
+from app.models.task import Task
+from app.models.workspace import Workspace
+
+router = APIRouter(tags=["attempts"], route_class=SafeValidationRoute)
+MAX_BATCH_BYTES = 4 * 1024 * 1024
+
+
+def attempt_dict(attempt: ExecutionAttempt) -> dict:
+    return {
+        "id": str(attempt.id),
+        "task_id": str(attempt.task_id),
+        "number": attempt.number,
+        "profile_id": str(attempt.profile_id) if attempt.profile_id else None,
+        "connector_id": attempt.connector_id,
+        "connector_version": attempt.connector_version,
+        "protocol_version": attempt.protocol_version,
+        "status": attempt.status,
+        "next_seq": attempt.next_seq,
+        "result": attempt.result,
+        "completeness": attempt.completeness,
+        "capabilities": attempt.manifest.get("capabilities", {}),
+        "commands": attempt.manifest.get("commands", {}),
+        "created_at": attempt.created_at.isoformat(),
+        "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+        "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
+        "last_heartbeat_at": attempt.last_heartbeat_at.isoformat(),
+    }
+
+
+async def scoped_attempt(db, workspace, attempt_id):
+    attempt = await db.scalar(
+        select(ExecutionAttempt).where(
+            ExecutionAttempt.id == attempt_id, ExecutionAttempt.workspace_id == workspace.id
+        )
+    )
+    if attempt is None:
+        raise HTTPException(404, "Attempt not found")
+    return attempt
+
+
+@router.get("/api/tasks/{task_id}/attempts")
+async def list_attempts(
+    task_id: uuid.UUID,
+    limit: int = Query(50, ge=1, le=200),
+    before_number: int | None = Query(None, ge=1),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    task = await db.scalar(
+        select(Task.id).where(Task.id == task_id, Task.workspace_id == workspace.id)
+    )
+    if task is None:
+        raise HTTPException(404, "Task not found")
+    query = select(ExecutionAttempt).where(
+        ExecutionAttempt.task_id == task_id, ExecutionAttempt.workspace_id == workspace.id
+    )
+    if before_number is not None:
+        query = query.where(ExecutionAttempt.number < before_number)
+    return [
+        attempt_dict(attempt)
+        for attempt in await db.scalars(query.order_by(ExecutionAttempt.number.desc()).limit(limit))
+    ]
+
+
+@router.get("/api/attempts/{attempt_id}")
+async def read_attempt(
+    attempt_id: uuid.UUID,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    return attempt_dict(await scoped_attempt(db, workspace, attempt_id))
+
+
+@router.get("/api/attempts/{attempt_id}/events")
+async def read_events(
+    attempt_id: uuid.UUID,
+    after_seq: int = Query(-1, ge=-1),
+    limit: int = Query(100, ge=1, le=500),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    await scoped_attempt(db, workspace, attempt_id)
+    rows = await db.scalars(
+        select(ExecutionEvent)
+        .where(ExecutionEvent.attempt_id == attempt_id, ExecutionEvent.seq > after_seq)
+        .order_by(ExecutionEvent.seq)
+        .limit(limit)
+    )
+    return [row.payload for row in rows]
+
+
+@router.post("/api/v1/attempts/{attempt_id}/events")
+async def receive_events(
+    attempt_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
+):
+    auth = request.headers.get("Authorization", "")
+    if (
+        not auth.startswith("Bearer ")
+        or await verify_runner_token(db, plain=auth[7:], attempt_id=attempt_id) is None
+    ):
+        raise HTTPException(401, "Invalid or expired runner token")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_BATCH_BYTES:
+            raise HTTPException(413, "Event batch exceeds size limit")
+        body.extend(chunk)
+    try:
+        payload = json.loads(
+            body.decode("utf-8"), parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
+        )
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"events"}
+            or not isinstance(payload["events"], list)
+        ):
+            raise ValueError()
+    except (ValueError, UnicodeError, RecursionError):
+        raise HTTPException(422, "Invalid event batch") from None
+    try:
+        receipt = await ingest_events(db, attempt_id, payload["events"])
+        await db.commit()
+    except AttemptError as exc:
+        await db.rollback()
+        raise HTTPException(exc.status, {"code": exc.code, "message": str(exc)}) from None
+    except ProtocolError as exc:
+        await db.rollback()
+        raise HTTPException(422, {"code": exc.code, "message": str(exc)}) from None
+    return receipt

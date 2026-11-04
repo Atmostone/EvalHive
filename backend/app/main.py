@@ -8,6 +8,7 @@ from app.api.agent_logs import router as agent_logs_router
 from app.api.agent_logs import ws_router as agent_logs_ws_router
 from app.api.agents import router as agents_router
 from app.api.analytics import router as analytics_router
+from app.api.attempts import router as attempts_router
 from app.api.auth import router as auth_router
 from app.api.benchmarks import router as benchmarks_router
 from app.api.chat import router as chat_router
@@ -354,6 +355,7 @@ app.include_router(workspaces_router)
 app.include_router(harnesses_router)
 app.include_router(harness_profiles_router)
 app.include_router(harness_secrets_router)
+app.include_router(attempts_router)
 app.include_router(data_lake_router)
 app.include_router(quality_router)
 app.include_router(registry_router)
