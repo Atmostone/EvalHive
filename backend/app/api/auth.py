@@ -16,7 +16,6 @@ from app.models.template import Template
 from app.models.user import User
 from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceMember
 
-
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
@@ -91,6 +90,10 @@ async def register(body: RegisterIn, db: AsyncSession = Depends(get_db)) -> Toke
     await db.flush()
 
     db.add(WorkspaceMember(user_id=user.id, workspace_id=workspace.id, role="owner"))
+
+    from app.harnesses.profiles import seed_workspace_profile
+
+    await seed_workspace_profile(db, workspace.id)
 
     # Clone providers + models from the default workspace so the new user has
     # a working LLM config out of the box. Templates' model_id is then mapped

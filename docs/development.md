@@ -48,6 +48,14 @@ are documented in [sdk/README.md](../sdk/README.md). They run without Docker,
 database services or model credentials. Run both process suites before changing
 the canonical schema; an incompatible change requires a new protocol version.
 
+Backend image builds now use the repository root as their context:
+`docker build -f backend/Dockerfile .`. Compose already supplies this path. The
+image installs `sdk/python` and includes `harnesses`; direct host development must
+also install `pip install -e sdk/python`. `HARNESS_MANIFEST_DIR` can select another
+administrator-controlled declaration directory. Each connector occupies a
+subdirectory containing `manifest.json`; worker packages/images are installed
+separately, and no Python worker module is imported by catalog discovery.
+
 ```bash
 docker build -t evalhive-agent:latest agent-image/
 ```

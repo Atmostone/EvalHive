@@ -5,6 +5,15 @@
 
 ## Migrations
 
+`ha01` (after `fad4e5f6a7b8`, SPA-121) adds `harness_profiles` and
+`harness_secrets`. Both belong to a workspace and cascade on workspace deletion.
+Profiles store connector/version, JSON settings, credential references, optional
+model FK (`SET NULL`), default flag and timestamps. Names are unique per workspace;
+a partial unique index permits one default. Secret values are stored separately
+and are write-only through the API; serializers expose only ID/name/configured.
+The migration seeds a Pi declaration per existing workspace and its downgrade
+drops only these new tables. Historical tasks and results are not rewritten.
+
 Revision chain:
 
 ```

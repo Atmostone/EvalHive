@@ -4,6 +4,16 @@
 
 ## 2026-11-04
 
+- **SPA-121 — register harnesses without teaching the backend their code.** A
+  server-owned manifest directory supplies the catalog and configuration schemas.
+  Workspace profiles pin connector versions, validate native settings and reject
+  foreign model/credential references. Credentials are write-only and stored
+  separately; validation errors do not echo rejected values. Pi profiles are
+  seeded for new/existing workspaces. Default changes are serialized and protected
+  by a unique index. The backend image now installs the independent SDK from the
+  repository root, with an allowlisted build context. Existing agent execution
+  remains on its transition path until the runner and real connectors land.
+
 - **SPA-120 — define the harness boundary before replacing the agent loop.** One
   JSON Schema governs manifests, RunSpec, command acknowledgements, normalized
   events and terminal results. Independent Python/TypeScript packages validate

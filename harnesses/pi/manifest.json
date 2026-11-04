@@ -1,0 +1,48 @@
+{
+  "protocol_version": "1.0",
+  "id": "pi",
+  "version": "0.1.0",
+  "display_name": "Pi",
+  "entrypoint": [
+    "node",
+    "/opt/connector/dist/index.js"
+  ],
+  "image": "evalhive-pi:1.5.0",
+  "requirements": {
+    "node": ">=22.19.0",
+    "harness_version": "1.5.0"
+  },
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "capabilities": {
+    "abort": "native",
+    "feedback": "native"
+  },
+  "commands": {
+    "abort": {
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    },
+    "feedback": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

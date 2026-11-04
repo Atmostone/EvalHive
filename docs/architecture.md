@@ -63,6 +63,15 @@ backend and LLM libraries. This first change supplies the contract and external
 fake workers; catalog, execution attempts and runtime integration follow in
 SPA-121–SPA-124. Existing production agent execution is unchanged at this stage.
 
+SPA-121 adds the server-installed manifest catalog (`HARNESS_MANIFEST_DIR`) and
+workspace profiles. Catalog loading validates JSON/schema/protocol without
+importing worker code. Profile CRUD pins connector versions and validates settings
+and workspace references; credentials are stored separately and returned only by
+the runner's private resolver. Default selection and reference deletion serialize
+on the workspace row. Backend builds use the repository root as context to install
+the independent Python SDK and copy declarations; `.dockerignore` limits that
+context to the application, SDK and harness directories.
+
 ### Creating and running a task
 
 ```

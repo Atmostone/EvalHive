@@ -55,6 +55,40 @@ Token: HS256, ttl=24h, payload `{sub: user_id, ws: default_workspace_id, iat, ex
 
 ## Endpoint groups
 
+### Harness catalog, profiles and credentials (SPA-121)
+
+All routes use the authenticated workspace. Members may read declarations and
+profiles; writes and saved-profile validation require owner/admin. Manifests are
+installed on the server under `HARNESS_MANIFEST_DIR/*/manifest.json`; no endpoint
+installs executable code or imports a connector module.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/api/harnesses` | Registered manifests, settings schemas and capabilities; 503 for an invalid catalog |
+| GET/POST | `/api/harness-profiles` | List/create workspace profiles |
+| GET/PATCH/DELETE | `/api/harness-profiles/{id}` | Read, update or delete a profile |
+| POST | `/api/harness-profiles/{id}/validate` | Validate pinned connector version, settings, model and credential references; no harness/model execution |
+| GET/POST | `/api/harness-secrets` | List credential metadata or create a write-only value |
+| PUT/DELETE | `/api/harness-secrets/{id}` | Replace a credential or delete an unreferenced one |
+
+A profile contains `name`, `connector_id`, `connector_version`, `config`,
+`secret_refs` (slot → credential UUID), optional workspace `model_id`, and
+`is_default`. Creation pins the installed version when omitted. Updates never
+silently select another connector/version. Configuration is checked against the
+connector's JSON Schema; unsupported fields, inline credentials and foreign
+references fail before execution. Credential values are accepted separately and
+never returned, including validation errors. Storage follows the existing private
+provider credential store; public configurations contain references only.
+
+New workspaces receive a Pi profile. Migration `ha01` seeds existing workspaces;
+startup repairs workspaces with no profiles. Exactly one profile is default;
+select a replacement before deleting or clearing the current default. Concurrent
+changes serialize on the workspace row and a partial unique index enforces the
+invariant. Referenced credentials cannot be deleted. A missing/pinned connector
+version fails validation explicitly. Catalog registration does not assert that
+its image is built or that a model is connected; runtime preflight verifies those
+before a real attempt. This change alone does not switch legacy task execution.
+
 ### Tasks (`/api/tasks`)
 
 | Method | Path | Description |

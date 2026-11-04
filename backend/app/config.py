@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,6 +24,8 @@ class Settings(BaseSettings):
     # Paths
     data_dir: str = "/data"  # inside api container
     host_data_dir: str = "./data"  # host path for agent container volume mounts
+    # Administrator-installed manifests; loading never imports connector code.
+    harness_manifest_dir: str = str(Path(__file__).resolve().parents[2] / "harnesses")
     # Absolute HOST path of the toolathlon_gym clone, used by the Experiment
     # Runner to bind-mount the gym into preprocess/eval containers (docker-py
     # talks to the host daemon). Empty unless running Toolathlon experiments.
