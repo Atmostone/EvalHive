@@ -154,23 +154,18 @@ async def test_diff_404_when_snapshot_missing(auth_client: AsyncClient):
     assert r.status_code == 404
 
 
-async def test_replay_links_task_and_pins_template(auth_client: AsyncClient):
+async def test_historical_snapshot_remains_readable_but_legacy_replay_is_explicitly_unavailable(auth_client: AsyncClient):
     ws = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     template_id = await _make_template(ws)
     tid = await _seed_task(ws, with_spawn=True, template_id=template_id)
     await auth_client.post(f"/api/quality/records/{tid}/capture-reproducibility")
 
     r = await auth_client.post(f"/api/quality/records/{tid}/replay")
-    assert r.status_code == 200, r.text
-    out = r.json()
-    assert out["source_task_id"] == str(tid)
-    assert out["run_config"]["template_id"] == str(template_id)
-
-    async with database.async_session() as s:
-        clone = await s.get(Task, uuid.UUID(out["replay_task_id"]))
-    assert clone is not None
-    assert str(clone.replay_of_task_id) == str(tid)
-    assert clone.template_id == template_id
+    assert r.status_code == 409, r.text
+    assert "new Pi run" in r.text
+    historical = await auth_client.get(f"/api/quality/records/{tid}/reproducibility")
+    assert historical.status_code == 200
+    assert historical.json()["reproducibility"]["determinism"]["template_id"] == str(template_id)
 
 
 async def test_replay_404_without_snapshot(auth_client: AsyncClient):

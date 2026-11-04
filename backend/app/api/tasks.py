@@ -45,6 +45,12 @@ class TaskUpdate(BaseModel):
     execution_mode: Literal["direct", "orchestrated"] | None = None
 
 
+class TaskRerun(BaseModel):
+    reuse_conditions: bool = True
+    harness_profile_id: uuid.UUID | None = None
+    execution_mode: Literal["direct", "orchestrated"] | None = None
+
+
 class TaskOut(BaseModel):
     id: str
     parent_id: str | None
@@ -80,6 +86,7 @@ def task_to_dict(task: Task) -> dict:
     return {
         "id": str(task.id),
         "parent_id": str(task.parent_id) if task.parent_id else None,
+        "replay_of_task_id": str(task.replay_of_task_id) if task.replay_of_task_id else None,
         "title": task.title,
         # Why this run stopped measuring the model (SPA-87). It was recorded from
         # the start and readable only in SQL: the experiment surfaces carried it,
@@ -153,6 +160,13 @@ async def _require_inactive(db, task):
         raise HTTPException(409, "Stop the current attempt before changing execution")
 
 
+async def _require_unarchived(db, task):
+    from app.models.quality_record import QualityRecord
+
+    if await db.scalar(select(QualityRecord.id).where(QualityRecord.task_id == task.id)):
+        raise HTTPException(409, "Archived execution is immutable; create a linked rerun")
+
+
 @router.get("")
 async def list_tasks(
     status: str | None = None,
@@ -215,6 +229,9 @@ async def get_task(
     task = await _get_scoped_task(task_id, workspace, db)
 
     result = task_to_dict(task)
+    from app.models.quality_record import QualityRecord
+
+    result["results_archived"] = bool(await db.scalar(select(QualityRecord.id).where(QualityRecord.task_id == task.id)))
 
     # Include subtasks (also workspace-scoped)
     sub_query = select(Task).where(Task.parent_id == task.id, Task.workspace_id == workspace.id)
@@ -239,12 +256,24 @@ async def update_task(
     task = await _get_scoped_task(task_id, workspace, db, lock=True)
 
     selected = body.model_dump(exclude_unset=True)
+    if any(key in selected for key in ("title", "description", "reference_answer", "canonical_trajectory", "capability_spec",
+                                      "template_id", "harness_profile_id", "execution_mode")) or body.status in _REQUEUE_STATUSES:
+        await _require_unarchived(db, task)
     selection = {key: selected[key] for key in ("template_id", "harness_profile_id", "execution_mode") if key in selected}
     if selection or (body.status is not None and body.status != task.status):
         await _require_inactive(db, task)
     await _selection(db, workspace, selection)
     for key, value in selection.items():
         setattr(task, key, value)
+    if (task.run_config or {}).get("harness_snapshot"):
+        rc = dict(task.run_config)
+        if "harness_profile_id" in selection:
+            rc.pop("harness_snapshot", None)
+            rc["new_harness_conditions"] = True
+        if "title" in selected or "description" in selected:
+            rc["replay_input_override"] = True
+        rc["replay_overrides"] = sorted(set(rc.get("replay_overrides", [])) | set(selection))
+        task.run_config = rc
 
     old_status = task.status
     if body.title is not None:
@@ -313,6 +342,7 @@ async def start_task(
 
     task = await _get_scoped_task(task_id, workspace, db, lock=True)
     await _require_inactive(db, task)
+    await _require_unarchived(db, task)
     if task.status not in {"backlog", "ready", "failed", "done", "awaiting_approval"}:
         raise HTTPException(409, "Task cannot be started in its current state")
     try:
@@ -329,6 +359,50 @@ async def start_task(
     await db.refresh(task)
     await log_event(db, "task_status_changed", "user", {"new_status": "ready"}, task_id=task.id, workspace_id=workspace.id)
     return task_to_dict(task)
+
+
+@router.post("/{task_id}/rerun", status_code=201, dependencies=[Depends(require_role("owner", "admin", "member"))])
+async def rerun_task(
+    task_id: str,
+    body: TaskRerun,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.harnesses.launch import resolve_launch
+    from app.models.execution_attempt import ExecutionAttempt
+    from app.orchestrator.rerun import clone_task_for_rerun
+
+    source = await _get_scoped_task(task_id, workspace, db, lock=True)
+    if body.reuse_conditions and body.harness_profile_id:
+        raise HTTPException(422, "Choose new conditions when selecting a harness profile")
+    await _require_inactive(db, source)
+    if source.status not in {"done", "failed", "awaiting_approval"}:
+        raise HTTPException(409, "Only a settled task can be rerun")
+    await _selection(db, workspace, body.model_dump())
+    config = {}
+    if body.reuse_conditions:
+        attempt = await db.get(ExecutionAttempt, source.current_attempt_id) if source.current_attempt_id else None
+        if attempt is None or attempt.connector_id.startswith("legacy"):
+            raise HTTPException(409, "Historical harness replay is unavailable; create a new run with current settings")
+    else:
+        config["new_harness_conditions"] = True
+    if body.harness_profile_id:
+        config["harness_profile_id"] = str(body.harness_profile_id)
+    if body.execution_mode:
+        config["execution_mode"] = body.execution_mode
+    try:
+        clone = await clone_task_for_rerun(db, source, run_config=config,
+            status="backlog", title_suffix=" (rerun)", commit=False)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    if body.reuse_conditions:
+        try:
+            await resolve_launch(db, clone)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from None
+    await db.commit()
+    await db.refresh(clone)
+    return task_to_dict(clone)
 
 
 @router.patch("/{task_id}/approve", dependencies=[Depends(require_role("owner", "admin", "member"))])
@@ -356,11 +430,31 @@ async def reject_task(
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    task = await _get_scoped_task(task_id, workspace, db)
+    task = await _get_scoped_task(task_id, workspace, db, lock=True)
     if task.status != TaskStatus.AWAITING_APPROVAL.value:
         raise HTTPException(status_code=400, detail="Task not in awaiting_approval status")
 
-    task.user_feedback = body.get("feedback", "")
+    feedback = body.get("feedback", "")
+    if not isinstance(feedback, str) or len(feedback) > 65536:
+        raise HTTPException(422, "Feedback must be text within the supported size limit")
+    from app.models.quality_record import QualityRecord
+
+    record = await db.scalar(select(QualityRecord).where(QualityRecord.task_id == task.id))
+    if record is not None:
+        from app.orchestrator.rerun import clone_task_for_rerun
+
+        clone = await clone_task_for_rerun(db, task,
+            run_config={"replay_input_override": True, "new_harness_conditions": not bool(task.current_attempt_id)},
+            status="ready", max_retries=task.max_retries, commit=False)
+        clone.user_feedback = feedback
+        task.user_feedback, task.status = feedback, TaskStatus.FAILED.value
+        record.final_status = task.status
+        await db.commit()
+        await db.refresh(clone)
+        await log_event(db, "user_rejection", "user", {"feedback": feedback, "followup_task_id": str(clone.id)},
+                        task_id=task.id, workspace_id=workspace.id)
+        return task_to_dict(clone)
+    task.user_feedback = feedback
     task.status = TaskStatus.READY.value
     task.agent_container_id = None
     await db.commit()

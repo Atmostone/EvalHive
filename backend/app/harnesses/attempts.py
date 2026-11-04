@@ -15,6 +15,7 @@ from app.auth.tokens import _utcnow_naive
 from app.harnesses.profiles import _reject_inline_secrets
 from app.models.execution_attempt import ExecutionAttempt, ExecutionCommand, ExecutionEvent
 from app.models.harness_profile import HarnessProfile
+from app.models.quality_record import QualityRecord
 from app.models.task import Task
 
 TERMINAL = frozenset({"success", "failed", "cancelled", "lost"})
@@ -25,6 +26,33 @@ class AttemptError(ValueError):
     def __init__(self, code: str, message: str, status: int = 409):
         super().__init__(message)
         self.code, self.status = code, status
+
+
+async def prepare_configuration(db, attempt_id, config):
+    """Freeze validated effective settings once, before the worker starts."""
+    attempt = await locked_attempt(db, attempt_id)
+    if attempt.prepared_at is not None:
+        if attempt.run_spec["config"] != config:
+            raise AttemptError("CONFIGURATION_CONFLICT", "Applied configuration is immutable")
+        return {"accepted": True, "duplicate": True}
+    if attempt.status not in {"created", "stopping"} or attempt.next_seq != 0:
+        raise AttemptError("ALREADY_STARTED", "Configuration must be saved before execution")
+    spec = deepcopy(attempt.run_spec)
+    spec["metadata"] = {
+        **spec.get("metadata", {}), "requested_config": deepcopy(spec["config"]),
+        "configuration_state": "prepared",
+    }
+    spec["config"] = deepcopy(config)
+    validate_run(attempt.manifest, spec)
+    _reject_inline_secrets(config, attempt.manifest["config_schema"])
+    attempt.run_spec = spec
+    attempt.prepared_at = _utcnow_naive()
+    from app.harnesses.provenance import condition_fingerprints
+    from app.orchestrator.engine import _record_run_condition
+
+    task = await db.get(Task, attempt.task_id)
+    await _record_run_condition(db, task, *condition_fingerprints(attempt))
+    return {"accepted": True, "duplicate": False}
 
 
 async def acknowledge_command(db, attempt_id, command_id, body):
@@ -116,6 +144,8 @@ async def create_attempt(
         )
         if task is None:
             raise AttemptError("NOT_FOUND", "Task not found", 404)
+        if await db.scalar(select(QualityRecord.id).where(QualityRecord.task_id == task.id)):
+            raise AttemptError("RESULTS_ARCHIVED", "Archived results are immutable; create a linked rerun task")
         if profile_id is not None:
             profile = await db.scalar(
                 select(HarnessProfile).where(

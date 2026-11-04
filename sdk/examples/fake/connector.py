@@ -11,6 +11,9 @@ from evalhive_harness.protocol import ProtocolError
 class FakeConnector(Connector):
     manifest = json.loads(Path(__file__).with_name("manifest.json").read_text())
 
+    async def validate(self, spec):
+        return {"accepted": True, "effective_config": {"prefix": "", "wait": False, "fail": False, **spec["config"]}}
+
     async def run(self, context: RunContext) -> dict:
         config = context.spec["config"]
         await context.emit(

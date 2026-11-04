@@ -232,6 +232,29 @@ An unsupported interaction fails in the runner rather than waiting indefinitely.
 File downloads send the caller's authorization/workspace headers and retain the
 environment's paths; no connector-specific output directory is imposed.
 
+SPA-132 freezes the connector's validated effective settings before `start`.
+Scoped, idempotent configuration receipts retain the requested settings separately;
+changed receipts are rejected. Applied conditions, immutable image identity and
+connector/native versions drive attempt fingerprints and schema-2 reproducibility
+snapshots. Matrix configurations accept a profile and native setting overrides.
+An old experiment cell cannot receive a late condition fingerprint from a
+superseded task. Trace and Data Lake readers scope SDK activity to its attempt;
+unscoped historical orchestration is retained in activity history separately.
+
+New quality records identify their execution attempt. Archiving and attempt
+creation serialize on the task row. Once a record exists, a linked rerun creates a
+new task instead of replacing its measured evidence; a post-archive rejection
+creates a linked revision carrying feedback. Historical records remain readable.
+Recorded replay preserves public applied settings and checks connector declaration,
+image, model connection and MCP resources. Missing legacy execution, unknown
+settings/images and changed dependencies produce explicit unavailability. A new
+run with current settings is a separate condition, never an exact legacy replay.
+Remote model revisions, credential versions and external system state remain gaps.
+
+Bundles include harness-aware snapshot coverage. With traces, SDK attempt headers
+and ordered normalized/native journals accompany legacy log archives, with sequence
+checks, expected counts and digests. Corrupt or missing journals fail verification.
+
 ### Creating and running a task
 
 ```

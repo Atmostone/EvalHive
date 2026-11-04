@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { benchmarksApi, experimentsApi, providersApi, registryApi, templatesApi } from '@/api/client'
+import { benchmarksApi, experimentsApi, harnessesApi, providersApi, registryApi, templatesApi } from '@/api/client'
 import type { ExperimentCreateBody } from '@/api/client'
 import type { Experiment, ExperimentStatus, LLMModel, RegistryEntry } from '@/types'
 import { FlaskConical, Plus, Trash2, X } from 'lucide-react'
@@ -35,12 +35,13 @@ interface ConfigDraft {
   seed: string
   soul_md: string
   memory_mode: string
+  harness_profile_id: string
   tools_enable: string[]
   tools_disable: string[]
 }
 
 function emptyConfig(): ConfigDraft {
-  return { label: '', orchestrator: false, template_id: '', model_id: '', temperature: '', seed: '', soul_md: '', memory_mode: '', tools_enable: [], tools_disable: [] }
+  return { label: '', orchestrator: false, template_id: '', model_id: '', temperature: '', seed: '', soul_md: '', memory_mode: '', harness_profile_id: '', tools_enable: [], tools_disable: [] }
 }
 
 function configToPayload(c: ConfigDraft): Record<string, unknown> {
@@ -52,6 +53,7 @@ function configToPayload(c: ConfigDraft): Record<string, unknown> {
   if (c.seed !== '') out.seed = Number(c.seed)
   if (c.soul_md.trim()) out.soul_md = c.soul_md
   if (c.memory_mode) out.memory_mode = c.memory_mode
+  if (c.harness_profile_id) out.harness_profile_id = c.harness_profile_id
   if (!c.orchestrator && (c.tools_enable.length || c.tools_disable.length)) {
     const ov: Record<string, string[]> = {}
     if (c.tools_enable.length) ov.enable = c.tools_enable
@@ -116,6 +118,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
   const [submitError, setSubmitError] = useState('')
 
   const { data: templates = [] } = useQuery({ queryKey: ['templates'], queryFn: templatesApi.list })
+  const { data: harnessProfiles = [] } = useQuery({ queryKey: ['harness-profiles'], queryFn: harnessesApi.profiles })
   const { data: models = [] } = useQuery({
     queryKey: ['all-models'],
     queryFn: async () => {
@@ -432,10 +435,16 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
                   </select>
                   <select value={c.model_id} onChange={(e) => setConfig(idx, { model_id: e.target.value })}
                     className="px-2 py-1.5 border rounded text-sm bg-white">
-                    <option value="">model: template default</option>
+                    <option value="">model: profile / template default</option>
                     {models.map((m) => <option key={m.id} value={m.id}>{m.display_name} ({m.api_name})</option>)}
                   </select>
                 </div>
+                <select aria-label="Configuration harness profile" value={c.harness_profile_id}
+                  onChange={event => setConfig(idx, { harness_profile_id: event.target.value })}
+                  className="w-full px-2 py-1.5 border rounded text-sm bg-white">
+                  <option value="">harness: role / workspace default</option>
+                  {harnessProfiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.connector_id}</option>)}
+                </select>
                 <div className="grid grid-cols-3 gap-2">
                   <input type="number" step="0.1" min={0} max={2} placeholder="temperature" value={c.temperature}
                     onChange={(e) => setConfig(idx, { temperature: e.target.value })}

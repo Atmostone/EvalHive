@@ -64,6 +64,7 @@ class ExecutionAttempt(Base):
     container_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     started_at: Mapped[datetime | None]
+    prepared_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     last_heartbeat_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

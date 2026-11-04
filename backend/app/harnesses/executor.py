@@ -151,6 +151,9 @@ async def launch_attempt(
     environment_id = run_spec.get("environment", {}).get("id", "workspace")
     image_args = (environment_id,) if environment_id in manifest.get("requirements", {}).get("environment_images", {}) else ()
     image_id = await asyncio.to_thread(runtime.resolve_image, manifest["id"], manifest["version"], *image_args)
+    if expected := run_spec.get("metadata", {}).get("expected_image_id"):
+        if image_id != expected:
+            raise AttemptError("REPLAY_IMAGE_CHANGED", "Recorded image is unavailable; create a run with new conditions", 422)
     active = await asyncio.to_thread(runtime.list_active)
     # Serialize capacity across API replicas as well as the orchestrator.
     await db.execute(text("SELECT pg_advisory_xact_lock(8412301)"))

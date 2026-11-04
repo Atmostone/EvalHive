@@ -4,6 +4,16 @@ Format: `YYYY-MM-DD — change — plan section / PR reference`.
 
 ## 2026-11-04
 
+- **SPA-132 — preserve the applied harness conditions and archive source.** SDK
+  validation reports effective native settings; the runner saves an idempotent
+  receipt before execution. Attempts, snapshots, matrix fingerprints and traced
+  bundles carry connector/version/image/settings. Trace readers exclude other
+  attempts, and superseded experiment tasks cannot overwrite a cell's conditions.
+  Archived measurements require linked reruns; recorded replay rejects unavailable
+  legacy runtimes or changed dependencies. New quality records name their source
+  attempt, while historical rows remain unchanged. Migrations `ha06` and `ha07`
+  add preparation time and source identity.
+
 - **SPA-131 — run direct work through a selected harness profile.** Work accepts
   an optional role and explicit profile, shows live attempt control/receipts and
   schema-declared interactions, and sends feedback or cancellation to that attempt.

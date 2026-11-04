@@ -13,6 +13,7 @@ export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent'
 export interface Task {
   id: string
   parent_id?: string | null
+  replay_of_task_id?: string | null
   title: string
   description?: string | null
   status: TaskStatus
@@ -24,6 +25,7 @@ export interface Task {
   harness_profile_id?: string | null
   execution_mode?: 'direct' | 'orchestrated' | null
   current_attempt_id?: string | null
+  results_archived?: boolean
   agent_container_id?: string | null
   result_summary?: string | null
   reference_answer?: string | null
@@ -1561,6 +1563,8 @@ export interface ExperimentConfig {
   soul_md?: string | null
   tools_override?: { enable?: string[]; disable?: string[] } | null
   memory_mode?: 'off' | 'flat' | 'structured' | null
+  harness_profile_id?: string | null
+  harness_config?: Record<string, unknown> | null
   /** SPA-84: set when the configuration was retired. Its cells keep their
    *  lineage but leave the matrix, so it must be shown as retired rather than
    *  drawn as an empty column. */
@@ -1575,6 +1579,9 @@ export interface ExperimentConfig {
     model_display_name?: string
     provider_name?: string
     agent_images?: Record<string, string | null>
+    harness?: { profile_id: string; connector_id: string; connector_version: string;
+      protocol_version: string | null; image: string | null; image_id: string | null;
+      requested_config: Record<string, unknown>; available: boolean; config_state: string }
   } | null
 }
 

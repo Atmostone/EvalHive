@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from evalhive_harness import ProtocolError, error_response, response, validate_run
+from evalhive_harness import ProtocolError, error_response, response, validate, validate_run
 
 from .api import RetryableDeliveryError
 from .redaction import Redactor
@@ -280,9 +280,27 @@ class AttemptRunner:
                         "MANIFEST_MISMATCH",
                         "Worker does not match the registered connector contract",
                     )
-            await self.connector.request(
+            validation = await self.connector.request(
                 "validate", {"run": self.spec}, timeout=self.policy.command_seconds
             )
+            validate("validation_result", validation)
+            applied = validation["effective_config"]
+            validate_run(self.manifest, {**self.spec, "config": applied})
+            if self.redactor.value(applied) != applied:
+                raise ProtocolError("PRIVATE_CONFIGURATION", "Applied configuration contains private values")
+            try:
+                async with asyncio.timeout(self.policy.command_seconds):
+                    while not self._cancelled:
+                        try:
+                            receipt = await self.api.prepare(applied)
+                            if receipt.get("accepted") is not True:
+                                raise ProtocolError("CONFIGURATION_REJECTED", "Applied configuration was not saved")
+                            self.spec["config"] = applied
+                            break
+                        except RetryableDeliveryError:
+                            await asyncio.sleep(self.policy.retry_seconds)
+            except TimeoutError:
+                raise ProtocolError("CONFIGURATION_UNAVAILABLE", "Applied configuration could not be saved before execution") from None
             if self._cancelled:
                 raise ProtocolError(
                     "CANCELLED_BEFORE_START", "Run cancelled before harness execution"

@@ -4,6 +4,9 @@ import { serveStdio, ProtocolError } from '@evalhive/harness-sdk';
 const manifest = JSON.parse(readFileSync(new URL('./manifest.json', import.meta.url), 'utf8'));
 await serveStdio({
   manifest,
+  async validate(spec) {
+    return {accepted: true, effective_config: {prefix: '', wait: false, fail: false, ...spec.config}};
+  },
   async run(context) {
     const config = context.spec.config;
     await context.emit('message.end', {message_id: 'answer', role: 'assistant', content: (config.prefix ?? '') + 'started'});

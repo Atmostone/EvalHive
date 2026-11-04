@@ -133,6 +133,9 @@ export const tasksApi = {
   update: (id: string, data: Partial<Task>) =>
     request<Task>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   start: (id: string) => request<Task>(`/tasks/${id}/start`, { method: 'POST' }),
+  rerun: (id: string) => request<Task>(`/tasks/${id}/rerun`, {
+    method: 'POST', body: JSON.stringify({ reuse_conditions: false, execution_mode: 'direct' }),
+  }),
   approve: (id: string) =>
     request<Task>(`/tasks/${id}/approve`, { method: 'PATCH' }),
   reject: (id: string, feedback: string) =>

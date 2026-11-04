@@ -89,10 +89,14 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
     mutationFn: () => tasksApi.approve(task.id),
     onSuccess: invalidate,
   })
+  const rerunMutation = useMutation({
+    mutationFn: () => tasksApi.rerun(task.id),
+    onSuccess: () => { invalidate(); onClose() },
+  })
 
   const rejectMutation = useMutation({
     mutationFn: () => tasksApi.reject(task.id, rejectFeedback),
-    onSuccess: () => { setShowReject(false); setRejectFeedback(''); invalidate() },
+    onSuccess: result => { setShowReject(false); setRejectFeedback(''); invalidate(); if (result.id !== task.id) onClose() },
   })
 
   const deleteMutation = useMutation({
@@ -330,13 +334,13 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         )}
 
         {['backlog', 'failed', 'done', 'awaiting_approval'].includes(t.status) && <>
-          <TaskExecutionFields value={t} onChange={selection => selectionMutation.mutate(selection)} disabled={selectionMutation.isPending} />
+          <TaskExecutionFields value={t} onChange={selection => selectionMutation.mutate(selection)} disabled={selectionMutation.isPending || t.results_archived} />
           {selectionMutation.error && <p role="alert" className="text-sm text-red-600">{selectionMutation.error.message}</p>}
         </>}
         <AttemptControls taskId={t.id} />
 
         {/* Start uses the same preflight for direct and orchestrated work. */}
-        {['backlog', 'failed'].includes(t.status) && (
+        {['backlog', 'failed'].includes(t.status) && !t.results_archived && (
           <div className="pt-2 border-t">
             <button
               onClick={() => startMutation.mutate()}
@@ -348,10 +352,17 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             {startMutation.error && <p role="alert" className="text-sm text-red-600 mt-2">{startMutation.error.message}</p>}
           </div>
         )}
+        {['done', 'failed', 'awaiting_approval'].includes(t.status) && <div className="space-y-2">
+          <button type="button" className="text-sm text-blue-600 disabled:opacity-50" disabled={rerunMutation.isPending}
+            onClick={() => rerunMutation.mutate()}>Create new run with current settings</button>
+          <p className="text-xs text-gray-500">Creates a linked draft. Select its profile and start it separately.</p>
+          {rerunMutation.error && <p role="alert" className="text-sm text-red-600">{rerunMutation.error.message}</p>}
+        </div>}
 
         {/* Approve / Reject buttons */}
         {t.status === 'awaiting_approval' && (
           <div className="space-y-2 pt-2 border-t">
+            {rejectMutation.error && <p role="alert" className="text-sm text-red-600">{rejectMutation.error.message}</p>}
             <div className="flex gap-2">
               <button
                 onClick={() => approveMutation.mutate()}

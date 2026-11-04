@@ -21,6 +21,7 @@ from app.harnesses.attempts import (
     acknowledge_command,
     ingest_events,
     locked_attempt,
+    prepare_configuration,
     queue_command,
 )
 from app.models.execution_attempt import ExecutionAttempt, ExecutionCommand, ExecutionEvent
@@ -82,6 +83,7 @@ def attempt_dict(attempt: ExecutionAttempt) -> dict:
         "commands": attempt.manifest.get("commands", {}),
         "created_at": attempt.created_at.isoformat(),
         "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+        "prepared_at": attempt.prepared_at.isoformat() if attempt.prepared_at else None,
         "finished_at": attempt.finished_at.isoformat() if attempt.finished_at else None,
         "last_heartbeat_at": attempt.last_heartbeat_at.isoformat(),
     }
@@ -151,6 +153,28 @@ async def read_events(
         query = query.where(ExecutionEvent.payload["event"].astext.in_(event_type))
     rows = await db.scalars(query)
     return [row.payload for row in rows]
+
+
+@router.post("/api/v1/attempts/{attempt_id}/configuration")
+async def save_applied_configuration(
+    attempt_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
+):
+    from app.harnesses.profiles import ProfileError
+
+    await require_runner(request, db, attempt_id)
+    body = await bounded_json(request)
+    if not isinstance(body, dict) or set(body) != {"config"} or not isinstance(body["config"], dict):
+        raise HTTPException(422, "Invalid applied configuration")
+    try:
+        receipt = await prepare_configuration(db, attempt_id, body["config"])
+        await db.commit()
+        return receipt
+    except (AttemptError, ProtocolError) as error:
+        await db.rollback()
+        raise attempt_error(error) from None
+    except ProfileError:
+        await db.rollback()
+        raise HTTPException(422, "Applied configuration contains inline credentials") from None
 
 
 @router.post("/api/v1/attempts/{attempt_id}/events")

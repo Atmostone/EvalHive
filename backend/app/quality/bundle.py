@@ -46,7 +46,7 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import inspect as sa_inspect
@@ -93,6 +93,7 @@ ANNOTATIONS_NAME = "annotations.jsonl"
 EXPECTED_NAME = "expected.json"
 RECORD_BLOB_DIR = "blobs/records"
 LOG_BLOB_DIR = "blobs/logs"
+ATTEMPT_BLOB_DIR = "blobs/attempts"
 
 # What this bundle promises, in the words it promises it. Carried in the manifest
 # rather than left to a README, so it travels with the data.
@@ -319,7 +320,7 @@ def diff_paths(expected: Any, actual: Any, *, prefix: str = "", limit: int = 40)
             if len(a) != len(b):
                 out.append(f"{path}: length {len(a)} → {len(b)}")
                 return
-            for i, (x, y) in enumerate(zip(a, b)):
+            for i, (x, y) in enumerate(zip(a, b, strict=True)):
                 walk(x, y, f"{path}[{i}]")
         elif a != b:
             out.append(f"{path}: {a!r} → {b!r}")
@@ -536,12 +537,21 @@ def coverage_summary(records) -> dict:
     captured: dict[str, int] = {}
     missing: dict[str, int] = {}
     notes: dict[str, str] = {}
+    harnesses: dict[str, int] = {}
+    pinned_images = 0
+    pinned_endpoints = 0
     for rec in records:
         n_records += 1
         snap = getattr(rec, "reproducibility", None)
         if not isinstance(snap, dict):
             continue
         manifest = snap.get("manifest") or {}
+        harness = (snap.get("content") or {}).get("harness") or {}
+        if harness.get("connector_id"):
+            identity = f"{harness['connector_id']}@{harness.get('connector_version', 'unknown')}"
+            harnesses[identity] = harnesses.get(identity, 0) + 1
+        pinned_images += bool(harness.get("image_id"))
+        pinned_endpoints += bool((harness.get("model") or {}).get("endpoint"))
         n_with_snapshot += 1
         for field in manifest.get("captured") or []:
             captured[field] = captured.get(field, 0) + 1
@@ -549,9 +559,15 @@ def coverage_summary(records) -> dict:
             missing[field] = missing.get(field, 0) + 1
         for field, note in (manifest.get("notes") or {}).items():
             notes.setdefault(field, note)
+    not_pinned = list(REPLAY_NOT_PINNED)
+    if n_records and pinned_images == n_records:
+        not_pinned.remove("agent_image_digests")
+    if n_records and pinned_endpoints == n_records:
+        not_pinned.remove("provider_endpoints")
     return {
         "replay_kind": REPLAY_KIND,
-        "not_pinned": list(REPLAY_NOT_PINNED),
+        "not_pinned": not_pinned,
+        "harnesses": dict(sorted(harnesses.items())),
         "n_records": n_records,
         "n_with_snapshot": n_with_snapshot,
         # A record with no snapshot is stated, not omitted: «no snapshot» and
@@ -587,7 +603,7 @@ async def build_bundle(
     disagree. A bundle that does not already reproduce is not a bundle, it is a
     claim, so it is never written."""
     import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
 
@@ -645,6 +661,8 @@ async def build_bundle(
             ).scalars().all()
         }
     blobs = _fetch_blobs(records, tasks_by_id, with_traces=with_traces)
+    if with_traces:
+        blobs.update(await _fetch_attempt_journals(db, records))
 
     exp_row = dump_row(exp)
     runs_text = dump_rows(runs)
@@ -695,10 +713,11 @@ async def build_bundle(
         "full_report_sha256": sha256_of(off_cmp),
         "report_schema_version": REPORT_SCHEMA_VERSION,
     }
+    coverage = coverage_summary(off_records)
     manifest = {
         "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
         "report_schema_version": REPORT_SCHEMA_VERSION,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "platform": platform_identity(),
         "experiment": {
             "id": str(exp.id),
@@ -719,6 +738,8 @@ async def build_bundle(
             # that shipped without its records from one whose records had none.
             "expected_record_blobs": sum(1 for r in off_records if r.record_s3_path),
             "log_blobs": sum(1 for k in blobs if k.startswith(LOG_BLOB_DIR)),
+            "attempt_journals": sum(1 for k in blobs if k.startswith(ATTEMPT_BLOB_DIR)),
+            "expected_attempt_journals": sum(1 for r in off_records if r.execution_attempt_id) if with_traces else 0,
         },
         # sha256 per blob — the manifest is the integrity index, so losing or
         # corrupting an archive is caught rather than assumed away.
@@ -731,7 +752,7 @@ async def build_bundle(
             # "this experiment had no traces".
             "logs": bool(with_traces),
             "logs_note": (
-                "agent log archives are the bulk of the object store and are not "
+                "legacy logs and SDK attempt journals are optional evidence and are not "
                 "needed to recompute any number; export with --with-traces to "
                 "include them (CLI only — too large to stream over HTTP)"
             ),
@@ -750,10 +771,10 @@ async def build_bundle(
         },
         "replay": {
             "kind": REPLAY_KIND,
-            "not_pinned": list(REPLAY_NOT_PINNED),
+            "not_pinned": coverage["not_pinned"],
             "derivation": DERIVATION,
         },
-        "coverage": coverage_summary(off_records),
+        "coverage": coverage,
     }
 
     files = {
@@ -808,6 +829,42 @@ def _fetch_blobs(records, tasks_by_id, *, with_traces: bool) -> dict[str, bytes]
     return blobs
 
 
+async def _fetch_attempt_journals(db, records):
+    from sqlalchemy import select
+
+    from app.harnesses.attempts import TERMINAL
+    from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
+
+    blobs, total = {}, 0
+    for record in records:
+        if record.execution_attempt_id is None:
+            continue
+        attempt = await db.get(ExecutionAttempt, record.execution_attempt_id)
+        if attempt is None or attempt.task_id != record.task_id or attempt.workspace_id != record.workspace_id or attempt.status not in TERMINAL:
+            raise BundleIncomplete("Archived record has no matching terminal execution attempt")
+        lines = [stable_json({"type": "attempt", "attempt": dump_row(attempt)}).encode() + b"\n"]
+        stream = await db.stream_scalars(select(ExecutionEvent).where(
+            ExecutionEvent.attempt_id == attempt.id).order_by(ExecutionEvent.seq).execution_options(yield_per=100))
+        count, terminal = 0, None
+        try:
+            async for event in stream:
+                if event.seq != count:
+                    raise BundleIncomplete("Attempt journal contains an event sequence gap")
+                line = stable_json({"type": "event", "payload": event.payload}).encode() + b"\n"
+                total += len(line)
+                if total > 256 * 1024 * 1024:
+                    raise BundleIncomplete("Attempt journals exceed the 256 MiB export limit")
+                lines.append(line)
+                count += 1
+                terminal = event.payload
+        finally:
+            await stream.close()
+        if count != attempt.next_seq or (attempt.status != "lost" and (not terminal or terminal["event"] != "run.finished")):
+            raise BundleIncomplete("Attempt journal is incomplete")
+        blobs[f"{ATTEMPT_BLOB_DIR}/{attempt.id}.jsonl"] = b"".join(lines)
+    return blobs
+
+
 def blob_digests(files: dict[str, bytes]) -> dict[str, str]:
     """sha256 per blob, for the manifest's integrity index.
 
@@ -818,7 +875,7 @@ def blob_digests(files: dict[str, bytes]) -> dict[str, str]:
     return {
         name: hashlib.sha256(data).hexdigest()
         for name, data in files.items()
-        if name.startswith(RECORD_BLOB_DIR) or name.startswith(LOG_BLOB_DIR)
+        if name.startswith((RECORD_BLOB_DIR, LOG_BLOB_DIR, ATTEMPT_BLOB_DIR))
     }
 
 
@@ -838,6 +895,10 @@ def check_blobs(files: dict[str, bytes], manifest: dict) -> list[str]:
             f"record archives: {present} present, {expected_records} expected — the "
             "canonical records are exactly what a database dump loses"
         )
+    expected_journals = (manifest.get("counts") or {}).get("expected_attempt_journals")
+    actual_journals = sum(1 for name in files if name.startswith(ATTEMPT_BLOB_DIR))
+    if expected_journals is not None and expected_journals != actual_journals:
+        problems.append(f"attempt journals: {actual_journals} present, {expected_journals} expected")
     return problems
 
 

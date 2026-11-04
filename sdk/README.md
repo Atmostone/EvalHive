@@ -1,5 +1,14 @@
 # Harness SDK 1.0
 
+Configuration validation returns `{ "accepted": true, "effective_config": {...} }`.
+Connectors report the public native settings they will apply, including defaults;
+private credentials remain references. Both language SDKs validate this receipt.
+The runner saves it through its scoped attempt API before sending `start` and
+retries a lost receipt with the same values. A conflicting receipt, unavailable
+configuration service or private value in public settings stops execution before
+the agent loop. Profile configuration remains the user's requested configuration;
+the immutable attempt specification carries the applied one.
+
 EvalHive owns the task, execution attempt, environment and results. A connector owns
 the harness process, native configuration and event translation. These packages do
 not import the backend, Docker or an LLM client.

@@ -46,6 +46,10 @@ class API:
         through = max(self.records)
         return {"acked_through": through, "next_seq": through + 1}
 
+    async def prepare(self, config):
+        self.prepared_config = copy.deepcopy(config)
+        return {"accepted": True}
+
     async def heartbeat(self):
         commands = []
         if self.commands and len(self.records) >= 2:
@@ -74,6 +78,8 @@ def test_unsupported_interaction_fails_without_waiting_for_a_deadline(tmp_path):
         async def request(self, method, *args, **kwargs):
             if method == "describe":
                 return FIXTURES["manifest"]
+            if method == "validate":
+                return {"accepted": True, "effective_config": args[0]["run"]["config"]}
             if method == "start":
                 self.started.set()
             return {"accepted": True}
@@ -137,6 +143,44 @@ def test_artifact_delivery_precedes_terminal_acknowledgement(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("unreachable", [False, True])
+def test_applied_settings_are_saved_before_start_and_lost_ack_is_retryable(tmp_path, unreachable):
+    class PreparationAPI(API):
+        attempts = 0
+
+        async def prepare(self, config):
+            self.attempts += 1
+            self.prepared_config = copy.deepcopy(config)
+            if unreachable or self.attempts == 1:
+                raise RetryableDeliveryError("Lost configuration receipt")
+            return {"accepted": True, "duplicate": True}
+
+        async def events(self, batch):
+            assert self.attempts > 0
+            return await super().events(batch)
+
+    async def scenario():
+        connector = await ConnectorClient.launch([sys.executable, str(ROOT / "sdk/examples/fake/connector.py")])
+        spec = {**copy.deepcopy(FIXTURES["run_spec"]), "config": {}}
+        api = PreparationAPI()
+        with EventSpool(tmp_path / "spool.sqlite") as spool:
+            runner = AttemptRunner(spec=spec, manifest=FIXTURES["manifest"], connector=connector,
+                api=api, spool=spool, policy=POLICY)
+            result = await runner.run()
+        assert api.prepared_config == {"prefix": "", "wait": False, "fail": False}
+        records = list(api.records.values())
+        if unreachable:
+            assert result["status"] == "failed"
+            assert records[0]["data"]["harness_started"] is False
+            assert records[-1]["data"]["error"]["code"] == "CONFIGURATION_UNAVAILABLE"
+        else:
+            assert result["status"] == "success" and api.attempts == 2
+            assert spec["config"] == api.prepared_config
+            assert any(record["event"] == "message.end" for record in records)
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("mode", ["timeout", "oversized"])
 def test_finalization_failure_is_bounded_and_does_not_lose_terminal_delivery(tmp_path, mode):
     async def scenario():
@@ -180,6 +224,8 @@ def test_native_artifact_cannot_claim_server_delivery(tmp_path):
         async def request(self, method, *args, **kwargs):
             if method == "describe":
                 return FIXTURES["manifest"]
+            if method == "validate":
+                return {"accepted": True, "effective_config": args[0]["run"]["config"]}
             if method == "start":
                 self.started.set()
             return {"accepted": True}
@@ -308,6 +354,8 @@ def test_noncooperative_abort_has_a_bounded_shutdown(tmp_path):
         async def request(self, method, params=None, **_):
             if method == "describe":
                 return FIXTURES["manifest"]
+            if method == "validate":
+                return {"accepted": True, "effective_config": params["run"]["config"]}
             if method == "start":
                 await self.emit("run.started", {})
                 await self.emit("message.end", {"message_id": "start", "content": "started"})
@@ -380,7 +428,7 @@ def test_abort_before_start_does_not_execute_the_harness(tmp_path):
     asyncio.run(scenario())
 
 
-def test_offline_delivery_keeps_a_redacted_recoverable_journal(tmp_path):
+def test_offline_delivery_keeps_private_configuration_out_of_the_recoverable_journal(tmp_path):
     async def scenario():
         connector = await ConnectorClient.launch(
             [sys.executable, str(ROOT / "sdk/examples/fake/connector.py")]
@@ -404,8 +452,9 @@ def test_offline_delivery_keeps_a_redacted_recoverable_journal(tmp_path):
         with EventSpool(path) as recovered:
             batch = recovered.batch()
             assert "test-private-key" not in json.dumps(batch)
-            assert any("[REDACTED]" in str(record) for record in batch)
-            assert batch[-1]["data"]["status"] == "success"
+            assert batch[-1]["data"]["error"]["code"] == "PRIVATE_CONFIGURATION"
+            assert batch[0]["data"]["harness_started"] is False
+            assert batch[-1]["data"]["status"] == "failed"
             api.offline = False
             receipt = await api.events(batch)
             recovered.acknowledge(receipt["acked_through"])

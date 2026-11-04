@@ -6,6 +6,7 @@ import re
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from evalhive_harness import validate_run
 from sqlalchemy import select
@@ -87,7 +88,12 @@ async def resolve_launch(db, task, template=None):
     profile = await selected_profile(db, task, template)
     manifest = get_manifest(profile.connector_id, profile.connector_version)
     overrides = task.run_config or {}
-    model_id = overrides.get("model_id") or profile.model_id or getattr(template, "model_id", None)
+    frozen = overrides.get("harness_snapshot")
+    changed = set(overrides.get("replay_overrides", []))
+    if frozen:
+        if (manifest["id"], manifest["version"]) != (frozen["connector_id"], frozen["connector_version"]):
+            raise ProfileError("Recorded connector version is unavailable; create a run with new conditions")
+    model_id = overrides.get("model_id") or (frozen or {}).get("model_id") or profile.model_id or getattr(template, "model_id", None)
     if not model_id:
         raise ProfileError("Choose a model connection in the harness profile or role before execution")
     llm = await resolve_model_by_id(db, model_id)
@@ -95,6 +101,9 @@ async def resolve_launch(db, task, template=None):
         raise ProfileError("Model connection is unavailable in this workspace")
     if not llm.provider.endpoint or not llm.provider.api_key:
         raise ProfileError("Model connection is incomplete")
+    endpoint = urlsplit(llm.provider.endpoint)
+    if endpoint.scheme not in {"http", "https"} or not endpoint.netloc or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+        raise ProfileError("Model endpoint must be an HTTP URL without inline credentials")
     # Old executable overrides must not silently change the installed image or
     # discard a scientific treatment while moving to the SDK path.
     if overrides.get("agent_image") or overrides.get("tool_injection"):
@@ -112,6 +121,13 @@ async def resolve_launch(db, task, template=None):
     tools, servers = (None, []) if template is None else await resolve_template_tools(
         db, template, run_config=overrides
     )
+    if pg_host := overrides.get("pg_host"):
+        if overrides.get("environment_id") != "toolathlon" or not re.fullmatch(r"toolathlon_pg(?:_lane_[0-7])?", str(pg_host)):
+            raise ProfileError("Database lane is not registered for this task environment")
+        servers = deepcopy(servers)
+        for server in servers:
+            if not server.get("url"):
+                server.setdefault("env", {}).update(PGHOST=str(pg_host), PG_HOST=str(pg_host))
     declarations, credentials = assemble_resources(
         tools=tools, mcp_servers=servers, memory_mode=memory_mode, memory_context=memory,
         rules=rules, attempt_id=attempt_id,
@@ -145,6 +161,8 @@ async def resolve_launch(db, task, template=None):
     sampling = {name: overrides[name] for name in ("temperature", "seed") if overrides.get(name) is not None}
     if sampling:
         model["sampling"] = sampling
+    if frozen and "model_id" not in changed and any(model.get(key) != frozen.get("model", {}).get(key) for key in ("name", "endpoint", "api")):
+        raise ProfileError("Recorded model connection changed; create a run with new conditions")
     limits = {"wall_time_seconds": int(getattr(template, "timeout_minutes", 60) or 60) * 60,
               "memory_mb": memory_mb(getattr(template, "max_ram", "2g")),
               "cpu_cores": getattr(template, "max_cpu", 100000) / 100000}
@@ -156,9 +174,61 @@ async def resolve_launch(db, task, template=None):
         "instructions": [instructions] if instructions else [], "config": deepcopy(profile.config),
         "model": model, "credential_refs": {key: "runtime-injected" for key in credentials},
         "limits": limits, "environment": environment,
-        "metadata": {"execution_mode": mode, "profile_id": str(profile.id),
+        "metadata": {"execution_mode": mode, "profile_id": str(profile.id), "model_id": str(llm.model.id),
+                     "template_name": template.name if template else None,
+                     "template_updated_at": template.updated_at.isoformat() if template and template.updated_at else None,
                      "template_id": str(template.id) if template else None},
     }
+    if frozen:
+        from app.harnesses.provenance import digest
+
+        if frozen.get("configuration_state") != "prepared" or not frozen.get("image_id"):
+            raise ProfileError("Recorded applied configuration or image is unknown; create a run with new conditions")
+        if frozen.get("manifest_sha256") != digest(manifest):
+            raise ProfileError("Installed connector declaration changed; create a run with new conditions")
+        prior_environment = deepcopy(frozen.get("environment") or {})
+        if prior_environment.get("id") != "workspace":
+            raise ProfileError("This environment requires a fresh prepared run rather than direct replay")
+        prior_resources = prior_environment.get("resources", [])
+        current_mcp = [item for item in declarations if item["kind"] == "mcp" and item["id"] != "evalhive_knowledge"]
+        prior_mcp = [item for item in prior_resources if item["kind"] == "mcp" and item["id"] != "evalhive_knowledge"]
+        if current_mcp != prior_mcp and "tools_override" not in changed:
+            raise ProfileError("Recorded MCP resources changed; create a run with new conditions")
+        for item in prior_resources:
+            if item["id"] == "evalhive_knowledge":
+                from app.harnesses.resources import knowledge_resource
+
+                item.update(knowledge_resource(attempt_id))
+        if "tools_override" in changed:
+            prior_resources[:] = [item for item in prior_resources if item["kind"] not in {"tools", "mcp"}]
+            prior_resources.extend(item for item in declarations if item["kind"] in {"tools", "mcp"})
+        if "memory_mode" in changed:
+            prior_resources[:] = [item for item in prior_resources if item["kind"] != "memory"]
+            prior_resources.extend(item for item in declarations if item["kind"] == "memory")
+        known_roles = set(credentials) | {"evalhive_knowledge_token"}
+        if set(frozen.get("credential_roles", [])) - known_roles:
+            raise ProfileError("Recorded private credential references are unavailable")
+        spec["config"] = {**deepcopy(frozen["config"]), **deepcopy(overrides.get("harness_config", {}))}
+        if frozen.get("task") and not overrides.get("replay_input_override"):
+            spec["task"] = deepcopy(frozen["task"])
+        spec["instructions"] = deepcopy(frozen.get("instructions", []))
+        if str(getattr(template, "id", "")) == frozen.get("template_id"):
+            spec["metadata"]["template_updated_at"] = frozen.get("template_updated_at")
+            spec["metadata"]["template_name"] = frozen.get("template_name")
+        if "template_id" in changed and str(getattr(template, "id", "")) != frozen.get("template_id"):
+            spec["instructions"] = [instructions] if instructions else []
+        if overrides.get("soul_md") is not None:
+            spec["instructions"] = [overrides["soul_md"]]
+        spec["environment"] = prior_environment
+        spec["limits"] = deepcopy(frozen.get("limits", limits))
+        if "max_iterations" in changed:
+            spec["limits"]["max_turns"] = overrides["max_iterations"]
+        spec["metadata"]["expected_image_id"] = frozen["image_id"]
+        spec["metadata"]["replay_conditions"] = "recorded_public_settings"
+    else:
+        spec["config"].update(deepcopy(overrides.get("harness_config", {})))
+        if overrides.get("new_harness_conditions"):
+            spec["metadata"]["replay_conditions"] = "new_conditions"
     validate_run(manifest, spec)
     return ResolvedLaunch(manifest, spec, credentials, profile, network, llm.model)
 

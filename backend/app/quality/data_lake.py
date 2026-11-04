@@ -78,13 +78,10 @@ def _safe_snapshot(task: Task, execution: dict) -> dict | None:
 async def assemble_record(db: AsyncSession, task: Task) -> dict:
     """Gather the full execution blob for a task. Best-effort, never raises on
     missing optional data."""
-    events = (
-        await db.execute(
-            select(AgentEvent)
-            .where(AgentEvent.task_id == task.id)
-            .order_by(AgentEvent.created_at)
-        )
-    ).scalars().all()
+    query = select(AgentEvent).where(AgentEvent.task_id == task.id)
+    if task.current_attempt_id is not None:
+        query = query.where(AgentEvent.data["attempt_id"].astext == str(task.current_attempt_id))
+    events = (await db.execute(query.order_by(AgentEvent.created_at))).scalars().all()
 
     snapshot = _spawn_snapshot_from_events(events)
 
@@ -105,6 +102,10 @@ async def assemble_record(db: AsyncSession, task: Task) -> dict:
         from app.harnesses.projection import load_attempt_view
 
         attempt_view = await load_attempt_view(db, task.current_attempt_id)
+        from app.harnesses.provenance import execution_context
+
+        snapshot = execution_context(attempt_view["attempt"])
+        events = [event for event in events if (event.data or {}).get("attempt_id") == str(task.current_attempt_id)]
         tool_calls = [
             {key: call.get(key) for key in (
                 "chunk_seq", "tool_name", "native_tool_name", "tool_call_id", "session_id",
@@ -216,6 +217,7 @@ async def assemble_record(db: AsyncSession, task: Task) -> dict:
             "resource_limits": snapshot.get("resource_limits", {}),
             "memory_context": snapshot.get("memory_context", ""),
             "flat_memory": snapshot.get("flat_memory", {}),
+            **({"harness": snapshot["harness"]} if "harness" in snapshot else {}),
             "tool_calls": tool_calls,
             "log_archive_s3_path": task.log_archive_s3_path,
             "attempt": {
@@ -272,6 +274,9 @@ async def build_quality_record(
     from app.api.settings import get_setting
     from app.storage.minio_client import upload_quality_record
 
+    # Serialize archiving against attempt creation, which resets task projections.
+    task = await db.scalar(select(Task).where(Task.id == task.id).with_for_update().execution_options(populate_existing=True))
+
     existing = (
         await db.execute(
             select(QualityRecord).where(QualityRecord.task_id == task.id)
@@ -281,12 +286,17 @@ async def build_quality_record(
     inp, out, reasoning = _tokens(task.token_usage or {})
     attempt = None
     if task.current_attempt_id is not None:
+        from app.harnesses.attempts import TERMINAL
         from app.models.execution_attempt import ExecutionAttempt
 
         attempt = await db.get(ExecutionAttempt, task.current_attempt_id)
+        if attempt is not None and attempt.status not in TERMINAL:
+            return None
     duration = _duration_seconds(task, attempt)
 
     if existing is not None:
+        if existing.execution_attempt_id != task.current_attempt_id:
+            raise ValueError("Archived record and current attempt have different measurement sources")
         existing.final_status = task.status
         existing.cost_usd = task.cost_usd
         existing.orchestrator_cost_usd = task.orchestrator_cost_usd or 0
@@ -306,6 +316,7 @@ async def build_quality_record(
 
     record = QualityRecord(
         task_id=task.id,
+        execution_attempt_id=task.current_attempt_id,
         workspace_id=task.workspace_id,
         schema_version=SCHEMA_VERSION,
         template_id=task.template_id,

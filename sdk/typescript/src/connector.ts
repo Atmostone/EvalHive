@@ -71,6 +71,7 @@ export async function serve(connector: Connector, input: AsyncIterable<Uint8Arra
           const spec = validateRun(connector.manifest, params.run as RunSpec);
           if (method === 'start' && started) throw new ProtocolError('ALREADY_STARTED', 'One process executes one attempt');
           result = connector.validate ? await connector.validate(spec) : {accepted: true, effective_config: spec.config};
+          validate('validation_result', result);
           if (method === 'start') {
             const ctx = context = new RunContext(spec, send);
             started = active = true;

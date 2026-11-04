@@ -1644,11 +1644,13 @@ async def replay_reproducibility(
 ):
     """Replay a run from its snapshot (E-20): clone the task with a run_config
     derived from the captured state, linked via replay_of_task_id."""
-    from app.quality.reproducibility import replay_from_snapshot
+    from app.quality.reproducibility import ReplayUnavailable, replay_from_snapshot
 
     task = await _get_owned_task(db, task_id, workspace)
     try:
         return await replay_from_snapshot(db, task.id)
+    except ReplayUnavailable as error:
+        raise HTTPException(409, str(error)) from None
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

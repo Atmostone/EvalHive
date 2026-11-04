@@ -19,18 +19,17 @@ import hashlib
 import statistics
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.annotation import Annotation
 from app.models.experiment import (
     Experiment,
     ExperimentAttempt,
     ExperimentRun,
     ExperimentRunStatus,
 )
-from app.models.annotation import Annotation
 from app.models.quality_record import QualityRecord
 from app.quality.aggregation import rank
 from app.quality.experiments import (
@@ -158,19 +157,19 @@ _SETTLED = {
 }
 
 
-def _mean(values: list[float]) -> Optional[float]:
+def _mean(values: list[float]) -> float | None:
     vals = [float(v) for v in values if v is not None]
     return round(statistics.fmean(vals), 4) if vals else None
 
 
-def _std(values: list[float]) -> Optional[float]:
+def _std(values: list[float]) -> float | None:
     vals = [float(v) for v in values if v is not None]
     if len(vals) < 2:
         return None
     return round(statistics.pstdev(vals), 4)
 
 
-def _median(values) -> Optional[float]:
+def _median(values) -> float | None:
     vals = [float(v) for v in values if v is not None]
     return round(statistics.median(vals), 4) if vals else None
 
@@ -181,7 +180,7 @@ def _median(values) -> Optional[float]:
 # (denormalized from task.token_usage), not on ExperimentRun; cost is sparse
 # ($0 for un-metered providers — ~74% of runs), so tokens are the primary signal
 # and cost is the priced secondary.
-def _run_effort_tokens(rec) -> Optional[float]:
+def _run_effort_tokens(rec) -> float | None:
     """Total LLM tokens (input + output) for a run, or None when unrecorded."""
     if rec is None:
         return None
@@ -192,7 +191,7 @@ def _run_effort_tokens(rec) -> Optional[float]:
     return float((it or 0) + (ot or 0))
 
 
-def _run_reasoning_tokens(rec) -> Optional[float]:
+def _run_reasoning_tokens(rec) -> float | None:
     """Output tokens the model spent thinking, or None when unrecorded (SPA-114).
 
     A SUBSET of the output tokens `_run_effort_tokens` already counts, never an
@@ -206,7 +205,7 @@ def _run_reasoning_tokens(rec) -> Optional[float]:
     return None if rt is None else float(rt)
 
 
-def _run_steps(rec) -> Optional[float]:
+def _run_steps(rec) -> float | None:
     """Agent step count — tool_call_count (near-100% populated), else the E-06
     trace steps_total fallback."""
     if rec is None:
@@ -227,8 +226,8 @@ def _run_steps(rec) -> Optional[float]:
 
 
 def _traj_score(
-    rec, stored: Optional[float], *, allowed: Optional[frozenset[str]] = None
-) -> Optional[float]:
+    rec, stored: float | None, *, allowed: frozenset[str] | None = None
+) -> float | None:
     """Trajectory aggregate over the axes the judge actually scored.
 
     Recomputed from the stored per-axis scores; falls back to the stored overall
@@ -254,7 +253,7 @@ def _traj_score(
     return None if allowed is not None else stored
 
 
-def _judge_loop_verdict(tprof: dict) -> Optional[bool]:
+def _judge_loop_verdict(tprof: dict) -> bool | None:
     """The E-07 judge's loop verdict on one run, or ``None`` if it never gave one.
 
     ``None`` covers both shapes of silence: the loop axis missing from the profile,
@@ -273,7 +272,7 @@ def _judge_loop_verdict(tprof: dict) -> Optional[bool]:
     return None
 
 
-def _trusted_weighted(rec, allowed: frozenset[str]) -> Optional[float]:
+def _trusted_weighted(rec, allowed: frozenset[str]) -> float | None:
     """The outcome score recomputed over the trusted rubric dimensions only.
 
     Same arithmetic as the judge's own aggregate (:mod:`app.quality.judge`): a
@@ -296,7 +295,7 @@ def _trusted_weighted(rec, allowed: frozenset[str]) -> Optional[float]:
     return round(num / den, 4) if den else None
 
 
-def _binary_kappa(both_yes: int, a_only: int, b_only: int, both_no: int) -> Optional[float]:
+def _binary_kappa(both_yes: int, a_only: int, b_only: int, both_no: int) -> float | None:
     """Cohen's κ for two binary raters on a 2×2 (chance-corrected agreement). None
     when undefined — no data, or perfect-by-base-rate where p_e == 1 (e.g. every
     run agrees and all-negative): κ is 0/0 there, which a raw agreement % hides."""
@@ -362,11 +361,11 @@ RANK_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE, TRUST_RANK_ONLY
 
 
 def _classify_reliability(
-    kappa: Optional[float],
+    kappa: float | None,
     n: int,
     *,
     has_source: bool,
-    rho: Optional[float] = None,
+    rho: float | None = None,
     binary_evidence: bool = False,
 ) -> str:
     """Bucket a judged axis into the trust taxonomy (SPA-88, +binary_only SPA-89).
@@ -444,7 +443,7 @@ def _trust_split(reliability: dict) -> tuple[frozenset[str], frozenset[str], dic
 
 
 def _axis_reliability(
-    calibration: Optional[dict],
+    calibration: dict | None,
     loop_detection: dict,
     axis_labels: dict[str, str],
 ) -> dict:
@@ -542,7 +541,7 @@ def _axis_reliability(
     }
 
 
-def _outcome_axis_reliability(calibration: Optional[dict]) -> dict:
+def _outcome_axis_reliability(calibration: dict | None) -> dict:
     """The same reliability traffic light, applied to the OUTCOME rubric
     dimensions. Unlike the fixed six trajectory axes, the outcome axis list is
     rubric-dependent — so it is whatever dimensions the humans actually rated on
@@ -825,7 +824,7 @@ def significance_matrix(
     families: dict[str, dict] = {}
     for family in sorted({r["family"] for r in out}):
         idx = [i for i, r in enumerate(out) if r["family"] == family]
-        for i, q in zip(idx, benjamini_hochberg([out[i]["p"] for i in idx])):
+        for i, q in zip(idx, benjamini_hochberg([out[i]["p"] for i in idx]), strict=True):
             out[i]["q"] = q
             out[i]["significant"] = q < SIGNIFICANCE_ALPHA
         families[family] = {
@@ -2193,7 +2192,7 @@ def build_report(
     on_keys = [k for k, c in configs.items() if c.get("orchestrator")]
     off_keys = [k for k, c in configs.items() if not c.get("orchestrator")]
 
-    def _side(keys: list[str]) -> Optional[dict]:
+    def _side(keys: list[str]) -> dict | None:
         group = [r for k in keys for r in by_config.get(k, [])]
         if not group:
             return None
@@ -2428,13 +2427,14 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     out: list[dict] = []
     for cfg in pinned:
         was = cfg["resolved"]
-        now = await _resolve_config_state(db, cfg, images)
+        now = await _resolve_config_state(db, cfg, images, workspace_id=exp.workspace_id)
         changed = {
             field: {"pinned": was.get(field), "current": now.get(field)}
             for field in (
                 "model_api_name",
                 "template_content_sha256",
                 "provider_name",
+                "harness",
             )
             # A field absent from the pin predates it; only a real change counts.
             if field in was and was.get(field) != now.get(field)
@@ -2523,12 +2523,12 @@ async def compute_report(
     # experiments). Empty until some of these runs carry human feedback.
     calibration = None
     if task_ids:
+        from app.api.settings import get_setting
         from app.quality.judge_calibration import (
             DEFAULT_MIN_KAPPA,
             _compute_report,
             collect_judge_human_pairs,
         )
-        from app.api.settings import get_setting
 
         pairs = await collect_judge_human_pairs(
             db, exp.workspace_id, task_ids=task_ids

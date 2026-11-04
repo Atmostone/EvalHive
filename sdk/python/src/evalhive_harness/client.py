@@ -67,6 +67,8 @@ class ConnectorClient:
                 raise ProtocolError("TRANSPORT_CLOSED", "Connector transport is closed") from None
             if method == "describe":
                 validate("manifest", result)
+            elif method == "validate":
+                validate("validation_result", result)
             return result
         finally:
             self._pending.pop(request_id, None)

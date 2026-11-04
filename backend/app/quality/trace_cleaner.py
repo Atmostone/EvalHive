@@ -800,12 +800,10 @@ async def build_cleaned_trace(
 ) -> dict:
     """Load a task's trajectory (events + log chunks) and clean it. The consumer
     is the trace preview endpoint and, later, the trajectory judge (E-07)."""
-    events = (
-        await db.execute(
-            select(AgentEvent)
-            .where(AgentEvent.task_id == task.id)
-            .order_by(AgentEvent.created_at)
-        )
-    ).scalars().all()
+    query = select(AgentEvent).where(AgentEvent.task_id == task.id)
+    if task.current_attempt_id is not None:
+        # Unscoped historical activity cannot be assigned to the current attempt.
+        query = query.where(AgentEvent.data["attempt_id"].astext == str(task.current_attempt_id))
+    events = (await db.execute(query.order_by(AgentEvent.created_at))).scalars().all()
     log_chunks = await _load_log_chunks(db, task)
     return clean_trajectory(task, events, log_chunks, config=config)

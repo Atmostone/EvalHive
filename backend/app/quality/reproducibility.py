@@ -28,6 +28,7 @@ import hashlib
 import json
 import logging
 import uuid
+from copy import deepcopy
 from datetime import datetime
 
 from sqlalchemy import select
@@ -38,6 +39,10 @@ from app.models.task import Task
 from app.utils.events import log_event
 
 logger = logging.getLogger(__name__)
+
+
+class ReplayUnavailable(ValueError):
+    pass
 
 SNAPSHOT_SCHEMA_VERSION = 1
 _CAP = 20000  # mirror engine._FLAT_MEMORY_CAP — bound large captured text
@@ -178,6 +183,30 @@ def assemble_snapshot(task_like, execution: dict | None = None) -> dict:
             template_id=template_id,
         ),
     }
+    if isinstance(execution.get("harness"), dict):
+        from app.harnesses.provenance import digest
+
+        harness = deepcopy(execution["harness"])
+        stable = {key: harness.get(key) for key in (
+            "connector_id", "connector_version", "protocol_version", "harness_version",
+            "image_id", "model", "config", "instructions", "limits", "execution_mode",
+            "environment", "manifest_sha256",
+            "task",
+        )}
+        determinism["harness"] = {
+            key: stable[key] for key in ("connector_id", "connector_version", "protocol_version", "harness_version", "image_id")
+        }
+        determinism["harness"]["conditions_sha256"] = digest(stable)
+        content["harness"] = harness
+        if harness.get("task"):
+            determinism["task_input"]["title"] = harness["task"].get("title")
+            determinism["task_input"]["prompt_sha256"] = digest(harness["task"]["prompt"])
+        for field in ("connector_id", "connector_version", "harness_version", "image_id"):
+            _mark(snapshot["manifest"]["captured"], snapshot["manifest"]["missing"], "harness." + field, harness.get(field) is not None)
+        _mark(snapshot["manifest"]["captured"], snapshot["manifest"]["missing"], "harness.applied_config", harness.get("configuration_state") == "prepared")
+        snapshot["manifest"]["missing"].extend(["provider_model_revision", "credential_versions", "point_in_time_external_systems"])
+        snapshot["manifest"]["notes"]["provider_model_revision"] = "A pinned harness image and request model name do not pin remote model weights."
+        snapshot["schema_version"] = 2
     snapshot["fingerprint"] = snapshot_fingerprint(snapshot)
     return snapshot
 
@@ -253,6 +282,7 @@ def _has_execution_context(execution: dict) -> bool:
         or execution.get("soul_md")
         or execution.get("tools")
         or execution.get("memory_context")
+        or execution.get("harness")
     )
 
 
@@ -317,7 +347,12 @@ async def replay_from_snapshot(db: AsyncSession, task_id) -> dict:
 
     det = snapshot.get("determinism", {})
     content = snapshot.get("content", {})
-    run_config: dict = {}
+    harness = content.get("harness")
+    if not harness or str(harness.get("connector_id", "legacy")).startswith("legacy"):
+        raise ReplayUnavailable("The historical harness is unavailable for recorded replay; create a new Pi run with new conditions")
+    if harness.get("configuration_state") != "prepared" or not harness.get("image_id"):
+        raise ReplayUnavailable("Recorded applied settings or image are unknown; create a run with new conditions")
+    run_config: dict = {"harness_snapshot": deepcopy(harness)}
     if det.get("template_id"):
         run_config["template_id"] = det["template_id"]
     if det.get("seed") is not None:
@@ -325,7 +360,7 @@ async def replay_from_snapshot(db: AsyncSession, task_id) -> dict:
     if det.get("temperature") is not None:
         run_config["temperature"] = det["temperature"]
     soul_md = content.get("soul_md")
-    if soul_md:
+    if soul_md and not harness:
         run_config["soul_md"] = soul_md
 
     clone = await clone_task_for_rerun(

@@ -43,6 +43,9 @@ class HTTPAttemptAPI:
     async def events(self, batch: list[dict]) -> dict:
         return await self.post("events", {"events": batch})
 
+    async def prepare(self, config: dict) -> dict:
+        return await self.post("configuration", {"config": config})
+
     async def heartbeat(self) -> dict:
         return await self.post("heartbeat")
 

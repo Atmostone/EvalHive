@@ -42,6 +42,7 @@ export class ConnectorClient {
     try {
       const value = await result;
       if (method === 'describe') validate('manifest', value);
+      if (method === 'validate') validate('validation_result', value);
       return value;
     } finally { clearTimeout(timer!); this.pending.delete(id); }
   }

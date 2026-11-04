@@ -139,7 +139,7 @@ async def serve(
                     spec = validate_run(connector.manifest, params["run"])
                     if method == "start" and started:
                         raise ProtocolError("ALREADY_STARTED", "One process executes one attempt")
-                    result = await connector.validate(spec)
+                    result = validate("validation_result", await connector.validate(spec))
                     if method == "start":
                         context = RunContext(spec, send)
                         started = True

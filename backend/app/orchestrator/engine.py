@@ -177,6 +177,7 @@ async def _record_run_condition(
             ExperimentRun.config_key == ref.get("config_key"),
             ExperimentRun.case_key == ref.get("case_key"),
             ExperimentRun.run_index == ref.get("run_index"),
+            ExperimentRun.task_id == task.id,
         )
         .values(condition_fingerprint=full, core_condition_fingerprint=core)
     )
@@ -192,7 +193,8 @@ async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Temp
     any spawn error, mirroring the previous inline behavior.
     """
     task.template_id = template.id
-    if getattr(task, "harness_profile_id", None) or getattr(template, "harness_profile_id", None):
+    if (getattr(task, "harness_profile_id", None) or getattr(template, "harness_profile_id", None)
+            or (task.run_config or {}).get("harness_config") is not None or getattr(task, "origin", None) == "experiment"):
         await _spawn_sdk_task(db, task, template)
         return
     run_config = task.run_config or {}
@@ -424,7 +426,19 @@ def _subtask_run_config(run_config: dict | None) -> dict | None:
 
 async def _spawn_sdk_task(db, task, template=None):
     from app.harnesses.attempts import AttemptError
+    from app.harnesses.catalog import CatalogError
     from app.harnesses.launch import launch_task
+    from app.harnesses.profiles import ProfileError
+    from app.models.quality_record import QualityRecord
+    from app.runtime.docker import RuntimeFailure
+
+    archived = await db.scalar(select(QualityRecord).where(QualityRecord.task_id == task.id))
+    if archived is not None:
+        task.status = archived.final_status
+        await db.commit()
+        await log_event(db, "rerun_requires_new_task", "runner", {"reason": "results_archived"},
+                        task_id=task.id, workspace_id=task.workspace_id)
+        return
 
     try:
         await launch_task(db, task, template)
@@ -440,7 +454,7 @@ async def _spawn_sdk_task(db, task, template=None):
         await db.refresh(task)
         task.status = TaskStatus.FAILED.value
         task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
-        task.result_summary = "Execution configuration could not be launched"
+        task.result_summary = str(error) if isinstance(error, (AttemptError, CatalogError, ProfileError, RuntimeFailure)) else "Execution configuration could not be launched"
         task.completed_at = datetime.utcnow()
         await db.commit()
         await log_event(db, "agent_failed", "runner", {"reason": "launch_configuration"},
@@ -580,7 +594,7 @@ async def process_ready_task(db: AsyncSession, task: Task):
                 created_subs.append(sub)
 
             await db.flush()
-            for st, sub in zip(subtasks, created_subs):
+            for st, sub in zip(subtasks, created_subs, strict=True):
                 deps = [
                     created_subs[i].id
                     for i in (st.get("depends_on_indices") or [])

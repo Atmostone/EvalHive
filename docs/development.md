@@ -152,6 +152,18 @@ variant.
 
 ## Migrations
 
+SDK runs save the connector's effective public configuration before execution.
+New Data Lake records identify their source attempt; an archived execution is
+rerun as a linked task. Recorded replay requires the same installed declaration,
+image and model connection. Legacy snapshots remain readable, but their retired
+agent cannot be replayed as Pi under the same conditions.
+
+Bundle exports with `--with-traces` include SDK attempt headers and ordered
+normalized/native JSONL journals in `blobs/attempts/`. Verification checks their
+digests and expected count. Journal export is bounded to 256 MiB and fails
+explicitly rather than truncating evidence. Remote model revisions, credential
+versions and point-in-time external systems are not pinned by a harness image.
+
 Create a new one:
 
 ```bash
