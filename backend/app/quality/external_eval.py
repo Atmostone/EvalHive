@@ -114,7 +114,8 @@ def _remove_name(name: str) -> None:
 
 
 def _run_pack(
-    name: str, task_id, task_path: str, command: str, pg_host: str | None = None
+    name: str, task_id, task_path: str, command: str, pg_host: str | None = None,
+    workspace_id=None,
 ) -> str:
     """Start a detached ``toolathlon-pack`` container; return its id. The gym
     (host path) and the task workspace (host path) are bind-mounted; ``PG_ENV``
@@ -138,7 +139,9 @@ def _run_pack(
         environment=env,
         working_dir=f"{GYM_MOUNT}/{task_path}",
         detach=True,
-        labels={"evalhive.toolathlon": "1", "evalhive.task_id": str(task_id)},
+        labels={"evalhive.toolathlon": "1", "evalhive.role": "environment",
+                "evalhive.task_id": str(task_id),
+                **({"evalhive.workspace_id": str(workspace_id)} if workspace_id is not None else {})},
     )
     return container.id
 
@@ -157,6 +160,7 @@ def start_preprocess(
     *,
     keep_alive: bool = False,
     pg_host: str | None = None,
+    workspace_id=None,
 ) -> str:
     """Seed the workspace + run the case's preprocess, detached. Returns the
     container id (poll it with :func:`poll_exit`).
@@ -173,7 +177,8 @@ def start_preprocess(
         cmd = f"{cmd} && tail -f /dev/null"
     cmd = _seed_prefix(task_path) + cmd
     return _run_pack(
-        preprocess_container_name(task_id), task_id, task_path, cmd, pg_host=pg_host
+        preprocess_container_name(task_id), task_id, task_path, cmd, pg_host=pg_host,
+        workspace_id=workspace_id,
     )
 
 
@@ -185,12 +190,14 @@ def start_eval(
     launch_time: str,
     *,
     pg_host: str | None = None,
+    workspace_id=None,
 ) -> str:
     """Run the case's evaluation script, detached. Returns the container id;
     a clean exit code of ``0`` is a pass."""
     gt = f"{GYM_MOUNT}/{groundtruth_path}" if groundtruth_path else None
     cmd = substitute(eval_command, gt=gt, launch_time=launch_time, res_log=EVAL_RES_LOG)
-    return _run_pack(f"tlev-{str(task_id)[:8]}", task_id, task_path, cmd, pg_host=pg_host)
+    return _run_pack(f"tlev-{str(task_id)[:8]}", task_id, task_path, cmd, pg_host=pg_host,
+                     workspace_id=workspace_id)
 
 
 def poll_exit(container_id: str) -> tuple[int | None, str]:

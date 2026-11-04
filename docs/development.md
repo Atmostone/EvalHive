@@ -56,6 +56,15 @@ administrator-controlled declaration directory. Each connector occupies a
 subdirectory containing `manifest.json`; worker packages/images are installed
 separately, and no Python worker module is imported by catalog discovery.
 
+The process runtime requires a rootless Docker daemon. `RUNTIME_NETWORK` selects
+its registered bridge; `RUNTIME_MAX_CPU_QUOTA` (default 200000, with period 100000)
+and `RUNTIME_MAX_MEMORY_MB` (default 2048) set server limits. Additional environment
+dependency trees can be registered through `RUNTIME_READONLY_ROOTS` (JSON array of
+absolute host paths); they cannot be mounted writable. `HOST_DATA_DIR` must be an
+absolute host path. Each attempt gets separate `workspace` and private input
+directories under `workspaces/<task>/<attempt>/`; the runner alone receives the
+private inputs, and artifact collection starts at the workspace directory.
+
 ```bash
 docker build -t evalhive-agent:latest agent-image/
 ```
