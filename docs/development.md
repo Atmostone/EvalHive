@@ -65,6 +65,14 @@ absolute host path. Each attempt gets separate `workspace` and private input
 directories under `workspaces/<task>/<attempt>/`; the runner alone receives the
 private inputs, and artifact collection starts at the workspace directory.
 
+Install the runner alongside the SDK for host development: `pip install -e runner`.
+`RUNNER_API_URL` defaults to the internal `http://api:8000`; `RUNTIME_MAX_CONCURRENCY`
+defaults to one. Capacity is serialized across API replicas. SDK workers must wait
+for the JSONL start command; starting the container alone must not invoke a model.
+The runner's own API token stays outside the worker. Native credentials use a
+separate read-only file named by `EVALHIVE_CREDENTIALS_FILE`; worker code resolves
+the RunSpec references from that map and must not discover global auth caches.
+
 ```bash
 docker build -t evalhive-agent:latest agent-image/
 ```

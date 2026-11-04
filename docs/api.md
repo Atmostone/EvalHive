@@ -120,6 +120,27 @@ established. Transport loss becomes an explicit `lost` attempt with interrupted
 recording; it never invents a successful terminal record. Historical task logs
 remain on their existing read path until journal projections are connected.
 
+### Runner control delivery (SPA-124)
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| POST | `/api/attempts/{id}/commands` | Workspace owner/admin; members may send feedback. Body `{id?: UUID, name, payload?}`; identical IDs replay the original receipt |
+| GET | `/api/attempts/{id}/commands` | Workspace-scoped command acknowledgement state |
+| POST | `/api/v1/attempts/{id}/heartbeat` | Runner token; refresh liveness and fetch queued/unacknowledged commands |
+| POST | `/api/v1/attempts/{id}/commands/{command_id}/ack` | Runner token; canonical SDK response, immutable and idempotent |
+
+Commands validate against the attempt's frozen manifest. Cancellation also has a
+runtime fallback when a connector has no native abort. Unacknowledged commands
+become `unknown` when an attempt ends; a real late acknowledgement can resolve
+that state. A timeout is not a claim that the native operation did not happen.
+Runner command receipts are persisted before HTTP acknowledgement and retried
+without applying feedback twice.
+
+Event `observed_at` records UTC time at the runner, independently of backend
+receipt. Terminal metadata includes `runner_elapsed_seconds` measured with a
+monotonic clock; missing terminal observations remain null. Delivery retries and
+artifact collection do not turn into measured model execution time.
+
 ### Tasks (`/api/tasks`)
 
 | Method | Path | Description |

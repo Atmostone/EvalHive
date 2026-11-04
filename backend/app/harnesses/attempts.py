@@ -5,24 +5,50 @@ from __future__ import annotations
 import hashlib
 import uuid
 from copy import deepcopy
+from datetime import datetime
 
-from evalhive_harness import encode_line, validate, validate_run
+from evalhive_harness import ProtocolError, encode_line, validate, validate_run
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.tokens import _utcnow_naive
 from app.harnesses.profiles import _reject_inline_secrets
-from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
+from app.models.execution_attempt import ExecutionAttempt, ExecutionCommand, ExecutionEvent
 from app.models.harness_profile import HarnessProfile
 from app.models.task import Task
 
 TERMINAL = frozenset({"success", "failed", "cancelled", "lost"})
+FENCED_ERRORS = frozenset({"STALE_ATTEMPT", "NOT_FOUND", "INVALID_SCOPE"})
 
 
 class AttemptError(ValueError):
     def __init__(self, code: str, message: str, status: int = 409):
         super().__init__(message)
         self.code, self.status = code, status
+
+
+async def acknowledge_command(db, attempt_id, command_id, body):
+    """Apply the same immutable receipt rules to HTTP delivery and crash recovery."""
+    validate("response", body)
+    if body["id"] != str(command_id):
+        raise ProtocolError("INVALID_COMMAND", "Acknowledgement ID does not match")
+    await locked_attempt(db, attempt_id)
+    command = await db.scalar(
+        select(ExecutionCommand).where(
+            ExecutionCommand.id == command_id, ExecutionCommand.attempt_id == attempt_id
+        )
+    )
+    if command is None:
+        raise AttemptError("NOT_FOUND", "Command not found", 404)
+    if command.result is not None:
+        if command.result != body:
+            raise AttemptError("COMMAND_CONFLICT", "Command acknowledgement is immutable")
+        return {"duplicate": True}
+    command.result = body
+    command.status = "acknowledged" if body["ok"] else "failed"
+    command.error = None if body["ok"] else body["error"]["message"]
+    command.acknowledged_at = _utcnow_naive()
+    return {"duplicate": False}
 
 
 async def create_attempt(
@@ -178,15 +204,40 @@ async def ingest_events(db: AsyncSession, attempt_id: uuid.UUID, events: list[di
                     "INVALID_LIFECYCLE", "The first event must be the only run.started record", 422
                 )
             now = _utcnow_naive()
+            try:
+                observed = (
+                    datetime.fromisoformat(event["observed_at"].replace("Z", "+00:00")).replace(
+                        tzinfo=None
+                    )
+                    if "observed_at" in event
+                    else now
+                )
+            except ValueError:
+                raise AttemptError(
+                    "INVALID_TIMESTAMP", "Event observation time is invalid", 422
+                ) from None
             if event["event"] == "run.started":
-                attempt.status, attempt.started_at = "running", now
+                if attempt.status != "stopping":
+                    attempt.status = "running"
+                attempt.started_at = observed
             if event["event"] == "run.finished":
                 attempt.status, attempt.result, attempt.finished_at = (
                     event["data"]["status"],
                     deepcopy(event["data"]),
-                    now,
+                    observed,
                 )
                 attempt.completeness = {**attempt.completeness, "event_delivery": "contiguous"}
+                pending_commands = await db.scalars(
+                    select(ExecutionCommand).where(
+                        ExecutionCommand.attempt_id == attempt_id,
+                        ExecutionCommand.status.in_(["queued", "delivered"]),
+                    )
+                )
+                for command in pending_commands:
+                    command.status, command.error = (
+                        "unknown",
+                        "Attempt ended before command acknowledgement",
+                    )
             db.add(
                 ExecutionEvent(
                     attempt_id=attempt_id,
@@ -222,3 +273,14 @@ async def mark_attempt_lost(db: AsyncSession, attempt_id: uuid.UUID, reason: str
             "error": {"code": "TRANSPORT_LOST", "message": reason},
         }
         attempt.completeness = {**attempt.completeness, "event_delivery": "interrupted"}
+        commands = await db.scalars(
+            select(ExecutionCommand).where(
+                ExecutionCommand.attempt_id == attempt_id,
+                ExecutionCommand.status.in_(["queued", "delivered"]),
+            )
+        )
+        for command in commands:
+            command.status, command.error = (
+                "unknown",
+                "Runner stopped before command acknowledgement",
+            )

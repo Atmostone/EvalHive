@@ -1021,6 +1021,40 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "runner observation timestamp",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "run.started",
+        "data": {},
+        "observed_at": "2026-11-04T14:00:01.123Z"
+      },
+      "error": null
+    },
+    {
+      "name": "invalid observation timestamp",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "run.started",
+        "data": {},
+        "observed_at": 42
+      },
+      "error": "INVALID_MESSAGE"
     }
   ]
 }

@@ -5,22 +5,57 @@ from __future__ import annotations
 import json
 import uuid
 
-from evalhive_harness import ProtocolError
+from evalhive_harness import ProtocolError, validate_run
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.harnesses import SafeValidationRoute
-from app.auth.dependencies import get_current_workspace
-from app.auth.tokens import verify_runner_token
+from app.auth.dependencies import get_current_workspace, require_role
+from app.auth.tokens import _utcnow_naive, verify_runner_token
 from app.database import get_db
-from app.harnesses.attempts import AttemptError, ingest_events
-from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
+from app.harnesses.attempts import (
+    TERMINAL,
+    AttemptError,
+    acknowledge_command,
+    ingest_events,
+    locked_attempt,
+)
+from app.models.execution_attempt import ExecutionAttempt, ExecutionCommand, ExecutionEvent
 from app.models.task import Task
 from app.models.workspace import Workspace
 
 router = APIRouter(tags=["attempts"], route_class=SafeValidationRoute)
 MAX_BATCH_BYTES = 4 * 1024 * 1024
+
+
+async def require_runner(request, db, attempt_id):
+    auth = request.headers.get("Authorization", "")
+    if (
+        not auth.startswith("Bearer ")
+        or await verify_runner_token(db, plain=auth[7:], attempt_id=attempt_id) is None
+    ):
+        raise HTTPException(401, "Invalid or expired runner token")
+
+
+async def bounded_json(request, limit=1024 * 1024):
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > limit:
+            raise HTTPException(413, "Request exceeds size limit")
+        body.extend(chunk)
+    try:
+        return json.loads(
+            body.decode("utf-8"), parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
+        )
+    except (ValueError, UnicodeError, RecursionError):
+        raise HTTPException(422, "Invalid request JSON") from None
+
+
+def attempt_error(error):
+    if isinstance(error, AttemptError):
+        return HTTPException(error.status, {"code": error.code, "message": str(error)})
+    return HTTPException(422, {"code": error.code, "message": str(error)})
 
 
 def attempt_dict(attempt: ExecutionAttempt) -> dict:
@@ -36,7 +71,12 @@ def attempt_dict(attempt: ExecutionAttempt) -> dict:
         "next_seq": attempt.next_seq,
         "result": attempt.result,
         "completeness": attempt.completeness,
-        "capabilities": attempt.manifest.get("capabilities", {}),
+        "capabilities": {
+            **attempt.manifest.get("capabilities", {}),
+            "abort": attempt.manifest.get("capabilities", {}).get("abort")
+            if attempt.manifest.get("capabilities", {}).get("abort") in ("native", "emulated")
+            else "emulated",
+        },
         "commands": attempt.manifest.get("commands", {}),
         "created_at": attempt.created_at.isoformat(),
         "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
@@ -144,3 +184,140 @@ async def receive_events(
         await db.rollback()
         raise HTTPException(422, {"code": exc.code, "message": str(exc)}) from None
     return receipt
+
+
+@router.post("/api/attempts/{attempt_id}/commands", status_code=201)
+async def enqueue_command(
+    attempt_id: uuid.UUID,
+    request: Request,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+    _role=Depends(require_role("owner", "admin", "member")),
+):
+    await scoped_attempt(db, workspace, attempt_id)
+    body = await bounded_json(request)
+    try:
+        if (
+            not isinstance(body, dict)
+            or set(body) - {"id", "name", "payload"}
+            or not isinstance(body.get("name"), str)
+            or not 1 <= len(body["name"]) <= 100
+            or not isinstance(body.get("payload", {}), dict)
+        ):
+            raise ValueError()
+        command_id = uuid.UUID(body["id"]) if "id" in body else uuid.uuid4()
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(422, "Invalid command") from None
+    if request.state.role == "member" and body["name"] != "feedback":
+        raise HTTPException(403, "This command requires owner or admin")
+    try:
+        attempt = await locked_attempt(db, attempt_id)
+        previous = await db.get(ExecutionCommand, command_id)
+        if previous is not None:
+            if (
+                previous.attempt_id != attempt_id
+                or previous.name != body["name"]
+                or previous.payload != body.get("payload", {})
+            ):
+                raise AttemptError("COMMAND_CONFLICT", "Command ID was already used")
+            return {"id": str(previous.id), "status": previous.status, "duplicate": True}
+        if attempt.status in TERMINAL:
+            raise AttemptError("ATTEMPT_FINISHED", "Attempt has finished")
+        name, payload = body["name"], body.get("payload", {})
+        if name != "abort" and attempt.manifest["capabilities"].get(name) not in (
+            "native",
+            "emulated",
+        ):
+            raise ProtocolError("UNSUPPORTED_CAPABILITY", "Command is unavailable")
+        schema = attempt.manifest.get("commands", {}).get(name, {}).get("input_schema")
+        if name == "abort" and schema is None:
+            schema = {"type": "object", "additionalProperties": False}
+        if schema is None:
+            raise ProtocolError("UNSUPPORTED_CAPABILITY", "Command has no declared input schema")
+        validate_run(
+            {**attempt.manifest, "config_schema": schema},
+            {**attempt.run_spec, "config": payload, "required_capabilities": []},
+        )
+        command = ExecutionCommand(id=command_id, attempt_id=attempt_id, name=name, payload=payload)
+        db.add(command)
+        if name == "abort":
+            attempt.status = "stopping"
+        await db.commit()
+        return {"id": str(command.id), "status": command.status, "duplicate": False}
+    except (AttemptError, ProtocolError) as error:
+        await db.rollback()
+        raise attempt_error(error) from None
+
+
+@router.get("/api/attempts/{attempt_id}/commands")
+async def read_commands(
+    attempt_id: uuid.UUID,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    await scoped_attempt(db, workspace, attempt_id)
+    commands = await db.scalars(
+        select(ExecutionCommand)
+        .where(ExecutionCommand.attempt_id == attempt_id)
+        .order_by(ExecutionCommand.created_at)
+    )
+    return [
+        {
+            "id": str(command.id),
+            "name": command.name,
+            "status": command.status,
+            "result": command.result,
+            "error": command.error,
+        }
+        for command in commands
+    ]
+
+
+@router.post("/api/v1/attempts/{attempt_id}/heartbeat")
+async def runner_heartbeat(
+    attempt_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
+):
+    await require_runner(request, db, attempt_id)
+    try:
+        attempt = await locked_attempt(db, attempt_id)
+        attempt.last_heartbeat_at = _utcnow_naive()
+        pending = []
+        if attempt.status not in TERMINAL:
+            commands = await db.scalars(
+                select(ExecutionCommand)
+                .where(
+                    ExecutionCommand.attempt_id == attempt_id,
+                    ExecutionCommand.status.in_(["queued", "delivered"]),
+                )
+                .order_by(ExecutionCommand.created_at)
+                .limit(32)
+            )
+            for command in commands:
+                command.status = "delivered"
+                pending.append(
+                    {"id": str(command.id), "name": command.name, "payload": command.payload}
+                )
+        status = attempt.status
+        await db.commit()
+        return {"status": status, "commands": pending}
+    except AttemptError as error:
+        await db.rollback()
+        raise attempt_error(error) from None
+
+
+@router.post("/api/v1/attempts/{attempt_id}/commands/{command_id}/ack")
+async def runner_ack(
+    attempt_id: uuid.UUID,
+    command_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    await require_runner(request, db, attempt_id)
+    body = await bounded_json(request)
+    try:
+        receipt = await acknowledge_command(db, attempt_id, command_id, body)
+        await db.commit()
+        return receipt
+    except (AttemptError, ProtocolError) as error:
+        await db.rollback()
+        raise attempt_error(error) from None

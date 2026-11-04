@@ -31,6 +31,7 @@ export type HarnessEvent = JsonObject & {
   protocol_version: '1.0'; type: 'event'; event_id: string; attempt_id: string;
   seq: number; source: string; event: string; data: JsonObject;
   session_id?: string; parent_session_id?: string;
+  observed_at?: string;
 }
 export type WireMessage = Command | Response | HarnessEvent;
 

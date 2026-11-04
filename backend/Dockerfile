@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY sdk/python /opt/evalhive-sdk
 RUN pip install --no-cache-dir /opt/evalhive-sdk
+COPY runner /opt/evalhive-runner
+RUN pip install --no-cache-dir /opt/evalhive-runner
 COPY harnesses /harnesses
 COPY backend .
 

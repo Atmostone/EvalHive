@@ -99,6 +99,9 @@ class ConnectorClient:
                         )
                 else:
                     raise ProtocolError("INVALID_MESSAGE", "Unexpected command from connector")
+                # Let an active consumer run even when many complete records
+                # arrived in one pipe read; the bounded queue is not a burst cap.
+                await asyncio.sleep(0)
         except ProtocolError as exc:
             error = exc
         except (ValueError, OSError):
@@ -132,12 +135,19 @@ class ConnectorClient:
         try:
             await asyncio.wait_for(self.process.wait(), grace)
         except TimeoutError:
-            self.process.terminate()
+            with suppress(ProcessLookupError):
+                self.process.terminate()
             try:
                 await asyncio.wait_for(self.process.wait(), grace)
             except TimeoutError:
-                self.process.kill()
-                await self.process.wait()
+                with suppress(ProcessLookupError):
+                    self.process.kill()
+                try:
+                    await asyncio.wait_for(self.process.wait(), grace)
+                except TimeoutError:
+                    raise ProtocolError(
+                        "SHUTDOWN_FAILED", "Connector did not exit after forced stop"
+                    ) from None
         self._reader.cancel()
         with suppress(asyncio.CancelledError):
             await self._reader

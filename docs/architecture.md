@@ -92,6 +92,22 @@ Toolathlon helpers now declare that scope. The old AgentSpec/DockerRuntime remai
 temporary compatibility exports; their implementation moved to the legacy boundary
 and is removed in SPA-134. New runner code uses the neutral runtime directly.
 
+SPA-124 runs the shared Python runner **outside** the connector container. Docker
+attach transports JSONL stdin/stdout with bounded multiplexed buffers; the event
+API token is never mounted or passed into the worker. A private native-credential
+file is separate from the artifact tree and removed on termination. Docker logging
+is disabled for this pipe, so redaction happens before records reach persistent
+storage rather than after an unredacted Docker log has already been written.
+
+The SQLite WAL spool commits records before HTTP delivery and removes them only
+after durable server acknowledgement; its sequence counter survives compaction.
+Command receipts follow the same pattern. SDK event observation time and monotonic
+duration are independent of delivery latency. Abort first requests native stop,
+then enforces bounded shutdown; missing terminal records or unconfirmed shutdown
+cannot become success. The server replays an orphaned spool after heartbeat loss
+and declares interrupted evidence explicitly. Image ID and runner policy are
+frozen before execution; one runner slot is the default server resource policy.
+
 ### Creating and running a task
 
 ```

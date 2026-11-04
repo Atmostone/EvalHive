@@ -101,6 +101,11 @@ with `EVENT_BUFFER_FULL`; events are never silently discarded. A local persisten
 spool belongs in the runner. Request timeouts do not cancel the native operation;
 late responses are ignored, and control/runner deadlines decide what to stop.
 
+The optional event `observed_at` is a UTC ISO timestamp assigned by the external
+runner when it receives the record. Backend receipt time is stored separately.
+Delayed delivery preserves observation time; execution duration is also measured
+with the runner's monotonic clock and is unknown without a terminal observation.
+
 ## External connector example
 
 [`examples/fake`](examples/fake) is a separate connector package with a manifest

@@ -20,8 +20,8 @@ class AttemptLayout:
     host_workspace: str
     host_private: str
 
-    def workspace_mount(self) -> BindMount:
-        return BindMount(self.host_workspace, "/workspace", read_only=False)
+    def workspace_mount(self, target: str = "/workspace") -> BindMount:
+        return BindMount(self.host_workspace, target, read_only=False)
 
 
 def prepare_layout(task_id: str, attempt_id: str) -> AttemptLayout:

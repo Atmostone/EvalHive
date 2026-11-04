@@ -4,6 +4,15 @@
 
 ## 2026-11-04
 
+- **SPA-124 — supervise execution independently of the harness.** The shared
+  runner journals unacknowledged events and command receipts before delivery,
+  retries lost acknowledgements without duplicating records or feedback, tracks
+  heartbeat and enforces execution/stop deadlines. Docker attach keeps its API
+  token outside the worker. Native credentials stay in a separate private mount;
+  event content is redacted before persistence. Recording uses runner observation
+  time and monotonic duration rather than delayed HTTP receipt time. Recovery
+  replays the spool and records missing completion/uncertain cleanup explicitly.
+
 - **SPA-123 — run a registered process rather than an agent-shaped Docker call.**
   The new process runtime accepts argv, opaque environment, mounts, cwd, resource
   limits and network mode. It requires rootless Docker, resolves registered images

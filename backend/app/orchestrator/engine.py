@@ -646,12 +646,16 @@ async def check_timed_out_tasks():
 
     try:
         async with async_session() as db:
+            from app.harnesses.executor import reconcile_attempts
+
+            await reconcile_attempts(db)
             timeout_minutes = await get_setting(db, "task_timeout_minutes", 60)
 
             result = await db.execute(
                 select(Task).where(
                     Task.status == TaskStatus.IN_PROGRESS.value,
                     Task.started_at.isnot(None),
+                    Task.current_attempt_id.is_(None),
                 )
             )
             tasks = result.scalars().all()
