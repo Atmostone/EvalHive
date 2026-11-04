@@ -1916,6 +1916,8 @@ async def _start_eval(
     """Agent settled → start the eval container detached (run → EVALUATING). If
     the eval cannot even launch, settle now with verdict=None."""
     try:
+        task = await db.get(Task, run.task_id)
+        workspace_scope = {"attempt_id": task.current_attempt_id} if task and task.current_attempt_id else {}
         run.eval_container_id = ext_eval.start_eval(
             run.task_id,
             _case_task_path(case),
@@ -1924,6 +1926,7 @@ async def _start_eval(
             run.launch_time,
             pg_host=_pg_host_for_lane(run.lane_index),
             workspace_id=exp.workspace_id,
+            **workspace_scope,
         )
         run.status = ExperimentRunStatus.EVALUATING.value
     except Exception as e:

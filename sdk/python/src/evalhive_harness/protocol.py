@@ -81,6 +81,9 @@ def validate(kind: str, value: Any) -> Any:
 def validate_run(manifest: dict, run: dict) -> dict:
     validate("manifest", manifest)
     validate("run_spec", run)
+    from .resources import resources
+
+    resources(run)
     schema = manifest["config_schema"]
     try:
         if (

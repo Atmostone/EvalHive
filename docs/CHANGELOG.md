@@ -1,8 +1,17 @@
 # Changelog
 
-Формат: `YYYY-MM-DD — что изменилось — ссылка на блок плана / PR`.
+Format: `YYYY-MM-DD — change — plan section / PR reference`.
 
 ## 2026-11-04
+
+- **SPA-128 — translate explicit task resources inside connectors.** Shared SDK
+  declarations cover tool selection, MCP, skills, memory and instructions, with
+  private credential references. Pi uses the pinned official MCP client for
+  stdio and Streamable HTTP, preserves native tool names and canonical aliases,
+  and distinguishes empty tools and disabled memory from defaults. Knowledge
+  search uses a read-only MCP endpoint with a separate active-attempt token.
+  Registered environment image variants preserve dependency separation; prepared
+  inputs and external evaluation use isolated attempt workspaces.
 
 - **SPA-127 — execute the official Pi SDK through the Harness SDK.** A pinned
   TypeScript worker uses Pi's native session, tools, retries and control, waits

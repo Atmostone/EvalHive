@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -73,3 +74,40 @@ def write_private_json(layout: AttemptLayout, name: str, value: dict) -> str:
     finally:
         temporary.unlink(missing_ok=True)
     return str(PurePosixPath(layout.host_private) / name)
+
+
+def seed_workspace(layout: AttemptLayout, *, max_bytes=256 * 1024 * 1024):
+    """Copy prepared task inputs, excluding all managed attempt directories.
+
+    Environment preprocessing owns the task root. Each connector receives a
+    separate copy so retries cannot inherit files written by another attempt.
+    """
+    source = layout.root.parent
+    total = 0
+    managed = {layout.root.name}
+    for candidate in source.iterdir():
+        if candidate.is_symlink():
+            raise ValueError("Prepared task inputs cannot contain symlinks")
+        try:
+            uuid.UUID(candidate.name)
+        except ValueError:
+            continue
+        if (candidate / "workspace").is_dir() and (candidate / "private").is_dir():
+            managed.add(candidate.name)
+    for path in source.rglob("*"):
+        relative = path.relative_to(source)
+        if relative.parts[0] in managed:
+            continue
+        if path.is_symlink():
+            raise ValueError("Prepared task inputs cannot contain symlinks")
+        destination = layout.workspace / relative
+        if path.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+        elif path.is_file():
+            total += path.stat().st_size
+            if total > max_bytes:
+                raise ValueError("Prepared task inputs exceed the size limit")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+        else:
+            raise ValueError("Prepared task inputs must be regular files")

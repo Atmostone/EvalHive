@@ -114,7 +114,23 @@ runtime stage includes production dependencies only. Pi requires an explicit
 OpenAI-compatible `RunSpec.model` (`name`, `endpoint`, `credential_ref`); the key is
 looked up only in the private credential input. Agent/session/auth state stays in
 an isolated temporary directory, outside artifacts. Native resource/MCP/skill
-translation is added at the connector boundary in SPA-128.
+translation lives at the connector boundary. Pi uses the explicitly pinned
+`@earendil-works/pi-mcp` client for stdio and Streamable HTTP, exposes native MCP
+names with canonical aliases, and closes clients with the session. Native tests
+cover both transports, private authorization, explicit skills, disabled memory
+and an empty toolset.
+
+When a rootless `toolathlon-pack:latest` image is installed, build the registered
+environment variant using the same worker and lockfile:
+
+```bash
+docker build --target runtime --build-arg BASE_IMAGE=toolathlon-pack:latest -f harnesses/pi/Dockerfile -t evalhive-pi-toolathlon:1.5.0 .
+```
+
+The base supplies its Python/MCP/benchmark dependencies; the connector pins its
+own Node runtime. This does not run a benchmark. The task environment must pass
+its MCP environment references (including per-lane database coordinates) and
+prepared inputs. Portal tasks retain their owned environment network namespace.
 
 ## Migrations
 

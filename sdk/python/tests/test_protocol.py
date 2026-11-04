@@ -87,3 +87,18 @@ def test_framing_is_utf8_lf_with_size_bound():
         encode_line(response("r", "x" * MAX_LINE_BYTES))
     assert exc.value.code == "FRAME_TOO_LARGE"
     assert decode_line(encode_line(command("r", "describe")))["id"] == "r"
+
+
+def test_resource_resolution_is_private_and_rejects_duplicate_singletons():
+    from evalhive_harness import resource_config, resources
+
+    resource = {'id': 'mcp', 'kind': 'mcp', 'config': {'transport': 'http', 'url': 'http://fixture/mcp'},
+                'credential_refs': {'headers.Authorization': 'private'}}
+    assert resource_config(resource, {'private': 'Bearer fixture'})['headers']['Authorization'] == 'Bearer fixture'
+    assert 'headers' not in resource['config']
+    with pytest.raises(ProtocolError, match='unavailable'):
+        resource_config(resource, {})
+    duplicate = {'id': 'tools', 'kind': 'tools', 'config': {'names': []}}
+    with pytest.raises(ProtocolError) as exc:
+        resources({'environment': {'resources': [duplicate, {**duplicate, 'id': 'other'}]}})
+    assert exc.value.code == 'DUPLICATE_RESOURCE'

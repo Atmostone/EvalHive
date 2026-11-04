@@ -5,7 +5,9 @@ from app.runtime.spec import ProcessHandle, ProcessSpec
 
 class ProcessRuntime(ABC):
     @abstractmethod
-    def resolve_image(self, connector_id: str, connector_version: str) -> str: ...
+    def resolve_image(
+        self, connector_id: str, connector_version: str, environment_id: str = "workspace"
+    ) -> str: ...
 
     @abstractmethod
     def spawn(self, spec: ProcessSpec) -> ProcessHandle: ...

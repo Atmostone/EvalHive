@@ -32,7 +32,7 @@ def convert_spec(task, spec, *, timeout_seconds):
     credentials = {"model_api_key": spec.env.get("OPENAI_API_KEY", "")}
     if spec.agent_token:
         credentials["knowledge_token"] = spec.agent_token
-    config = {"tools": spec.tools, "memory_context": spec.memory_context}
+    config = {"tools": spec.tools, "memory_context": spec.memory_context if spec.memory_mode != "off" else ""}
     mcp_refs = []
     for index, server in enumerate(spec.mcp_servers):
         reference = f"legacy_mcp_{index}"
@@ -79,6 +79,7 @@ def convert_spec(task, spec, *, timeout_seconds):
         "limits": limits,
         "environment": {
             "id": "toolathlon" if identity.endswith("toolathlon") else "workspace",
+            **({"workspace_seed": "task"} if identity.endswith("toolathlon") else {}),
             "artifact_policy": {
                 "root": "." if config.get("benchmark_mode") else "output",
                 "recursive": not config.get("benchmark_mode", False),

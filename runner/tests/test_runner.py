@@ -373,3 +373,10 @@ def test_offline_delivery_keeps_a_redacted_recoverable_journal(tmp_path):
             assert recovered.pending_count == 0
 
     asyncio.run(scenario())
+
+
+def test_bearer_resource_credentials_are_redacted_with_or_without_scheme():
+    from evalhive_runner.redaction import Redactor
+
+    redactor = Redactor(['Bearer private-knowledge-fixture'])
+    assert redactor.text('Bearer private-knowledge-fixture / private-knowledge-fixture') == '[REDACTED] / [REDACTED]'

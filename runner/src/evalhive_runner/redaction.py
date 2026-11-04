@@ -9,6 +9,8 @@ class Redactor:
         variants = set()
         candidates = list(values)
         for value in list(candidates):
+            if isinstance(value, str) and value.startswith("Bearer "):
+                candidates.append(value[7:])
             # Some native launchers consume a structured credential (for
             # example a private MCP configuration). Its leaf values must also
             # be removed when the native process echoes only part of that input.

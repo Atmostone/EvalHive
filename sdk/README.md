@@ -112,6 +112,37 @@ runner when it receives the record. Backend receipt time is stored separately.
 Delayed delivery preserves observation time; execution duration is also measured
 with the runner's monotonic clock and is unknown without a terminal observation.
 
+## Task resources
+
+`RunSpec.environment.resources` is a bounded, validated list independent of the
+connector configuration. Resource IDs are unique; `tools` and `memory` are
+singletons. Both SDKs expose resource validation and private credential resolution.
+
+| Kind | Configuration |
+| --- | --- |
+| `tools` | `names`: explicit allowlist; an absent resource selects connector defaults, while `[]` disables tools |
+| `mcp` | `transport: stdio` with command/args/cwd, or `transport: http` with URL; optional timeout and native-tool-to-canonical aliases |
+| `skill` | Explicit mounted skill path; no installation or implicit user-directory discovery |
+| `memory` | `mode: off/flat/structured`; `off` forbids content, other modes carry the resolved context |
+| `instructions` | Environment/workspace rules as explicit content |
+
+MCP `credential_refs` map `env.NAME` or `headers.NAME` to private worker credential
+IDs. The backend persists references, not environment/header values. Native
+configuration is constructed inside the connector. Credentials never belong in
+URLs, public settings, resource snapshots or artifacts. Connectors must reject
+unavailable requested tools and resource failures before contacting a model.
+
+Tool start events retain native `name` and optional canonical `aliases`. A reader
+can preserve native identity while applying existing benchmark checks. The
+environment also owns artifact paths and optional `workspace_seed: task`: the
+runtime copies prepared inputs into the attempt workspace and excludes prior
+attempts. Evaluation must use that same attempt workspace.
+
+Manifests may register `requirements.environment_images`, mapping environment IDs
+to compatible installed images. The runtime selects and freezes the registered
+image without importing a harness implementation; environment dependencies remain
+separate from native agent configuration.
+
 ## External connector example
 
 [`examples/fake`](examples/fake) is a separate connector package with a manifest

@@ -37,12 +37,13 @@ from app.harnesses.attempts import (
 )
 from app.harnesses.failures import classify_result
 from app.harnesses.projection import load_attempt_view
+from app.harnesses.resources import provision_knowledge
 from app.models.execution_attempt import ExecutionAttempt
 from app.models.task import Task, TaskStatus
 from app.runtime import get_process_runtime
 from app.runtime.attach import DockerAttachedProcess
 from app.runtime.spec import BindMount, NetworkSpec, ProcessSpec, ResourceLimits
-from app.runtime.workspace import prepare_layout, write_private_json
+from app.runtime.workspace import prepare_layout, seed_workspace, write_private_json
 from app.utils.failures import merge_failure_type
 
 _jobs: dict = {}
@@ -147,7 +148,9 @@ async def launch_attempt(
     """The caller has resolved the profile/environment; no harness branches exist here."""
     validate_run(manifest, run_spec)
     settings, runtime = get_settings(), get_process_runtime()
-    image_id = await asyncio.to_thread(runtime.resolve_image, manifest["id"], manifest["version"])
+    environment_id = run_spec.get("environment", {}).get("id", "workspace")
+    image_args = (environment_id,) if environment_id in manifest.get("requirements", {}).get("environment_images", {}) else ()
+    image_id = await asyncio.to_thread(runtime.resolve_image, manifest["id"], manifest["version"], *image_args)
     active = await asyncio.to_thread(runtime.list_active)
     # Serialize capacity across API replicas as well as the orchestrator.
     await db.execute(text("SELECT pg_advisory_xact_lock(8412301)"))
@@ -183,12 +186,15 @@ async def launch_attempt(
     token = await issue_runner_token(
         db, attempt_id=attempt.id, task_id=task.id, workspace_id=task.workspace_id
     )
+    credentials = await provision_knowledge(db, attempt, spec, credentials)
     task.status, task.started_at = TaskStatus.IN_PROGRESS.value, _utcnow_naive()
     await db.commit()
     container = None
     layout = None
     try:
         layout = prepare_layout(str(task.id), str(attempt.id))
+        if spec.get("environment", {}).get("workspace_seed") == "task":
+            await asyncio.to_thread(seed_workspace, layout)
         credential_path = write_private_json(layout, "credentials.json", credentials)
         limits = spec.get("limits", {})
         process = ProcessSpec(
@@ -197,6 +203,7 @@ async def launch_attempt(
             attempt_id=str(attempt.id),
             connector_id=manifest["id"],
             connector_version=manifest["version"],
+            environment_id=environment_id,
             argv=tuple(manifest["entrypoint"]),
             image_id=image_id,
             workdir=spec["cwd"],

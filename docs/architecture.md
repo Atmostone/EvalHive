@@ -171,6 +171,20 @@ request; omitted budgets retain Pi's native behavior. Error parsing belongs to t
 connector and produces SDK failure facts. Backend classification consumes those
 facts and common runner errors, without branches naming Pi or OpenCode.
 
+SPA-128 defines common tools, MCP, skills, memory and instructions resources in
+the SDK. Connectors translate them to native configuration; Pi connects explicit
+servers through the pinned standalone MCP SDK and loads only declared skills.
+An omitted toolset selects native defaults; an explicit empty set disables tools.
+Memory off excludes both memory content and shared memory files. Native tool
+names and canonical aliases are retained together in attempt evidence.
+
+The read-only knowledge MCP endpoint uses a separate service token scoped to the
+current active workspace/task/attempt. Runner tokens cannot authorize knowledge
+calls; completed/replaced attempts lose access. Secrets are resolved only in the
+worker credential input. Environment image variants are registered declarations,
+prepared inputs are copied into isolated attempt workspaces, and external
+evaluation reads the selected attempt's files.
+
 ### Creating and running a task
 
 ```

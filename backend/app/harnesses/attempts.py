@@ -98,6 +98,9 @@ async def create_attempt(
     _reject_inline_secrets(run_spec["config"], manifest["config_schema"])
     if run_spec.get("model"):
         _reject_inline_secrets(run_spec["model"], {})
+    for resource in run_spec.get("environment", {}).get("resources", []):
+        if resource["kind"] == "mcp" and any(resource["config"].get(key) for key in ("env", "headers")):
+            raise AttemptError("INLINE_CREDENTIALS", "MCP environment and headers require private references", 422)
     try:
         attempt_id = uuid.UUID(run_spec["attempt_id"])
     except ValueError:

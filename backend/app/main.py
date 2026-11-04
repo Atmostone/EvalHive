@@ -21,6 +21,7 @@ from app.api.harnesses import router as harnesses_router
 from app.api.harnesses import secrets_router as harness_secrets_router
 from app.api.health import router as health_router
 from app.api.knowledge import router as knowledge_router
+from app.api.knowledge_mcp import router as knowledge_mcp_router
 from app.api.memory import router as memory_router
 from app.api.providers import models_router
 from app.api.providers import router as providers_router
@@ -356,6 +357,7 @@ app.include_router(harnesses_router)
 app.include_router(harness_profiles_router)
 app.include_router(harness_secrets_router)
 app.include_router(attempts_router)
+app.include_router(knowledge_mcp_router)
 app.include_router(data_lake_router)
 app.include_router(quality_router)
 app.include_router(registry_router)

@@ -21,6 +21,11 @@ class RuntimeFailure(ValueError):
     """A public runtime error whose message never includes private process input."""
 
 
+def registered_image(manifest, environment_id):
+    images = manifest.get("requirements", {}).get("environment_images", {})
+    return images.get(environment_id, manifest["image"])
+
+
 class DockerProcessRuntime(ProcessRuntime):
     def __init__(self, client=None):
         self._client = client
@@ -37,11 +42,13 @@ class DockerProcessRuntime(ProcessRuntime):
         ):
             raise RuntimeFailure("Execution requires the EvalHive rootless Docker daemon")
 
-    def resolve_image(self, connector_id: str, connector_version: str) -> str:
+    def resolve_image(
+        self, connector_id: str, connector_version: str, environment_id: str = "workspace"
+    ) -> str:
         manifest = get_manifest(connector_id, connector_version)
         self._check_daemon()
         try:
-            return self.client.images.get(manifest["image"]).id
+            return self.client.images.get(registered_image(manifest, environment_id)).id
         except ImageNotFound:
             raise RuntimeFailure("Registered connector image is not installed") from None
 
@@ -137,7 +144,7 @@ class DockerProcessRuntime(ProcessRuntime):
         manifest = get_manifest(spec.connector_id, spec.connector_version)
         self._check_daemon()
         try:
-            image = self.client.images.get(manifest["image"])
+            image = self.client.images.get(registered_image(manifest, spec.environment_id))
         except ImageNotFound:
             raise RuntimeFailure("Registered connector image is not installed") from None
         if spec.image_id is not None and image.id != spec.image_id:

@@ -9,6 +9,7 @@ import { ProtocolError, type Connector, type JsonObject, type JsonValue, type Ru
 import { ADAPTER_VERSION, connection, effectiveConfig, manifest, object } from './config.js';
 import { EventQueue, json, UsageTracker } from './events.js';
 import { failureFacts } from './errors.js';
+import { connectResources, resourcePlan } from './resources.js';
 
 function text(content: unknown, kind: string): string {
   return Array.isArray(content) ? content.map(object).filter((part) => part.type === kind)
@@ -27,6 +28,7 @@ export class PiConnector implements Connector {
     if (VERSION !== '1.5.0') throw new ProtocolError('NATIVE_VERSION_MISMATCH', 'Installed Pi version does not match the connector');
     const config = effectiveConfig(spec);
     connection(spec, this.credentials);
+    resourcePlan(spec, this.credentials);
     if (Number(config.maxOutputTokens) > Number(config.contextWindow))
       throw new ProtocolError('INVALID_LIMITS', 'Output limit cannot exceed the context window');
     if (config.thinkingLevel !== 'off' && !config.reasoning)
@@ -52,11 +54,13 @@ export class PiConnector implements Connector {
     let compactionActive = false;
     let agentStarted = false;
     let responseStatus: number | undefined;
+    let resourceSet: Awaited<ReturnType<typeof connectResources>> | undefined;
     let complete: (() => void) | undefined;
     const settled = new Promise<void>((resolve) => { complete = resolve; });
     const abort = () => { void session?.abort().catch(() => {}); };
     context.signal.addEventListener('abort', abort);
     try {
+      resourceSet = await connectResources(context.spec, this.credentials, context.signal);
       const runtime = await ModelRuntime.create({authPath: join(state, 'auth.json'), modelsPath: null,
         modelsStorePath: join(state, 'models.sqlite'), allowModelNetwork: false, refreshOnCreate: false});
       runtime.registerProvider('evalhive', {
@@ -96,12 +100,13 @@ export class PiConnector implements Connector {
           provider: {maxRetries: 0, timeoutMs: 60000}}, packages: []});
       const loader = new DefaultResourceLoader({cwd: context.spec.cwd, agentDir: state, settingsManager: settings,
         noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-        extensionFactories: [bridge], appendSystemPrompt: Array.isArray(context.spec.instructions) ?
-          context.spec.instructions.filter((value): value is string => typeof value === 'string') : []});
+        skillsOverride: () => resourceSet!.loadSkills(state),
+        extensionFactories: [bridge], appendSystemPrompt: [...(Array.isArray(context.spec.instructions) ?
+          context.spec.instructions.filter((value): value is string => typeof value === 'string') : []), ...resourceSet.instructions]});
       await loader.reload();
       ({session} = await createAgentSession({cwd: context.spec.cwd, agentDir: state, modelRuntime: runtime,
         model: selected, thinkingLevel: config.thinkingLevel as 'off', sessionManager: sessions,
-        settingsManager: settings, resourceLoader: loader}));
+        settingsManager: settings, resourceLoader: loader, tools: resourceSet.tools, customTools: resourceSet.customTools}));
       this.session = session;
       const current = session;
       if (current.thinkingLevel !== config.thinkingLevel)
@@ -138,6 +143,7 @@ export class PiConnector implements Connector {
           }
         } else if (event.type === 'tool_execution_start') {
           output.emit('tool.start', {call_id: event.toolCallId, name: event.toolName,
+            ...(resourceSet?.aliases[event.toolName]?.length ? {aliases: resourceSet.aliases[event.toolName]} : {}),
             arguments: json(event.args) as JsonObject, ...(assistantId ? {message_id: assistantId} : {}),
             ...(event.parentToolCallId ? {parent_call_id: event.parentToolCallId} : {})});
         } else if (event.type === 'tool_execution_update') {
@@ -183,6 +189,7 @@ export class PiConnector implements Connector {
       context.signal.removeEventListener('abort', abort);
       unsubscribe?.();
       session?.dispose();
+      await resourceSet?.close();
       this.session = undefined;
       rmSync(state, {recursive: true, force: true});
     }

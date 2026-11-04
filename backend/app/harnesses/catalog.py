@@ -51,6 +51,12 @@ def load_catalog(directory: str | Path | None = None) -> dict[str, dict]:
             if path.stat().st_size > 256 * 1024:
                 raise CatalogError("Harness manifest exceeds size limit")
             manifest = validate("manifest", json.loads(path.read_text(encoding="utf-8")))
+            images = manifest.get("requirements", {}).get("environment_images", {})
+            if not isinstance(images, dict) or not all(
+                isinstance(key, str) and key and isinstance(value, str) and value
+                for key, value in images.items()
+            ):
+                raise CatalogError("Connector environment images must be registered image references")
             _check_schema(manifest["config_schema"])
             for command in manifest.get("commands", {}).values():
                 _check_schema(command["input_schema"])

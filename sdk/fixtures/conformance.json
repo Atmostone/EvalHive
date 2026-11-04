@@ -67,7 +67,7 @@
       "Do the task"
     ],
     "config": {
-      "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
+      "prefix": "Hello world 🌍"
     },
     "model": null,
     "credential_refs": {},
@@ -161,7 +161,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
+          "prefix": "Hello world 🌍"
         },
         "model": null,
         "credential_refs": {},
@@ -214,7 +214,7 @@
               "Do the task"
             ],
             "config": {
-              "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
+              "prefix": "Hello world 🌍"
             },
             "model": null,
             "credential_refs": {},
@@ -257,7 +257,7 @@
               "Do the task"
             ],
             "config": {
-              "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
+              "prefix": "Hello world 🌍"
             },
             "model": null,
             "credential_refs": {},
@@ -470,7 +470,7 @@
         "event": "message.delta",
         "data": {
           "message_id": "m1",
-          "delta": "Thinking\u2026",
+          "delta": "Thinking…",
           "channel": "reasoning"
         }
       },
@@ -792,7 +792,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
+          "prefix": "Hello world 🌍"
         },
         "model": null,
         "credential_refs": {},
@@ -828,7 +828,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
+          "prefix": "Hello world 🌍"
         },
         "model": null,
         "credential_refs": {},
@@ -863,7 +863,7 @@
           "Do the task"
         ],
         "config": {
-          "prefix": "Hello\u2028world\u2029\ud83c\udf0d"
+          "prefix": "Hello world 🌍"
         },
         "model": null,
         "credential_refs": {},
@@ -1100,6 +1100,122 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "resource tools valid",
+      "kind": "resource",
+      "value": {
+        "id": "tools",
+        "kind": "tools",
+        "config": {
+          "names": []
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource memory valid",
+      "kind": "resource",
+      "value": {
+        "id": "memory",
+        "kind": "memory",
+        "config": {
+          "mode": "off"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource mcp stdio",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "stdio",
+          "command": "node",
+          "args": []
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource mcp http",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "http",
+          "url": "http://fixture/mcp"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource skill valid",
+      "kind": "resource",
+      "value": {
+        "id": "skill",
+        "kind": "skill",
+        "config": {
+          "path": "/resources/skill/SKILL.md"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "memory off rejects hidden content",
+      "kind": "resource",
+      "value": {
+        "id": "memory",
+        "kind": "memory",
+        "config": {
+          "mode": "off",
+          "content": "should not leak"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "MCP transport rejects mixed options",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "http",
+          "url": "http://fixture/mcp",
+          "command": "node"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "resource rejects unknown kind",
+      "kind": "resource",
+      "value": {
+        "id": "r",
+        "kind": "invented",
+        "config": {}
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "resource private header reference",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "http",
+          "url": "http://fixture/mcp"
+        },
+        "credential_refs": {
+          "headers.Authorization": "private-ref"
+        }
+      },
+      "error": null
     }
   ]
 }

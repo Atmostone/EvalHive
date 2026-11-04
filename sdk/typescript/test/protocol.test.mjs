@@ -46,3 +46,14 @@ test('UTF8/LF framing preserves Unicode separators and splits byte chunks', asyn
   async function* incomplete() {yield Buffer.from('unterminated');}
   await assert.rejects(async () => {for await (const _ of lines(incomplete())) {}}, {code: 'INVALID_FRAME'});
 });
+
+test('resource resolution stays private and rejects duplicate singletons', async () => {
+  const {resourceConfig, resources} = await import('../dist/index.js');
+  const resource = {id: 'mcp', kind: 'mcp', config: {transport: 'http', url: 'http://fixture/mcp'},
+    credential_refs: {'headers.Authorization': 'private'}};
+  assert.equal(resourceConfig(resource, {private: 'Bearer fixture'}).headers.Authorization, 'Bearer fixture');
+  assert.equal(resource.config.headers, undefined);
+  assert.throws(() => resourceConfig(resource, {}), {code: 'CREDENTIAL_REQUIRED'});
+  const duplicate = {id: 'tools', kind: 'tools', config: {names: []}};
+  assert.throws(() => resources({environment: {resources: [duplicate, {...duplicate, id: 'other'}]}}), {code: 'DUPLICATE_RESOURCE'});
+});

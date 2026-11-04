@@ -11,6 +11,7 @@ from .protocol import (
     validate,
     validate_run,
 )
+from .resources import resource_config, resources
 
 __all__ = [
     "PROTOCOL_VERSION",
@@ -22,4 +23,6 @@ __all__ = [
     "response",
     "validate",
     "validate_run",
+    "resource_config",
+    "resources",
 ]

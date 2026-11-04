@@ -11,7 +11,10 @@
   "requirements": {
     "node": ">=22.19.0",
     "harness_version": "1.5.0",
-    "model_api": "openai-compatible"
+    "model_api": "openai-compatible",
+    "environment_images": {
+      "toolathlon": "evalhive-pi-toolathlon:1.5.0"
+    }
   },
   "config_schema": {
     "type": "object",

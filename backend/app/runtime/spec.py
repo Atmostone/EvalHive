@@ -32,6 +32,7 @@ class ProcessSpec:
     connector_id: str
     connector_version: str
     argv: tuple[str, ...]
+    environment_id: str = "workspace"
     image_id: str | None = None
     workdir: str = "/workspace"
     environment: dict[str, str] = field(default_factory=dict, repr=False)

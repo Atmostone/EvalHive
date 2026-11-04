@@ -233,3 +233,37 @@ def test_environment_helpers_label_the_workspace_for_namespace_validation(
     assert labels["evalhive.role"] == "environment"
     assert labels["evalhive.task_id"] == spec.task_id
     assert labels["evalhive.workspace_id"] == spec.workspace_id
+
+
+def test_attempt_seed_isolated_from_previous_attempts(setup_runtime):
+    from app.runtime.workspace import seed_workspace
+
+    _, _, _, layout = setup_runtime
+    task_root = layout.root.parent
+    (task_root / 'input.txt').write_text('prepared input')
+    prior = task_root / str(uuid.uuid4()) / 'workspace'
+    prior.mkdir(parents=True)
+    (prior.parent / 'private').mkdir()
+    (prior / 'answer.txt').write_text('old answer must not leak')
+    named_input = task_root / str(uuid.uuid4())
+    named_input.mkdir()
+    (named_input / 'data.txt').write_text('legitimate UUID input directory')
+    seed_workspace(layout)
+    assert (layout.workspace / 'input.txt').read_text() == 'prepared input'
+    assert not (layout.workspace / prior.parent.name).exists()
+    assert (layout.workspace / named_input.name / 'data.txt').read_text() == 'legitimate UUID input directory'
+    (layout.workspace / 'input.txt').write_text('attempt mutation')
+    assert (task_root / 'input.txt').read_text() == 'prepared input'
+    (task_root / 'escape').symlink_to('/outside')
+    with pytest.raises(ValueError, match='symlinks'):
+        seed_workspace(layout)
+
+
+def test_environment_image_selection_is_connector_neutral(setup_runtime):
+    process_runtime, client, spec, _ = setup_runtime
+    manifest = runtime.get_manifest(spec.connector_id, spec.connector_version)
+    manifest['requirements'] = {'environment_images': {'fixture-tools': 'registry/fake-tools:7.0'}}
+    frozen = process_runtime.resolve_image(spec.connector_id, spec.connector_version, 'fixture-tools')
+    handle = process_runtime.spawn(replace(spec, environment_id='fixture-tools', image_id=frozen))
+    assert handle.image_id == frozen
+    assert client.images.get.call_args.args == ('registry/fake-tools:7.0',)

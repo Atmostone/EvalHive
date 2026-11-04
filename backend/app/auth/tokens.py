@@ -67,16 +67,19 @@ async def issue_runner_token(
     task_id: uuid.UUID,
     workspace_id: uuid.UUID,
     ttl_hours: int = 24,
+    kind: str = "runner",
 ) -> str:
     from app.models.execution_attempt import ExecutionAttempt
 
+    if kind not in {"runner", "knowledge"}:
+        raise ValueError("Unsupported attempt token kind")
     attempt = await db.get(ExecutionAttempt, attempt_id)
     if attempt is None or attempt.task_id != task_id or attempt.workspace_id != workspace_id:
         raise ValueError("Runner token scope does not match the attempt")
     plain = secrets.token_urlsafe(48)
     db.add(
         ServiceToken(
-            kind="runner",
+            kind=kind,
             token_hash=hash_token(plain),
             attempt_id=attempt_id,
             task_id=task_id,
@@ -89,7 +92,7 @@ async def issue_runner_token(
 
 
 async def verify_runner_token(
-    db: AsyncSession, *, plain: str, attempt_id: uuid.UUID
+    db: AsyncSession, *, plain: str, attempt_id: uuid.UUID, kind: str = "runner"
 ) -> ServiceToken | None:
     from app.models.execution_attempt import ExecutionAttempt
     from app.models.task import Task
@@ -100,7 +103,7 @@ async def verify_runner_token(
         .join(Task, Task.id == ExecutionAttempt.task_id)
         .where(
             ServiceToken.token_hash == hash_token(plain),
-            ServiceToken.kind == "runner",
+            ServiceToken.kind == kind,
             ServiceToken.attempt_id == attempt_id,
             ServiceToken.task_id == ExecutionAttempt.task_id,
             ServiceToken.workspace_id == ExecutionAttempt.workspace_id,
@@ -110,3 +113,22 @@ async def verify_runner_token(
     if token is None or (token.expires_at and token.expires_at < _utcnow_naive()):
         return None
     return token
+
+
+async def verify_knowledge_token(db: AsyncSession, *, plain: str, attempt_id: uuid.UUID):
+    from app.models.execution_attempt import ExecutionAttempt
+    from app.models.task import Task
+
+    token = await verify_runner_token(db, plain=plain, attempt_id=attempt_id, kind="knowledge")
+    if token is None:
+        return None
+    current = await db.scalar(
+        select(ExecutionAttempt.id)
+        .join(Task, Task.current_attempt_id == ExecutionAttempt.id)
+        .where(
+            ExecutionAttempt.id == attempt_id,
+            Task.id == ExecutionAttempt.task_id,
+            ExecutionAttempt.status.in_(["created", "running", "stopping"]),
+        )
+    )
+    return token if current is not None else None

@@ -179,37 +179,17 @@
             "resources": {
               "type": "array",
               "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "kind": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "config": {
-                    "type": "object"
-                  },
-                  "credential_refs": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string",
-                      "minLength": 1
-                    }
-                  }
-                },
-                "required": [
-                  "id",
-                  "kind",
-                  "config"
-                ],
-                "additionalProperties": false
-              }
+                "$ref": "#/$defs/resource"
+              },
+              "maxItems": 128
             },
             "artifact_policy": {
               "type": "object"
+            },
+            "workspace_seed": {
+              "enum": [
+                "task"
+              ]
             }
           },
           "required": [
@@ -569,6 +549,14 @@
         "message_id": {
           "type": "string",
           "minLength": 1
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
         }
       },
       "required": [
@@ -1108,6 +1096,324 @@
         "kind"
       ],
       "additionalProperties": false
+    },
+    "resource": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "tools",
+            "mcp",
+            "skill",
+            "memory",
+            "instructions"
+          ]
+        },
+        "config": {
+          "type": "object"
+        },
+        "credential_refs": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(env|headers)\\.[A-Za-z0-9_-]+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "config"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "tools"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "properties": {
+                  "names": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true
+                  }
+                },
+                "required": [
+                  "names"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "not": {
+              "required": [
+                "credential_refs"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "mcp"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "properties": {
+                  "transport": {
+                    "enum": [
+                      "stdio",
+                      "http"
+                    ]
+                  },
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "env": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "url": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300
+                  },
+                  "aliases": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "transport"
+                ],
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "transport": {
+                          "const": "stdio"
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "command"
+                      ],
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "url"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "headers"
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "else": {
+                      "required": [
+                        "url"
+                      ],
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "command"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "args"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "env"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "cwd"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "skill"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "not": {
+              "required": [
+                "credential_refs"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "memory"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "off",
+                      "flat",
+                      "structured"
+                    ]
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "mode": {
+                          "const": "off"
+                        }
+                      }
+                    },
+                    "then": {
+                      "not": {
+                        "required": [
+                          "content"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "not": {
+              "required": [
+                "credential_refs"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "instructions"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "type": "object",
+                "properties": {
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "content"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "not": {
+              "required": [
+                "credential_refs"
+              ]
+            }
+          }
+        }
+      ]
     }
   },
   "$ref": "#/$defs/wire_message"

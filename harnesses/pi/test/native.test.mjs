@@ -6,20 +6,23 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { ConnectorClient } from '@evalhive/harness-sdk';
 import { fakeOpenAI, stream } from '../../shared/fake-openai.mjs';
+import { fakeMcpHTTP } from '../../shared/fake-mcp-http.mjs';
 
 const entrypoint = fileURLToPath(new URL('../dist/index.js', import.meta.url));
-async function runFixture(handler, {control, config = {}, limits = {}} = {}) {
+async function runFixture(handler, {control, config = {}, limits = {}, resources = [], prepare, privateCredentials = {}} = {}) {
   const endpoint = await fakeOpenAI(handler);
   const directory = mkdtempSync(join(tmpdir(), 'evalhive-pi-test-'));
   const workspace = join(directory, 'workspace');
   mkdirSync(workspace);
+  if (prepare) resources = await prepare(workspace);
   const credentials = join(directory, 'private.json');
-  writeFileSync(credentials, JSON.stringify({model_api_key: 'fake-key-for-local-tests'}), {mode: 0o600});
+  writeFileSync(credentials, JSON.stringify({model_api_key: 'fake-key-for-local-tests', ...privateCredentials}), {mode: 0o600});
   const client = ConnectorClient.launch(['node', entrypoint], {env: {PATH: process.env.PATH,
     HOME: directory, TMPDIR: tmpdir(), EVALHIVE_CREDENTIALS_FILE: credentials}});
   const spec = {protocol_version: '1.0', workspace_id: 'workspace', task_id: 'task', attempt_id: 'attempt',
     task: {prompt: 'Create the requested result and finish.'}, cwd: workspace, config,
     instructions: ['This is a local engineering fixture.'], limits,
+    environment: {id: 'fixture', resources},
     model: {name: 'fake-model', endpoint: endpoint.url, credential_ref: 'model_api_key'}};
   const events = [];
   const collect = (async () => {
@@ -181,4 +184,81 @@ test('Pi cancellation interrupts an active bash tool', {timeout: 20000}, async (
   }});
   assert.equal(result.status, 'cancelled');
   assert(events.some((event) => event.event === 'tool.end'));
+});
+
+test('explicit empty toolset and memory off override native discovery', {timeout: 20000}, async () => {
+  const {result} = await runFixture((body, index, res) => {
+    assert.equal(body.tools?.length ?? 0, 0);
+    assert(!JSON.stringify(body.messages).includes('FORBIDDEN_DISCOVERED_MEMORY'));
+    stream(res, index, {content: 'No tools or memory'});
+  }, {prepare(workspace) {
+    writeFileSync(join(workspace, 'AGENTS.md'), 'FORBIDDEN_DISCOVERED_MEMORY');
+    return [{id: 'toolset', kind: 'tools', config: {names: []}},
+      {id: 'memory', kind: 'memory', config: {mode: 'off'}}];
+  }});
+  assert.equal(result.status, 'success');
+});
+
+test('explicit skills, memory and native builtin aliases reach Pi', {timeout: 20000}, async () => {
+  const {result} = await runFixture((body, index, res) => {
+    const context = JSON.stringify(body.messages);
+    assert(context.includes('REMEMBER_FIXTURE_RULE'));
+    assert(context.includes('fixture-skill'));
+    assert.deepEqual(body.tools.map((tool) => tool.function.name), ['read']);
+    stream(res, index, {content: 'Configured resources'});
+  }, {prepare(workspace) {
+    const skill = join(workspace, 'SKILL.md');
+    writeFileSync(skill, '---\nname: fixture-skill\ndescription: Read the engineering fixture.\n---\nUse fixture data.\n');
+    return [{id: 'toolset', kind: 'tools', config: {names: ['file_read']}},
+      {id: 'memory', kind: 'memory', config: {mode: 'structured', content: 'REMEMBER_FIXTURE_RULE'}},
+      {id: 'skill', kind: 'skill', config: {path: skill}}];
+  }});
+  assert.equal(result.status, 'success');
+});
+
+test('official MCP client exposes calls with native names and canonical aliases', {timeout: 20000}, async () => {
+  const {result, events} = await runFixture((body, index, res) => {
+    assert.deepEqual(body.tools.map((tool) => tool.function.name), ['mcp__fixture__echo']);
+    if (index === 1) stream(res, index, {tool: {id: 'mcp-1', type: 'function', function: {
+      name: 'mcp__fixture__echo', arguments: JSON.stringify({text: 'fixture-value'})}}});
+    else {
+      assert(JSON.stringify(body.messages).includes('fixture-value'));
+      stream(res, index, {content: 'MCP completed'});
+    }
+  }, {resources: [{id: 'toolset', kind: 'tools', config: {names: ['search_knowledge_base']}},
+    {id: 'fixture', kind: 'mcp', config: {transport: 'stdio', command: process.execPath,
+      args: [fileURLToPath(new URL('../../shared/fake-mcp.mjs', import.meta.url))], aliases: {echo: 'search_knowledge_base'}}}]});
+  assert.equal(result.status, 'success');
+  const call = events.find((event) => event.event === 'tool.start');
+  assert.equal(call.data.name, 'mcp__fixture__echo');
+  assert.deepEqual(call.data.aliases, ['search_knowledge_base']);
+  assert.equal(events.find((event) => event.event === 'tool.end').data.status, 'completed');
+});
+
+test('unavailable required MCP fails before any model request', {timeout: 20000}, async () => {
+  const {result, requests} = await runFixture(() => { throw new Error('Model must not run'); },
+    {resources: [{id: 'missing', kind: 'mcp', config: {transport: 'stdio', command: '/missing/fixture-mcp'}}]});
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error.code, 'MCP_UNAVAILABLE');
+  assert.equal(requests.length, 0);
+});
+
+test('HTTP MCP resolves private authorization and knowledge aliases', {timeout: 20000}, async () => {
+  const mcp = await fakeMcpHTTP((req) => assert.equal(req.headers.authorization, 'Bearer fixture-knowledge-token'));
+  try {
+    const {result, events} = await runFixture((body, index, res) => {
+      if (index === 1) stream(res, index, {tool: {id: 'knowledge-1', type: 'function', function: {
+        name: 'mcp__knowledge__search_knowledge_base', arguments: JSON.stringify({query: 'fixture'})}}});
+      else {
+        assert(JSON.stringify(body.messages).includes('Knowledge fixture result'));
+        stream(res, index, {content: 'Knowledge read'});
+      }
+    }, {privateCredentials: {knowledge: 'Bearer fixture-knowledge-token'}, resources: [
+      {id: 'tools', kind: 'tools', config: {names: ['search_knowledge_base']}},
+      {id: 'knowledge', kind: 'mcp', config: {transport: 'http', url: mcp.url,
+        aliases: {search_knowledge_base: 'search_knowledge_base'}}, credential_refs: {'headers.Authorization': 'knowledge'}}]});
+    assert.equal(result.status, 'success');
+    assert(!JSON.stringify(events).includes('fixture-knowledge-token'));
+    assert(mcp.requests.some((request) => request.method === 'tools/call'));
+  } finally { await mcp.close(); }
 });

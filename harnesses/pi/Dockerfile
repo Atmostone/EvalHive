@@ -1,4 +1,9 @@
-FROM node:22.23.1-bookworm-slim AS build
+ARG BASE_IMAGE=node:22.23.1-bookworm-slim
+FROM node:22.23.1-bookworm-slim AS node-runtime
+
+FROM ${BASE_IMAGE} AS build
+# Environment images supply benchmark dependencies; the connector pins Node.
+COPY --from=node-runtime /usr/local/ /usr/local/
 WORKDIR /opt/evalhive
 COPY sdk/python/src/evalhive_harness/schemas sdk/python/src/evalhive_harness/schemas
 COPY sdk/typescript sdk/typescript
@@ -13,7 +18,8 @@ CMD ["npm", "test", "--prefix", "/opt/evalhive/harnesses/pi"]
 FROM build AS production-dependencies
 RUN npm prune --omit=dev --prefix harnesses/pi && npm prune --omit=dev --prefix sdk/typescript
 
-FROM node:22.23.1-bookworm-slim AS runtime
+FROM ${BASE_IMAGE} AS runtime
+COPY --from=node-runtime /usr/local/ /usr/local/
 COPY --from=production-dependencies /opt/evalhive/sdk/typescript/dist /opt/evalhive/sdk/typescript/dist
 COPY --from=production-dependencies /opt/evalhive/sdk/typescript/package.json /opt/evalhive/sdk/typescript/package.json
 COPY --from=production-dependencies /opt/evalhive/sdk/typescript/node_modules /opt/evalhive/sdk/typescript/node_modules

@@ -69,3 +69,13 @@ test('preflight rejects unsupported settings and inline endpoint credentials', (
   assert.throws(() => connection(spec, {}), {code: 'MODEL_REQUIRED'});
   assert.throws(() => connection({...spec, model: {name: 'fake', endpoint: 'https://user:secret@example.invalid', credential_ref: 'k'}}, {k: 'fake'}), {code: 'INVALID_MODEL_ENDPOINT'});
 });
+
+test('resource preflight rejects unavailable native tools and credentials', async () => {
+  const {resourcePlan} = await import('../dist/resources.js');
+  const spec = {cwd: '/workspace', environment: {id: 'fixture', resources: [
+    {id: 'tools', kind: 'tools', config: {names: ['invented_tool']}}]}};
+  assert.throws(() => resourcePlan(spec, {}), {code: 'UNSUPPORTED_TOOL'});
+  spec.environment.resources = [{id: 'mcp', kind: 'mcp', config: {transport: 'http', url: 'http://fixture/mcp'},
+    credential_refs: {'headers.Authorization': 'missing'}}];
+  assert.throws(() => resourcePlan(spec, {}), {code: 'CREDENTIAL_REQUIRED'});
+});

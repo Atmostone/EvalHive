@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { ValidateFunction } from 'ajv';
+import { resources } from './resources.js';
 
 export const PROTOCOL_VERSION = '1.0' as const;
 export const MAX_LINE_BYTES = 1024 * 1024;
@@ -94,6 +95,7 @@ export function validate<T = JsonObject>(kind: string, value: unknown): T {
 
 export function validateRun(manifest: Manifest, run: RunSpec): RunSpec {
   validate('manifest', manifest); validate('run_spec', run);
+  resources(run);
   let valid: boolean;
   try {
     if (manifest.config_schema.$schema !== undefined && manifest.config_schema.$schema !== 'https://json-schema.org/draft/2020-12/schema')

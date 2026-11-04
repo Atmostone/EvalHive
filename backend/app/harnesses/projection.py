@@ -148,8 +148,11 @@ def project_log(events, *, tool_aliases=None):
             if kind == "tool.start":
                 row.update(
                     {
-                        "tool_name": tool_aliases.get(data["name"], data["name"]),
+                        "tool_name": tool_aliases.get(
+                            data["name"], next(iter(data.get("aliases", [])), data["name"])
+                        ),
                         "native_tool_name": data["name"],
+                        "tool_aliases": data.get("aliases", []),
                         "arguments": data["arguments"],
                         "start_missing": False,
                     }
