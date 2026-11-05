@@ -140,6 +140,8 @@ jobs:
           rootless: true
           set-host: true
       - run: npm ci --prefix frontend && npm run build --prefix frontend
+      - name: Build the pinned frontend production image
+        run: docker build --target prod -t evalhive-frontend:ci frontend
       - name: Pinned native conformance and Work browser acceptance
         env:
           E2E_DATA_DIR: ${{ runner.temp }}/evalhive-e2e-data
