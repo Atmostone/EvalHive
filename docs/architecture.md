@@ -1,6 +1,6 @@
 # Architecture
 
-> Snapshot as of 2026-07-10. Any PR that changes components or data flows must update this file.
+> Execution architecture updated on 2026-11-05. The Harness SDK sections describe current launches and controls. Historical agent/callback notes explain pre-SDK archives. Changes to components or data flows must update this file.
 
 ## Services (docker compose)
 
@@ -88,9 +88,9 @@ then starts its resolved immutable image ID. Writable mounts stay within the
 attempt tree; shared/environment dependencies are read-only and server registered.
 Private inputs live beside the work tree, outside artifact collection. A portal
 namespace must belong to the same task/workspace and carry the environment role.
-Toolathlon helpers now declare that scope. The old AgentSpec/DockerRuntime remain
-temporary compatibility exports; their implementation moved to the legacy boundary
-and is removed in SPA-134. New runner code uses the neutral runtime directly.
+Toolathlon helpers declare that scope. SPA-134 removed AgentSpec, DockerRuntime
+and the legacy execution manager. Current launches use the neutral runtime; the
+management compatibility facade lists, inspects and stops owned runner containers.
 
 SPA-124 runs the shared Python runner **outside** the connector container. Docker
 attach transports JSONL stdin/stdout with bounded multiplexed buffers; the event
@@ -108,22 +108,19 @@ cannot become success. The server replays an orphaned spool after heartbeat loss
 and declares interrupted evidence explicitly. Image ID and runner policy are
 frozen before execution; one runner slot is the default server resource policy.
 
-SPA-125 wraps `agent-image/agent.py` without copying its completion loop. The
-temporary worker translates native messages, tool IDs and per-turn usage into
-SDK events and retains native records with its adapter version. Unknown cache,
-reasoning and cost details stay unknown. Native feedback enters the original
-queue; cancellation interrupts the loop and the runner stops the whole container.
-Unsupported model switching and native settings fail explicitly. An explicit
-empty tool list stays empty.
+SPA-125 provided a temporary adapter around the former built-in agent during
+migration. SPA-134 removed that worker, bridge, executable loop and build inputs.
+Pi is now the default, and OpenCode uses the same connector contract. Feedback,
+abort and health compatibility routes address the current attempt. Retired
+webhooks authenticate legacy tokens, reject attempt writes with 409 and return
+410 for pre-SDK tasks. Historical log archives remain readable.
 
-The transition bridge converts the old AgentSpec at the connector boundary,
-including the registered Toolathlon environment image and portal namespace. MCP
-credentials use private references rather than public RunSpec values. Existing
-feedback/abort/health routes wrap attempt control. Legacy webhook/log write routes
-reject attempt-backed tasks under the task lock, so a read-only knowledge token
-cannot bypass runner fencing. SDK startup capacity keeps tasks queued, and the
-orchestrator cannot overwrite a fast terminal result with an in-progress status.
-The temporary connector and bridge are removed in SPA-134.
+All launch modes use the shared runner. The task workflow separately performs
+orchestrated review, bounded retry and final archival; direct mode never calls an
+orchestrator or automatic evaluator. A durable review claim prevents replaying an
+uncertain paid review after interruption. Configuration, native outcome and event
+evidence remain attached to their original attempt. See
+[engineering validation](harness-sdk-validation.md) for acceptance boundaries.
 
 SPA-126 projects the immutable journal into existing task logs, traces and data
 lake records. Call identity includes the session; nested/interleaved calls retain
@@ -1692,8 +1689,8 @@ nothing on one side makes no claim at all.
 | `app/api/*` | REST + WS endpoints |
 | `app/orchestrator/engine.py` | Polling loop, decomposition, template selection, spawn, timeout check |
 | `app/orchestrator/llm.py` | LLM-powered orchestrator decisions + reasoning trail |
-| `app/orchestrator/docker_manager.py` | Docker SDK wrapper: spawn/kill/list/health/feedback/abort/switch (low-level — go through `app.plugins.runtime`) |
-| `app/plugins/runtime.py` | `AgentRuntime` ABC + `DockerRuntime` impl. Every call-site (engine, api/agents, api/chat, api/events, scheduler) goes through this. |
+| `app/runtime/*` | Rootless process isolation, registered images, workspaces, resource limits and owned environment networks |
+| `app/plugins/runtime.py` | Compatibility management facade for inspecting and stopping owned runner containers |
 | `app/plugins/embeddings.py` | `EmbeddingProvider` ABC + `FastembedProvider`/`OpenAIEmbeddingProvider`/`SettingsDispatchProvider`. `fastembed`/`httpx` are imported ONLY inside the plugin |
 | `app/plugins/llm.py` | `LLMProvider` ABC + `LiteLLMProvider`. Every `acompletion(...)` call goes through it. Adds transient 429/5xx retry (exp backoff, `LLM_TRANSIENT_RETRIES`/`LLM_RETRY_BASE_SECONDS`) and a per-provider `asyncio.Semaphore` registry fed by `providers.max_concurrency` (SPA-47) |
 | `app/plugins/secrets.py` | `SecretsProvider` ABC + `DBSecretsProvider`/`EnvSecretsProvider`. `llm_api_key` is read through it |
@@ -1738,14 +1735,15 @@ multiplicity-corrected statistics on top of it (`_significance_cells` /
 | `app/utils/failures.py` | SPA-87 Why a run died, as a type: the failure vocabulary, the single LLM-error classifier (also the backend's retry predicate, so «retry this?» and «did infrastructure decide this?» cannot drift apart), and `is_contaminated` — the subset the experiment report excludes |
 | `app/schemas/webhooks.py` | Pydantic discriminated union for agent → orchestrator events |
 
-## Agent components (container)
+## Execution components
 
-| File | What it does |
-|------|--------------|
-| `entrypoint.py` | Runs feedback_server alongside run_agent, sends the final webhook |
-| `agent.py` | LLM tool-calling loop, MCP integration, periodic progress, control-queue drain; honors `AGENT_TOOL_INJECTION` (E-12) — appends a perturbation payload to the first tool result |
-| `feedback_server.py` | FastAPI on :8080 — health/feedback/switch_model/abort |
-| `time_server.py` | Sample MCP server (used to verify the MCP integration) |
+| Component | Responsibility |
+|-----------|----------------|
+| `harnesses/pi` | TypeScript worker over the official Pi SDK |
+| `harnesses/opencode` | Isolated native server, official HTTP SDK and SSE observation |
+| `runner` | JSONL lifecycle, heartbeat, command receipts, durable delivery and shutdown |
+| `app/harnesses/workflow.py` | Task review, retry and archive stages after native completion |
+| `environments/workspace` | Independent Python/MCP dependencies and existing time/web servers |
 
 ## Plugin layer (R5 + R6 wiring)
 

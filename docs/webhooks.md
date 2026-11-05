@@ -1,13 +1,23 @@
-# Webhook protocol (agent → orchestrator)
+# Historical webhook protocol (pre-SDK agent → orchestrator)
+
+Current execution uses the versioned Harness SDK journal at
+`POST /api/v1/attempts/{attempt_id}/events`. The former webhook endpoints retain
+legacy-token authentication and return 409 for attempt-backed tasks or 410 for
+historical tasks. They do not process completion, review or retry callbacks.
+See [the SDK contract](../sdk/README.md) and [API reference](api.md).
+
+The envelope below documents records produced before the SDK cutover. Its
+Pydantic definitions remain in `backend/app/schemas/webhooks.py`; retired agent
+source can be inspected in the previous release (`8424384`).
 
 > P3 formalised the contract via a Pydantic discriminated union; R2 added auth + idempotency + URL versioning; R6 made the whole flow atomic.
 > Source of truth: `backend/app/schemas/webhooks.py` + `backend/app/api/webhooks.py`.
 
 ## Endpoint (R2)
 
-Canonical path: **`POST /api/v1/agent-webhook/{task_id}`**.
+Historical canonical path: **`POST /api/v1/agent-webhook/{task_id}`**.
 
-The legacy alias `POST /api/agent-webhook/{task_id}` stays around until 2026-08-01 — it returns the same status codes plus `Sunset` / `Deprecation` / `Link` headers (even on 4xx responses).
+Before the SDK cutover, `POST /api/agent-webhook/{task_id}` was an alias with deprecation headers. Both paths now use the retirement behavior described above.
 
 Headers:
 - `Authorization: Bearer <EVALHIVE_AGENT_TOKEN>` — required. A missing, invalid, or expired token returns 401.

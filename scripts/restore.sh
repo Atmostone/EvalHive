@@ -4,7 +4,7 @@
 # rehearsal can be run at any time without touching the live stand.
 #
 #     scripts/restore.sh --backup DIR [--scratch] [--keep]
-#     scripts/restore.sh --backup DIR --live
+#     scripts/restore.sh --backup DIR --live [--compose-helper PATH]
 #
 # A backup that has never been restored is a hypothesis. `--scratch` (the
 # default) restores the dump into a temporary Postgres container and the tarball
@@ -30,6 +30,7 @@ BACKUP=""
 MODE="scratch"
 KEEP=0
 PROJECT="evalhive"
+COMPOSE_HELPER=""
 
 usage() { sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
         --live) MODE="live"; shift ;;
         --keep) KEEP=1; shift ;;
         --project) PROJECT="$2"; shift 2 ;;
+        --compose-helper) COMPOSE_HELPER="$2"; shift 2 ;;
         -h|--help) usage 0 ;;
         *) echo "unknown argument: $1" >&2; usage 1 ;;
     esac
@@ -114,12 +116,29 @@ if [[ "${MODE}" == "live" ]]; then
         alpine sh -c 'rm -rf /data/* /data/.minio.sys && tar xzf /backup/minio.tar.gz -C /data'
 
     echo "==> restoring database"
-    docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d postgres >/dev/null
-    until docker exec "${PROJECT}-postgres-1" pg_isready -h 127.0.0.1 -U evalhive >/dev/null 2>&1; do sleep 1; done
+    if [[ -n "${COMPOSE_HELPER}" ]]; then
+        [[ -x "${COMPOSE_HELPER}" ]] || { echo 'FATAL: compose helper is not executable' >&2; exit 2; }
+        "${COMPOSE_HELPER}" up -d postgres >/dev/null
+    elif docker inspect "${PROJECT}-postgres-1" >/dev/null 2>&1; then
+        # Preserve the actual deployed credentials, volume and server image.
+        docker start "${PROJECT}-postgres-1" >/dev/null
+    else
+        docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d postgres >/dev/null
+    fi
     PGUSER="$(docker exec "${PROJECT}-postgres-1" printenv POSTGRES_USER)"
     PGDB="$(docker exec "${PROJECT}-postgres-1" printenv POSTGRES_DB)"
+    for _ in $(seq 60); do
+        docker exec "${PROJECT}-postgres-1" pg_isready -h 127.0.0.1 -U "${PGUSER}" >/dev/null 2>&1 && break
+        sleep 1
+    done
+    docker exec "${PROJECT}-postgres-1" pg_isready -h 127.0.0.1 -U "${PGUSER}" >/dev/null 2>&1 || {
+        echo 'FATAL: PostgreSQL did not become ready' >&2; exit 1; }
+    # --clean only removes objects present in the dump. Newer SDK tables can
+    # otherwise survive rollback or prevent old tables from being restored.
+    docker exec "${PROJECT}-postgres-1" dropdb --force --if-exists -U "${PGUSER}" -- "${PGDB}"
+    docker exec "${PROJECT}-postgres-1" createdb -U "${PGUSER}" -- "${PGDB}"
     docker exec -i "${PROJECT}-postgres-1" pg_restore -U "${PGUSER}" -d "${PGDB}" \
-        --clean --if-exists --no-owner < "${BACKUP}/db.dump"
+        --no-owner --exit-on-error < "${BACKUP}/db.dump"
 
     echo "==> live restore complete. Bring the rest of the stack back up when ready."
     exit 0

@@ -236,7 +236,7 @@ off` cells pin the template for the engine fast path) with evaluation always on.
 | GET | `/api/agents/{cid}` | Stats |
 | POST | `/api/agents/{cid}/kill` | |
 | POST | `/api/agents/kill-all` | Kill switch |
-| GET | `/api/agents/{cid}/health` | Forwarded from the agent's `:8080/health` (uptime/iteration/tokens) |
+| GET | `/api/agents/{cid}/health` | Current attempt status and runner heartbeat |
 | POST | `/api/agents/{cid}/feedback` | Body `{message}` → injected as a user message into the agent loop |
 | POST | `/api/agents/{cid}/switch_model` | Body `{model_id}` — resolved server-side to (provider, model); creds are forwarded to the agent. |
 | POST | `/api/agents/{cid}/abort` | Body `{reason}` → the agent finishes its loop with `event=aborted` |
@@ -245,8 +245,8 @@ off` cells pin the template for the engine fast path) with evaluation always on.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/agent-webhook/{task_id}` | Canonical. Pydantic validation (see `webhooks.md`). 422 on invalid event/data. Requires `Authorization: Bearer $EVALHIVE_AGENT_TOKEN` and `idempotency_key`. |
-| POST | `/api/agent-webhook/{task_id}` | Legacy alias. Adds `Sunset: Sat, 01 Aug 2026 00:00:00 GMT`, `Deprecation: true`, `Link: rel="successor-version"` headers (even on 401/422 responses). |
+| POST | `/api/v1/agent-webhook/{task_id}` | Retired. Legacy-token authentication remains; current attempt writes return 409, historical task writes return 410. Use the attempt event API. |
+| POST | `/api/agent-webhook/{task_id}` | Retired alias with the same authentication and 409/410 behavior. A 410 response includes deprecation and successor-link headers. |
 
 ### Events (`/api/events`)
 

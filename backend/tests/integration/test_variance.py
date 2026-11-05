@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-from httpx import AsyncClient
-from sqlalchemy import select
-
 from app import database
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
@@ -24,6 +21,8 @@ from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.orchestrator import engine
 from app.orchestrator.rerun import clone_task_for_rerun
 from app.quality import variance as var
+from httpx import AsyncClient
+from sqlalchemy import select
 
 
 def _template(model_id) -> Template:
@@ -81,17 +80,20 @@ async def test_pinned_template_skips_decomposition_and_selection(
     decompose_mock = AsyncMock()
     monkeypatch.setattr(engine, "select_template_for_task", select_mock)
     monkeypatch.setattr(engine, "decide_decomposition", decompose_mock)
-    fake_runtime = MagicMock()
-    fake_runtime.spawn.return_value = "ctr-pinned-000000000000"
-    monkeypatch.setattr(engine, "get_agent_runtime", lambda: fake_runtime)
-    monkeypatch.setattr(engine, "issue_agent_token", AsyncMock(return_value="tok"))
+    async def launch(db, task, template):
+        task.status = TaskStatus.IN_PROGRESS.value
+        task.agent_container_id = "ctr-pinned-000000000000"
+        await db.commit()
+
+    launcher = AsyncMock(side_effect=launch)
+    monkeypatch.setattr("app.harnesses.launch.launch_task", launcher)
 
     await engine.process_ready_task(db_session, task)
     await db_session.refresh(task)
 
     assert task.status == TaskStatus.IN_PROGRESS.value
     assert task.agent_container_id == "ctr-pinned-000000000000"
-    fake_runtime.spawn.assert_called_once()
+    launcher.assert_awaited_once()
     select_mock.assert_not_called()
     decompose_mock.assert_not_called()
 

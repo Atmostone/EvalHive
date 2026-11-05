@@ -34,3 +34,20 @@ Native test images use a network-disabled container and a loopback fixture.
 The browser acceptance stack allows container-to-container traffic on its own
 network. Each native execution has a single CPU and at most 2 GiB of memory;
 the backend runner also enforces a global execution concurrency of one.
+
+For a deployed release, use the separate scoped smoke helper after pausing its
+scheduler (the browser Compose stack above remains disposable):
+
+```bash
+/home/evalhive/deployment/compose stop scheduler
+bash tests/e2e/run-release-smoke.sh
+/home/evalhive/deployment/compose start scheduler
+```
+
+It provisions a temporary engineering principal directly, so closed registration
+stays closed and owner providers are never cloned. The tasks explicitly disable
+memory without modifying global settings. Pi and OpenCode run serially against
+an isolated local fixture, write a file, archive their results and download the
+file through the authenticated API. Cleanup removes only that principal's rows,
+objects and task directories; the report contains no authentication tokens.
+The caller verifies successful cleanup before resuming scheduled evaluation.

@@ -53,3 +53,18 @@ stream deltas remain explicit in their respective evidence/completeness fields.
 
 These checks validate execution and recording behavior. They establish no model
 ranking, benchmark score, remote-weight pinning or scientific comparison.
+
+The H15 packaging checkpoint passed native Pi 23/23 and OpenCode 28/28 checks.
+All eight browser scenarios also passed with the backend/SDK/runner loaded from
+the built image and connector manifests pinned to immutable local image IDs.
+The deployed-release smoke helper was rehearsed against the isolated stack: both
+connectors produced and downloaded the fixture artifact, no orchestrator was
+called, and the temporary tasks and user were removed. The paired production
+backup was restored separately; upgrading and downgrading its ten templates
+preserved their original field hash. Backup verification additionally detects
+missing result-file arrays and artifacts retained only in older attempt journals.
+
+The final H15 backend checkpoint passed all 1,177 tests with 71.24% coverage
+against the required 60%. The rollback helper was also rehearsed on an isolated
+copy upgraded to the SDK schema: restoring the previous paired backup removed
+new tables and recovered the original schema and all template contents.
