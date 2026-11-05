@@ -132,3 +132,32 @@ full scientific runs and a new chat product are outside this delivery.
 Each task records implemented behavior and actual tests in Linear. Repository
 documentation/code/commits use English; project discussion uses Russian. Local
 commits have an SPA prefix and no coauthor. Push remains deferred by the owner.
+
+## Catalog and configuration API
+
+`GET /api/benchmarks` lists installed manifest envelopes with independent
+installed/configured/compatible/live_verified fields. Unknown profile-specific
+values remain null. Existing `/api/benchmarks/suites` endpoints remain compatible.
+`/api/benchmark-profiles` provides workspace-scoped CRUD and schema validation;
+`/api/benchmark-secrets` is write-only for credential values. Profile model
+bindings refer to workspace model IDs by role. Configuration presence does not
+prove remote authentication or live acceptance.
+
+`POST /api/benchmark-datasets` registers an already installed server receipt for
+a workspace; it cannot install executable code or accept an arbitrary path.
+`GET /api/benchmark-datasets`, individual revision reads and paginated `/cases`
+return public projections. Native descriptors and provenance remain internal.
+Re-registration preserves identity and rejects changed content. Database triggers
+protect immutable revision/case rows. Migration `bg01` introduces this storage.
+
+`POST /api/benchmarks/preflight` binds a benchmark profile, registered revision,
+case and harness profile from the same workspace. It preserves native capability,
+platform and resource requirements, checks configured references and reports
+incompatibility reasons. The initial `static` stage always reports
+`runtime_admission: pending` and `can_run: false`. B03 adds authoritative provider
+and resource checks; B04 must reserve and revalidate before launching a trial.
+Static policy capacity alone must never authorize execution.
+
+Native connector profiles for conversation support use version 0.2.0, with Pi
+1.5.0 and OpenCode 1.19.5 unchanged. B17 must migrate installed 0.1 profile
+references during cutover while preserving historical snapshots and image digests.

@@ -10,6 +10,10 @@ from app.api.agents import router as agents_router
 from app.api.analytics import router as analytics_router
 from app.api.attempts import router as attempts_router
 from app.api.auth import router as auth_router
+from app.api.benchmark_sdk import datasets_router as benchmark_datasets_router
+from app.api.benchmark_sdk import profiles_router as benchmark_profiles_router
+from app.api.benchmark_sdk import router as benchmark_catalog_router
+from app.api.benchmark_sdk import secrets_router as benchmark_secrets_router
 from app.api.benchmarks import router as benchmarks_router
 from app.api.chat import router as chat_router
 from app.api.data_lake import router as data_lake_router
@@ -363,3 +367,7 @@ app.include_router(quality_router)
 app.include_router(registry_router)
 app.include_router(experiments_router)
 app.include_router(benchmarks_router)
+app.include_router(benchmark_catalog_router)
+app.include_router(benchmark_profiles_router)
+app.include_router(benchmark_secrets_router)
+app.include_router(benchmark_datasets_router)
