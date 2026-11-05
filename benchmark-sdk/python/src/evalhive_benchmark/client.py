@@ -73,6 +73,13 @@ class ConnectorClient:
             validate(kind, result)
         return result
 
+    async def resource(self, scope, provider, operation, payload, *, handle=None, request_id=None, timeout=30):
+        """Send an owned resource operation to an environment-provider worker."""
+        from .peer import Context
+
+        return await Context(self.peer).broker(scope, provider, operation, payload,
+            handle=handle, request_id=request_id, timeout=timeout)
+
     async def events(self):
         while not self.reading.done() or not self.queue.empty():
             try:

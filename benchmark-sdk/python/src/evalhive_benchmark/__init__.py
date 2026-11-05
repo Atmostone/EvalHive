@@ -12,6 +12,7 @@ from .protocol import (
     validate,
     validate_spec,
 )
+from .provider import EnvironmentProvider, serve_provider, serve_provider_stdio
 
 __all__ = [
     "PROTOCOL_VERSION",
@@ -24,6 +25,9 @@ __all__ = [
     "Connector",
     "ConnectorClient",
     "Context",
+    "EnvironmentProvider",
+    "serve_provider",
+    "serve_provider_stdio",
     "serve",
     "serve_stdio",
 ]

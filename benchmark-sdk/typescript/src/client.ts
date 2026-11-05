@@ -2,8 +2,8 @@ import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {once} from 'node:events';
 import {RESULT_TYPES} from './connector.js';
-import {Peer} from './peer.js';
-import {command, ProtocolError, validate, type JsonObject, type JsonValue, type WireMessage} from './protocol.js';
+import {Context, Peer} from './peer.js';
+import {command, ProtocolError, validate, type JsonObject, type JsonValue, type Scope, type WireMessage} from './protocol.js';
 
 export class ConnectorClient {
   readonly peer: Peer;
@@ -51,6 +51,10 @@ export class ConnectorClient {
       await new Promise<void>(resolve => {this.wake = resolve;}); this.wake = undefined;
     }
     if (this.error) throw this.error;
+  }
+  async resource(scope: Scope, provider: string, operation: string, payload: JsonObject,
+    options: {handle?: string; requestId?: string; timeout?: number} = {}): Promise<JsonValue> {
+    return new Context(this.peer).broker(scope, provider, operation, payload, options);
   }
   async close(grace = 3000): Promise<void> {
     if (!this.peer.closed) {try {await this.request('shutdown', {}, {timeout: grace});} catch {}}

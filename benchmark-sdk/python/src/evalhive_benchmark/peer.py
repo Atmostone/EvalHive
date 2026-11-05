@@ -48,7 +48,9 @@ class Peer:
             raise ValueError("RPC limits must be positive integers")
         self.write = write
         self.handler = handler
-        self.request_type = request_type
+        self.request_types = (request_type,) if isinstance(request_type, str) else tuple(request_type)
+        if not self.request_types or any(kind not in {"command", "broker_request"} for kind in self.request_types):
+            raise ValueError("Invalid inbound request types")
         self.event_handler = event_handler
         self.max_pending, self.max_active, self.receipt_limit = (
             max_pending,
@@ -211,7 +213,7 @@ class Peer:
                 try:
                     value = decode_line(line)
                 except ProtocolError as error:
-                    if self.request_type == "command" and self.handler is not None:
+                    if "command" in self.request_types and self.handler is not None:
                         await self.send(
                             {
                                 "protocol_version": "1.0",
@@ -259,7 +261,7 @@ class Peer:
                         )
                 elif kind == "event" and self.event_handler is not None:
                     await self.event_handler(value)
-                elif kind == self.request_type and self.handler is not None:
+                elif kind in self.request_types and self.handler is not None:
                     # Bound duplicate deliveries as well as distinct active operations.
                     if len(deliveries) >= self.max_pending:
                         raise ProtocolError("PENDING_LIMIT", "Inbound request limit reached")

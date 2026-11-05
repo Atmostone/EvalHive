@@ -13,6 +13,36 @@ The TypeScript build copies the canonical file into its published package.
 The architecture and implementation sequence are in
 [the architecture decision](../docs/benchmark-sdk.md).
 
+## Environment-provider packages
+
+Providers use the same framing, receipts and owner scope as benchmark workers,
+with a manifest of kind `environment_provider`. Python packages implement
+`EnvironmentProvider.handle(request, context)` and `serve_provider_stdio`;
+TypeScript packages implement `EnvironmentProvider` and `serveProviderStdio`.
+The validated resource request includes provider identity, operation, payload,
+optional handle, stable request ID and the complete trial generation scope.
+Native idempotency keys must include the scope as well as the request identity.
+
+`ConnectorClient.resource` sends `allocate`, `exec`, `inspect`, `stop`, `export`
+or `release`. The provider advertises each supported operation explicitly.
+`describe`, scoped `cancel` and `shutdown` remain control commands. Cancellation
+rejects new allocation/execution while allowing inspection, capture and cleanup.
+A provider process binds to one trial generation and rejects another provider
+identity or scope. The host still enforces durable leases and authority; this
+process-local check does not grant access to the host or recover native effects.
+
+The transport accepts both command and resource request directions only when the
+provider wrapper explicitly enables them. Ordinary benchmark workers retain their
+original incoming direction. Receipts share bounded pending/active/unacknowledged
+limits; acknowledgement retires a payload only after durable host persistence.
+Native effects after a worker crash must be reconciled from native idempotency
+keys or resource labels before retrying an uncertain mutation. Providers must
+validate their own resource payloads and handles; the broker must never forward
+arbitrary host paths or privileged runtime access from a benchmark worker.
+
+The fake package includes provider examples for both languages. Their in-memory
+resources test the protocol and do not claim a real Docker/VM implementation.
+
 ## Public and private information
 
 A `CaseDescriptor` contains a dataset revision, native case reference, source

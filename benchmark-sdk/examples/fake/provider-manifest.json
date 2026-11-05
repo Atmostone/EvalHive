@@ -1,0 +1,47 @@
+{
+  "protocol_version": "1.0",
+  "kind": "environment_provider",
+  "id": "example.provider",
+  "version": "0.1.0",
+  "display_name": "Example environment provider",
+  "entrypoint": [
+    "python",
+    "/opt/benchmark/connector.py"
+  ],
+  "image": "example/benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "prefix": {
+        "type": "string",
+        "maxLength": 32
+      },
+      "wait": {
+        "type": "boolean"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "secret_schema": {
+    "type": "object",
+    "properties": {
+      "token": {
+        "type": "string"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "capabilities": {
+    "allocate": "emulated",
+    "exec": "emulated",
+    "inspect": "emulated",
+    "stop": "emulated",
+    "release": "emulated",
+    "export": "unsupported"
+  },
+  "requirements": {
+    "capabilities": []
+  }
+}

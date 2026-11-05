@@ -20,11 +20,13 @@ export class Peer {
   private writing: Promise<void> = Promise.resolve();
   closed = false;
   constructor(private write: (frame: Buffer) => Promise<void>, private options: {
-    handler?: Handler; requestType?: string; eventHandler?: (event: WireMessage) => Promise<void>;
+    handler?: Handler; requestType?: string; requestTypes?: string[]; eventHandler?: (event: WireMessage) => Promise<void>;
     maxPending?: number; maxActive?: number; receiptLimit?: number; tombstoneLimit?: number;
   } = {}) {
     for (const n of [options.maxPending ?? 64, options.maxActive ?? 16, options.receiptLimit ?? 256, options.tombstoneLimit ?? 16384])
       if (!Number.isInteger(n) || n < 1) throw new Error('RPC limits must be positive integers');
+    const types = options.requestTypes ?? [options.requestType ?? 'command'];
+    if (!types.length || types.some(type => !['command', 'broker_request'].includes(type))) throw new Error('Invalid inbound request types');
   }
   async send(value: WireMessage): Promise<void> {
     const frame = encodeLine(value);
@@ -96,7 +98,7 @@ export class Peer {
         let value: WireMessage;
         try {value = decodeLine(line);}
         catch (error) {
-          if ((this.options.requestType ?? 'command') === 'command' && this.options.handler && error instanceof ProtocolError)
+          if ((this.options.requestTypes ?? [this.options.requestType ?? 'command']).includes('command') && this.options.handler && error instanceof ProtocolError)
             await this.send({protocol_version: '1.0', type: 'response', id: null, ok: false, error: error.asData()});
           throw error;
         }
@@ -117,7 +119,7 @@ export class Peer {
             throw new ProtocolError(String(error.code), String(error.message), error.kind as ErrorKind);
           }
         } else if (value.type === 'event' && this.options.eventHandler) await this.options.eventHandler(value);
-        else if (value.type === (this.options.requestType ?? 'command') && this.options.handler) {
+        else if ((this.options.requestTypes ?? [this.options.requestType ?? 'command']).includes(value.type) && this.options.handler) {
           if (this.deliveries.size >= (this.options.maxPending ?? 64)) throw new ProtocolError('PENDING_LIMIT', 'Inbound request limit reached');
           const delivery = this.dispatch(value); this.deliveries.add(delivery);
           void delivery.finally(() => this.deliveries.delete(delivery)).catch(() => {});
