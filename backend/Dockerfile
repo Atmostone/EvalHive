@@ -11,9 +11,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY sdk/python /opt/evalhive-sdk
 RUN pip install --no-cache-dir /opt/evalhive-sdk
+COPY benchmark-sdk/python /opt/evalhive-benchmark-sdk
+RUN pip install --no-cache-dir /opt/evalhive-benchmark-sdk
 COPY runner /opt/evalhive-runner
 RUN pip install --no-cache-dir /opt/evalhive-runner
 COPY harnesses /harnesses
+COPY benchmarks /benchmarks
 COPY backend .
 
 # The commit a reproduction bundle (SPA-90) names as the checkout that produced it.

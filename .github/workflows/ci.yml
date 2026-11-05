@@ -142,6 +142,7 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-dev.txt
           pip install -e sdk/python
+          pip install -e benchmark-sdk/python
           pip install -e runner
           pip install ruff
 

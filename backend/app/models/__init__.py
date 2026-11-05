@@ -1,4 +1,10 @@
 from app.models.annotation import Annotation, AnnotationSession
+from app.models.benchmark import (
+    BenchmarkDatasetCase,
+    BenchmarkDatasetRevision,
+    BenchmarkProfile,
+    BenchmarkSecret,
+)
 from app.models.bias_report import BiasReport
 from app.models.chat_message import ChatMessage
 from app.models.event import AgentEvent
@@ -28,6 +34,10 @@ from app.models.workspace import Workspace, WorkspaceMember
 
 __all__ = [
     "User",
+    "BenchmarkProfile",
+    "BenchmarkSecret",
+    "BenchmarkDatasetRevision",
+    "BenchmarkDatasetCase",
     "Workspace",
     "WorkspaceMember",
     "ServiceToken",

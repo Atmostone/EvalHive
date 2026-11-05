@@ -11,6 +11,11 @@
 !harnesses/**
 !runner/
 !runner/**
+!benchmark-sdk/
+!benchmark-sdk/python/
+!benchmark-sdk/python/**
+!benchmarks/
+!benchmarks/**
 !environments/
 !environments/**
 **/.env*

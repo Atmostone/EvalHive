@@ -1969,6 +1969,61 @@
         "installation_policy"
       ],
       "additionalProperties": false
+    },
+    "dataset_installation": {
+      "type": "object",
+      "properties": {
+        "format_version": {
+          "const": "1.0"
+        },
+        "connector_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "connector_version": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "dataset_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "worker_image": {
+          "type": "string",
+          "pattern": "^([A-Za-z0-9._:/-]+@)?sha256:[a-f0-9]{64}$",
+          "maxLength": 4096
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/case_descriptor"
+          },
+          "maxItems": 100000
+        },
+        "provenance": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "format_version",
+        "connector_id",
+        "connector_version",
+        "dataset_id",
+        "revision",
+        "source_digest",
+        "worker_image",
+        "cases"
+      ],
+      "additionalProperties": false
     }
   }
 }

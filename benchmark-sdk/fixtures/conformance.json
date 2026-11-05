@@ -573,6 +573,70 @@
         "effective_config": {}
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "immutable installed dataset metadata",
+      "kind": "dataset_installation",
+      "value": {
+        "format_version": "1.0",
+        "connector_id": "example.benchmark",
+        "connector_version": "0.1.0",
+        "dataset_id": "example",
+        "revision": "1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worker_image": "example@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cases": [
+          {
+            "ref": {
+              "dataset_id": "example",
+              "revision": "1",
+              "case_id": "echo"
+            },
+            "title": "Echo and verify",
+            "description": "Create an example artifact",
+            "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "native_ref": {
+              "case": "echo"
+            },
+            "requirements": {
+              "capabilities": []
+            }
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "reject floating dataset worker image",
+      "kind": "dataset_installation",
+      "value": {
+        "format_version": "1.0",
+        "connector_id": "example.benchmark",
+        "connector_version": "0.1.0",
+        "dataset_id": "example",
+        "revision": "1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worker_image": "example:latest",
+        "cases": [
+          {
+            "ref": {
+              "dataset_id": "example",
+              "revision": "1",
+              "case_id": "echo"
+            },
+            "title": "Echo and verify",
+            "description": "Create an example artifact",
+            "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "native_ref": {
+              "case": "echo"
+            },
+            "requirements": {
+              "capabilities": []
+            }
+          }
+        ]
+      },
+      "error": "INVALID_MESSAGE"
     }
   ]
 }
