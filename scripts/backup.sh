@@ -3,7 +3,7 @@
 # SPA-92. One command that backs up a EvalHive stand: the Postgres dump AND the
 # MinIO volume, written together with a manifest that pairs them.
 #
-#     scripts/backup.sh [--out DIR] [--project NAME]
+#     scripts/backup.sh [--out DIR] [--project NAME] [--source-sha DEPLOYED_SHA]
 #
 # Why both, and why together. `quality_records.record_s3_path`,
 # `tasks.log_archive_s3_path` and `knowledge_documents.s3_path` hold keys into
@@ -25,6 +25,7 @@
 # container, nothing from the api image.
 #
 set -euo pipefail
+umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/_backup_lib.sh
@@ -32,6 +33,7 @@ source "${REPO_ROOT}/scripts/_backup_lib.sh"
 
 OUT_DIR="${HOME}/evalhive-backups"
 PROJECT="evalhive"
+SOURCE_SHA=""
 
 usage() { sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
@@ -39,10 +41,15 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) OUT_DIR="$2"; shift 2 ;;
         --project) PROJECT="$2"; shift 2 ;;
+        --source-sha) SOURCE_SHA="$2"; shift 2 ;;
         -h|--help) usage 0 ;;
         *) echo "unknown argument: $1" >&2; usage 1 ;;
     esac
 done
+
+if [[ -n "${SOURCE_SHA}" && ! "${SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo 'FATAL: --source-sha must be a full deployed commit SHA' >&2; exit 2
+fi
 
 PG_CONTAINER="${PROJECT}-postgres-1"
 MINIO_VOLUME="${PROJECT}_miniodata"
@@ -91,10 +98,12 @@ psql_q "SELECT coalesce(json_agg(row_to_json(a)), '[]'::json) FROM annotations a
 # The whole volume, `.minio.sys` included, so a restore reconstitutes the object
 # store rather than a directory that merely looks like one.
 echo "==> tarring ${MINIO_VOLUME}"
-docker run --rm \
+docker run --rm --network none --memory 128m --cpus 1 --pids-limit 64 \
+    --cap-drop ALL --security-opt no-new-privileges \
     -v "${MINIO_VOLUME}":/data:ro \
     -v "${DEST}":/backup \
     alpine tar czf /backup/minio.tar.gz -C /data .
+chmod 600 "${DEST}/minio.tar.gz"
 
 # ------------------------------------------------------- blob pairing check --
 
@@ -111,7 +120,10 @@ N_MISSING="$(wc -l < "${DEST}/.s3-missing.txt" | tr -d ' ')"
 
 echo "==> writing manifest"
 
-GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || echo '')"
+# A checkout can be ahead of production while a release is prepared. Read only
+# the deployed image's public version variable, never infer it from local HEAD.
+GIT_SHA="${SOURCE_SHA:-$(docker exec "${PROJECT}-api-1" printenv EVALHIVE_GIT_SHA 2>/dev/null || true)}"
+[[ "${GIT_SHA}" =~ ^[0-9a-f]{40}$ ]] || GIT_SHA=""
 
 COUNTS="$(psql_q "
     SELECT json_build_object(

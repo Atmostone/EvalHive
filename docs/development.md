@@ -298,3 +298,58 @@ See the root `CLAUDE.md`. It doesn't contradict this folder — it just lists sh
 4. ✅ No new workarounds without a `docs/workarounds.md` entry.
 5. ✅ No backwards-compatibility shims "just in case".
 6. ✅ No stubs/mocks left in production code.
+
+Release acceptance runs the packaged backend, SDK and runner from the built
+image; the engineering Compose file does not overlay their source directories.
+The browser fixture uses disposable storage and a local OpenAI-compatible model
+endpoint, with one native execution at a time. Production provider credentials
+are never required for this suite.
+
+Migration `ha09` records template/profile conversions in
+`harness_template_conversions` and `harness_profile_conversions`. It preserves
+explicit non-legacy connector choices and historical template versions. Legacy
+profiles with unsupported settings or secret references require explicit
+conversion before upgrade. Downgrade restores unedited references; it does not
+rewrite execution attempts, snapshots or bundles. A full release rollback uses
+the previous image set and a matching verified database/object-store backup,
+especially when newer records contain unknown costs or precision older schemas
+cannot represent.
+
+Install a release's public declarations with immutable local image identities:
+
+```bash
+python3 scripts/install-harness-manifests.py --destination /absolute/release/harnesses
+```
+
+Mount that directory read-only at `/harnesses` and set `HARNESS_MANIFEST_DIR` to
+that path in the backend and worker. The installer checks the rootless daemon,
+resolves required connector images before publishing the catalog, and refuses to
+overwrite an existing release directory. Optional environment images remain
+explicitly unavailable until installed. `images.json` records the installed
+image IDs and declaration checksums. The same process accepts external
+connector declarations without importing their executable code into the backend.
+
+Task completion has two independent stages: immutable native attempt evidence,
+and the task's review/archive workflow. Direct runs and benchmark leaves archive
+without an automatic model reviewer. Orchestrated tasks claim a bounded review
+before calling a model; an interrupted or unavailable review requires the owner's
+decision. Recovered review claims never issue a second uncertain paid call.
+Retries retain their own attempt journals and occur before final task archival.
+An archive upload failure remains pending and can resume without re-running the
+connector or reviewer. Disabled memory never schedules extraction.
+
+The engineering review checks attempt fencing, contiguous terminal delivery,
+interleaved/nested tool identity, unknown usage/cost preservation, credential
+redaction, immutable prepared configuration, artifact collection after every
+outcome, and replay source isolation. Native compaction and OpenCode retry/
+subagent observations are tested against local model fixtures. Missing reasoning,
+usage or remote model revisions remain missing evidence; passing fixture tests
+does not establish a scientific model-quality result or deterministic remote
+model weights.
+
+Backup verification includes scalar S3 references, task result-file arrays and
+artifacts delivered by earlier attempt journals. A deployment rehearsal restores
+the paired database/object-store backup into isolated resources, upgrades and
+downgrades the schema, and compares template contents before release. The backup
+manifest names the deployed image's SHA, not the potentially newer checkout that
+runs the backup helper. Use `--source-sha` when quiescing the API before backup.

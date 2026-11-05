@@ -14,13 +14,11 @@ from app.harnesses.attempts import (
 )
 from app.harnesses.executor import settle_task
 from app.harnesses.launch import launch_task, resolve_launch
-from app.harnesses.provenance import execution_context
 from app.models.harness_profile import HarnessProfile
 from app.models.provider import LLMModel, Provider
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.quality.bundle import _fetch_attempt_journals, blob_digests, check_blobs
-from app.quality.reproducibility import assemble_snapshot
 from sqlalchemy import select
 
 
@@ -49,10 +47,8 @@ async def archived_fixture(auth_client, db):
     await ingest_events(db, attempt.id, frames)
     await db.commit()
     await settle_task(db, attempt.id)
-    record = QualityRecord(workspace_id=workspace, task_id=task.id, execution_attempt_id=attempt.id,
-        cost_usd=None, final_status="done", reproducibility=assemble_snapshot(task, execution_context(attempt)))
-    db.add(record)
-    await db.commit()
+    record = await db.scalar(select(QualityRecord).where(QualityRecord.task_id == task.id))
+    assert record is not None and record.execution_attempt_id == attempt.id
     return task, attempt, profile, record, token
 
 

@@ -93,7 +93,7 @@ jobs:
           docker build -f tests/e2e/Minio.Dockerfile -t evalhive-test-minio:ci tests/e2e
           docker run -d --name evalhive-ci-minio -p 127.0.0.1:19000:9000 --memory 512m --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges -e MINIO_ROOT_USER=evalhive-ci -e MINIO_ROOT_PASSWORD=fixture-only-storage-password evalhive-test-minio:ci server /data
           docker run -d --name evalhive-ci-qdrant -p 127.0.0.1:19033:6333 --memory 512m --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges qdrant/qdrant@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2
-          docker run -d --name evalhive-ci-redis -p 127.0.0.1:19079:6379 --memory 128m --cpus 1 --pids-limit 128 --cap-drop ALL --security-opt no-new-privileges redis@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+          docker run -d --user redis --name evalhive-ci-redis -p 127.0.0.1:19079:6379 --memory 128m --cpus 1 --pids-limit 128 --cap-drop ALL --security-opt no-new-privileges redis@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
           mkdir -p "$TIKTOKEN_CACHE_DIR"
           curl --fail --location --retry 2 --max-time 60 https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken -o "$TIKTOKEN_CACHE_DIR/9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
           echo "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7 $TIKTOKEN_CACHE_DIR/9b5ad71b2ce5302211f9c61530b329a4922fc6a4" | sha256sum --check

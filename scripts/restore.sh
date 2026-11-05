@@ -20,6 +20,7 @@
 # rehearsal with its own re-implementation would prove the rehearsal works.
 #
 set -euo pipefail
+umask 077
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/_backup_lib.sh
@@ -109,12 +110,12 @@ if [[ "${MODE}" == "live" ]]; then
     [[ "${CONFIRM}" == "restore live" ]] || { echo "    aborted."; exit 1; }
 
     echo "==> restoring MinIO volume"
-    docker run --rm -v "${PROJECT}_miniodata":/data -v "${BACKUP}":/backup:ro \
+    docker run --rm --network none --memory 128m --cpus 1 --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges -v "${PROJECT}_miniodata":/data -v "${BACKUP}":/backup:ro \
         alpine sh -c 'rm -rf /data/* /data/.minio.sys && tar xzf /backup/minio.tar.gz -C /data'
 
     echo "==> restoring database"
     docker compose -f "${REPO_ROOT}/docker-compose.yml" up -d postgres >/dev/null
-    until docker exec "${PROJECT}-postgres-1" pg_isready -U evalhive >/dev/null 2>&1; do sleep 1; done
+    until docker exec "${PROJECT}-postgres-1" pg_isready -h 127.0.0.1 -U evalhive >/dev/null 2>&1; do sleep 1; done
     PGUSER="$(docker exec "${PROJECT}-postgres-1" printenv POSTGRES_USER)"
     PGDB="$(docker exec "${PROJECT}-postgres-1" printenv POSTGRES_DB)"
     docker exec -i "${PROJECT}-postgres-1" pg_restore -U "${PGUSER}" -d "${PGDB}" \
@@ -138,10 +139,10 @@ cleanup() {
         echo "    --keep: left in place for inspection —"
         echo "      container ${SCRATCH_PG}"
         echo "      volume    ${SCRATCH_VOL}"
-        echo "    Remove with: docker rm -f ${SCRATCH_PG}; docker volume rm ${SCRATCH_VOL}"
+        echo "    Remove with: docker rm -fv ${SCRATCH_PG}; docker volume rm ${SCRATCH_VOL}"
         return
     fi
-    docker rm -f "${SCRATCH_PG}" >/dev/null 2>&1 || true
+    docker rm -fv "${SCRATCH_PG}" >/dev/null 2>&1 || true
     docker volume rm "${SCRATCH_VOL}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -151,21 +152,21 @@ echo "==> rehearsing into throwaway container ${SCRATCH_PG} and volume ${SCRATCH
 
 echo "==> unpacking MinIO tarball into the scratch volume"
 docker volume create "${SCRATCH_VOL}" >/dev/null
-docker run --rm -v "${SCRATCH_VOL}":/data -v "${BACKUP}":/backup:ro \
+docker run --rm --network none --memory 128m --cpus 1 --pids-limit 64 --cap-drop ALL --security-opt no-new-privileges -v "${SCRATCH_VOL}":/data -v "${BACKUP}":/backup:ro \
     alpine tar xzf /backup/minio.tar.gz -C /data
 
 echo "==> starting ${PG_IMAGE}"
-docker run -d --name "${SCRATCH_PG}" \
+docker run -d --memory 512m --cpus 1 --pids-limit 256 --name "${SCRATCH_PG}" \
     -e POSTGRES_USER="${SCRATCH_USER}" \
     -e POSTGRES_PASSWORD=rehearsal \
     -e POSTGRES_DB="${SCRATCH_DB}" \
     "${PG_IMAGE}" >/dev/null
 
 for _ in $(seq 60); do
-    docker exec "${SCRATCH_PG}" pg_isready -U "${SCRATCH_USER}" >/dev/null 2>&1 && break
+    docker exec "${SCRATCH_PG}" pg_isready -h 127.0.0.1 -U "${SCRATCH_USER}" >/dev/null 2>&1 && break
     sleep 1
 done
-docker exec "${SCRATCH_PG}" pg_isready -U "${SCRATCH_USER}" >/dev/null 2>&1 || {
+docker exec "${SCRATCH_PG}" pg_isready -h 127.0.0.1 -U "${SCRATCH_USER}" >/dev/null 2>&1 || {
     echo "FATAL: scratch postgres never became ready" >&2; exit 1; }
 
 echo "==> pg_restore into the scratch database"

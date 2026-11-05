@@ -41,10 +41,7 @@ services:
     volumes: &backend-volumes
       - ${E2E_DATA_DIR}:/data
       - ${E2E_DOCKER_SOCKET:-/run/user/11001/docker.sock}:/run/evalhive-docker.sock
-      - ../../backend/app:/app/app:ro
-      - ../../runner/src/evalhive_runner:/usr/local/lib/python3.12/site-packages/evalhive_runner:ro
-      - ../../sdk/python/src/evalhive_harness:/usr/local/lib/python3.12/site-packages/evalhive_harness:ro
-      - ../../harnesses:/harnesses:ro
+      - ${E2E_HARNESS_DIR:?Install the public connector manifests before acceptance}:/harnesses:ro
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_started}

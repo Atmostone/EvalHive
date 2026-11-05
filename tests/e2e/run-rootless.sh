@@ -38,6 +38,8 @@ if [[ "${E2E_SKIP_BUILD:-0}" != 1 ]]; then
     docker build -f "harnesses/$harness/Dockerfile" -t "evalhive-$harness:$version" .
   done
 fi
+export E2E_HARNESS_DIR="$E2E_RESULTS_DIR/catalog-$(date -u +%Y%m%dT%H%M%S)-$$"
+python3 scripts/install-harness-manifests.py --destination "$E2E_HARNESS_DIR"
 "${compose[@]}" up -d api
 # API migrations must finish before the worker reads the new schema.
 "${compose[@]}" exec -T api python -c 'import time,urllib.request

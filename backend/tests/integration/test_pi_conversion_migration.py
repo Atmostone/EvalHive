@@ -60,7 +60,8 @@ async def test_unsupported_legacy_settings_abort_without_silent_conversion(auth_
     workspace = uuid.UUID(auth_client.headers["X-Workspace-Id"])
     cfg = config()
     await asyncio.to_thread(command.downgrade, cfg, "ha08")
-    profile = HarnessProfile(workspace_id=workspace, name="Legacy settings", connector_id="legacy", connector_version="0.1.0", config={"tool_injection": "requires review"})
+    await db_session.execute(text("UPDATE harness_profiles SET is_default = false WHERE workspace_id = :id"), {"id": workspace})
+    profile = HarnessProfile(workspace_id=workspace, is_default=True, name="Legacy settings", connector_id="legacy", connector_version="0.1.0", config={"tool_injection": "requires review"})
     db_session.add(profile)
     await db_session.flush()
     template = Template(workspace_id=workspace, description="Migration fixture", name="Unconverted", soul_md="Original", tool_ids=[], harness_profile_id=profile.id)
@@ -75,3 +76,13 @@ async def test_unsupported_legacy_settings_abort_without_silent_conversion(auth_
     await asyncio.to_thread(command.upgrade, cfg, "head")
     await db_session.refresh(template)
     assert (await db_session.get(HarnessProfile, template.harness_profile_id)).connector_id == "pi"
+    await db_session.refresh(profile)
+    assert profile.connector_id == "pi" and profile.is_default
+    await db_session.commit()
+    await asyncio.to_thread(command.downgrade, cfg, "ha08")
+    await db_session.refresh(profile)
+    await db_session.refresh(template)
+    assert profile.connector_id == "legacy" and profile.is_default
+    assert template.harness_profile_id == profile.id
+    await db_session.commit()
+    await asyncio.to_thread(command.upgrade, cfg, "head")
