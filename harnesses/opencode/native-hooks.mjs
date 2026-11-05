@@ -45,6 +45,27 @@ export const EvalHive = async (context, options) => {
     'chat.headers': async (input, output) => {
       output.headers['x-evalhive-purpose'] = input.agent;
       output.headers['x-evalhive-session'] = input.sessionID;
+      if (options.externalSteps) {
+        const response = await context.client.session.messages({path: {id: input.sessionID}, query: {limit: 32}, throwOnError: true});
+        const assistant = response.data?.findLast(entry => entry.info.role === 'assistant' && entry.info.time.completed === undefined);
+        if (!assistant) throw new Error('EvalHive could not correlate the native model step');
+        output.headers['x-evalhive-message'] = assistant.info.id;
+      }
+    },
+    'tool.execute.before': async (input, output) => {
+      if (options.externalSteps) {
+        // Added after native argument validation. The loopback MCP gateway removes
+        // this transport field before checking the original model arguments.
+        output.args.__evalhive_native_call_id = input.callID;
+      }
+    },
+    'tool.execute.after': async (input) => {
+      if (options.externalSteps) delete input.args.__evalhive_native_call_id;
+    },
+    'experimental.chat.messages.transform': async (_input, output) => {
+      if (options.externalSteps) for (const message of output.messages)
+        for (const part of message.parts) if (part.type === 'tool' && part.state.input)
+          delete part.state.input.__evalhive_native_call_id;
     },
   };
 };

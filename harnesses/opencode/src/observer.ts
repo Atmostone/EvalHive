@@ -18,6 +18,10 @@ export class ProviderObserver {
   constructor(
     private endpoint: string,
     private output: EventWriter,
+    private interaction?: {
+      beforeRequest: () => Promise<void>;
+      tools: (messageId: string, calls: JsonObject[], content: string) => void;
+    },
   ) {}
 
   async start(): Promise<void> {
@@ -55,6 +59,7 @@ export class ProviderObserver {
         const purpose = ['build', 'evalhive', 'general', 'explore'].includes(nativePurpose)
           ? 'agent'
           : nativePurpose;
+        if (this.interaction && purpose === 'agent') await this.interaction.beforeRequest();
         state = {
           usage_id: `request-${++this.requests}`,
           mode: 'cumulative',
@@ -112,8 +117,32 @@ export class ProviderObserver {
         );
         const decoder = new TextDecoder();
         let buffer = '';
+        const toolCalls = new Map<number, {id: string; name: string; arguments: string}>();
+        let toolBytes = 0, content = '', announced = false;
         const observe = (packet: unknown) => {
           const value = object(packet);
+          if (this.interaction && purpose === 'agent') {
+            const choice = object(Array.isArray(value.choices) ? value.choices[0] : undefined);
+            const delta = object(choice.delta ?? choice.message);
+            if (typeof delta.content === 'string') content += delta.content;
+            for (const raw of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
+              const call = object(raw), fn = object(call.function), index = Number(call.index ?? toolCalls.size);
+              const saved = toolCalls.get(index) ?? {id: '', name: '', arguments: ''};
+              if (typeof call.id === 'string') saved.id += call.id;
+              if (typeof fn.name === 'string') saved.name += fn.name;
+              if (typeof fn.arguments === 'string') {saved.arguments += fn.arguments; toolBytes += fn.arguments.length;}
+              toolCalls.set(index, saved);
+            }
+            if (toolCalls.size > 128 || toolBytes + content.length > 1024 * 1024) throw new Error('Native tool batch exceeds the limit');
+            if (choice.finish_reason === 'tool_calls' && !announced) {
+              const identity = request.headers['x-evalhive-message'];
+              if (typeof identity !== 'string' || !identity) throw new Error('Native model message identity is missing');
+              const calls = [...toolCalls.entries()].sort(([a], [b]) => a - b).map(([,call]) => ({call_id: call.id,
+                name: call.name, arguments: JSON.parse(call.arguments) as JsonObject}));
+              if (calls.length) this.interaction.tools(identity, calls, content);
+              announced = true;
+            }
+          }
           if (typeof value.model === 'string') state!.metadata = {model_source: 'request', reported_model: value.model};
           const usage = object(value.usage);
           if (!Object.keys(usage).length) return;

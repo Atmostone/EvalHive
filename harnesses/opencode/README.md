@@ -65,3 +65,35 @@ The same recipe supports a registered environment variant with
 dependencies while the connector pins Node. This does not run a benchmark.
 Native tests use only local model/MCP fixtures and run serially without external
 network access or model credentials.
+
+## Persistent benchmark sessions
+
+Connector 0.2.0 supports interaction protocol 1.0 `conversation` and
+`external_steps`. One native server and session persist over explicit user turns;
+idle/completed assistant output ends a turn without ending the execution attempt.
+An idle `session.close` ends the attempt. Inputs use `turn.submit`; legacy feedback
+is rejected in a persistent session. Multiple text fragments in one input become
+one native user prompt separated by blank lines. The model-step budget spans the
+whole session. Abort works while generating or waiting for input or tools. Native
+server death also ends an idle conversation with failure, without a restart.
+
+Agent-visible initial history is checked for causal tool/result pairing and
+loaded using the pinned CLI's official `opencode import` command into the same
+isolated state tree. Completed tool parts belong to their native assistant
+message. Imported context does not become new usage or normalized execution.
+The connector does not claim transparent recovery of a dead native session.
+
+For external steps the connector's MCP SDK is pinned to 1.32.2. A private loopback
+gateway discovers upstream schemas and returns only driver-supplied results;
+it never invokes upstream `tools/call`. The native request observer correlates
+the complete streamed tool batch with its native assistant message. A fixed
+native hook adds call identity after native validation, the gateway checks the
+original name/arguments, and the transport identity is removed from subsequent
+model context and normalized arguments. Further model requests wait for the
+batch. Builtins are disabled and explicit builtin selection fails preflight.
+
+`external_tools.mapping` records native/exposed/canonical names and both source
+and exposed schema hashes. OpenCode's native sanitization and its object-schema
+rules remain active; collisions and names exceeding the native provider limit
+fail before a model request. Native prompts, validation and error formatting are
+preserved. This is a declared adapted interface, not a baseline prompt replica.

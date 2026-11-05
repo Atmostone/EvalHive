@@ -99,7 +99,8 @@ after an explicit idle `session.close` or cancellation.
 | `session.close` | Stable input ID, expected revision and reason | Close an idle session |
 
 The manifest must declare these controls and their canonical input schemas.
-They are handled by the SDK; ordinary feedback keeps its original semantics.
+They are handled by the SDK. Ordinary single-turn feedback keeps its original
+semantics; a native conversation connector may require typed input instead.
 `turn.submit` increments the session revision. Tool results use that revision and
 can arrive individually or in a batch, in any order. Duplicate input IDs return
 the previous receipt, while conflicting content fails. A command is validated

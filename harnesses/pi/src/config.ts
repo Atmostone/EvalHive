@@ -2,7 +2,7 @@ import { ProtocolError, validateRun, type JsonObject, type Manifest, type RunSpe
 import { readFileSync } from 'node:fs';
 
 export const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')) as Manifest;
-export const ADAPTER_VERSION = '0.1.0';
+export const ADAPTER_VERSION = '0.2.0';
 
 export function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};

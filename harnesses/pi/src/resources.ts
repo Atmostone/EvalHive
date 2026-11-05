@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { McpClient, StdioTransport, StreamableHttpTransport, toLlmContent } from '@earendil-works/pi-mcp';
 import { loadSkills, type ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { ProtocolError, resourceConfig, resources, type JsonObject, type RunSpec } from '@evalhive/harness-sdk';
+import { ProtocolError, resourceConfig, resources, contentHash, type ExternalToolGate, type JsonObject, type RunSpec } from '@evalhive/harness-sdk';
 import { object } from './config.js';
 
 const builtinAliases: Record<string, string> = {file_read: 'read', file_write: 'write'};
@@ -42,6 +42,8 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
     return {id: value.id, config};
   });
   for (const name of tools ?? []) {
+    if (object(spec.interaction).mode === 'external_steps' && builtinNames.includes(name))
+      throw new ProtocolError('UNSUPPORTED_TOOL', 'External steps permit only driver-owned MCP tools');
     const available = builtinNames.includes(name) || mcp.some((server) =>
       name.startsWith(`mcp__${server.id}__`) || Object.values(object(server.config.aliases)).includes(name));
     if (!available) throw new ProtocolError('UNSUPPORTED_TOOL', 'A requested tool is unavailable in Pi');
@@ -49,11 +51,12 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
   return {tools, skills, instructions, mcp};
 }
 
-export async function connectResources(spec: RunSpec, credentials: Record<string, string>, signal: AbortSignal) {
+export async function connectResources(spec: RunSpec, credentials: Record<string, string>, signal: AbortSignal, gate?: ExternalToolGate) {
   const plan = resourcePlan(spec, credentials);
   const clients: McpClient[] = [];
   const tools: ToolDefinition[] = [];
   const aliases: Record<string, string[]> = {read: ['file_read'], write: ['file_write']};
+  const mapping: JsonObject[] = [];
   const close = async () => { await Promise.allSettled(clients.map((client) => client.close())); };
   try {
     if (plan.tools?.length !== 0) for (const server of plan.mcp) {
@@ -74,18 +77,27 @@ export async function connectResources(spec: RunSpec, credentials: Record<string
       for (const tool of discovered) {
         const canonical = `mcp__${server.id}__${tool.name}`;
         const name = modelToolName(canonical);
+        if (mapping.some(item => item.exposed_name === name))
+          throw new ProtocolError('INVALID_RESOURCE', 'MCP exposed tool names collide');
         const alias = object(config.aliases)[tool.name];
         aliases[name] = [...new Set([...(typeof alias === 'string' ? [alias] : []),
           ...(typeof config.alias_prefix === 'string' ? [config.alias_prefix + tool.name] : []), canonical])];
+        mapping.push({native_name: tool.name, exposed_name: name, canonical_name: canonical,
+          schema_sha256: contentHash(tool.inputSchema as JsonObject), exposed_schema_sha256: contentHash(tool.inputSchema as JsonObject)});
         tools.push({name, label: name, description: tool.description ?? name,
           parameters: tool.inputSchema as ToolDefinition['parameters'],
-          async execute(_callId, args, toolSignal) {
+          async execute(callId, args, toolSignal) {
+            if (gate) {
+              const result = await gate.execute(callId, name, args as JsonObject);
+              return {content: [{type: 'text' as const, text: typeof result.content === 'string' ? result.content : JSON.stringify(result.content)}],
+                details: result, isError: Boolean(result.is_error)};
+            }
             const result = await client.callTool(tool.name, args as Record<string, unknown>, {signal: toolSignal ?? signal});
             return {content: toLlmContent(result), details: result, isError: result.isError};
           }});
       }
     }
-    const selected = plan.tools?.flatMap((name) => {
+    const selected = (plan.tools ?? (gate ? tools.map(tool => tool.name) : undefined))?.flatMap((name) => {
       if (name.endsWith('*')) {
         const matches = tools.filter((tool) => aliases[tool.name]?.some(alias => alias.startsWith(name.slice(0, -1)))).map((tool) => tool.name);
         if (!matches.length) throw new ProtocolError('UNSUPPORTED_TOOL', 'A requested MCP namespace has no tools');
@@ -95,7 +107,7 @@ export async function connectResources(spec: RunSpec, credentials: Record<string
     });
     for (const name of selected ?? []) if (![...builtinNames, ...tools.map((tool) => tool.name)].includes(name))
       throw new ProtocolError('UNSUPPORTED_TOOL', 'A requested tool is unavailable in Pi');
-    return {...plan, tools: selected, customTools: tools, aliases, close,
+    return {...plan, tools: selected, customTools: tools, aliases, mapping, close,
       loadSkills(agentDir: string) {
         const result = loadSkills({cwd: spec.cwd, agentDir, skillPaths: plan.skills, includeDefaults: false});
         if (result.diagnostics.length) throw new ProtocolError('INVALID_SKILL', 'Configured skills have validation errors');

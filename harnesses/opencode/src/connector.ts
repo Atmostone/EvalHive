@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { createOpencodeClient, type Config, type OpencodeClient } from '@opencode-ai/sdk/v2';
 import {
   ProtocolError,
+  ExternalToolGate,
+  conversationHistory,
   type Connector,
   type JsonObject,
   type JsonValue,
@@ -18,6 +20,8 @@ import { EventTranslator, EventWriter } from './events.js';
 import { ProviderObserver } from './observer.js';
 import { resourcePlan } from './resources.js';
 import { executable, isolatedEnv, startServer, stopServer } from './server.js';
+import {externalResources} from './external-tools.js';
+import {nativeHistory} from './history.js';
 
 const runFile = promisify(execFile);
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -44,6 +48,7 @@ export class OpenCodeConnector implements Connector {
     const config = effectiveConfig(spec);
     connection(spec, this.credentials);
     resourcePlan(spec, this.credentials);
+    conversationHistory(spec);
     if (Number(config.maxOutputTokens) > Number(config.contextWindow))
       throw new ProtocolError('INVALID_LIMITS', 'Output limit cannot exceed the context window');
     this.nativeVersion ??= this.checkVersion();
@@ -124,7 +129,18 @@ export class OpenCodeConnector implements Connector {
       void this.interrupt();
     });
     const translator = new EventTranslator(output, plan.aliases, plan.aliasPrefixes);
-    const observer = new ProviderObserver(model.endpoint, output);
+    const gate = context.conversation?.mode === 'external_steps' ? new ExternalToolGate(context.conversation, context.signal) : undefined;
+    let batch: Promise<unknown> = Promise.resolve();
+    let externalFailure: unknown;
+    const observer = new ProviderObserver(model.endpoint, output, gate ? {
+      beforeRequest: async () => {await batch; if (externalFailure) throw externalFailure;},
+      tools: (messageId, calls, content) => {
+        if (calls.some(call => !resourceSet?.mapping.some(tool => tool.exposed_name === call.name)))
+          throw new ProtocolError('UNSUPPORTED_TOOL_STEP', 'Native model requested an unavailable external tool');
+        batch = gate.announce(messageId, messageId, calls, content).catch(error => {externalFailure = error; void this.interrupt();});
+      },
+    } : undefined);
+    let resourceSet: Awaited<ReturnType<typeof externalResources>> | undefined;
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
     let events: Promise<void> | undefined;
     let reconnects = 0;
@@ -134,6 +150,7 @@ export class OpenCodeConnector implements Connector {
     };
     context.signal.addEventListener('abort', abort);
     try {
+      if (gate) resourceSet = await externalResources(plan.mcp, gate, context.signal);
       await observer.start();
       const instructions = [
         ...(Array.isArray(context.spec.instructions) ? (context.spec.instructions as string[]) : []),
@@ -189,6 +206,7 @@ export class OpenCodeConnector implements Connector {
           [
             new URL('../native-hooks.mjs', import.meta.url).href,
             {
+              externalSteps: Boolean(gate),
               toolPolicyPath: toolPolicyFile,
               turnStatePath,
               limitPath,
@@ -200,7 +218,7 @@ export class OpenCodeConnector implements Connector {
         ],
         instructions: instructions ? [instructionFile] : [],
         skills: { paths: plan.skills },
-        mcp: plan.mcp,
+        mcp: resourceSet?.mcp ?? plan.mcp,
         permission,
         agent: {
           build: {
@@ -213,6 +231,10 @@ export class OpenCodeConnector implements Connector {
         compaction: { auto: Boolean(config.autoCompaction) },
       };
       server = await startServer(state, context.spec.cwd, native);
+      const nativeExited = new Promise<never>((_resolve, reject) => {
+        server!.proc.once('exit', () => reject(new ProtocolError('SERVER_EXITED', 'OpenCode server exited during execution')));
+      });
+      nativeExited.catch(() => {});
       output.native('connector.stage', { stage: 'server_ready', pid: server.proc.pid ?? null });
       const client = createOpencodeClient({
         baseUrl: server.url,
@@ -250,6 +272,15 @@ export class OpenCodeConnector implements Connector {
       const session = created.data!;
       output.native('connector.stage', { stage: 'session_created' });
       this.sessionId = session.id;
+      const seed = nativeHistory(context.spec, session, model.name, resourceSet?.mapping ?? []);
+      if (seed.messages.length) {
+        const historyPath = join(state, 'history.json');
+        writeFileSync(historyPath, JSON.stringify(seed), {mode: 0o600});
+        await runFile(executable, ['import', historyPath], {cwd: context.spec.cwd, env: server.env, timeout: 30000, maxBuffer: 65536});
+        // Imported messages are context, not newly observed execution or usage.
+        for (const message of seed.messages) translator.imported.add(message.info.id);
+      }
+      if (gate) output.native('external_tools.mapping', {tools: resourceSet!.mapping, interface: 'adapted_mcp', history_messages: seed.messages.length});
       const statuses = await client.mcp.status(
         {},
         { throwOnError: true, signal: AbortSignal.timeout(30000) },
@@ -379,34 +410,49 @@ export class OpenCodeConnector implements Connector {
       }
       if (context.signal.aborted) return { status: 'cancelled', summary: 'Run cancelled' };
       output.native('connector.stage', { stage: 'events_ready' });
-      await this.sendPrompt(context.spec.task.prompt);
-      output.native('connector.stage', { stage: 'prompt_admitted' });
-      while (this.pendingFeedback.length) await this.sendPrompt(this.pendingFeedback.shift()!);
-      this.started = true;
       let last: Record<string, unknown> | undefined;
+      let finalAnswer = '';
       for (;;) {
-        const generation = this.feedbackGeneration;
-        const messages = [...(await history())].sort(
-          (a, b) => a.info.time.created - b.info.time.created || a.info.id.localeCompare(b.info.id),
-        );
-        const user = [...messages].reverse().find((item) => item.info.role === 'user');
-        last = object([...messages].reverse().find((item) => item.info.role === 'assistant')?.info);
-        const active = await client.session.status(
-          {},
-          { throwOnError: true, signal: AbortSignal.timeout(10000) },
-        );
-        const idle = !active.data?.[session.id] || active.data[session.id].type === 'idle';
-        if (
-          !this.controls &&
-          generation === this.feedbackGeneration &&
-          idle &&
-          ((object(last.time).completed !== undefined && last.parentID === user?.info.id) ||
-            translator.final.get(session.id)?.error)
-        )
-          break;
-        if (server.proc.exitCode !== null || server.proc.signalCode !== null)
-          throw new ProtocolError('SERVER_EXITED', 'OpenCode server exited during execution');
-        await delay(200);
+        const input = context.conversation ? await Promise.race([context.conversation.nextInput(), nativeExited]) : undefined;
+        if (input === null) break;
+        await this.sendPrompt(input ? (input.messages as JsonObject[]).map(item => String(item.content)).join('\n\n') : context.spec.task.prompt);
+        output.native('connector.stage', { stage: 'prompt_admitted' });
+        while (this.pendingFeedback.length) await this.sendPrompt(this.pendingFeedback.shift()!);
+        this.started = true;
+        for (;;) {
+          const generation = this.feedbackGeneration;
+          const messages = [...(await history())].sort(
+            (a, b) => a.info.time.created - b.info.time.created || a.info.id.localeCompare(b.info.id),
+          );
+          const user = [...messages].reverse().find((item) => item.info.role === 'user');
+          last = object([...messages].reverse().find((item) => item.info.role === 'assistant')?.info);
+          const active = await client.session.status(
+            {},
+            { throwOnError: true, signal: AbortSignal.timeout(10000) },
+          );
+          const idle = !active.data?.[session.id] || active.data[session.id].type === 'idle';
+          if (context.signal.aborted) {await this.interrupt(); break;}
+          if (
+            !this.controls &&
+            generation === this.feedbackGeneration &&
+            idle &&
+            ((object(last.time).completed !== undefined && last.parentID === user?.info.id) ||
+              translator.final.get(session.id)?.error)
+          )
+            break;
+          if (server.proc.exitCode !== null || server.proc.signalCode !== null)
+            throw new ProtocolError('SERVER_EXITED', 'OpenCode server exited during execution');
+          await delay(200);
+        }
+        await batch;
+        if (externalFailure) throw externalFailure;
+        await output.drain();
+        const completedMessages = await history();
+        finalAnswer = completedMessages.filter(item => item.info.id === last?.id).flatMap(item => item.parts)
+          .filter(part => part.type === 'text').map(part => String(object(part).text ?? '')).join('');
+        if (!context.conversation || context.signal.aborted || existsSync(limitPath) || unsupportedInteraction ||
+            !last || last.error || !['stop', 'end-turn'].includes(String(last.finish ?? ''))) break;
+        await context.conversation.completeTurn(String(last.id), finalAnswer);
       }
       this.stopped = true;
       streamAbort.abort();
@@ -428,7 +474,7 @@ export class OpenCodeConnector implements Connector {
       if (unsupportedInteraction)
         throw new ProtocolError('UNSUPPORTED_INTERACTION', 'OpenCode requested unsupported question input');
       const final = last && Object.keys(last).length ? last : translator.final.get(session.id);
-      if (!final || final.error || !['stop', 'end-turn'].includes(String(final.finish ?? '')))
+      if ((!final && !context.conversation) || (final && (final.error || !['stop', 'end-turn'].includes(String(final.finish ?? '')))))
         return {
           status: 'failed',
           summary: 'OpenCode did not finish successfully',
@@ -446,13 +492,6 @@ export class OpenCodeConnector implements Connector {
             },
           },
         };
-      const finalMessages = await history();
-      const finalAnswer = finalMessages
-        .filter((item) => item.info.id === last?.id)
-        .flatMap((item) => item.parts)
-        .filter((part) => part.type === 'text')
-        .map((part) => String(object(part).text ?? ''))
-        .join('');
       return {
         status: 'success',
         summary: finalAnswer || 'OpenCode completed',
@@ -466,6 +505,7 @@ export class OpenCodeConnector implements Connector {
             ...(reconnects ? { missing_stream_deltas: 'possible' } : {}),
             reconnects,
             usage: 'provider_reported_or_unknown',
+            seeded_history_messages: conversationHistory(context.spec).length,
           },
         },
       };
@@ -496,6 +536,7 @@ export class OpenCodeConnector implements Connector {
       await this.interrupt();
       if (server) await stopServer(server.proc);
       await observer.close();
+      await resourceSet?.close();
       this.client = undefined;
       this.sessionId = undefined;
       rmSync(state, { recursive: true, force: true });
@@ -503,6 +544,8 @@ export class OpenCodeConnector implements Connector {
   }
 
   async control(context: RunContext, name: string, payload: JsonObject): Promise<JsonValue> {
+    if (context.conversation && name === 'feedback')
+      throw new ProtocolError('UNSUPPORTED_CAPABILITY', 'Conversation input requires turn.submit');
     if (this.stopped) throw new ProtocolError('ATTEMPT_NOT_ACTIVE', 'OpenCode has already stopped');
     if (name === 'abort') {
       context.abort.abort();
