@@ -15,6 +15,24 @@ class FakeConnector(Connector):
         return {"accepted": True, "effective_config": {"prefix": "", "wait": False, "fail": False, **spec["config"]}}
 
     async def run(self, context: RunContext) -> dict:
+        if context.conversation is not None:
+            conversation = context.conversation
+            summary = "Conversation closed"
+            while incoming := await conversation.next_input():
+                content = "\n".join(message["content"] for message in incoming["messages"])
+                if content == "tools":
+                    results = await conversation.request_tools("message-" + incoming["turn_id"], "batch-" + incoming["turn_id"], [
+                        {"call_id": "first", "name": "echo", "arguments": {"text": "one"}},
+                        {"call_id": "second", "name": "echo", "arguments": {"text": "two"}},
+                    ])
+                    summary = json.dumps([result["content"] for result in results])
+                elif content == "wait":
+                    await context.cancelled.wait()
+                    continue
+                else:
+                    summary = "Echo: " + content
+                await conversation.complete_turn("final-" + incoming["turn_id"], summary)
+            return {"status": "success", "summary": summary}
         config = context.spec["config"]
         await context.emit(
             "message.end",

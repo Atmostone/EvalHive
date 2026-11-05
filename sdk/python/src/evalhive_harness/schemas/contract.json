@@ -246,6 +246,9 @@
         },
         "metadata": {
           "type": "object"
+        },
+        "interaction": {
+          "$ref": "#/$defs/interaction_config"
         }
       },
       "required": [
@@ -844,7 +847,12 @@
             "interaction.request",
             "interaction.resolved",
             "native",
-            "failure.observed"
+            "failure.observed",
+            "turn.started",
+            "turn.output",
+            "turn.completed",
+            "session.waiting_input",
+            "tool.request"
           ]
         },
         "data": {},
@@ -1076,6 +1084,56 @@
             },
             "data": {
               "$ref": "#/$defs/failure_observed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "turn.started"
+            },
+            "data": {
+              "$ref": "#/$defs/turn_started"
+            }
+          }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "turn.output"
+            },
+            "data": {
+              "$ref": "#/$defs/turn_output"
+            }
+          }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "turn.completed"
+            },
+            "data": {
+              "$ref": "#/$defs/turn_completed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "session.waiting_input"
+            },
+            "data": {
+              "$ref": "#/$defs/session_waiting_input"
+            }
+          }
+        },
+        {
+          "properties": {
+            "event": {
+              "const": "tool.request"
+            },
+            "data": {
+              "$ref": "#/$defs/conversation_tool_request"
             }
           }
         }
@@ -1469,6 +1527,491 @@
         "request_id",
         "purpose",
         "facts"
+      ],
+      "additionalProperties": false
+    },
+    "conversation_tool_call": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "arguments": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "call_id",
+        "name",
+        "arguments"
+      ],
+      "additionalProperties": false
+    },
+    "conversation_message": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "enum": [
+            "user",
+            "assistant",
+            "tool"
+          ]
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 262144
+        },
+        "call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "tool_calls": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/conversation_tool_call"
+          }
+        },
+        "is_error": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "tool"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "call_id"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "call_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "is_error"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "enum": [
+                  "user",
+                  "tool"
+                ]
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "tool_calls"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "interaction_config": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "1.0"
+        },
+        "mode": {
+          "enum": [
+            "single_turn",
+            "conversation",
+            "external_steps"
+          ]
+        },
+        "initial_history": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/conversation_message"
+          }
+        },
+        "max_inputs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      },
+      "required": [
+        "version",
+        "mode"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "single_turn"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "initial_history"
+                  ]
+                },
+                {
+                  "required": [
+                    "max_inputs"
+                  ]
+                },
+                {
+                  "required": [
+                    "max_tool_calls"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "conversation_input": {
+      "type": "object",
+      "properties": {
+        "input_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "const": "user"
+              },
+              "content": {
+                "type": "string",
+                "maxLength": 262144
+              }
+            },
+            "required": [
+              "role",
+              "content"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "input_id",
+        "turn_id",
+        "expected_revision",
+        "messages"
+      ],
+      "additionalProperties": false
+    },
+    "conversation_tool_result": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "content": {},
+        "is_error": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "call_id",
+        "content",
+        "is_error"
+      ],
+      "additionalProperties": false
+    },
+    "conversation_tool_response": {
+      "type": "object",
+      "properties": {
+        "input_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/conversation_tool_result"
+          }
+        }
+      },
+      "required": [
+        "input_id",
+        "turn_id",
+        "batch_id",
+        "expected_revision",
+        "results"
+      ],
+      "additionalProperties": false
+    },
+    "conversation_close": {
+      "type": "object",
+      "properties": {
+        "input_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 262144
+        }
+      },
+      "required": [
+        "input_id",
+        "expected_revision",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "turn_started": {
+      "type": "object",
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "input_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "turn_id",
+        "input_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "turn_output": {
+      "type": "object",
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "input_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "output": {
+          "type": "object",
+          "properties": {
+            "role": {
+              "const": "assistant"
+            },
+            "content": {
+              "type": "string",
+              "maxLength": 262144
+            },
+            "tool_calls": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "$ref": "#/$defs/conversation_tool_call"
+              }
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "turn_id",
+        "input_id",
+        "revision",
+        "message_id",
+        "output"
+      ],
+      "additionalProperties": false
+    },
+    "turn_completed": {
+      "type": "object",
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "input_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "turn_id",
+        "input_id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "session_waiting_input": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "conversation_tool_request": {
+      "type": "object",
+      "properties": {
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "input_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/$defs/conversation_tool_call"
+          }
+        }
+      },
+      "required": [
+        "turn_id",
+        "input_id",
+        "revision",
+        "message_id",
+        "batch_id",
+        "calls"
       ],
       "additionalProperties": false
     }

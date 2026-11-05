@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { stdin, stdout } from 'node:process';
+import {Conversation, CONVERSATION_COMMANDS, CONVERSATION_EVENTS} from './conversation.js';
 import {
   PROTOCOL_VERSION, ProtocolError, decodeLine, encodeLine, errorResponse,
   lines, response, validate, validateRun,
@@ -12,10 +13,14 @@ export class RunContext {
   private finished = false;
   private output: Promise<void> = Promise.resolve();
   readonly abort = new AbortController();
+  readonly conversation: Conversation | undefined;
   get signal(): AbortSignal { return this.abort.signal; }
-  constructor(readonly spec: RunSpec, private send: (value: WireMessage) => Promise<void>) {}
+  constructor(readonly spec: RunSpec, private send: (value: WireMessage) => Promise<void>) {
+    if ((spec.interaction as JsonObject | undefined)?.mode && (spec.interaction as JsonObject).mode !== 'single_turn')
+      this.conversation = new Conversation(this);
+  }
   emit(event: string, data: JsonObject, extra: {source?: string; session_id?: string; parent_session_id?: string} = {}): Promise<void> {
-    if (['run.started', 'run.finished'].includes(event))
+    if (['run.started', 'run.finished'].includes(event) || CONVERSATION_EVENTS.has(event))
       return Promise.reject(new ProtocolError('RESERVED_EVENT', 'Run lifecycle is owned by the SDK'));
     return this.lifecycle(event, data, extra);
   }
@@ -80,7 +85,10 @@ export async function serve(connector: Connector, input: AsyncIterable<Uint8Arra
               await ctx.lifecycle('run.started', {});
               let terminal: RunResult;
               try {
+                await ctx.conversation?.ready();
                 terminal = validate('result', await connector.run(ctx));
+                if (ctx.conversation && !ctx.signal.aborted && terminal.status === 'success' && ctx.conversation.state !== 'closed')
+                  throw new ProtocolError('CONVERSATION_NOT_CLOSED', 'Connector returned before explicit conversation close');
                 if (ctx.signal.aborted) terminal = {status: 'cancelled', summary: 'Run cancelled'};
               }
               catch (error) {
@@ -98,13 +106,20 @@ export async function serve(connector: Connector, input: AsyncIterable<Uint8Arra
           if (!active || !context || params.attempt_id !== context.spec.attempt_id)
             throw new ProtocolError('ATTEMPT_NOT_ACTIVE', 'Attempt is not active');
           const name = params.command as string;
-          if (!['native', 'emulated'].includes(connector.manifest.capabilities[name] ?? 'unsupported') || !connector.control)
+          if (!['native', 'emulated'].includes(connector.manifest.capabilities[name] ?? 'unsupported') ||
+              (!Object.hasOwn(CONVERSATION_COMMANDS, name) && !connector.control))
             throw new ProtocolError('UNSUPPORTED_CAPABILITY', `Unavailable command: ${name}`);
           const payload = (params.payload ?? {}) as JsonObject;
           const commandSchema = connector.manifest.commands?.[name];
           if (commandSchema) validateRun({...connector.manifest, config_schema: commandSchema.input_schema},
             {...context.spec, config: payload, required_capabilities: []});
-          result = await connector.control(context, name, payload);
+          if (Object.hasOwn(CONVERSATION_COMMANDS, name)) {
+            if (!context.conversation) throw new ProtocolError('UNSUPPORTED_INTERACTION', 'Persistent conversation was not selected');
+            result = await context.conversation.control(name, payload);
+          } else {
+            if (name === 'abort') context.abort.abort();
+            result = await connector.control!(context, name, payload);
+          }
         } else {
           await stop(); await send(response(id, {stopped: true})); break;
         }

@@ -81,6 +81,12 @@ function jsonValue(value: unknown, seen = new Set<object>(), depth = 0): void {
 
 export function validate<T = JsonObject>(kind: string, value: unknown): T {
   jsonValue(value);
+  const root = value as JsonObject | null;
+  const params = root && root.type === 'command' && root.params && typeof root.params === 'object' && !Array.isArray(root.params) ? root.params as JsonObject : undefined;
+  const spec = params?.run ?? root;
+  if (spec && typeof spec === 'object' && !Array.isArray(spec) && spec.interaction && typeof spec.interaction === 'object' &&
+      !Array.isArray(spec.interaction) && spec.interaction.version !== '1.0')
+    throw new ProtocolError('UNSUPPORTED_INTERACTION_VERSION', 'Unsupported interaction protocol version');
   if (value && typeof value === 'object' && 'protocol_version' in value && value.protocol_version !== PROTOCOL_VERSION)
     throw new ProtocolError('UNSUPPORTED_PROTOCOL', 'Unsupported protocol version');
   if (!(kind in schema.$defs)) throw new Error(`Unknown contract type: ${kind}`);
@@ -96,6 +102,13 @@ export function validate<T = JsonObject>(kind: string, value: unknown): T {
 export function validateRun(manifest: Manifest, run: RunSpec): RunSpec {
   validate('manifest', manifest); validate('run_spec', run);
   resources(run);
+  const mode = (run.interaction as JsonObject | undefined)?.mode ?? 'single_turn';
+  for (const capability of [...(mode !== 'single_turn' ? ['conversation'] : []), ...(mode === 'external_steps' ? ['external_tool_execution'] : [])])
+    if (!['native', 'emulated'].includes(manifest.capabilities[capability] ?? 'unsupported'))
+      throw new ProtocolError('UNSUPPORTED_CAPABILITY', 'Requested interaction mode is unavailable');
+  if (((run.interaction as JsonObject | undefined)?.initial_history as JsonValue[] | undefined)?.length &&
+      !['native', 'emulated'].includes(manifest.capabilities.conversation_history ?? 'unsupported'))
+    throw new ProtocolError('UNSUPPORTED_CAPABILITY', 'Native history initialization is unavailable');
   let valid: boolean;
   try {
     if (manifest.config_schema.$schema !== undefined && manifest.config_schema.$schema !== 'https://json-schema.org/draft/2020-12/schema')
