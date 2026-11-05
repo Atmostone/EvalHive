@@ -1,0 +1,7 @@
+{
+  "name": "@evalhive/example-benchmark",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {"@evalhive/benchmark-sdk": "file:../../typescript"}
+}

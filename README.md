@@ -138,7 +138,7 @@ docker-compose.yml
 - [Architecture](docs/architecture.md) — components, runtime, data flow
 - [Data model](docs/data-model.md) — schema and migrations
 - [API](docs/api.md) — endpoint map (source of truth: `/openapi.json`)
-- [Benchmarks](docs/benchmarks.md) · [Scheduler](docs/scheduler.md) · [Webhooks](docs/webhooks.md) · [Development](docs/development.md)
+- [Benchmarks](docs/benchmarks.md) · [Benchmark SDK](docs/benchmark-sdk.md) · [Scheduler](docs/scheduler.md) · [Webhooks](docs/webhooks.md) · [Development](docs/development.md)
 
 ## License
 

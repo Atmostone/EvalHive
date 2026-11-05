@@ -1,0 +1,247 @@
+{
+  "lock_version": 1,
+  "sources": [
+    {
+      "id": "harbor",
+      "repository": "https://github.com/harbor-framework/harbor",
+      "revision": "fdba28fc411e47e8765420a1a063b4918fce3def",
+      "tree": "0ace3864785e1dc8f0a09aa0e92a79b5a2f765f6",
+      "contract_files": [
+        {
+          "path": "README.md",
+          "sha256": "7b5e24d0974e623c44209361019746167d4938dff76e847f3d5b5a1157cf805c",
+          "size_bytes": 2990
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "6d8a7a7c29dab96612f6833891ddd176e55af8df64199fc5713e26980e7e4c06",
+          "size_bytes": 7292
+        }
+      ]
+    },
+    {
+      "id": "terminal-bench-2",
+      "repository": "https://github.com/harbor-framework/terminal-bench-2",
+      "revision": "2fd12b88aafdd04a52c298e3940bcb189f9766d6",
+      "tree": "ec7c02c7f0b59ce8ed2f7c88d1e70cda7427edfa",
+      "contract_files": [
+        {
+          "path": "README.md",
+          "sha256": "7dfa9992c45c7e30744cda7ce659ba77309f43120a0990fce033eb8afd972364",
+          "size_bytes": 4574
+        }
+      ]
+    },
+    {
+      "id": "tau2",
+      "repository": "https://github.com/sierra-research/tau2-bench",
+      "revision": "fc0055dc4e0a316c3f83133267fbd6faaa770992",
+      "tree": "4837da1c2b310152f63d3d7987f4325183ca6f7c",
+      "contract_files": [
+        {
+          "path": "pyproject.toml",
+          "sha256": "23d59670b4ad7bbc0f57420fd9643a8d9188c24abe4f29c9c965544d8cc4cb8d",
+          "size_bytes": 2417
+        },
+        {
+          "path": "src/tau2/data_model/tasks.py",
+          "sha256": "0243a6454b2e9c8a14b8364c38ff95dc1dd7512105b69fada9bf9295fc8170fa",
+          "size_bytes": 22764
+        },
+        {
+          "path": "src/tau2/agent/base_agent.py",
+          "sha256": "97f1033723d03da99f3338ff7a12ed60114a55ed293928ff4ca0bdace6851b4d",
+          "size_bytes": 6331
+        },
+        {
+          "path": "src/tau2/orchestrator/orchestrator.py",
+          "sha256": "6c689e5d1037dd08aef8834b46f58efa14359824cbebf7084de0172e5f580cba",
+          "size_bytes": 40843
+        }
+      ]
+    },
+    {
+      "id": "mcpmark",
+      "repository": "https://github.com/eval-sys/mcpmark",
+      "revision": "cd45b7f57923b9b3985467f5139927575f83141c",
+      "tree": "43595ba49996ac3c8d1ae3ecd24e9b73519fe254",
+      "contract_files": [
+        {
+          "path": "README.md",
+          "sha256": "e2ee62a1eb2780863c6ee17d82267b4097070e544243da4a29de0ece119fbc91",
+          "size_bytes": 13481
+        },
+        {
+          "path": "src/base/task_manager.py",
+          "sha256": "861445187543ddf9b611815b144d8207af5f372753f05b5e1eb4a30e7d18ce91",
+          "size_bytes": 15702
+        },
+        {
+          "path": "src/base/state_manager.py",
+          "sha256": "2606584a57a48afbae583ececea816c97c4f746a58760ec9e26cada42d7ff3fc",
+          "size_bytes": 7150
+        }
+      ]
+    },
+    {
+      "id": "appworld",
+      "repository": "https://github.com/StonyBrookNLP/appworld",
+      "revision": "42b5bcf3cd334fee33f0c37c02070a9f5807add5",
+      "tree": "dfce7142b8669fc11467c89a3f571b1f47d52dcf",
+      "contract_files": [
+        {
+          "path": "README.md",
+          "sha256": "f4049141b6e520217395b7ccd9f27048c8e0f90331690dcbef300d2bc4ff7bdd",
+          "size_bytes": 81334
+        },
+        {
+          "path": "src/appworld/common/constants.py",
+          "sha256": "776a1c2a97e8f3d7cbda00523be3fdf38ed6165d61ac729a82290a843524138d",
+          "size_bytes": 1802
+        }
+      ]
+    },
+    {
+      "id": "swebench",
+      "repository": "https://github.com/SWE-bench/SWE-bench",
+      "revision": "02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
+      "tree": "3c53c27bd4ae6a14ddf58be94156965dcd00f6f3",
+      "contract_files": [
+        {
+          "path": "pyproject.toml",
+          "sha256": "58c4f4f283c6f214166376f83dad8b18bc85f9a7c2c66216343de0498fd9fe19",
+          "size_bytes": 2816
+        },
+        {
+          "path": "swebench/task/repo.py",
+          "sha256": "3d473d52decec6e6f67f8ff0ad36347ae5626309d8f67c35574002f03a715894",
+          "size_bytes": 8366
+        }
+      ]
+    },
+    {
+      "id": "swebench-tasks",
+      "repository": "https://github.com/SWE-bench/swe-bench-tasks",
+      "revision": "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d",
+      "tree": "4bf3e75187bbe4798cdf20be88b12b6e7ca910c4",
+      "contract_files": [
+        {
+          "path": "README.md",
+          "sha256": "b4d7119d879c7356e58dec4b66e60b8fc13e67c9e5d47a84c4cbe23ff7f50fa0",
+          "size_bytes": 568
+        },
+        {
+          "path": "tasks/sympy__sympy-20590/task.yaml",
+          "sha256": "061781d79ad364b1a499155b377a4ae1d354a40c56fb0e549f664caf6cd06665",
+          "size_bytes": 467
+        }
+      ]
+    },
+    {
+      "id": "toolathlon-gym",
+      "repository": "https://github.com/eigent-ai/toolathlon_gym",
+      "revision": "ed735ba0af71d82688a55f952a6ea11479ae7206",
+      "tree": "e90ee7afdbed88b4cf20d3d23c9e85bb092e8b2b",
+      "contract_files": [
+        {
+          "path": "README.md",
+          "sha256": "d3d2fb94202658220351c0698f7f6774e8db2dea1c07f47f501c14593e987a34",
+          "size_bytes": 19768
+        }
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "name": "harbor",
+      "version": "0.25.0",
+      "distributions": [
+        {
+          "filename": "harbor-0.25.0-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/90/72/2ead84b6d43e4737682dd489b107be9d828bf5ae4869d0d4f2aa72243149/harbor-0.25.0-py3-none-any.whl",
+          "sha256": "51923ac567fc57b03279e93468b105f689628bcac2cd3d541d4e44aa5c0ec309"
+        },
+        {
+          "filename": "harbor-0.25.0.tar.gz",
+          "url": "https://files.pythonhosted.org/packages/b5/8f/624ed4b2763565d50c78e9278d2800037c9147d56ee977d3b8ed6c5b81b1/harbor-0.25.0.tar.gz",
+          "sha256": "a66543a223539cd853889ee0eea77d15a3e5222963418a87c0f079b63dadb4b2"
+        }
+      ]
+    },
+    {
+      "name": "swebench",
+      "version": "5.0.2",
+      "distributions": [
+        {
+          "filename": "swebench-5.0.2-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/10/a4/bf16e5aca9d69c600a2b32ebb9212bb9c5a274621cb5f542b72fd634a75c/swebench-5.0.2-py3-none-any.whl",
+          "sha256": "b7f0416a1e686eca22c2f749b5f816685a202835032f6683080e2b53545bbb62"
+        },
+        {
+          "filename": "swebench-5.0.2.tar.gz",
+          "url": "https://files.pythonhosted.org/packages/a1/2b/799ae0c4fc1847758b1c2348fc12579eb04c5927029a37d8acc49c42a981/swebench-5.0.2.tar.gz",
+          "sha256": "faae7b1307b8188e842e78ef5826cf0d64fa78486adc41e3414f9533b9e0d7eb"
+        }
+      ]
+    }
+  ],
+  "datasets": [
+    {
+      "id": "terminal-bench",
+      "version": "2.0",
+      "source": "terminal-bench-2"
+    },
+    {
+      "id": "tau2",
+      "version": "1.0.1",
+      "source": "tau2",
+      "domains": [
+        "airline",
+        "retail",
+        "telecom"
+      ]
+    },
+    {
+      "id": "mcpmark",
+      "version": "verified",
+      "source": "mcpmark",
+      "suites": [
+        "standard",
+        "easy"
+      ]
+    },
+    {
+      "id": "appworld",
+      "version": "0.2.0",
+      "source": "appworld",
+      "splits": [
+        "train",
+        "dev",
+        "test_normal",
+        "test_challenge"
+      ]
+    },
+    {
+      "id": "swebench",
+      "version": "classic",
+      "source": "swebench-tasks",
+      "subsets": [
+        "verified",
+        "lite",
+        "full"
+      ]
+    },
+    {
+      "id": "toolathlon-gym",
+      "version": "source-revision",
+      "source": "toolathlon-gym"
+    }
+  ],
+  "installation_policy": {
+    "dataset_content_digest_required": true,
+    "image_digest_required": true,
+    "mutable_tags_must_be_resolved_before_prepare": true,
+    "remote_dataset_bytes_recorded_at_installation": true,
+    "note": "Source commits pin code and repository-resident data. Downloaded data and images require a separate immutable installation receipt; this lock does not claim they are installed or live-verified."
+  }
+}
