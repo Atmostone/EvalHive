@@ -32,7 +32,7 @@ class ResolvedLaunch:
     credentials: dict
     profile: HarnessProfile
     network: NetworkSpec
-    model: LLMModel
+    model: LLMModel | None
 
 
 async def selected_template(db, task):
@@ -45,7 +45,8 @@ async def selected_template(db, task):
 
 
 def execution_mode(task, template=None):
-    return getattr(task, "execution_mode", None) or getattr(template, "execution_mode", None) or "orchestrated"
+    return (getattr(task, "execution_mode", None) or (task.run_config or {}).get("execution_mode")
+            or getattr(template, "execution_mode", None) or "orchestrated")
 
 
 async def selected_profile(db, task, template=None):
@@ -94,19 +95,21 @@ async def resolve_launch(db, task, template=None):
         if (manifest["id"], manifest["version"]) != (frozen["connector_id"], frozen["connector_version"]):
             raise ProfileError("Recorded connector version is unavailable; create a run with new conditions")
     model_id = overrides.get("model_id") or (frozen or {}).get("model_id") or profile.model_id or getattr(template, "model_id", None)
-    if not model_id:
+    llm = None
+    if not model_id and manifest.get("requirements", {}).get("model_api"):
         raise ProfileError("Choose a model connection in the harness profile or role before execution")
-    llm = await resolve_model_by_id(db, model_id)
-    if llm.provider.workspace_id != task.workspace_id:
-        raise ProfileError("Model connection is unavailable in this workspace")
-    if not llm.provider.endpoint or not llm.provider.api_key:
-        raise ProfileError("Model connection is incomplete")
-    try:
-        endpoint = urlsplit(llm.provider.endpoint)
-    except ValueError:
-        raise ProfileError("Model endpoint is invalid") from None
-    if endpoint.scheme not in {"http", "https"} or not endpoint.netloc or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
-        raise ProfileError("Model endpoint must be an HTTP URL without inline credentials")
+    if model_id:
+        llm = await resolve_model_by_id(db, model_id)
+        if llm.provider.workspace_id != task.workspace_id:
+            raise ProfileError("Model connection is unavailable in this workspace")
+        if not llm.provider.endpoint or not llm.provider.api_key:
+            raise ProfileError("Model connection is incomplete")
+        try:
+            endpoint = urlsplit(llm.provider.endpoint)
+        except ValueError:
+            raise ProfileError("Model endpoint is invalid") from None
+        if endpoint.scheme not in {"http", "https"} or not endpoint.netloc or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+            raise ProfileError("Model endpoint must be an HTTP URL without inline credentials")
     # Old executable overrides must not silently change the installed image or
     # discard a scientific treatment while moving to the SDK path.
     if overrides.get("agent_image") or overrides.get("tool_injection"):
@@ -139,7 +142,9 @@ async def resolve_launch(db, task, template=None):
     profile_credentials = await resolve_secret_refs(db, task.workspace_id, profile.secret_refs)
     if set(profile_credentials) & (set(credentials) | {"model_api_key", "evalhive_knowledge_token"}):
         raise ProfileError("Harness credential role conflicts with a reserved runtime reference")
-    credentials = {**profile_credentials, **credentials, "model_api_key": llm.provider.api_key}
+    credentials = {**profile_credentials, **credentials}
+    if llm is not None:
+        credentials["model_api_key"] = llm.provider.api_key
     instructions = overrides.get("soul_md", getattr(template, "soul_md", ""))
     prompt = f"{task.title}\n\n{task.description or ''}"
     for name in ("user_feedback", "orchestrator_feedback"):
@@ -159,12 +164,14 @@ async def resolve_launch(db, task, template=None):
         if not isinstance(network_mode, str) or not network_mode.startswith("container:"):
             raise ProfileError("Unsupported environment network mode")
         network = NetworkSpec(container=network_mode.removeprefix("container:"))
-    model = {"name": llm.model.api_name, "endpoint": llm.provider.endpoint, "api": "openai-compatible",
-             "credential_ref": "model_api_key"}
+    model = ({"name": llm.model.api_name, "endpoint": llm.provider.endpoint, "api": "openai-compatible",
+              "credential_ref": "model_api_key"} if llm is not None else None)
     sampling = {name: overrides[name] for name in ("temperature", "seed") if overrides.get(name) is not None}
     if sampling:
+        if model is None:
+            raise ProfileError("Sampling requires a model connection")
         model["sampling"] = sampling
-    if frozen and "model_id" not in changed and any(model.get(key) != frozen.get("model", {}).get(key) for key in ("name", "endpoint", "api")):
+    if frozen and "model_id" not in changed and any((model or {}).get(key) != (frozen.get("model") or {}).get(key) for key in ("name", "endpoint", "api")):
         raise ProfileError("Recorded model connection changed; create a run with new conditions")
     limits = {"wall_time_seconds": int(getattr(template, "timeout_minutes", 60) or 60) * 60,
               "memory_mb": memory_mb(getattr(template, "max_ram", "2g")),
@@ -177,7 +184,7 @@ async def resolve_launch(db, task, template=None):
         "instructions": [instructions] if instructions else [], "config": deepcopy(profile.config),
         "model": model, "credential_refs": {key: "runtime-injected" for key in credentials},
         "limits": limits, "environment": environment,
-        "metadata": {"execution_mode": mode, "profile_id": str(profile.id), "model_id": str(llm.model.id),
+        "metadata": {"execution_mode": mode, "profile_id": str(profile.id), "model_id": str(llm.model.id) if llm is not None else None,
                      "template_name": template.name if template else None,
                      "template_updated_at": template.updated_at.isoformat() if template and template.updated_at else None,
                      "template_id": str(template.id) if template else None},
@@ -233,14 +240,14 @@ async def resolve_launch(db, task, template=None):
         if overrides.get("new_harness_conditions"):
             spec["metadata"]["replay_conditions"] = "new_conditions"
     validate_run(manifest, spec)
-    return ResolvedLaunch(manifest, spec, credentials, profile, network, llm.model)
+    return ResolvedLaunch(manifest, spec, credentials, profile, network, llm.model if llm is not None else None)
 
 
 async def launch_task(db, task, template=None):
     resolved = await resolve_launch(db, task, template)
-    task.model_used = resolved.model.api_name
-    task.input_price_per_1m_usd = resolved.model.input_price_per_1m_usd
-    task.output_price_per_1m_usd = resolved.model.output_price_per_1m_usd
+    task.model_used = resolved.model.api_name if resolved.model else None
+    task.input_price_per_1m_usd = resolved.model.input_price_per_1m_usd if resolved.model else None
+    task.output_price_per_1m_usd = resolved.model.output_price_per_1m_usd if resolved.model else None
     return await launch_attempt(
         db, task=task, manifest=resolved.manifest, run_spec=resolved.spec,
         credentials=resolved.credentials, profile_id=resolved.profile.id, network=resolved.network,

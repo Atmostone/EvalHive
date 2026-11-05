@@ -8,7 +8,7 @@ is only the DB-touching half, run inside the api container:
 
     python -m app.cli.toolathlon_pilot create --case <case_id> \\
         --workspace-id <uuid> --template-id <uuid> --model-id <uuid> \\
-        [--agent-image evalhive-agent-toolathlon:latest] [--suite toolathlon]
+        [--harness-profile <uuid>] [--suite toolathlon]
     python -m app.cli.toolathlon_pilot ready --task-id <uuid>
     python -m app.cli.toolathlon_pilot status --task-id <uuid>
     python -m app.cli.toolathlon_pilot verdict --task-id <uuid> --passed {true,false} \\
@@ -73,11 +73,14 @@ async def _create(args) -> None:
             workspace_id=ws_id,
             origin="experiment",
             template_id=uuid.UUID(args.template_id),
+            harness_profile_id=uuid.UUID(args.harness_profile) if args.harness_profile else None,
+            execution_mode="direct",
             run_config={
                 "benchmark_mode": True,
                 "template_id": args.template_id,
                 "model_id": args.model_id,
-                "agent_image": args.agent_image,
+                "environment_id": "toolathlon",
+                "execution_mode": "direct",
                 "tools_override": {"enable": [str(found[n].id) for n in names]},
                 "max_iterations": 100,
                 "toolathlon_pilot": True,
@@ -171,7 +174,7 @@ def main() -> None:
     c.add_argument("--workspace-id", required=True)
     c.add_argument("--template-id", required=True)
     c.add_argument("--model-id", required=True)
-    c.add_argument("--agent-image", default="evalhive-agent-toolathlon:latest")
+    c.add_argument("--harness-profile", help="Installed workspace harness profile UUID")
 
     r = sub.add_parser("ready", help="flip a seeded task BACKLOG -> READY")
     r.add_argument("--task-id", required=True)

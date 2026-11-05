@@ -11,8 +11,8 @@
 !harnesses/**
 !runner/
 !runner/**
-!agent-image/
-!agent-image/**
+!environments/
+!environments/**
 **/.env*
 **/__pycache__/
 **/.pytest_cache/

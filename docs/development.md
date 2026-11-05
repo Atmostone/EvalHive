@@ -73,30 +73,22 @@ The runner's own API token stays outside the worker. Native credentials use a
 separate read-only file named by `EVALHIVE_CREDENTIALS_FILE`; worker code resolves
 the RunSpec references from that map and must not discover global auth caches.
 
-During the SDK transition the existing orchestrator uses the temporary legacy
-connector through the common runner. Build it from the repository root using the
-EvalHive rootless Docker endpoint:
+Pi is the built-in default connector; OpenCode uses the same installed-package
+contract. The previous executable agent and transitional adapters have been
+removed. Historical journals, log archives and template versions remain readable.
+Retired webhook endpoints authenticate old service tokens but reject execution
+writes; feedback and cancellation compatibility endpoints queue attempt commands.
+
+Build the shared workspace dependencies before either connector:
 
 ```bash
-docker build -f harnesses/legacy/Dockerfile -t evalhive-legacy:harness-0.1.0 .
+docker build --target runtime -f environments/workspace/Dockerfile -t evalhive-environment-workspace:0.1.0 .
 ```
 
-The optional `harnesses/legacy-toolathlon/Dockerfile` wraps the already installed
-Toolathlon environment image as `evalhive-legacy-toolathlon:harness-0.1.0`.
-Neither build launches a model. These transitional images and their adapters are
-removed when Pi becomes the default; they are not an alternative installation API.
-
-Artifact policy belongs to `RunSpec.environment`, independently of the connector:
-`root` is workspace-relative, `recursive` and `include_hidden` control traversal,
-`max_files`/`max_bytes` bound collection, and `preserve_on` selects terminal outcomes.
-The default preserves ordinary workspace files on success, failure and cancel.
-The resolved policy is frozen before execution. Collection never follows symlinks
-or traverses the private input directory. Delivery errors remain visible in the
-terminal result and journal, alongside any successfully retained files.
-
-Run frontend state-merge checks with `npm test --prefix frontend` on Node 22.23.1.
-They cover interleaved tools, delayed snapshots and duplicate delivery without a
-browser or model connection. The frontend CI job also checks the production build.
+This environment contains Python and the existing time/web MCP servers at their
+registry paths. Its Python base is pinned by digest and dependencies by hashes.
+Connector images add their own pinned Node runtime and native SDK, while custom
+benchmark base images provide their independent toolchains.
 
 Build the Pi connector from the repository root. Its Node/Pi/SDK dependency
 versions are pinned by the package lockfile. Native tests use the actual Pi SDK

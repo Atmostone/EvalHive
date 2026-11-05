@@ -317,3 +317,26 @@ async def test_profile_is_not_silently_rebound_after_connector_upgrade(auth_clie
         f"/api/harness-profiles/{profile['id']}", json={"connector_version": "8.0.0"}
     )
     assert response.status_code == 200
+
+
+async def test_external_connector_without_model_requirement_resolves_without_core_imports(
+    auth_client, db_session, installed_fake,
+):
+    import uuid
+
+    from app.harnesses.launch import resolve_launch
+    from app.models.task import Task
+
+    declaration = installed_fake / "external/manifest.json"
+    manifest = json.loads(declaration.read_text())
+    manifest.pop("requirements", None)
+    declaration.write_text(json.dumps(manifest))
+    profile = await create_fake(auth_client)
+    task = Task(title="Independent connector", workspace_id=uuid.UUID(auth_client.headers["X-Workspace-Id"]),
+                harness_profile_id=uuid.UUID(profile["id"]), execution_mode="direct")
+    db_session.add(task)
+    await db_session.flush()
+    resolved = await resolve_launch(db_session, task)
+    assert resolved.spec["model"] is None and resolved.model is None
+    assert resolved.spec["config"] == {"native_prefix": "hello"}
+    assert "model_api_key" not in resolved.credentials

@@ -7,7 +7,7 @@ EvalHive turns scattered "agent runs" into a reproducible, multi-dimensional, st
 > The orchestration loop (task → pick an agent role → spawn an isolated container → the agent solves the task with its tools and MCP servers → review) is the **engine that produces runs to evaluate**, not the headline. The headline is the evaluation pipeline on top of it.
 
 EvalHive ships in **two modes**, toggled in the UI:
-- **Work** — the full agent orchestrator it grew from: a kanban task board, agent selection per task, chat, an agent-communication graph, and structured memory.
+- **Work** — a task board with direct Pi/OpenCode execution, optional roles, live output, files, feedback and cancellation. Orchestrated execution adds role selection, decomposition and review.
 - **Experiments** — the evaluation platform: the A/B runner, the ~25 evaluator modules, calibration and reports.
 
 Both are built and working; orchestration is what produces the runs the evaluators score.
@@ -123,7 +123,10 @@ Full setup, development workflow and test commands are in [`docs/development.md`
 ```
 backend/      FastAPI app: API, evaluators (app/quality/), models, migrations, tests, benchmarks
 frontend/     React + Vite SPA (experiments, analytics, calibration, reports)
-agent-image/  Docker image the agents run inside
+harnesses/    Installed Pi/OpenCode connectors
+environments/ Independent task toolchains and MCP servers
+sdk/          Python/TypeScript connector protocol
+runner/       Attempt lifecycle, controls and reliable event delivery
 nginx/        reverse proxy
 docs/         architecture, data model, API map, scheduler, webhooks, development
 docker-compose.yml

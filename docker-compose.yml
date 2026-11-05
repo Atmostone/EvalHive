@@ -29,11 +29,7 @@ services:
       # services here are one fact in two files, and the test that claims to
       # compare them can only do so if it can read this one (SPA-94).
       - ./docker-compose.yml:/app/docker-compose.yml:ro
-      # Read-only, for tests only: nothing in agent-image/ has ever been under
-      # test, and the one place that matters — which field each vendor puts a
-      # model's reasoning in — is exactly where an unverified assumption hides
-      # (SPA-114). The API never imports from here at runtime.
-      - ./agent-image:/agent-image:ro
+
       - ./backend/alembic:/app/alembic
       - ./backend/tests:/app/tests
       - ./backend/benchmarks:/app/benchmarks

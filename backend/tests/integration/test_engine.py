@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
-
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.orchestrator import engine
+from sqlalchemy import select
 
 
 @pytest.mark.asyncio
@@ -91,16 +90,13 @@ async def test_process_ready_task_spawns_when_template_picked(db_session, defaul
 
     monkeypatch.setattr("app.orchestrator.engine.select_template_for_task", pick)
 
-    # Patch the AgentRuntime so we don't actually run Docker.
-    fake_runtime = MagicMock()
-    fake_runtime.spawn.return_value = "ctr-id-1234567890ab"
-    monkeypatch.setattr("app.orchestrator.engine.get_agent_runtime", lambda: fake_runtime)
+    async def launch(db, task, template):
+        task.status = "in_progress"
+        task.agent_container_id = "ctr-id-1234567890ab"
+        await db.commit()
 
-    # Patch issue_agent_token (would otherwise need a real DB row).
-    monkeypatch.setattr(
-        "app.orchestrator.engine.issue_agent_token",
-        AsyncMock(return_value="fake-token"),
-    )
+    launcher = AsyncMock(side_effect=launch)
+    monkeypatch.setattr("app.harnesses.launch.launch_task", launcher)
 
     await engine.process_ready_task(db_session, task)
     await db_session.refresh(task)
@@ -108,13 +104,13 @@ async def test_process_ready_task_spawns_when_template_picked(db_session, defaul
     assert task.status == TaskStatus.IN_PROGRESS.value
     assert task.template_id == tpl.id
     assert task.agent_container_id == "ctr-id-1234567890ab"
-    fake_runtime.spawn.assert_called_once()
+    launcher.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_sdk_spawn_does_not_overwrite_a_fast_terminal_result(db_session, default_model, monkeypatch):
     from app.harnesses.attempts import create_attempt
-    from app.harnesses.legacy_bridge import convert_spec
+    from app.harnesses.catalog import get_manifest
 
     template = Template(
         name="SDK role", description="SDK test role", soul_md="Instructions", model_id=default_model.id,
@@ -124,27 +120,17 @@ async def test_sdk_spawn_does_not_overwrite_a_fast_terminal_result(db_session, d
     db_session.add_all([template, task])
     await db_session.commit()
 
-    class FastRuntime:
-        async def spawn_attempt(self, db, task, spec, *, timeout_seconds):
-            manifest, run, _ = convert_spec(task, spec, timeout_seconds=timeout_seconds)
-            attempt = await create_attempt(
-                db, workspace_id=task.workspace_id, task_id=task.id,
-                manifest=manifest, run_spec=run,
-            )
-            attempt.container_id = task.agent_container_id = "fast-sdk-container"
-            attempt.status = "success"
-            task.status = "done"
-            task.result_summary = "Already finished"
-            await db.commit()
-            return attempt
+    async def launch(db, task, template):
+        run = {"protocol_version": "1.0", "workspace_id": str(task.workspace_id), "task_id": str(task.id),
+               "attempt_id": str(uuid.uuid4()), "task": {"prompt": "Fast fixture"}, "cwd": "/workspace", "config": {}}
+        attempt = await create_attempt(db, workspace_id=task.workspace_id, task_id=task.id,
+                                       manifest=get_manifest("pi"), run_spec=run)
+        attempt.container_id = task.agent_container_id = "fast-sdk-container"
+        attempt.status, task.status, task.result_summary = "success", "done", "Already finished"
+        await db.commit()
+        return attempt
 
-        def image_id(self, container_id):
-            return "sha256:fake-image"
-
-        def spawn(self, spec):
-            raise AssertionError("SDK runs must use the common runner path")
-
-    monkeypatch.setattr(engine, "get_agent_runtime", FastRuntime)
+    monkeypatch.setattr("app.harnesses.launch.launch_task", launch)
     await engine._spawn_agent_for_template(db_session, task, template)
     await db_session.refresh(task)
     assert task.current_attempt_id is not None
@@ -163,11 +149,8 @@ async def test_sdk_capacity_keeps_task_queued(db_session, default_model, monkeyp
     db_session.add_all([template, task])
     await db_session.commit()
 
-    class BusyRuntime:
-        async def spawn_attempt(self, *args, **kwargs):
-            raise AttemptError("CAPACITY", "Runner capacity is exhausted")
-
-    monkeypatch.setattr(engine, "get_agent_runtime", BusyRuntime)
+    monkeypatch.setattr("app.harnesses.launch.launch_task", AsyncMock(
+        side_effect=AttemptError("CAPACITY", "Runner capacity is exhausted")))
     await engine._spawn_agent_for_template(db_session, task, template)
     await db_session.refresh(task)
     assert task.status == "ready" and task.current_attempt_id is None
@@ -209,13 +192,12 @@ async def test_process_ready_task_skips_decomposition_when_disabled(
         return {"template_id": str(tpl_a.id), "reasoning": "single agent path"}
 
     monkeypatch.setattr("app.orchestrator.engine.select_template_for_task", pick)
-    fake_runtime = MagicMock()
-    fake_runtime.spawn.return_value = "ctr-disabled-deco"
-    monkeypatch.setattr("app.orchestrator.engine.get_agent_runtime", lambda: fake_runtime)
-    monkeypatch.setattr(
-        "app.orchestrator.engine.issue_agent_token",
-        AsyncMock(return_value="fake-token"),
-    )
+    async def launch(db, task, template):
+        task.status = "in_progress"
+        task.agent_container_id = "ctr-disabled-deco"
+        await db.commit()
+
+    monkeypatch.setattr("app.harnesses.launch.launch_task", launch)
 
     await engine.process_ready_task(db_session, task)
     await db_session.refresh(task)
@@ -547,10 +529,7 @@ async def test_a_spawn_failure_rolls_the_parent_up_itself(
     await db_session.refresh(child)
     await db_session.refresh(tpl)
 
-    def _boom():
-        raise RuntimeError("docker socket is gone")
-
-    monkeypatch.setattr("app.orchestrator.engine.get_agent_runtime", _boom)
+    monkeypatch.setattr("app.harnesses.launch.launch_task", AsyncMock(side_effect=RuntimeError("docker socket is gone")))
     await engine._spawn_agent_for_template(db_session, child, tpl)
 
     await db_session.refresh(child)

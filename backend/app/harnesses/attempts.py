@@ -1,4 +1,4 @@
-"""Atomic attempt journal. Runtime and legacy task projection live elsewhere."""
+"""Atomic attempt journal. Runtime and task projection live elsewhere."""
 
 from __future__ import annotations
 

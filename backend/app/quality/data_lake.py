@@ -9,6 +9,7 @@ The record is the foundation for downstream eval features; its JSONB slots
 are left NULL here and filled later (E-02/E-07/E-05/E-22/E-20).
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -310,7 +311,7 @@ async def build_quality_record(
 
     blob = await assemble_record(db, task)
     content = json.dumps(blob, ensure_ascii=False, default=str).encode("utf-8")
-    s3_path = upload_quality_record(str(task.workspace_id), str(task.id), content)
+    s3_path = await asyncio.to_thread(upload_quality_record, str(task.workspace_id), str(task.id), content)
 
     opt_in_default = bool(await get_setting(db, "data_lake_public_opt_in_default", False))
 

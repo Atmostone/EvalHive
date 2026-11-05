@@ -59,14 +59,6 @@ from app.utils.failures import FAILURE_INFRA, merge_failure_type
 
 logger = logging.getLogger(__name__)
 
-# Toolathlon executable-eval cases (gold.external_eval) run on a dedicated image
-# with the case's MCP servers force-enabled, and a higher iteration ceiling.
-TOOLATHLON_AGENT_IMAGE = "evalhive-agent-toolathlon:latest"
-# The image a plain (non-executable-eval) case runs on; mirrors
-# app/orchestrator/docker_manager.AGENT_IMAGE, imported lazily there to keep the
-# docker dependency out of this module's import path.
-DEFAULT_AGENT_IMAGE = "evalhive-agent:latest"
-
 # The two halves of "what is still part of this experiment" (SPA-84). Retiring a
 # configuration keeps its lineage but takes it out of the matrix, and every
 # reader has to agree on that — or the report and the aggregates end up
@@ -749,7 +741,7 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
         for t in tasks:
             if t.agent_container_id and t.status not in _TERMINAL_TASK:
                 try:
-                    get_agent_runtime().kill(t.agent_container_id)
+                    get_agent_runtime().kill(t.agent_container_id, workspace_id=str(t.workspace_id))
                     t.status = TaskStatus.FAILED.value
                     t.completed_at = now
                 except Exception as e:
@@ -815,7 +807,7 @@ def _agent_image_ids() -> dict:
 
         if "name=rootless" not in client.info().get("SecurityOptions", []):
             raise ValueError("Execution evidence requires the EvalHive rootless daemon")
-        names = {DEFAULT_AGENT_IMAGE, TOOLATHLON_AGENT_IMAGE}
+        names = set()
         for manifest in load_catalog().values():
             names.add(manifest["image"])
             names.update(manifest.get("requirements", {}).get("environment_images", {}).values())
@@ -1288,7 +1280,7 @@ async def remove_config_from_experiment(
         for t in tasks:
             if t.agent_container_id and t.status not in _TERMINAL_TASK:
                 try:
-                    get_agent_runtime().kill(t.agent_container_id)
+                    get_agent_runtime().kill(t.agent_container_id, workspace_id=str(t.workspace_id))
                     t.status = TaskStatus.FAILED.value
                     t.completed_at = now
                 except Exception as e:

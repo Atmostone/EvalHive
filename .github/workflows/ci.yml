@@ -74,9 +74,29 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://evalhive:password@localhost:5432/evalhive_test
       JWT_SECRET: ci-test-secret-please-rotate
+      MINIO_ENDPOINT: localhost:19000
+      MINIO_ACCESS_KEY: evalhive-ci
+      MINIO_SECRET_KEY: fixture-only-storage-password
+      QDRANT_URL: http://localhost:19033
+      REDIS_URL: redis://localhost:19079/0
+      TIKTOKEN_CACHE_DIR: ${{ runner.temp }}/evalhive-tokenizers
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: docker/setup-docker-action@v5
+        with:
+          rootless: true
+          set-host: true
+      - name: Start isolated integration services and cache the pinned tokenizer
+        run: |
+          docker build -f tests/e2e/Minio.Dockerfile -t evalhive-test-minio:ci tests/e2e
+          docker run -d --name evalhive-ci-minio -p 127.0.0.1:19000:9000 --memory 512m --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges -e MINIO_ROOT_USER=evalhive-ci -e MINIO_ROOT_PASSWORD=fixture-only-storage-password evalhive-test-minio:ci server /data
+          docker run -d --name evalhive-ci-qdrant -p 127.0.0.1:19033:6333 --memory 512m --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges qdrant/qdrant@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2
+          docker run -d --name evalhive-ci-redis -p 127.0.0.1:19079:6379 --memory 128m --cpus 1 --pids-limit 128 --cap-drop ALL --security-opt no-new-privileges redis@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+          mkdir -p "$TIKTOKEN_CACHE_DIR"
+          curl --fail --location --retry 2 --max-time 60 https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken -o "$TIKTOKEN_CACHE_DIR/9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
+          echo "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7 $TIKTOKEN_CACHE_DIR/9b5ad71b2ce5302211f9c61530b329a4922fc6a4" | sha256sum --check
 
       - uses: actions/setup-python@v5
         with:

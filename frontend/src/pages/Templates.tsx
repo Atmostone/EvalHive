@@ -27,8 +27,11 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
   const [tagsInput, setTagsInput] = useState(form.tags.join(', '))
 
   const profiles = useQuery({ queryKey: ['harness-profiles'], queryFn: harnessesApi.profiles })
+  const catalog = useQuery({ queryKey: ['harnesses'], queryFn: harnessesApi.list })
   const selectedProfile = profiles.data?.find(profile => profile.id === form.harness_profile_id)
     ?? (form.harness_profile_id ? undefined : profiles.data?.find(profile => profile.is_default))
+
+  const selectedManifest = catalog.data?.find(manifest => manifest.id === selectedProfile?.connector_id && manifest.version === selectedProfile?.connector_version)
 
   const { data: providers = [] } = useQuery({
     queryKey: ['providers'],
@@ -102,7 +105,7 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
               onChange={(v) => set('model_id', v)}
               placeholder="— Pick a model —"
             />
-            {!form.model_id && !selectedProfile?.model_id && (
+            {selectedManifest?.requirements?.model_api && !form.model_id && !selectedProfile?.model_id && (
               <p className="text-xs text-orange-600 mt-1">
                 Select a model here or in the harness profile before execution.
               </p>

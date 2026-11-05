@@ -71,7 +71,7 @@ def workspace_host_path(task_id, attempt_id=None) -> str:
 
 def ensure_workspace_dir(task_id) -> str:
     """Create the container-local workspace dir so the host bind mount targets a
-    real directory (mirrors ``docker_manager.spawn_agent``)."""
+    real directory, independent of the selected connector."""
     local = os.path.join(_settings().data_dir, "workspaces", str(task_id))
     os.makedirs(local, exist_ok=True)
     return local

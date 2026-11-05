@@ -170,7 +170,7 @@ def test_mounts_cannot_escape_the_task_or_mutate_shared_resources(setup_runtime)
 def test_stop_and_inspect_do_not_return_private_configuration(setup_runtime):
     process_runtime, client, spec, _ = setup_runtime
     container = MagicMock()
-    container.id, container.status = "owned", "exited"
+    container.id, container.status, container.name = "owned", "exited", "owned-runner"
     container.labels = {"evalhive.role": "runner", "evalhive.workspace_id": spec.workspace_id}
     container.attrs = {
         "Image": "sha256:actual",

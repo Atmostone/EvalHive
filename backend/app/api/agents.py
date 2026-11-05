@@ -142,24 +142,7 @@ async def agent_feedback(
     if attempt is not None:
         receipt = await _queue_attempt_control(db, attempt, "feedback", {"text": body.message})
         return {"status": "queued", "command_id": receipt["id"]}
-    runtime = get_agent_runtime()
-    stats = runtime.stats(container_id, workspace_id=str(workspace.id))
-    if not stats:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    ok = await runtime.send_command(container_id, "feedback", {"message": body.message})
-    if not ok:
-        raise HTTPException(status_code=502, detail="Agent did not accept feedback")
-    task_id = stats.get("task_id")
-    await log_event(
-        db,
-        "agent_feedback_sent",
-        "user",
-        {"message": body.message[:500]},
-        task_id=task_id,
-        agent_container_id=container_id,
-        workspace_id=workspace.id,
-    )
-    return {"status": "queued"}
+    raise HTTPException(status_code=404, detail="Attempt not found")
 
 
 class SwitchModelBody(BaseModel):
@@ -185,40 +168,7 @@ async def agent_switch_model(
                 "message": "Changing the model during an SDK attempt is unavailable",
             },
         )
-    from app.api._resolve_model import resolve_model_by_id
-
-    resolved = await resolve_model_by_id(db, body.model_id)
-    provider = resolved.provider
-    if provider.workspace_id != workspace.id:
-        raise HTTPException(status_code=400, detail="model does not belong to this workspace")
-
-    runtime = get_agent_runtime()
-    stats = runtime.stats(container_id, workspace_id=str(workspace.id))
-    if not stats:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    payload = {
-        "model": resolved.model.api_name,
-        "base_url": provider.endpoint,
-        "api_key": provider.api_key,
-    }
-    ok = await runtime.send_command(container_id, "switch_model", payload)
-    if not ok:
-        raise HTTPException(status_code=502, detail="Agent did not accept switch_model")
-    task_id = stats.get("task_id")
-    await log_event(
-        db,
-        "agent_model_switched",
-        "user",
-        {
-            "model_id": body.model_id,
-            "model": resolved.model.api_name,
-            "provider": provider.name,
-        },
-        task_id=task_id,
-        agent_container_id=container_id,
-        workspace_id=workspace.id,
-    )
-    return {"status": "queued"}
+    raise HTTPException(status_code=404, detail="Attempt not found")
 
 
 class AbortBody(BaseModel):
@@ -239,21 +189,4 @@ async def agent_abort(
     if attempt is not None:
         receipt = await _queue_attempt_control(db, attempt, "abort", {})
         return {"status": "abort_signaled", "command_id": receipt["id"]}
-    runtime = get_agent_runtime()
-    stats = runtime.stats(container_id, workspace_id=str(workspace.id))
-    if not stats:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    ok = await runtime.send_command(container_id, "abort", {"reason": body.reason})
-    if not ok:
-        raise HTTPException(status_code=502, detail="Agent unreachable")
-    task_id = stats.get("task_id")
-    await log_event(
-        db,
-        "agent_abort_signaled",
-        "user",
-        {"reason": body.reason},
-        task_id=task_id,
-        agent_container_id=container_id,
-        workspace_id=workspace.id,
-    )
-    return {"status": "abort_signaled"}
+    raise HTTPException(status_code=404, detail="Attempt not found")

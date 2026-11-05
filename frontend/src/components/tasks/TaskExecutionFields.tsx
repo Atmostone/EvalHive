@@ -44,7 +44,7 @@ export default function TaskExecutionFields({ value, onChange, disabled = false 
       ? 'Runs the selected harness directly. No orchestrator or automatic evaluation is called.'
       : 'Uses the orchestrator workflow and its configured system model.'}</p>
     {profile && <><p className="text-xs text-gray-600">Applied profile: {profile.name}</p><HarnessCapabilities manifest={manifest} /></>}
-    {mode === 'direct' && profile && !profile.model_id && !role?.model_id && <p className="text-xs text-amber-700">
+    {mode === 'direct' && manifest?.requirements?.model_api && profile && !profile.model_id && !role?.model_id && <p className="text-xs text-amber-700">
       Choose a model connection in this profile or role before starting.
     </p>}
     {error && <p role="alert" className="text-sm text-red-600">{error.message}</p>}

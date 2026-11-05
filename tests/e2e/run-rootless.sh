@@ -24,6 +24,10 @@ if [[ "${E2E_SKIP_BUILD:-0}" != 1 ]]; then
   if ! docker image inspect evalhive-minio:RELEASE.2025-10-15T17-29-55Z >/dev/null 2>&1; then
     docker build -f tests/e2e/Minio.Dockerfile -t evalhive-minio:RELEASE.2025-10-15T17-29-55Z tests/e2e
   fi
+  docker build --target test -f environments/workspace/Dockerfile -t evalhive-environment-tests:e2e .
+  docker run --rm --network none --memory 512m --cpus 1 --pids-limit 128 --cap-drop ALL \
+    --security-opt no-new-privileges --init evalhive-environment-tests:e2e
+  docker build --target runtime -f environments/workspace/Dockerfile -t evalhive-environment-workspace:0.1.0 .
   # Native tests and execution are deliberately serial.
   for harness in pi opencode; do
     docker build --target test -f "harnesses/$harness/Dockerfile" -t "evalhive-$harness-tests:e2e" .

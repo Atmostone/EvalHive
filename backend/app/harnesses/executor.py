@@ -55,6 +55,9 @@ async def settle_task(db, attempt_id):
         return
     if attempt.completeness.get("task_projection") == "committed":
         await db.commit()
+        from app.harnesses.workflow import continue_workflow
+
+        await continue_workflow(db, attempt_id)
         return
     task = await db.get(Task, attempt.task_id)
     view = await load_attempt_view(db, attempt_id)
@@ -109,6 +112,8 @@ async def settle_task(db, attempt_id):
                 task.failure_type, classify_facts(observed["data"]["facts"])
             )
     attempt.completeness = {**view["completeness"], "task_projection": "committed"}
+    if attempt.run_spec.get("metadata", {}).get("execution_mode") in {"direct", "orchestrated"}:
+        attempt.completeness = {**attempt.completeness, "workflow": "pending"}
     if invalid_artifacts:
         attempt.completeness = {**attempt.completeness, "artifacts": "invalid"}
     from app.utils.events import broadcast_committed_event, log_event
@@ -127,14 +132,12 @@ async def settle_task(db, attempt_id):
         agent_container_id=attempt.container_id,
         commit=False,
     )
-    from app.orchestrator.engine import check_parent_task_completion
-
-    parent_event = await check_parent_task_completion(db, task, commit=False)
     await db.commit()
-    for committed in (event, parent_event):
-        if committed is not None:
-            with suppress(Exception):
-                await broadcast_committed_event(committed)
+    with suppress(Exception):
+        await broadcast_committed_event(event)
+    from app.harnesses.workflow import continue_workflow
+
+    await continue_workflow(db, attempt_id)
 
 
 async def launch_attempt(
@@ -301,10 +304,15 @@ async def launch_attempt(
                         await client.aclose()
                 with suppress(OSError):
                     (layout.private / "credentials.json").unlink(missing_ok=True)
-            async with database.async_session() as session:
-                await finish_interrupted_attempt(
-                    session, attempt.id, "Runner stopped before completion was committed"
-                )
+            try:
+                async with database.async_session() as session:
+                    await finish_interrupted_attempt(
+                        session, attempt.id, "Runner stopped before completion was committed"
+                    )
+            finally:
+                with suppress(Exception):
+                    await asyncio.to_thread(runtime.stop, container.container_id, str(task.workspace_id),
+                                            grace_seconds=0, remove=True)
 
     job = asyncio.create_task(execute())
     _jobs[attempt.id] = job
@@ -391,8 +399,10 @@ async def reconcile_attempts(db):
                     ExecutionAttempt.status.in_(["created", "running", "stopping"]),
                     ExecutionAttempt.status.in_(TERMINAL)
                     & (
-                        func.coalesce(ExecutionAttempt.completeness["task_projection"].astext, "")
-                        != "committed"
+                        (func.coalesce(ExecutionAttempt.completeness["task_projection"].astext, "") != "committed")
+                        | ExecutionAttempt.completeness["workflow"].astext.in_(
+                            ["pending", "review_running", "reviewed", "archive_pending"]
+                        )
                     ),
                 )
             )

@@ -217,6 +217,9 @@ class DockerProcessRuntime(ProcessRuntime):
             "exit_code": state.get("ExitCode"),
             "oom_killed": state.get("OOMKilled"),
             "attempt_id": container.labels.get(f"{LABEL}.attempt_id"),
+            "task_id": container.labels.get(f"{LABEL}.task_id"),
+            "workspace_id": container.labels.get(f"{LABEL}.workspace_id"),
+            "name": container.name,
         }
 
     def list_active(self, workspace_id: str | None = None) -> list[dict]:

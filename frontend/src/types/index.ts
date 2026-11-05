@@ -123,6 +123,7 @@ export interface HarnessManifest {
   display_name: string
   protocol_version: string
   config_schema: JsonSchema
+  requirements?: { model_api?: string; [key: string]: unknown }
   capabilities: Record<string, 'native' | 'emulated' | 'unsupported'>
   commands?: Record<string, { input_schema: JsonSchema }>
 }

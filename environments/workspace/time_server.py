@@ -1,7 +1,7 @@
 """Tiny MCP server exposing a single tool `now` returning the current UTC time."""
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -24,7 +24,7 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "now":
-        return [TextContent(type="text", text=datetime.now(timezone.utc).isoformat())]
+        return [TextContent(type="text", text=datetime.now(UTC).isoformat())]
     return [TextContent(type="text", text=f"unknown tool: {name}")]
 
 

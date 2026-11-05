@@ -3,12 +3,11 @@
 import uuid
 
 import pytest
-from httpx import AsyncClient
-from sqlalchemy import select
-
 from app.auth.tokens import issue_agent_token
 from app.models.agent_log import AgentLogChunk
 from app.models.task import Task
+from httpx import AsyncClient
+from sqlalchemy import select
 
 
 async def _make_task_with_token(auth_client: AsyncClient, db_session):
@@ -184,7 +183,7 @@ async def test_compaction_concatenates_chunks_and_prunes_db(
     auth_client: AsyncClient, db_session, monkeypatch
 ):
     """Direct unit-style test of _compact_agent_log that exercises the in-process code path."""
-    from app.api.webhooks import _compact_agent_log
+    from app.quality.legacy_logs import compact_agent_log as _compact_agent_log
 
     task_id, plain = await _make_task_with_token(auth_client, db_session)
     headers = {"Authorization": f"Bearer {plain}"}
@@ -224,7 +223,7 @@ async def test_compaction_concatenates_chunks_and_prunes_db(
 
 @pytest.mark.asyncio
 async def test_compaction_skips_when_no_chunks(auth_client: AsyncClient, db_session):
-    from app.api.webhooks import _compact_agent_log
+    from app.quality.legacy_logs import compact_agent_log as _compact_agent_log
 
     task_id, _plain = await _make_task_with_token(auth_client, db_session)
     task = await db_session.get(Task, task_id)
@@ -238,7 +237,7 @@ async def test_log_compaction_idempotent_when_already_archived(
     auth_client: AsyncClient, db_session, monkeypatch
 ):
     """Re-compaction on a task that already has log_archive_s3_path is a no-op."""
-    from app.api.webhooks import _compact_agent_log
+    from app.quality.legacy_logs import compact_agent_log as _compact_agent_log
 
     task_id, _plain = await _make_task_with_token(auth_client, db_session)
     task = await db_session.get(Task, task_id)
@@ -299,79 +298,6 @@ async def test_log_ws_rejects_other_workspace(client: AsyncClient, db_session):
     assert r.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_log_compaction_on_completed_event(
-    auth_client: AsyncClient, db_session, monkeypatch
-):
-    """End-to-end: ingest chunks → fire completed webhook → chunks moved to MinIO → GET reads from archive."""
-    from app.storage import minio_client as mc
-
-    uploaded: dict = {}
-
-    def fake_upload(task_id: str, content: bytes) -> str:
-        uploaded["task_id"] = task_id
-        uploaded["content"] = content
-        return f"logs/{task_id}.log"
-
-    def fake_read(s3_path: str) -> bytes:
-        return uploaded["content"]
-
-    monkeypatch.setattr(mc, "upload_log_archive", fake_upload)
-    # Re-route the imports webhooks.py + agent_logs.py do at call time:
-    from app.api import webhooks as webhooks_mod
-    monkeypatch.setattr(
-        "app.storage.minio_client.upload_log_archive", fake_upload, raising=True
-    )
-    monkeypatch.setattr(
-        "app.storage.minio_client.read_log_archive", fake_read, raising=True
-    )
-
-    task_id, plain = await _make_task_with_token(auth_client, db_session)
-    headers = {"Authorization": f"Bearer {plain}"}
-    for seq, content in enumerate(["alpha", "beta", "gamma"]):
-        r = await auth_client.post(
-            f"/api/v1/agent-log/{task_id}",
-            headers=headers,
-            json={
-                "chunk_seq": seq,
-                "content": content,
-                "idempotency_key": f"c-{seq}",
-            },
-        )
-        assert r.status_code == 200
-
-    # Stub LLM evaluation + MinIO upload_task_results so webhooks.py runs cleanly.
-    async def fake_evaluate(*args, **kwargs):
-        return {"approved": True}
-    monkeypatch.setattr(webhooks_mod, "evaluate_agent_result", fake_evaluate)
-    monkeypatch.setattr(
-        "app.storage.minio_client.upload_task_results", lambda *a, **k: []
-    )
-
-    body = {
-        "event": "completed",
-        "idempotency_key": "complete-1",
-        "data": {
-            "result_summary": "done",
-            "files": [],
-            "token_usage": {"input_tokens": 0, "output_tokens": 0},
-        },
-    }
-    r = await auth_client.post(
-        f"/api/v1/agent-webhook/{task_id}", headers=headers, json=body
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "ok"
-    assert uploaded["task_id"] == str(task_id)
-    assert b"alpha" in uploaded["content"] and b"gamma" in uploaded["content"]
-
-    # GET now reads from archive branch.
-    r = await auth_client.get(f"/api/tasks/{task_id}/log")
-    body_json = r.json()
-    assert body_json["archived"] is True
-    assert body_json["archive_path"].endswith(".log")
-    contents = [c["content"] for c in body_json["chunks"]]
-    assert contents == ["alpha", "beta", "gamma"]
 
 
 # --- tool-call arguments (SPA-86) -------------------------------------------

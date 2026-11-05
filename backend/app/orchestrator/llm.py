@@ -436,11 +436,11 @@ async def evaluate_agent_result(
         return args
 
     except Exception as e:
-        logger.error(f"LLM evaluation failed: {e}")
+        logger.error("LLM evaluation failed (%s)", type(e).__name__)
         await _record_reasoning(
-            db, task_id, "evaluation_failed", str(e)[:300],
+            db, task_id, "evaluation_failed", "Automatic review unavailable",
             commit=commit,
         )
 
-    # Default to approved on failure (don't block the user)
-    return {"approved": True, "feedback": ""}
+    # An unavailable review is unknown; the task requires the owner's decision.
+    return {"approved": None, "feedback": ""}

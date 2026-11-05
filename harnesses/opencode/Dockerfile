@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+ARG BASE_IMAGE=evalhive-environment-workspace:0.1.0
 FROM node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS node-runtime
 
 FROM ${BASE_IMAGE} AS build
@@ -23,6 +23,7 @@ RUN npm prune --omit=dev --omit=optional --prefix harnesses/opencode && npm prun
 
 FROM ${BASE_IMAGE} AS runtime
 COPY --from=node-runtime /usr/local/ /usr/local/
+COPY environments/workspace/time_server.py environments/workspace/web_server.py /app/
 COPY --from=production-dependencies /opt/evalhive/sdk/typescript/dist /opt/evalhive/sdk/typescript/dist
 COPY --from=production-dependencies /opt/evalhive/sdk/typescript/package.json /opt/evalhive/sdk/typescript/package.json
 COPY --from=production-dependencies /opt/evalhive/sdk/typescript/node_modules /opt/evalhive/sdk/typescript/node_modules
