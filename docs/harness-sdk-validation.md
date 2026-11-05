@@ -68,3 +68,35 @@ The final H15 backend checkpoint passed all 1,177 tests with 71.24% coverage
 against the required 60%. The rollback helper was also rehearsed on an isolated
 copy upgraded to the SDK schema: restoring the previous paired backup removed
 new tables and recovered the original schema and all template contents.
+
+## Authorized live OpenCode Go smoke, 2026-11-05
+
+After the owner enabled the Global region, both deployed connectors passed the
+same live task using `deepseek-v4.1-flash` at
+`https://opencode.ai/inference/go/openai/v1`. The tested release was
+`491292180da6c122aaeef4302114382945307fd9`; no production code or images changed.
+Results and diagnostic history are recorded in
+[SPA-135](https://linear.app/spawnhive/issue/SPA-135).
+
+Each task called the environment MCP echo tool with a unique nonce, wrote and
+read `smoke-result.json`, then returned its completion marker. The authenticated
+download matched the expected JSON. Both attempts finished successfully with
+contiguous terminal journals, complete observed tool calls, applied configuration
+saved before execution, and no orchestrator usage or observed provider failure.
+
+| Connector | Agent requests | Input tokens | Output tokens | Cache read tokens | Downloaded bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Pi 1.5.0 | 4 | 5,442 | 294 | 3,840 | 126 |
+| OpenCode 1.19.5 | 4 | 13,104 | 265 | 11,264 | 118 |
+
+These are engineering observations, not benchmark comparisons. Recorded USD cost
+and cache-write usage remain unknown. Live cancellation and feedback were not
+part of this smoke; their deterministic acceptance coverage remains separate.
+The temporary principal, workspace, provider, tasks, stored objects and task
+directories were removed, the scheduler resumed, and service health passed.
+The retained reports and logs were checked for the supplied credential.
+
+OpenCode Go requires a stable `x-opencode-session` and an identifying User-Agent.
+Both deployed connectors already supplied them. An initial standalone preflight
+omitted the session header; only the smoke helper required correction. See the
+[provider requirements](https://opencode.ai/v2/docs/console/go/#where-can-i-use-it).
