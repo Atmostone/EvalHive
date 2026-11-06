@@ -79,16 +79,25 @@ jobs:
       MINIO_SECRET_KEY: fixture-only-storage-password
       QDRANT_URL: http://localhost:19033
       REDIS_URL: redis://localhost:19079/0
-      TIKTOKEN_CACHE_DIR: ${{ runner.temp }}/evalhive-tokenizers
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Start the runner user bus for rootless cgroups
+        run: |
+          ci_uid="$(id -u)"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@${ci_uid}.service"
+          ci_bus="unix:path=/run/user/${ci_uid}/bus"
+          XDG_RUNTIME_DIR="/run/user/${ci_uid}" DBUS_SESSION_BUS_ADDRESS="$ci_bus" systemctl --user start dbus
+          echo "DBUS_SESSION_BUS_ADDRESS=$ci_bus" >> "$GITHUB_ENV"
       - uses: docker/setup-docker-action@v5
         with:
           rootless: true
           set-host: true
       - name: Start isolated integration services and cache the pinned tokenizer
+        env:
+          TIKTOKEN_CACHE_DIR: ${{ runner.temp }}/evalhive-tokenizers
         run: |
           docker build -f tests/e2e/Minio.Dockerfile -t evalhive-test-minio:ci tests/e2e
           docker run -d --name evalhive-ci-minio -p 127.0.0.1:19000:9000 --memory 512m --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges -e MINIO_ROOT_USER=evalhive-ci -e MINIO_ROOT_PASSWORD=fixture-only-storage-password evalhive-test-minio:ci server /data
@@ -121,6 +130,8 @@ jobs:
       - name: Run pytest
         working-directory: backend
         env:
+          TIKTOKEN_CACHE_DIR: ${{ runner.temp }}/evalhive-tokenizers
+          DATA_DIR: ${{ runner.temp }}/evalhive-backend-data
           PYTHONPATH: ${{ github.workspace }}/backend
         # --cov-fail-under enforces the 60% coverage acceptance bar (legacy production-readiness §R4).
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=60
@@ -135,6 +146,14 @@ jobs:
           node-version: "22.23.1"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - name: Start the runner user bus for rootless cgroups
+        run: |
+          ci_uid="$(id -u)"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@${ci_uid}.service"
+          ci_bus="unix:path=/run/user/${ci_uid}/bus"
+          XDG_RUNTIME_DIR="/run/user/${ci_uid}" DBUS_SESSION_BUS_ADDRESS="$ci_bus" systemctl --user start dbus
+          echo "DBUS_SESSION_BUS_ADDRESS=$ci_bus" >> "$GITHUB_ENV"
       - uses: docker/setup-docker-action@v5
         with:
           rootless: true
