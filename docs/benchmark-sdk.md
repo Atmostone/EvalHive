@@ -93,6 +93,17 @@ separate adapter retaining reset, launch time, portal readiness and native check
 The official Toolathlon and its GYM derivative keep distinct identities. Historical
 records remain readable; old floating images do not imply exact replay.
 
+The `evalhive-cases` package includes an independent legacy format reader,
+byte-pinned dataset installer and JSONL lifecycle worker. Its Docker runtime has
+no backend or Docker client dependency. The owned task environment and Harness
+session are supplied through the common host APIs. Final text can be checkpointed
+for grading without replaying the agent; native exact/fuzzy reference matching
+is an explicit profile choice and other quality evaluation remains deferred.
+See [package installation and evaluation](../benchmarks/evalhive-cases/README.md).
+Package presence does not switch existing experiment scheduling or install
+production datasets. Toolathlon migration and coordinator launch composition
+remain separate delivery work.
+
 ## Delivery and operational constraints
 
 The current VPS is the only execution host in this epic. Native trials are

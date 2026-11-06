@@ -13,4 +13,4 @@ dependencies = ["evalhive-benchmark==0.1.0", "jsonschema==4.25.1", "PyYAML==6.0.
 where = ["src"]
 
 [tool.setuptools.package-data]
-evalhive_cases = ["schemas/*.json"]
+evalhive_cases = ["manifest.json", "schemas/*.json"]
