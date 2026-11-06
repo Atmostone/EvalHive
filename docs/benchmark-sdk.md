@@ -101,8 +101,12 @@ for grading without replaying the agent; native exact/fuzzy reference matching
 is an explicit profile choice and other quality evaluation remains deferred.
 See [package installation and evaluation](../benchmarks/evalhive-cases/README.md).
 Package presence does not switch existing experiment scheduling or install
-production datasets. Toolathlon migration and coordinator launch composition
-remain separate delivery work.
+production datasets. `RootlessCoordinator` composes a registered benchmark,
+provider, evidence store and selected Harness SDK runtime without native adapter
+imports. It also creates fresh evaluation-only controllers from retained source
+installations. The recorded Harness limits and image come from the admitted Task,
+and private credentials use a separate host-only grant. Product scheduling and
+legacy launch migration remain separate delivery work.
 
 ## Delivery and operational constraints
 

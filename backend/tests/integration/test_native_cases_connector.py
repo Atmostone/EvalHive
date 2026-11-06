@@ -11,31 +11,25 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import docker
 import pytest
 import pytest_asyncio
-from app.benchmarks.agent_calls import AgentCallStore
-from app.benchmarks.agent_gateway import AgentGateway
-from app.benchmarks.driver import DriverLimits, TrialDriver
-from app.benchmarks.harness_execution import HarnessExecution
-from app.benchmarks.harness_transport import RootlessHarnessTransport
+from app.benchmarks.composition import RootlessCoordinator
+from app.benchmarks.driver import DriverLimits
 from app.benchmarks.private_store import PrivateStore
-from app.benchmarks.recovery import RecoveryService
 from app.benchmarks.trials import TrialStore
-from app.benchmarks.worker_host import RootlessWorkerHost
 from app.harnesses.catalog import get_manifest
 from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
 from app.models.benchmark_trial import BenchmarkResourceLease
 from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
 from app.models.task import Task
 from app.runtime.bundles import install_bundle
-from app.runtime.docker_provider import RootlessDockerProvider
 from app.runtime.lease_codec import decode_lease
 from app.runtime.managed_docker import RootlessDockerRuntime
 from app.runtime.managed_exec import OwnedExecRuntime
 from app.runtime.managed_spec import PathMapping, Quota, RuntimePolicy
-from app.runtime.reconcile import RootlessReconciler
 from app.runtime.registered_assets import RegisteredFile, RootlessAssets
 from evalhive_runner.runner import RunnerPolicy
 from sqlalchemy import select
@@ -212,79 +206,45 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
             return await super().save(scope, grant, chunks, publication=publication)
 
     artifacts = Capture()
-    factories = {
-        provider_id: lambda authority: RootlessDockerProvider(
-            runtime, authority, provider_manifest, artifacts=artifacts
-        )
-    }
     credential = uuid.uuid4().hex
-
-    def agent_factory(host):
-        calls = AgentCallStore(store, owner, host.worker_actor)
-        run_spec = {
-            "protocol_version": "1.0",
-            "workspace_id": str(WORKSPACE),
-            "task_id": str(task_id),
-            "attempt_id": str(calls.session_id),
-            "task": {"prompt": "Frozen by prepared access"},
-            "cwd": "/workspace",
-            "config": {},
-            "limits": {"max_turns": 4},
-            "model": {
-                "name": "fake-model",
-                "endpoint": "http://127.0.0.1:8765/v1",
-                "credential_ref": "model_api_key",
-            },
-            "metadata": {
-                "image_id": task_image["image_id"],
-                "runtime_bundle_image_id": bundle.image_id,
-                "runtime_bundle_fingerprint": bundle.fingerprint,
-            },
-        }
-
-        async def transport():
-            return await RootlessHarnessTransport(
-                host, host.plan, host.prepared, bundle, harness, credential_ref="agent.credentials"
-            )()
-
-        return AgentGateway(
-            calls,
-            HarnessExecution(
-                calls,
-                harness,
-                run_spec,
-                transport,
-                local / "spool" / str(calls.session_id) / "events.sqlite",
-                private_values=[credential],
-                policy=RunnerPolicy(heartbeat_seconds=0.2, startup_seconds=20, command_seconds=20),
-            ),
-        )
-
-    host = RootlessWorkerHost(
+    harness_spec = {
+        "protocol_version": "1.0",
+        "workspace_id": str(WORKSPACE),
+        "task_id": str(task_id),
+        "attempt_id": str(uuid.uuid4()),
+        "task": {"prompt": "Frozen by prepared access"},
+        "cwd": "/workspace",
+        "config": {},
+        "limits": {"max_turns": 4},
+        "model": {
+            "name": "fake-model",
+            "endpoint": "http://127.0.0.1:8765/v1",
+            "credential_ref": "model_api_key",
+        },
+    }
+    coordinator = RootlessCoordinator(
+        runtime,
+        provider_manifest,
+        SimpleNamespace(
+            store=store, sink=lambda owner: artifacts, validate_capture=artifacts.validate_capture
+        ),
+        limits=DriverLimits(
+            phase_seconds=90, capture_seconds=10, cleanup_seconds=25, service_seconds=10
+        ),
+        runner_policy=RunnerPolicy(heartbeat_seconds=0.2, startup_seconds=20, command_seconds=20),
+    )
+    controller = coordinator.execution(
         store,
         owner,
         declaration,
         assets,
-        factories,
-        agent_factory=agent_factory,
-        host_private_inputs={
-            "agent.credentials": json.dumps({"model_api_key": credential}).encode()
-        },
+        harness_manifest=harness,
+        harness_spec=harness_spec,
+        bundle=bundle,
+        credentials={"model_api_key": credential},
+        spool_root=local / "spool",
     )
-    recovery = RecoveryService(
-        store,
-        host.host_actor,
-        {provider_id: lambda authority: RootlessReconciler(runtime, authority, provider_id)},
-    )
-    controller = TrialDriver(
-        host,
-        recovery,
-        capture_providers=factories,
-        capture_validator=artifacts.validate_capture,
-        limits=DriverLimits(
-            phase_seconds=90, capture_seconds=10, cleanup_seconds=25, service_seconds=10
-        ),
-    )
+    host = controller.host
     run_spec = {
         "protocol_version": "1.0",
         "scope": {
