@@ -409,3 +409,54 @@ async def test_event_page_observed_before_terminal_remains_valid_after_terminal_
     page = {"session_id": str(calls.session_id), "events": [], "cursor": 0, "closed": False}
     await finish(calls)
     await calls.complete(ticket.id, receipt("page-before-terminal", page))
+
+
+@pytest.mark.parametrize("bound,takeover", [(False, False), (True, False), (True, True)])
+async def test_reconcile_retires_agent_only_after_owned_resources_are_released(
+    calls, bound, takeover
+):
+    ticket = await calls.begin(frame(calls))
+    await create_attempt(calls)
+    if bound:
+        await calls.bind_attempt(ticket.id)
+    if takeover:
+        async with AsyncSession(calls.trials.engine) as db:
+            await db.execute(
+                update(BenchmarkTrial).values(
+                    controller_expires_at=datetime.now(UTC) - timedelta(seconds=1)
+                )
+            )
+            await db.commit()
+        owner = await calls.trials.claim(
+            calls.owner.workspace_id, calls.owner.trial_id, uuid.uuid4()
+        )
+        recovered = AgentCallStore(calls.trials, owner, uuid.uuid4())
+    else:
+        await calls.trials.transition(calls.owner, "driving", "cleaning")
+        recovered = calls
+    with pytest.raises(ProtocolError) as live:
+        await recovered.reconcile()
+    assert live.value.code == "CLEANUP_PENDING"
+    async with AsyncSession(calls.trials.engine) as db:
+        await db.execute(update(BenchmarkResourceLease).values(state="released"))
+        await db.commit()
+    assert await recovered.reconcile() == {"attempts_lost": 1, "calls_uncertain": 1}
+    assert await recovered.reconcile() == {"attempts_lost": 0, "calls_uncertain": 0}
+    async with AsyncSession(calls.trials.engine) as db:
+        assert (await db.get(ExecutionAttempt, calls.session_id)).status == "lost"
+        assert (await db.get(BenchmarkAgentCall, ticket.id)).state == "uncertain"
+    await recovered.trials.transition(recovered.owner, "cleaning", "finished")
+
+
+async def test_agent_reconciliation_refuses_a_foreign_execution_binding(calls):
+    await calls.begin(frame(calls))
+    await create_attempt(calls, binding={"trial_id": str(uuid.uuid4())})
+    async with AsyncSession(calls.trials.engine) as db:
+        await db.execute(update(BenchmarkResourceLease).values(state="released"))
+        await db.commit()
+    await calls.trials.transition(calls.owner, "driving", "cleaning")
+    with pytest.raises(ProtocolError) as foreign:
+        await calls.reconcile()
+    assert foreign.value.code == "FOREIGN_HARNESS_ATTEMPT"
+    async with AsyncSession(calls.trials.engine) as db:
+        assert (await db.get(ExecutionAttempt, calls.session_id)).status == "created"

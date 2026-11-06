@@ -4,20 +4,28 @@ The existing Harness execution attempt is also the agent session. Database locks
 cover short transitions only; model execution and native waits belong outside.
 """
 
+import json
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from evalhive_benchmark import encode_line, validate
 from evalhive_benchmark.peer import identity
+from evalhive_benchmark.protocol import MAX_LINE_BYTES
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
 from app.benchmarks.harness_outcome import HarnessExecutionBinding, HarnessExecutionOutcome
-from app.benchmarks.trials import failure
+from app.benchmarks.trials import database_fence, failure
+from app.harnesses.attempts import mark_attempt_lost
 from app.models.benchmark_agent_call import BenchmarkAgentCall
-from app.models.benchmark_trial import BenchmarkEventStream, BenchmarkHostReservation
+from app.models.benchmark_trial import (
+    BenchmarkEnvironmentSession,
+    BenchmarkEventStream,
+    BenchmarkHostReservation,
+    BenchmarkResourceLease,
+)
 from app.models.execution_attempt import ExecutionAttempt, ExecutionCommand, ExecutionEvent
 from app.models.task import Task
 
@@ -356,6 +364,51 @@ class AgentCallStore:
             result.confirm_reference(reference)
             return result
 
+    async def completion(self):
+        async with self.runner_transaction() as (_, trial, attempt, _):
+            outcome = HarnessExecutionOutcome.from_attempt(attempt, self._binding(trial))
+            return {
+                "session_id": str(attempt.id),
+                "status": outcome.status,
+                "outcome": outcome.reference(),
+            }
+
+    async def event_page(self, payload):
+        """Return a byte-bounded prefix; the cursor never skips an oversized event."""
+        async with self.runner_transaction() as (db, _, attempt, _):
+            cursor = payload["cursor"]
+            if cursor > attempt.next_seq:
+                raise failure("AGENT_EVENT_CONFLICT", "Event cursor exceeds committed history")
+            rows = await db.scalars(
+                select(ExecutionEvent.payload)
+                .where(
+                    ExecutionEvent.attempt_id == attempt.id,
+                    ExecutionEvent.seq >= cursor,
+                )
+                .order_by(ExecutionEvent.seq)
+                .limit(payload.get("limit", 256))
+            )
+            events, size = [], 4096
+            for event in rows:
+                size += (
+                    len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode()) + 1
+                )
+                if size > MAX_LINE_BYTES:
+                    if not events:
+                        raise failure(
+                            "AGENT_EVENT_TOO_LARGE",
+                            "Native event cannot fit an agent reply",
+                            "recording",
+                        )
+                    break
+                events.append(event)
+            return {
+                "session_id": str(attempt.id),
+                "events": events,
+                "cursor": cursor + len(events),
+                "closed": attempt.status in {"success", "failed", "cancelled", "lost"},
+            }
+
     @asynccontextmanager
     async def runner_transaction(self):
         """Authorize one short Harness write without projecting a benchmark task."""
@@ -373,3 +426,100 @@ class AgentCallStore:
             attempt = await self._attempt(db, trial)
             yield db, trial, attempt, now
             await db.commit()
+
+    async def reconcile(self):
+        """Retire intended attempts only after all owned native resources are gone.
+
+        A recovery controller may reconcile earlier generations, never restart
+        their agent or reuse their commands. The provider's released leases are
+        the stop proof, including attempts whose startup never reached binding.
+        """
+        async with database_fence(self.trials.engine, self.owner.trial_id) as db:
+            trial, _ = await self.trials.current(db, self.owner, row_lock=True)
+            if trial.phase != "cleaning":
+                raise failure("INVALID_PHASE", "Agent reconciliation requires cleanup")
+            live = await db.scalar(
+                select(BenchmarkResourceLease.id)
+                .join(BenchmarkEnvironmentSession)
+                .where(
+                    BenchmarkResourceLease.trial_id == self.owner.trial_id,
+                    BenchmarkEnvironmentSession.control_id.is_(None),
+                    BenchmarkResourceLease.state != "released",
+                )
+                .limit(1)
+            )
+            if live is not None:
+                raise failure(
+                    "CLEANUP_PENDING",
+                    "Native leases must be released before agent reconciliation",
+                    "cleanup",
+                )
+            starters = await db.execute(
+                select(BenchmarkAgentCall, BenchmarkEventStream)
+                .join(
+                    BenchmarkEventStream,
+                    BenchmarkEventStream.id == BenchmarkAgentCall.stream_id,
+                )
+                .where(
+                    BenchmarkAgentCall.trial_id == self.owner.trial_id,
+                    BenchmarkAgentCall.operation.in_(["run", "open"]),
+                )
+            )
+            retired = 0
+            for call, stream in starters:
+                attempt = await db.get(ExecutionAttempt, call.session_id)
+                if attempt is None or attempt.status in {"success", "failed", "cancelled", "lost"}:
+                    continue
+                binding = attempt.run_spec.get("metadata", {}).get("benchmark_binding", {})
+                try:
+                    controller_id = uuid.UUID(binding["controller_id"])
+                    expected_id = uuid.uuid5(
+                        controller_id, "benchmark.harness:" + str(stream.actor_id)
+                    )
+                except (KeyError, ValueError, TypeError):
+                    raise failure(
+                        "FOREIGN_HARNESS_ATTEMPT", "Agent recovery binding is invalid"
+                    ) from None
+                expected = HarnessExecutionBinding(
+                    self.owner.workspace_id,
+                    attempt.task_id,
+                    self.owner.trial_id,
+                    stream.generation,
+                    controller_id,
+                )
+                if (
+                    attempt.workspace_id != self.owner.workspace_id
+                    or call.session_id != expected_id
+                    or binding != expected.metadata()
+                    or (trial.task_id is not None and attempt.task_id != trial.task_id)
+                ):
+                    raise failure(
+                        "FOREIGN_HARNESS_ATTEMPT",
+                        "Agent recovery binding differs from the intended session",
+                    )
+                await mark_attempt_lost(
+                    db,
+                    attempt.id,
+                    "Benchmark resources were reconciled without confirmed agent completion",
+                )
+                retired += 1
+            pending = list(
+                await db.scalars(
+                    select(BenchmarkAgentCall).where(
+                        BenchmarkAgentCall.trial_id == self.owner.trial_id,
+                        BenchmarkAgentCall.state == "started",
+                    )
+                )
+            )
+            for call in pending:
+                call.state = "uncertain"
+            if retired or pending:
+                trial.recording_status = "incomplete"
+                await self.trials.append(
+                    db,
+                    trial,
+                    "agent.reconciled",
+                    {"attempts_lost": retired, "calls_uncertain": len(pending)},
+                )
+            await db.commit()
+            return {"attempts_lost": retired, "calls_uncertain": len(pending)}

@@ -11,6 +11,7 @@ from app.harnesses.attempts import (
     prepare_configuration,
     queue_command,
 )
+from app.models.execution_attempt import ExecutionCommand
 
 
 class BenchmarkAttemptAPI:
@@ -60,3 +61,22 @@ class BenchmarkAttemptAPI:
     async def acknowledge(self, command_id, response):
         async with self.calls.runner_transaction() as (db, _, attempt, _):
             return await acknowledge_command(db, attempt.id, uuid.UUID(command_id), response)
+
+    async def command(self, command_id, name, payload):
+        async with self.calls.runner_transaction() as (db, trial, attempt, now):
+            if name != "abort" and (
+                trial.phase != "driving"
+                or trial.cancel_requested_at is not None
+                or trial.deadline_at <= now
+            ):
+                raise failure(
+                    "TRIAL_STOPPING", "Trial cannot accept a new agent command", "execution"
+                )
+            return await queue_command(db, attempt.id, name, payload, command_id=command_id)
+
+    async def command_result(self, command_id):
+        async with self.calls.runner_transaction() as (db, _, attempt, _):
+            command = await db.get(ExecutionCommand, command_id)
+            if command is None or command.attempt_id != attempt.id:
+                raise failure("AGENT_COMMAND_CONFLICT", "Agent command is unavailable")
+            return command.result

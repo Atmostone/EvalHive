@@ -1,5 +1,7 @@
 """The shared Harness runner commits into a fenced trial without settling its task."""
 
+# ruff: noqa: F811
+
 import asyncio
 from copy import deepcopy
 

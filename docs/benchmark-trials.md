@@ -146,6 +146,32 @@ and cleanup still own the remaining lifecycle. Integration tests run the actual
 shared runner with an engineering connector and PostgreSQL; native container
 composition remains a separate integration step.
 
+`AgentGateway` dispatches `run`, `open`, `control`, `events` and `close` against
+that ledger. `HarnessExecution` creates the scoped attempt, then composes the
+existing Harness SDK process client and `AttemptRunner` over a server-supplied
+owned transport. It does not implement model generation. Harness/profile/model
+configuration is frozen by the host; a benchmark can supply typed initial
+conversation history, which is validated before creating an attempt or process.
+
+Autonomous readiness requires a committed start or terminal record. Persistent
+sessions additionally require their committed input boundary. Turn and external
+tool replies use the Harness conversation revision and command acknowledgement;
+closing requires an idle boundary. Cancelling an SDK await does not restart its
+native effect. The host can still abort the intended attempt separately.
+
+Event replies return a contiguous prefix within the JSONL byte budget. A single
+event that cannot fit reports an explicit recording failure without advancing
+the cursor. Model credentials are redacted by the shared runner before events
+are stored. Failed control/configuration checks retain stable rejection receipts.
+
+After all execution-context resource leases are released, `AgentCallStore.reconcile`
+can retire active intended attempts as lost and pending calls as uncertain. It
+revalidates each attempt's original controller/worker-derived identity, including
+an unbound startup or an earlier controller generation. This operation is cleanup
+only; it cannot resume an old conversation. Full gateway tests use the real
+Harness SDK wire server/client with in-memory engineering pipes and PostgreSQL;
+they do not establish native Pi/OpenCode container acceptance.
+
 ## Resource authority and private state
 
 The host installs an immutable plan with resolved image IDs, paths, resource
