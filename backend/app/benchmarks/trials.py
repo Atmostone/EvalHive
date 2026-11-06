@@ -285,6 +285,11 @@ class TrialStore:
                 if trial.execution_status in {"pending", "running"}:
                     trial.execution_status = "lost"
                 if trial.evaluation_status == "running":
+                    from app.benchmarks.evaluation import interrupt_initial
+
+                    await interrupt_initial(
+                        db, self, trial, kind="uncertain", code="CONTROLLER_LOST"
+                    )
                     trial.evaluation_status = "error"
                 trial.recording_status = "incomplete"
                 trial.phase = "cleaning"
@@ -377,7 +382,25 @@ class TrialStore:
                 trial.cleanup_status = "pending"
             await db.commit()
 
-    async def finish_evaluation(self, owner, result=None):
+    async def begin_evaluation(self, owner, inputs):
+        from app.benchmarks.evaluation import begin_initial
+
+        return await begin_initial(self, owner, inputs)
+
+    async def fail_evaluation(self, owner, *, kind, code, cancelled=False):
+        from app.benchmarks.evaluation import interrupt_initial
+
+        async with database_fence(self.engine, owner.trial_id) as db:
+            trial, _ = await current_trial(db, owner, row_lock=True)
+            if trial.phase != "evaluating" or trial.evaluation_status != "running":
+                return
+            await interrupt_initial(db, self, trial, kind=kind, code=code, cancelled=cancelled)
+            await append_entry(
+                db, trial, "evaluation.finished", {"status": trial.evaluation_status}
+            )
+            await db.commit()
+
+    async def finish_evaluation(self, owner, result=None, *, attempt_id=None):
         if result is not None:
             validate("evaluation_result", result)
         async with database_fence(self.engine, owner.trial_id) as db:
@@ -390,21 +413,11 @@ class TrialStore:
                     return
                 trial.evaluation_status = "unavailable"
             else:
-                if trial.phase != "evaluating" or trial.evaluation_status != "running":
-                    raise failure("INVALID_PHASE", "Evaluation summary cannot be changed")
-                pending = await db.scalar(
-                    select(BenchmarkCommand.id)
-                    .where(
-                        BenchmarkCommand.trial_id == trial.id,
-                        BenchmarkCommand.method == "evaluate",
-                        BenchmarkCommand.state != "completed",
-                    )
-                    .limit(1)
-                )
-                if pending is not None:
-                    raise failure(
-                        "COMMAND_OPEN", "Evaluation needs durable worker completion", "recording"
-                    )
+                from app.benchmarks.evaluation import finish
+
+                _, duplicate = await finish(db, self, trial, result, attempt_id=attempt_id)
+                if duplicate:
+                    return
                 trial.evaluation_status = result["status"]
             entry_id = uuid.uuid4()
             await append_entry(
@@ -588,7 +601,15 @@ class TrialStore:
                 if trial.execution_status in {"pending", "running"}:
                     trial.execution_status = "cancelled" if trial.cancel_requested_at else "failed"
                 if trial.evaluation_status == "running":
-                    trial.evaluation_status = "error"
+                    from app.benchmarks.evaluation import interrupt_initial
+
+                    await interrupt_initial(
+                        db, self, trial, cancelled=trial.cancel_requested_at is not None
+                    )
+                    if trial.evaluation_status == "running":
+                        trial.evaluation_status = (
+                            "cancelled" if trial.cancel_requested_at else "error"
+                        )
                 trial.cleanup_status = "running"
             if target == "finished":
                 live = await db.scalar(

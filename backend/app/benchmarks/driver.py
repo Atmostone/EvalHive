@@ -399,15 +399,40 @@ class TrialDriver:
                 await self._note("capture.completed", private=capture)
                 captured = True
                 if evaluate:
-                    await self._wait(self.store.transition(self.owner, "capturing", "evaluating"))
+                    evaluation_id = await self._wait(
+                        self.store.begin_evaluation(
+                            self.owner,
+                            {
+                                "spec": spec,
+                                "capture": capture,
+                                "prepared": prepared,
+                                "execution": execution,
+                                "worker_actor_id": str(channel.actor_id),
+                                "evaluator": {
+                                    key: self.host.manifest[key]
+                                    for key in ("id", "version", "protocol_version", "image")
+                                },
+                            },
+                        )
+                    )
+                    params = self._scoped(prepared, execution, capture)
+                    params["payload"]["evaluation_id"] = str(evaluation_id)
                     result = await self._wait(
                         channel.invoke(
                             "evaluate",
-                            self._scoped(prepared, execution, capture),
+                            params,
+                            request_id="evaluation." + str(evaluation_id),
                             timeout=self.limits.phase_seconds,
                         )
                     )
-                    await self._wait(self.store.finish_evaluation(self.owner, result))
+                    artifacts = list(capture["artifacts"])
+                    for artifact in result["artifacts"]:
+                        if artifact not in artifacts:
+                            artifacts.append(artifact)
+                    await self._capture_result({**capture, "artifacts": artifacts})
+                    await self._wait(
+                        self.store.finish_evaluation(self.owner, result, attempt_id=evaluation_id)
+                    )
                 else:
                     await self._wait(self.store.finish_evaluation(self.owner))
         except asyncio.CancelledError:
@@ -417,6 +442,12 @@ class TrialDriver:
                     await bounded(
                         self.store.request_cancel(self.owner.workspace_id, self.owner.trial_id),
                         self.limits.service_seconds,
+                    )
+                    await self._wait(
+                        self.store.fail_evaluation(
+                            self.owner, kind="execution", code="CANCELLED", cancelled=True
+                        ),
+                        interruptible=False,
                     )
                     await self._interrupt("CANCELLED")
                 except Exception:
@@ -450,6 +481,15 @@ class TrialDriver:
                         code=code,
                         incomplete=not isinstance(error, ProtocolError)
                         or error.kind in {"uncertain", "transport", "recording"},
+                    )
+                    await self._wait(
+                        self.store.fail_evaluation(
+                            self.owner,
+                            kind=error.kind if isinstance(error, ProtocolError) else "uncertain",
+                            code=code,
+                            cancelled=code == "CANCELLED",
+                        ),
+                        interruptible=False,
                     )
                     await self._interrupt(code)
                 except Exception:

@@ -177,9 +177,47 @@ Unknown tokens and cost remain null. Each projection reports the known subtotal
 and unknown call count, without presenting that subtotal as a complete total.
 Costs use exact decimal arithmetic and retain provider/estimate provenance.
 Out-of-policy cost strings remain unknown with an explicit projection error.
-An empty ledger does not claim complete measurement. Separate evaluation attempts,
-regrade authorization/checkpoints and native aggregation history remain B05/B15
-work; these evidence components do not themselves authorize regrade.
+An empty ledger does not claim complete measurement. Initial evaluator attempts
+are described below. Standalone regrade authorization/checkpoints and native
+aggregation history remain B05/B15 work; retained files alone do not authorize
+regrade.
+
+## Initial evaluator attempts
+
+`BenchmarkEvaluationAttempt` records one evaluator intent and its confirmed
+terminal result independently of execution. Starting the initial attempt and
+entering `evaluating` are atomic. Inputs fix the applied spec, evaluator manifest,
+worker actor, native preparation/execution/capture context, and immutable
+environment session plan digests. Inputs and raw native results are encrypted;
+database guards freeze inputs and the first terminal outcome. The initial
+attempt shares its execution controller and admitted environment, keeping native
+services alive for grading.
+
+The evaluator receives the attempt ID. Its durable command uses that same ID;
+completion requires that exact worker actor/generation, a completed event barrier
+and a successful wire receipt whose result matches the proposed result. Another
+command's output cannot substitute for it. Returned artifact references are also
+validated against retained bytes. Identical repeated begin/completion reads the
+original record without adding another journal entry or invoking the checker.
+The final transaction checks committed cancellation and the database deadline
+before accepting a new verdict; a late confirmation cannot outrun an earlier
+stop request. An already confirmed receipt remains stable on repeated reads.
+
+Completed evaluation with success false means `incorrect`; it remains a completed
+checker and a successful execution. A null success remains unknown, regardless
+of metric values. Checker errors, transport/infrastructure loss, recording
+failures and cancellation remain distinct outcomes. Cleanup has its own result
+and cannot change an existing evaluator verdict. A lost controller terminates a
+pending initial evaluation as uncertain without accepting a late native result.
+Unavailable/unrequested grading does not fabricate a successful evaluator call.
+
+Migration `bg06` enforces trial/workspace and source-attempt scope, one initial
+attempt per trial, complete terminal writes and immutable input/result fields.
+Public history contains normalized metrics, status and verdict, without native
+state, hidden assets or raw error messages. Regrade execution is still B05 work:
+it must create another attempt with independent ownership/resources and sufficient
+verified native checkpoint, while preserving the finished execution. No current
+API treats a capture's arbitrary native metadata as permission to regrade.
 
 ## Durable worker commands
 
@@ -312,9 +350,9 @@ only its local transport and cannot stop or release the new owner's resources.
 
 A driver instance is single-use. Another driver observing a partially running
 epoch detaches instead of taking over its cleanup. A retry is a new trial; only
-an explicit expired-owner claim permits recovery. Separate evaluation attempts,
-production evidence storage and controlled regrade are B05 work. Product API and
-queue wiring are B14 work.
+an explicit expired-owner claim permits recovery. Initial evaluator history and
+production evidence storage are implemented in B05; standalone controlled regrade
+remains B05 work. Product API and queue wiring are B14 work.
 
 ## Recovery and deadlines
 

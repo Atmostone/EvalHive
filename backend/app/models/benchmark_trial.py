@@ -24,6 +24,7 @@ from app.database import Base
 class BenchmarkTrial(Base):
     __tablename__ = "benchmark_trials"
     __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_benchmark_trial_workspace"),
         CheckConstraint("generation > 0 AND next_seq >= 0", name="ck_benchmark_trial_counters"),
         CheckConstraint(
             "phase IN ('created','planning','preparing','ready','driving','capturing',"
