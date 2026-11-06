@@ -98,6 +98,40 @@ payloads. Consumers must explicitly build a redacted public projection. Direct
 SQL updates of journal entries, trial inputs and installed session plans are
 rejected by database triggers.
 
+### Reverse agent call receipts
+
+`AgentCallStore` records the SDK's reverse `agent.call` commands in `bg12`.
+It uses the existing Harness `ExecutionAttempt` as the session rather than
+introducing a second execution state machine. A controller/worker-derived UUID
+identifies the intended session before the Harness attempt exists. Each stream
+can request one `run` or `open`; additional control, event and close calls must
+reference that session. A startup intent binds a fresh current Harness attempt
+before native agent execution may begin.
+
+Every call requires the current execution controller, registered worker, driving
+phase, remaining deadline and full host reservation. Short row-locked
+transactions commit encrypted requests before effects and immutable encrypted
+responses before SDK acknowledgement. A completed duplicate returns its saved
+receipt; an interrupted call cannot authorize another model request. Recovery
+claims cannot replay an old controller's receipts.
+
+Successful completion replies must match a terminal Harness result and its
+scope-bound evidence digest. Control replies must match the native command's
+saved acknowledgement and original payload. Event pages must reproduce committed
+Harness events and respect the requested cursor and limit. Execution status is
+independent of benchmark correctness: failure, cancellation and transport loss
+retain their original meanings.
+
+Cleanup cannot release the host reservation while an intended Harness attempt
+remains active, including an attempt created just before a crash prevented its
+binding. Unfinished agent call receipts make recording incomplete. A downgrade
+below `bg12` refuses to discard calls belonging to unfinished trials.
+
+This ledger is a host integration component. Wiring the native agent executor
+and replacing the execution driver's provisional drive-response handling are
+remaining B08 work; the component alone does not advertise `host.agent_api_v1`
+or enable product launches.
+
 ## Resource authority and private state
 
 The host installs an immutable plan with resolved image IDs, paths, resource

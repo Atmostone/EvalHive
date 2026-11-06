@@ -364,6 +364,8 @@ async def test_schema_rollback_cannot_discard_live_file_cleanup_intents(retained
     item = retained
     await item.admit()
     await item.inputs.materialize(item.plan)
+    async with item.store.engine.connect() as db:
+        previous_version = await db.scalar(text("SELECT version_num FROM alembic_version"))
     result = await asyncio.to_thread(
         subprocess.run,
         [sys.executable, "-m", "alembic", "downgrade", "bg10"],
@@ -373,6 +375,6 @@ async def test_schema_rollback_cannot_discard_live_file_cleanup_intents(retained
     )
     assert result.returncode != 0 and "Release retained evaluation inputs" in result.stderr
     async with item.store.engine.connect() as db:
-        assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "bg11"
+        assert await db.scalar(text("SELECT version_num FROM alembic_version")) == previous_version
     assert item.path.read_bytes() == item.data and (await input_rows(item))[0].state == "ready"
     await clean(item)

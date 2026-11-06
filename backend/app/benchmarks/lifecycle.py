@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.benchmark_agent_call import BenchmarkAgentCall
 from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_evaluation_input import BenchmarkEvaluationInput
 from app.models.benchmark_trial import (
@@ -14,6 +15,7 @@ from app.models.benchmark_trial import (
     BenchmarkOperation,
     BenchmarkResourceLease,
 )
+from app.models.execution_attempt import ExecutionAttempt
 
 NOTE_EVENTS = {
     "controller.stopping",
@@ -147,6 +149,18 @@ class ControlLifecycle:
         )
         if live is not None:
             raise failure("CLEANUP_PENDING", "Resource leases remain unreconciled", "cleanup")
+        if owner.control_id is None:
+            active_agent = await db.scalar(
+                select(BenchmarkAgentCall.id)
+                .join(ExecutionAttempt, ExecutionAttempt.id == BenchmarkAgentCall.session_id)
+                .where(
+                    BenchmarkAgentCall.trial_id == owner.trial_id,
+                    ExecutionAttempt.status.in_(["created", "running", "stopping"]),
+                )
+                .limit(1)
+            )
+            if active_agent is not None:
+                raise failure("CLEANUP_PENDING", "Agent attempts remain unreconciled", "cleanup")
         if owner.control_id is not None:
             retained = await db.scalar(
                 select(BenchmarkEvaluationInput.id)
@@ -200,9 +214,19 @@ class ControlLifecycle:
             )
             .limit(1)
         )
+        agent_pending = None
+        if owner.control_id is None:
+            agent_pending = await db.scalar(
+                select(BenchmarkAgentCall.id)
+                .where(
+                    BenchmarkAgentCall.trial_id == owner.trial_id,
+                    BenchmarkAgentCall.state != "completed",
+                )
+                .limit(1)
+            )
         row.recording_status = (
             "complete"
-            if unsealed is None and uncertain is None and pending is None
+            if unsealed is None and uncertain is None and pending is None and agent_pending is None
             else "incomplete"
         )
         row.finished_at = now
