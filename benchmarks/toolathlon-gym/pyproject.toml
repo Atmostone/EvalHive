@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evalhive-toolathlon-gym"
+version = "0.1.0"
+description = "Toolathlon-GYM native environment and evaluator adapter for EvalHive"
+requires-python = ">=3.12"
+dependencies = ["evalhive-benchmark==0.1.0", "evalhive-cases==0.1.0", "PyYAML==6.0.3"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
