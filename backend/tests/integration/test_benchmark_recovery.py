@@ -1,14 +1,14 @@
 """Durable cleanup dependency and unavailable-provider behavior."""
 
 import uuid
-from dataclasses import replace
+from dataclasses import asdict, replace
 from unittest.mock import MagicMock
 
 import pytest
 from app.benchmarks.recovery import RecoveryService
 from app.benchmarks.resource_authority import install_session
 from app.models.benchmark_trial import BenchmarkResourceLease
-from app.runtime.broker import ResourceLease
+from app.runtime.broker import ExportGrant, ResourceLease
 from app.runtime.docker_provider import RootlessDockerProvider
 from app.runtime.managed_spec import ManagedNetwork, ManagedRuntimeError, NetworkRequest
 from app.runtime.reconcile import RootlessReconciler
@@ -110,3 +110,62 @@ async def test_retired_resource_receipt_lookup_never_dispatches_missing_operatio
     with pytest.raises(ProtocolError) as missing:
         await provider.replay(request(scope))
     assert missing.value.code == "RECEIPT_UNAVAILABLE" and runtime.creates == 1
+
+
+@pytest.mark.parametrize(
+    "required,code,complete",
+    [
+        (False, "ARTIFACT_MISSING", True),
+        (True, "ARTIFACT_MISSING", False),
+        (False, "PROVIDER_UNAVAILABLE", False),
+    ],
+)
+async def test_recovery_skips_only_definitively_absent_optional_outputs(
+    fixture,  # noqa: F811
+    required,
+    code,
+    complete,
+):
+    store, owner, scope, actor, original, authority, params = fixture
+    await RootlessDockerProvider(FakeRuntime(), authority, MANIFEST).handle(
+        request(scope, "release", handle=original.handle)
+    )
+    scope = replace(scope, session_id=str(uuid.uuid4()))
+    identity = str(uuid.uuid4())
+    lease = replace(
+        original,
+        handle=identity,
+        scope=scope,
+        intent=replace(original.intent, scope=scope, resource_id=identity),
+    )
+    await install_session(
+        store,
+        owner,
+        scope,
+        leases={"environment": (PROVIDER, lease)},
+        actors=params["actors"],
+        outputs={
+            "environment": {
+                "result": {
+                    "actors": [str(actor)],
+                    "grant": asdict(ExportGrant("result", "/result", "private", 1024)),
+                }
+            }
+        },
+        registration={
+            "output_plan": [{"id": "result", "resource_id": "environment", "required": required}]
+        },
+    )
+    await store.transition(owner, "planning", "cleaning")
+
+    class MissingExport:
+        async def handle(self, command):
+            assert command["operation"] == "export" and command["handle"] == identity
+            raise ProtocolError(code, "Fixture output is unavailable", "recording")
+
+    recovery = RecoveryService(store, actor, {})
+    result = await recovery.capture_files(owner, {PROVIDER: lambda authority: MissingExport()})
+    assert result["complete"] is complete
+    assert result["native_state"] == "unavailable" and result["artifacts"] == []
+    assert bool(result["absent_optional_outputs"]) is complete
+    assert bool(result["errors"]) is not complete

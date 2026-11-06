@@ -191,6 +191,11 @@ class RecoveryService:
             selected = []
             for lease, session in rows:
                 plan = self.store.private.open("session:" + str(session.id), session.private_plan)
+                policy = {
+                    item["id"]: item["required"]
+                    for item in plan.get("registration", {}).get("output_plan", [])
+                    if item["resource_id"] == lease.logical_id
+                }
                 for output_id in plan["outputs"].get(lease.logical_id, {}):
                     selected.append(
                         (
@@ -199,10 +204,11 @@ class RecoveryService:
                             lease.origin_generation,
                             lease.provider_id,
                             output_id,
+                            policy.get(output_id, True),
                         )
                     )
-        artifacts, errors = [], []
-        for handle, session_id, generation, provider_id, output_id in selected:
+        artifacts, errors, absent = [], [], []
+        for handle, session_id, generation, provider_id, output_id, required in selected:
             request = {
                 "protocol_version": "1.0",
                 "type": "broker_request",
@@ -236,12 +242,16 @@ class RecoveryService:
                     "NO_RESERVATION",
                 }:
                     raise
+                if error.code == "ARTIFACT_MISSING" and not required:
+                    absent.append({"handle": str(handle), "output_id": output_id})
+                    continue
                 errors.append(
                     {"handle": str(handle), "output_id": output_id, "error": error.as_dict()}
                 )
         return {
             "artifacts": artifacts,
             "errors": errors,
+            "absent_optional_outputs": absent,
             "complete": not errors,
             "native_state": "unavailable",
         }
