@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from app.benchmarks.trials import Controller
 from app.benchmarks.worker_host import RootlessWorkerHost
-from app.runtime.admission import ResourceDemand
+from app.runtime.admission import ResourceDemand, StorageDemand
 from evalhive_benchmark import ProtocolError
 
 from tests.fixtures.benchmark_driver_worker import AGENT, MANIFEST
@@ -254,5 +254,30 @@ def test_host_journal_disk_cannot_bypass_the_trial_budget():
             await host.install_plan(spec, plan)
         assert budget.value.code == "LIMIT_EXCEEDED"
         host.store.reserve.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("disk_mb,accepted", [(64, True), (63, False)])
+def test_owned_storage_is_counted_as_disk_without_inventing_process_limits(
+    monkeypatch, disk_mb, accepted
+):
+    async def scenario():
+        install = AsyncMock()
+        monkeypatch.setattr("app.benchmarks.worker_host.install_session", install)
+        host, spec, plan = invocation(False)
+        spec["limits"].update(memory_mb=QUOTA.memory_mb, cpu_cores=QUOTA.cpu_cores, disk_mb=disk_mb)
+        storage = StorageDemand("owned-workspace", 48)
+        host.assets.compile.return_value.demands = (storage,)
+        if accepted:
+            await host.install_plan(spec, plan)
+            assert host.store.reserve.await_args.kwargs["demands"] == (host.worker_demand, storage)
+            install.assert_awaited_once()
+        else:
+            with pytest.raises(ProtocolError) as budget:
+                await host.install_plan(spec, plan)
+            assert budget.value.code == "LIMIT_EXCEEDED"
+            host.store.reserve.assert_not_awaited()
+            install.assert_not_awaited()
 
     asyncio.run(scenario())

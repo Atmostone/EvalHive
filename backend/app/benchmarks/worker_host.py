@@ -24,7 +24,7 @@ from app.benchmarks.evidence import _io
 from app.benchmarks.resource_authority import ActorPolicy, install_session
 from app.benchmarks.retained_inputs import RetainedInputs
 from app.benchmarks.worker_channel import WorkerChannel
-from app.runtime.admission import GroupPolicy, host_capacity
+from app.runtime.admission import GroupPolicy, ResourceDemand, host_capacity
 from app.runtime.file_pins import freeze_files
 from app.runtime.managed_spec import ManagedRuntimeError, OwnerScope
 
@@ -272,9 +272,10 @@ class RootlessWorkerHost:
             self.manifest["requirements"], spec["case"]["requirements"], plan["requirements"]
         )
         demands = (self.worker_demand, *compiled.demands, *extra_demands)
+        processes = tuple(item for item in demands if isinstance(item, ResourceDemand))
         totals = {
-            "memory_mb": sum(item.limits.memory_mb for item in demands),
-            "cpu_cores": sum(Decimal(str(item.limits.cpu_cores)) for item in demands),
+            "memory_mb": sum(item.limits.memory_mb for item in processes),
+            "cpu_cores": sum(Decimal(str(item.limits.cpu_cores)) for item in processes),
             "disk_mb": sum(item.disk_mb for item in demands)
             + retained.disk_mb
             + self.host_auxiliary_disk_mb,
