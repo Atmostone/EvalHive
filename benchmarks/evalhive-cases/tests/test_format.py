@@ -155,6 +155,68 @@ def test_yaml_aliases_cannot_expand_an_unbounded_document():
         parse_case(b"value: &v [one, two]\ncopy: *v\n")
 
 
+def test_installed_locator_selects_only_its_frozen_case_and_checks_changed_bytes(tmp_path):
+    from evalhive_cases.format import load_suite, resolve_case
+
+    directory = tmp_path / "example"
+    directory.mkdir()
+    target = directory / "case.json"
+    target.write_bytes(encoded())
+    descriptor = load_suite(tmp_path, "example")[0].descriptor("revision-1")
+    assert descriptor["native_ref"]["path"] == "example/case.json"
+    (directory / "unselected.json").write_bytes(b"not a selected case")
+    assert resolve_case(tmp_path, descriptor).id == "case-1"
+    changed = json.loads(encoded())
+    changed["input"]["title"] = "Changed fixture title"
+    target.write_bytes(encoded(changed))
+    with pytest.raises(CaseFormatError, match="frozen descriptor"):
+        resolve_case(tmp_path, descriptor)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "../outside.json",
+        "/example/case.json",
+        "other/case.json",
+        "example//case.json",
+        "example/./case.json",
+        "example/../case.json",
+        "example/case.py",
+        None,
+    ],
+)
+def test_installed_case_locator_cannot_select_foreign_or_ambiguous_files(tmp_path, locator):
+    from evalhive_cases.format import resolve_case
+
+    (tmp_path / "example").mkdir()
+    descriptor = parse_case(encoded(), suffix=".json").descriptor("revision-1")
+    descriptor["native_ref"]["path"] = locator
+    with pytest.raises(CaseFormatError):
+        resolve_case(tmp_path, descriptor)
+
+
+def test_installed_case_locator_rejects_links_and_fifo_without_opening_a_stream(tmp_path):
+    import os
+
+    from evalhive_cases.format import resolve_case
+
+    directory = tmp_path / "example"
+    directory.mkdir()
+    target = directory / "case.json"
+    descriptor = parse_case(encoded(), suffix=".json").descriptor(
+        "revision-1", relative_path="example/case.json"
+    )
+    (tmp_path / "outside.json").write_bytes(encoded())
+    target.symlink_to(tmp_path / "outside.json")
+    with pytest.raises(CaseFormatError):
+        resolve_case(tmp_path, descriptor)
+    target.unlink()
+    os.mkfifo(target)
+    with pytest.raises(CaseFormatError, match="regular file"):
+        resolve_case(tmp_path, descriptor)
+
+
 @pytest.mark.parametrize(
     "field,value", [("reference_answer", 7), ("capability_spec", []), ("external_eval", {})]
 )

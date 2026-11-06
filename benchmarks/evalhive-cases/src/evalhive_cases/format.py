@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from copy import deepcopy
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePosixPath
 
 import yaml
 from evalhive_benchmark import ProtocolError, validate
@@ -68,6 +70,7 @@ def _text(value, name, *, optional=False):
 class NativeCase:
     source_digest: str
     _data: dict = field(repr=False)
+    _relative_path: str | None = field(default=None, repr=False)
 
     @property
     def id(self):
@@ -94,6 +97,7 @@ class NativeCase:
         return {"title": source["title"], "prompt": source.get("description") or source["title"]}
 
     def descriptor(self, revision, *, dataset_id=None, relative_path=None):
+        relative_path = relative_path if relative_path is not None else self._relative_path
         value = {
             "ref": {
                 "dataset_id": dataset_id or self.suite,
@@ -173,7 +177,7 @@ def parse_case(data: bytes, *, suffix=".yaml"):
         raise CaseFormatError("Invalid native case document") from None
 
 
-def load_suite(root, suite):
+def _suite_directory(root, suite):
     root = Path(root).resolve(strict=True)
     if (
         not isinstance(suite, str)
@@ -187,6 +191,11 @@ def load_suite(root, suite):
     directory = root / suite
     if directory.is_symlink() or not directory.is_dir() or directory.resolve().parent != root:
         raise CaseFormatError("Suite is unavailable in the installed dataset")
+    return root, directory
+
+
+def load_suite(root, suite):
+    _, directory = _suite_directory(root, suite)
     cases, seen = [], set()
     for path in sorted(directory.iterdir()):
         if path.suffix not in SUFFIXES:
@@ -198,7 +207,7 @@ def load_suite(root, suite):
         if case.suite != suite or case.id in seen:
             raise CaseFormatError("Case suite or identity conflicts with its installation")
         seen.add(case.id)
-        cases.append(case)
+        cases.append(replace(case, _relative_path=suite + "/" + path.name))
     return cases
 
 
@@ -207,10 +216,39 @@ def resolve_case(root, descriptor):
     validate("case_descriptor", descriptor)
     native = descriptor["native_ref"]
     suite = native.get("suite")
-    candidates = load_suite(root, suite)
+    if "path" in native:
+        _, directory = _suite_directory(root, suite)
+        locator = native["path"]
+        if not isinstance(locator, str):
+            raise CaseFormatError("Installed case locator must be a relative file path")
+        relative = PurePosixPath(locator)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 2
+            or relative.parts[0] != suite
+            or ".." in relative.parts
+            or relative.as_posix() != locator
+            or "\\" in locator
+            or relative.suffix not in SUFFIXES
+        ):
+            raise CaseFormatError("Installed case locator escapes its suite")
+        path = directory / relative.name
+        try:
+            descriptor_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor_fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise CaseFormatError("Installed case locator must select a regular file")
+                data = stream.read(MAX_LINE_BYTES + 1)
+            candidates = [parse_case(data, suffix=path.suffix)]
+        except OSError:
+            raise CaseFormatError("Installed case file is unavailable") from None
+    else:
+        # Historical installations did not retain locators. Preserve their reader.
+        candidates = load_suite(root, suite)
     selected = [case for case in candidates if case.id == descriptor["ref"]["case_id"]]
     if (
         len(selected) != 1
+        or selected[0].suite != suite
         or selected[0].source_digest != descriptor["source_digest"]
         or native.get("case_id") != selected[0].id
     ):

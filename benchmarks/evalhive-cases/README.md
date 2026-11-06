@@ -61,3 +61,10 @@ The versioned JSON schema is packaged with the reader. Development tooling can
 refresh it from the legacy data-model declarations without importing backend
 runtime code. Corpus compatibility tests use `CASE_CORPUS_PATH`; the package's
 runtime has no dependency on the backend case store.
+
+New installation receipts retain a canonical suite-relative file locator in each
+case descriptor. Resolution reads only that bounded regular file, verifies its
+source digest and identity, and rejects links, special files and path escapes.
+Older receipts without a locator retain the historical suite reader. Neither
+form exposes private native data in the agent prompt. This keeps repeated
+lifecycle calls independent of the number of unselected cases in a new snapshot.
