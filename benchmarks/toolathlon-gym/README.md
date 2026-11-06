@@ -55,6 +55,14 @@ checkpoints explicitly disable
 regrading. Native checker exit codes 0 and 1 represent correct and incorrect;
 other exits are evaluator failures. Deferred quality evaluation remains unknown.
 
+Unhandled checker exceptions are evaluator errors even when Python would normally
+exit with code 1. A native-script wrapper preserves argv, imports and explicit
+verdict exits. Checkpoints have a 248 MiB combined write budget before export,
+including tar overhead; oversized logical files are rejected before reading.
+Unavailable checkpoints retain the public workspace and a fixed reason code.
+Native database operations share the owned command's deadline rather than a
+second fixed timeout. Database restore runs in one transaction.
+
 Restore replaces captured directories, preserving deletions rather than merging
 them into the initial source. Private World preparation reserves 0.2 CPU; the
 Task's separate 1 CPU limit is unchanged. Native owned commands explicitly

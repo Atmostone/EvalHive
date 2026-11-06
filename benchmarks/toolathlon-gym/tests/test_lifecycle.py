@@ -93,6 +93,9 @@ class Context:
         result = {"exit_code": 0, "stdout": "", "stderr": ""}
         if argv[1].endswith("environment.py"):
             name = argv[2]
+            if name == "evaluate":
+                result["exit_code"] = self.verdict
+                return result
             if name in {"database_ready", "portals"}:
                 self.ready_checks += 1
                 data = {"ready": self.ready_checks > 1}

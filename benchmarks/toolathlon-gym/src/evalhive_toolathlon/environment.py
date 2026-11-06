@@ -7,14 +7,91 @@ import gzip
 import hashlib
 import json
 import os
+import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
+import traceback
 from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+MAX_CHECKPOINT_BYTES = 248 * 1024**2
+
+
+class CheckpointLimit(ValueError):
+    pass
+
+
+class BoundedWriter:
+    def __init__(self, stream, remaining):
+        self.stream, self.remaining = stream, remaining
+
+    def write(self, data):
+        if len(data) > self.remaining:
+            raise CheckpointLimit("Native checkpoint exceeds its storage budget")
+        written = self.stream.write(data)
+        self.remaining -= written
+        return written
+
+
+def snapshot_tree(source, destination, remaining):
+    """Reject large logical files before reading and bound actual tar bytes too."""
+    size, count = 0, 0
+    pending = [Path(source)]
+    while pending:
+        path = pending.pop()
+        info = path.lstat()
+        count += 1
+        if count > 65536:
+            raise CheckpointLimit("Native checkpoint contains too many entries")
+        if stat.S_ISDIR(info.st_mode):
+            with os.scandir(path) as children:
+                for child in children:
+                    if count + len(pending) >= 65536:
+                        raise CheckpointLimit("Native checkpoint contains too many entries")
+                    pending.append(Path(child.path))
+        elif stat.S_ISREG(info.st_mode):
+            size += info.st_size
+            if size > remaining:
+                raise CheckpointLimit("Native checkpoint exceeds its logical byte budget")
+        else:
+            raise ValueError("Native checkpoint contains unsupported entries")
+
+    def supported(member):
+        if not member.isfile() and not member.isdir():
+            raise ValueError("Native checkpoint contains unsupported entries")
+        return member
+
+    with Path(destination).open("xb") as target:
+        writer = BoundedWriter(target, remaining)
+        with tarfile.open(fileobj=writer, mode="w|") as archive:
+            archive.add(source, arcname=".", recursive=True, filter=supported)
+        return remaining - writer.remaining
+
+
+def snapshot_database(destination, remaining):
+    with Path(destination).open("xb") as target:
+        writer = BoundedWriter(target, remaining)
+        process = subprocess.Popen(
+            ["pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--no-password"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            while chunk := process.stdout.read(128 * 1024):
+                writer.write(chunk)
+            if process.wait() != 0:
+                raise ValueError("Native database checkpoint failed")
+        finally:
+            process.stdout.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        return remaining - writer.remaining
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -131,7 +208,7 @@ def reset(identity):
             try:
                 shutil.copyfileobj(source, process.stdin, length=1024**2)
                 process.stdin.close()
-                if process.wait(timeout=60) != 0:
+                if process.wait() != 0:
                     raise ValueError("Native database reset failed")
             finally:
                 if process.poll() is None:
@@ -156,6 +233,8 @@ def reset(identity):
 
 def portal_service(argv, identity):
     """Only the native read-only Python file server has a supported restart recipe."""
+    if len(argv) == 8 and argv[4:6] == ["--bind", "127.0.0.1"]:
+        argv = [*argv[:4], *argv[6:]]
     if len(argv) != 6 or argv[1:3] != ["-m", "http.server"] or argv[4] != "--directory":
         return None
     if Path(argv[0]).name not in {"python", "python3", "python3.12"}:
@@ -249,31 +328,18 @@ def snapshot(identity):
     destination = Path("/checkpoint")
     destination.mkdir(exist_ok=False)
     (destination / "services.json").write_text(json.dumps(services) + "\n")
-    with (destination / "dump.stderr").open("wb") as errors:
-        subprocess.run(
-            [
-                "pg_dump",
-                "--format=custom",
-                "--no-owner",
-                "--no-privileges",
-                "--no-password",
-                "--file",
-                str(destination / "db.dump"),
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=errors,
-            timeout=60,
-        )
-    for output, source in (
-        ("workspace.tar", Path("/workspace")),
-        ("task.tar", task_root(identity)),
-    ):
-        with tarfile.open(destination / output, "w") as archive:
-            archive.add(source, arcname=".", recursive=True)
-        with tarfile.open(destination / output, "r:") as archive:
-            if any(not member.isfile() and not member.isdir() for member in archive):
-                return {"checkpoint_complete": False, "reason": "UNSUPPORTED_NATIVE_STATE"}
+    remaining = MAX_CHECKPOINT_BYTES - (destination / "services.json").stat().st_size
+    try:
+        remaining -= snapshot_database(destination / "db.dump", remaining)
+        for output, source in (
+            ("workspace.tar", Path("/workspace")),
+            ("task.tar", task_root(identity)),
+        ):
+            remaining -= snapshot_tree(source, destination / output, remaining)
+    except CheckpointLimit:
+        return {"checkpoint_complete": False, "reason": "NATIVE_CHECKPOINT_LIMIT_EXCEEDED"}
+    except ValueError:
+        return {"checkpoint_complete": False, "reason": "UNSUPPORTED_NATIVE_STATE"}
     return {"checkpoint_complete": True}
 
 
@@ -289,6 +355,7 @@ def restore(identity, checkpoint):
         subprocess.run(
             [
                 "pg_restore",
+                "--single-transaction",
                 "--clean",
                 "--if-exists",
                 "--no-owner",
@@ -301,7 +368,6 @@ def restore(identity, checkpoint):
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=errors,
-            timeout=60,
         )
     restore_tree(saved / "workspace.tar", "/workspace")
     restore_tree(saved / "task.tar", task_root(identity))
@@ -312,7 +378,31 @@ def restore(identity, checkpoint):
     return {"restored": True}
 
 
+def evaluate(argv):
+    """Preserve explicit native verdict exits; unhandled checker failures are errors."""
+    try:
+        if not argv:
+            raise ValueError("Native evaluator script is missing")
+        script = Path(argv[0])
+        if not script.is_absolute() or script.resolve(strict=True) != script:
+            raise ValueError("Native evaluator requires its installed script path")
+        sys.argv = list(argv)
+        sys.path[0] = str(script.parent)
+        runpy.run_path(str(script), run_name="__main__")
+    except SystemExit as error:
+        if error.code is None or isinstance(error.code, int):
+            raise
+        print("Native evaluator exited without a numeric verdict", file=sys.stderr)
+        raise SystemExit(70) from None
+    except Exception:
+        traceback.print_exc()
+        raise SystemExit(70) from None
+
+
 def main():
+    if sys.argv[1:2] == ["evaluate"]:
+        evaluate(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation",

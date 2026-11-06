@@ -486,9 +486,15 @@ class ToolathlonConnector(Connector):
                 self.snapshot_available = False
                 checkpoint_failure = error.code
             else:
-                checkpoint_failure = (
-                    "NATIVE_STATE_INCOMPLETE" if not self.snapshot_available else None
-                )
+                checkpoint_failure = None
+                if not self.snapshot_available:
+                    checkpoint_failure = state.get("reason")
+                    if checkpoint_failure not in {
+                        "NATIVE_CHECKPOINT_LIMIT_EXCEEDED",
+                        "UNSUPPORTED_NATIVE_STATE",
+                        "UNSUPPORTED_NATIVE_SERVICES",
+                    }:
+                        checkpoint_failure = "NATIVE_STATE_INCOMPLETE"
         else:
             checkpoint_failure = (
                 "NATIVE_STATE_CAPTURE_DISABLED" if self.ready else "NATIVE_PREPARATION_INCOMPLETE"
@@ -531,7 +537,7 @@ class ToolathlonConnector(Connector):
         )
         response = await self._exec(
             context,
-            argv,
+            [PYTHON, HELPER, "evaluate", *argv[1:]],
             request_id="evaluate.native",
             timeout=self.config["evaluation_timeout_seconds"],
             cwd=str(task_path(self.case.id)),

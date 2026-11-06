@@ -3,20 +3,26 @@
 import io
 import socket
 import subprocess
+import sys
 import tarfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from evalhive_toolathlon.environment import (
+    CheckpointLimit,
     extract_native,
     native_services,
     portal_service,
     portals,
     restore_services,
     restore_tree,
+    snapshot_database,
+    snapshot_tree,
 )
 
 
@@ -78,6 +84,62 @@ def test_restore_removes_uncaptured_initial_files_instead_of_resurrecting_delete
     assert (target / "answer.txt").read_bytes() == b"native-state"
 
 
+def test_checkpoint_rejects_oversize_sparse_file_before_reading_or_creating_archive(tmp_path):
+    source = tmp_path / "workspace"
+    source.mkdir()
+    with (source / "large").open("wb") as stream:
+        stream.truncate(1024**3)
+    target = tmp_path / "captured.tar"
+    with pytest.raises(CheckpointLimit):
+        snapshot_tree(source, target, 1024**2)
+    assert not target.exists()
+
+
+def test_checkpoint_bounds_tar_overhead_and_roundtrips_regular_state(tmp_path):
+    source = tmp_path / "workspace"
+    source.mkdir()
+    (source / "answer.txt").write_text("answer")
+    target = tmp_path / "captured.tar"
+    with pytest.raises(CheckpointLimit):
+        snapshot_tree(source, target, 1000)
+    assert target.stat().st_size <= 1000
+    target.unlink()
+    written = snapshot_tree(source, target, 65536)
+    assert written == target.stat().st_size <= 65536
+    extract_native(target, tmp_path / "restored")
+    assert (tmp_path / "restored/answer.txt").read_text() == "answer"
+
+
+def test_checkpoint_rejects_links_before_reading_external_files(tmp_path):
+    source = tmp_path / "workspace"
+    source.mkdir()
+    (source / "link").symlink_to(tmp_path / "private")
+    target = tmp_path / "captured.tar"
+    with pytest.raises(ValueError):
+        snapshot_tree(source, target, 65536)
+    assert not target.exists()
+
+
+def test_oversize_database_dump_stops_producer_without_exceeding_capture_budget(
+    tmp_path, monkeypatch
+):
+    producer = SimpleNamespace(
+        stdout=io.BytesIO(b"native dump larger than the saved budget"),
+        poll=lambda: None,
+        kill=Mock(),
+        wait=Mock(return_value=0),
+    )
+    monkeypatch.setattr(
+        "evalhive_toolathlon.environment.subprocess.Popen", lambda *a, **kw: producer
+    )
+    target = tmp_path / "db.dump"
+    with pytest.raises(CheckpointLimit):
+        snapshot_database(target, 8)
+    assert target.stat().st_size <= 8 and producer.stdout.closed
+    producer.kill.assert_called_once()
+    producer.wait.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "name,kind",
     [
@@ -100,6 +162,8 @@ def test_checkpoint_accepts_only_restartable_native_read_only_portals(tmp_path, 
     argv = ["python3", "-m", "http.server", "30411", "--directory", str(task / "tmp/pages")]
     expected = {"kind": "python_http", "port": 30411, "root": "task", "path": "tmp/pages"}
     assert portal_service(argv, "native-case") == expected
+    assert portal_service([*argv[:4], "--bind", "127.0.0.1", *argv[4:]], "native-case") == expected
+    assert portal_service([*argv[:4], "--bind", "0.0.0.0", *argv[4:]], "native-case") is None
     assert portal_service(["python3", "/arbitrary-server.py"], "native-case") is None
     assert portal_service([*argv[:-1], "/private"], "native-case") is None
     proc = tmp_path / "proc"
@@ -159,3 +223,48 @@ def test_native_portal_restart_serves_restored_files_without_preprocessing(tmp_p
         for process in children:
             process.terminate()
             process.wait(timeout=3)
+
+
+@pytest.mark.parametrize(
+    "script,expected",
+    [
+        ("raise SystemExit(1)", 1),
+        ("raise SystemExit('checker startup failed')", 70),
+        ("raise RuntimeError('checker infrastructure failure')", 70),
+        ("import evalhive_nonexistent_fixture_dependency", 70),
+    ],
+)
+def test_checker_crash_is_distinct_from_an_explicit_incorrect_verdict(tmp_path, script, expected):
+    target = tmp_path / "checker.py"
+    target.write_text(script)
+    result = subprocess.run(
+        [sys.executable, "-m", "evalhive_toolathlon.environment", "evaluate", str(target)],
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == expected
+
+
+def test_checker_wrapper_preserves_native_argv_import_path_and_main_file(tmp_path):
+    (tmp_path / "native_dependency.py").write_text("VALUE = 'native dependency'\n")
+    target = tmp_path / "checker.py"
+    target.write_text(
+        "import sys;from pathlib import Path;from native_dependency import VALUE\n"
+        "assert sys.argv == [str(Path(__file__)), '--launch_time', 'frozen time']\n"
+        "assert __name__ == '__main__';print(VALUE)\n"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "evalhive_toolathlon.environment",
+            "evaluate",
+            str(target),
+            "--launch_time",
+            "frozen time",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0 and result.stdout == "native dependency\n"
