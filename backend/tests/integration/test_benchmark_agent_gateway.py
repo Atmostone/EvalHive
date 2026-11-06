@@ -398,3 +398,35 @@ async def test_external_tool_result_roundtrip_uses_native_revision_and_acknowled
         if gateway.executor.job is not None and not gateway.executor.job.done():
             await gateway.cancel()
             await asyncio.wait_for(gateway.executor.wait(), 10)
+
+
+async def test_prepared_access_preserves_frozen_configuration_and_uses_native_paths(
+    calls, tmp_path
+):
+    gateway, _ = await gateway_for(calls, tmp_path)
+    executor = gateway.executor
+    executor.spec["config"] = {"thinkingLevel": "off", "maxOutputTokens": 512}
+    original_config = dict(executor.spec["config"])
+    prepared = {
+        "ready": True,
+        "session_handle": "native-task",
+        "native_state": {},
+        "artifacts": [],
+        "agent": {
+            "mode": "in_environment",
+            "interaction": "autonomous",
+            "environment_handle": "native-task",
+            "cwd": "/native/project",
+            "prompt": "Native task instruction",
+            "instructions": ["Native constraints"],
+            "resources": [{"id": "native-tools", "kind": "tools", "config": {"names": []}}],
+        },
+    }
+    gateway.configure(prepared)
+    assert executor.spec["task"]["prompt"] == "Native task instruction"
+    assert executor.spec["cwd"] == "/native/project"
+    assert executor.spec["instructions"] == ["Native constraints"]
+    assert executor.spec["config"] == original_config
+    assert executor.spec["environment"]["resources"][0]["config"]["names"] == []
+    with pytest.raises(ProtocolError, match="frozen"):
+        gateway.configure(prepared)

@@ -105,6 +105,11 @@ class Worker(Connector):
                 prepared.update(purpose="evaluation", native_state=checkpoint["state"])
             return prepared
         if method == "drive":
+            if self.config.get("use_host_agent"):
+                result = await context.agent(
+                    params["scope"], "run", {}, request_id="native.agent", timeout=20
+                )
+                return {"agent_outcome": result["outcome"]}
             return {"finished": True}
         if method == "capture":
             if self.config.get("malformed_capture"):

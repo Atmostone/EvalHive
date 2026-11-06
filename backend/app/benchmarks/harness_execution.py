@@ -50,7 +50,52 @@ class HarnessExecution:
         self.api, self.redactor = BenchmarkAttemptAPI(calls), Redactor(private_values)
         self.policy, self.max_pending_bytes = policy or RunnerPolicy(), max_pending_bytes
         self.prepared, self.starting = False, False
+        self.access_configured = False
         self.job, self.connector, self.spool = None, None, None
+
+    def configure_access(self, prepared):
+        """Apply native task access while preserving frozen model/profile settings."""
+        from evalhive_benchmark import validate
+
+        validate("prepared", prepared)
+        if self.prepared or self.starting or self.access_configured:
+            raise failure("AGENT_ALREADY_STARTED", "Native agent access is already frozen")
+        agent = prepared.get("agent")
+        if agent is None or agent["interaction"] != self.mode:
+            raise failure(
+                "AGENT_MODE_CONFLICT", "Native access differs from the frozen interaction mode"
+            )
+        spec = deepcopy(self.spec)
+        spec["task"] = {**spec["task"], "prompt": agent["prompt"]}
+        spec["cwd"] = agent["cwd"]
+        spec["instructions"] = [*spec.get("instructions", []), *agent["instructions"]]
+        environment = spec.get("environment", {})
+        resources = {resource["id"]: resource for resource in environment.get("resources", [])}
+        for resource in agent["resources"]:
+            if resource["id"] in resources and resources[resource["id"]] != resource:
+                raise failure(
+                    "AGENT_RESOURCE_CONFLICT",
+                    "Native resource differs from the frozen role resource",
+                )
+            resources[resource["id"]] = deepcopy(resource)
+        spec["environment"] = {
+            **environment,
+            "id": environment.get("id", "benchmark"),
+            "resources": list(resources.values()),
+        }
+        if "tool_mapping" in agent:
+            spec["metadata"] = {
+                **spec.get("metadata", {}),
+                "benchmark_tool_mapping": deepcopy(agent["tool_mapping"]),
+            }
+        try:
+            validate_run(self.manifest, spec)
+        except HarnessProtocolError:
+            raise failure(
+                "INVALID_AGENT_ACCESS", "Native access is incompatible with the Harness contract"
+            ) from None
+        self.spec = spec
+        self.access_configured = True
 
     async def prepare(self, initial_history=None):
         if self.prepared:

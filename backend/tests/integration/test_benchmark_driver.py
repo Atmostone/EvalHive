@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import undefer
 
 from tests.fixtures.benchmark_driver_worker import MANIFEST
+from tests.fixtures.benchmark_execution_outcome import fixture_execution_outcome
 from tests.integration.test_benchmark_trials import POLICY, QUOTA, WORKSPACE
 
 
@@ -63,6 +64,12 @@ class Host:
         self.client = await ConnectorClient.launch(
             [sys.executable, str(worker)],
             env={"PATH": os.defpath, "PYTHONPATH": "/opt/current-benchmark-sdk"},
+            agent=None
+            if getattr(self, "agent_gateway", None) is None
+            else self.agent_gateway.handle,
+            agent_replay=None
+            if getattr(self, "agent_gateway", None) is None
+            else self.agent_gateway.replay,
         )
         self.channel = await WorkerChannel.attach(
             self.store,
@@ -75,6 +82,10 @@ class Host:
 
     async def install_plan(self, spec, plan, **kwargs):
         self.installed_spec = spec
+
+    async def bind_prepared(self, prepared):
+        if getattr(self, "agent_gateway", None) is not None:
+            self.agent_gateway.configure(prepared)
 
     async def detach(self, **kwargs):
         if self.channel:
@@ -111,6 +122,7 @@ async def driver(_engine, db_session):
         RecoveryService(store, uuid.uuid4(), {}),
         capture_providers={},
         capture_validator=fixture_capture_validator,
+        execution_outcome=fixture_execution_outcome(owner),
         limits=limits,
     )
     spec = {
@@ -270,6 +282,7 @@ async def test_trial_deadline_cannot_be_sealed_as_success(driver, _engine):
         RecoveryService(store, uuid.uuid4(), {}),
         capture_providers={},
         capture_validator=fixture_capture_validator,
+        execution_outcome=fixture_execution_outcome(owner),
         limits=original.limits,
     )
     spec["scope"]["trial_id"] = str(trial.id)
@@ -394,6 +407,7 @@ async def test_restart_at_each_phase_recovers_without_starting_a_worker(driver, 
         RecoveryService(store, uuid.uuid4(), {}),
         capture_providers={},
         capture_validator=fixture_capture_validator,
+        execution_outcome=fixture_execution_outcome(claimed),
         limits=original.limits,
     )
     result = await recovered.run(spec)
@@ -460,6 +474,7 @@ async def test_second_driver_cannot_clean_up_an_active_owner_session(driver):
             original.recovery,
             capture_providers={},
             capture_validator=fixture_capture_validator,
+            execution_outcome=fixture_execution_outcome(original.owner),
             limits=original.limits,
         )
         rejected = await another.run(spec)
@@ -490,3 +505,76 @@ async def test_unavailable_capture_preserves_the_reservation_for_retry(driver, _
     assert all(call.args[1] != "release" for call in controller.recovery.sweep.call_args_list)
     async with AsyncSession(_engine) as db:
         assert await db.get(BenchmarkHostReservation, controller.store.host_id) is not None
+
+
+async def test_drive_rpc_has_no_execution_authority_without_a_harness_resolver(driver):
+    controller, spec = driver
+    controller.execution_outcome = None
+    result = await controller.run(spec)
+    assert result["phase"] == "finished" and result["execution"] == "failed"
+    assert not controller.host.started
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "lost"])
+async def test_confirmed_harness_outcome_is_not_promoted_by_successful_drive_rpc(driver, status):
+    controller, spec = driver
+    controller.execution_outcome = fixture_execution_outcome(
+        controller.owner,
+        status=status,
+        recording_status="interrupted" if status == "lost" else "complete",
+    )
+    result = await controller.run(spec)
+    assert result["phase"] == "finished" and result["execution"] == status
+    if status == "lost":
+        assert result["recording"] == "incomplete"
+
+
+async def test_untyped_execution_reply_cannot_replace_a_harness_outcome(driver):
+    controller, spec = driver
+    controller.execution_outcome = AsyncMock(return_value={"status": "success"})
+    result = await controller.run(spec)
+    assert result["phase"] == "finished" and result["execution"] == "failed"
+
+
+async def test_worker_agent_call_and_shared_harness_runner_complete_the_whole_trial(
+    driver, tmp_path
+):
+    from app.benchmarks.agent_calls import AgentCallStore
+    from app.models.execution_attempt import ExecutionAttempt
+    from app.models.task import Task
+
+    from tests.integration.test_benchmark_agent_gateway import gateway_for
+
+    controller, spec = driver
+    async with AsyncSession(controller.store.engine) as db:
+        task = Task(
+            title="Full SDK composition fixture",
+            workspace_id=controller.owner.workspace_id,
+            status="in_progress",
+        )
+        db.add(task)
+        await db.flush()
+        await db.execute(
+            update(BenchmarkTrial)
+            .where(BenchmarkTrial.id == controller.owner.trial_id)
+            .values(task_id=task.id)
+        )
+        await db.commit()
+    calls = AgentCallStore(
+        controller.store,
+        controller.owner,
+        uuid.uuid5(controller.owner.controller_id, "benchmark.actor"),
+    )
+    gateway, processes = await gateway_for(calls, tmp_path)
+    controller.host.agent_gateway = controller.agent_control = gateway
+    controller.execution_outcome = None
+    spec["case"]["requirements"]["capabilities"] = ["host.agent_api_v1"]
+    spec["config"] = {"use_host_agent": True}
+    result = await controller.run(spec)
+    assert result["phase"] == "finished" and result["execution"] == "success", result
+    assert result["evaluation"] == "completed" and result["recording"] == "complete"
+    assert len(processes) == 1 and processes[0].returncode == 0
+    async with AsyncSession(controller.store.engine) as db:
+        attempt = await db.get(ExecutionAttempt, calls.session_id)
+        assert attempt.status == "success" and attempt.run_spec["cwd"] == "/tmp"
+        assert attempt.run_spec["task"]["prompt"] == "Fixture"

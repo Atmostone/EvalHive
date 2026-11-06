@@ -12,6 +12,9 @@ class AgentGateway:
     def __init__(self, calls, executor):
         self.calls, self.executor = calls, executor
 
+    def configure(self, prepared):
+        self.executor.configure_access(prepared)
+
     @staticmethod
     def _unwrap(receipt):
         if receipt["ok"]:

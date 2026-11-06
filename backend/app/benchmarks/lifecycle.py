@@ -25,6 +25,7 @@ NOTE_EVENTS = {
     "cleanup.failed",
     "deadline.result",
     "configuration.applied",
+    "execution.confirmed",
 }
 
 

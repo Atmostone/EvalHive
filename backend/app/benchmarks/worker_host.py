@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -50,6 +51,7 @@ class RootlessWorkerHost:
         retained_evidence=None,
         worker_image_pin=None,
         host_private_inputs=None,
+        agent_factory=None,
     ):
         validate("manifest", manifest)
         if manifest["kind"] != "benchmark" or (manifest["id"], manifest["version"]) != (
@@ -81,6 +83,18 @@ class RootlessWorkerHost:
         self.retained_inputs = RetainedInputs(
             store, owner, assets.runtime.policy, retained_evidence
         )
+        self.plan, self.prepared, self.agent_gateway = None, None, None
+        if agent_factory is not None:
+            if self.purpose != "execution":
+                raise ManagedRuntimeError("Agent factories require an execution controller")
+            self.agent_gateway = agent_factory(self)
+            calls = self.agent_gateway.calls
+            if (
+                calls.trials is not store
+                or calls.owner != owner
+                or calls.actor_id != self.worker_actor
+            ):
+                raise ManagedRuntimeError("Agent gateway differs from its worker ownership")
 
     async def _measure(self):
         return await asyncio.to_thread(
@@ -192,7 +206,11 @@ class RootlessWorkerHost:
             )
         )
         client = self.client = ConnectorClient(
-            process, broker=self.worker_broker.handle, broker_replay=self.worker_broker.replay
+            process,
+            broker=self.worker_broker.handle,
+            broker_replay=self.worker_broker.replay,
+            agent=None if self.agent_gateway is None else self.agent_gateway.handle,
+            agent_replay=None if self.agent_gateway is None else self.agent_gateway.replay,
         )
         self.channel = await WorkerChannel.attach(self.store, self.owner, self.worker_actor, client)
         description = await self.channel.invoke("describe", request_id="worker.describe")
@@ -313,7 +331,14 @@ class RootlessWorkerHost:
             purpose=self.purpose,
         )
         self.environment = compiled
+        self.plan = deepcopy(plan)
         return compiled
+
+    async def bind_prepared(self, prepared):
+        validate("prepared", prepared)
+        if self.agent_gateway is not None:
+            self.agent_gateway.configure(prepared)
+        self.prepared = deepcopy(prepared)
 
     async def release_inputs(self):
         await self.retained_inputs.release()

@@ -127,10 +127,9 @@ remains active, including an attempt created just before a crash prevented its
 binding. Unfinished agent call receipts make recording incomplete. A downgrade
 below `bg12` refuses to discard calls belonging to unfinished trials.
 
-This ledger is a host integration component. Wiring the native agent executor
-and replacing the execution driver's provisional drive-response handling are
-remaining B08 work; the component alone does not advertise `host.agent_api_v1`
-or enable product launches.
+This ledger is a host integration component. Installed adapter/runtime composition
+and product launch APIs remain separate work; the component alone does not
+advertise `host.agent_api_v1` or enable production launches.
 
 `BenchmarkAttemptAPI` lets the shared Harness `AttemptRunner` deliver events,
 effective configuration, heartbeats and native command acknowledgements directly
@@ -187,6 +186,30 @@ transport passes a credential-file reference to the exec supervisor, never a raw
 credential in argv or public environment. Evaluation controllers reject these
 agent grants. Runtime unit checks cover the boundary; full native composition
 is still required before enabling the product path.
+
+`RootlessWorkerHost` can construct one host agent gateway before starting its SDK
+worker. The gateway must belong to the same store, controller and worker actor;
+evaluation controllers cannot construct it. The worker client's reverse agent
+callbacks remain unavailable when no gateway is installed. After native
+preparation, the host applies the prepared task prompt, cwd, instructions and
+resources to the frozen Harness spec. Model/profile configuration is retained,
+resource conflicts fail explicitly and access cannot be configured twice.
+
+`TrialDriver` requires a trusted Harness outcome resolver before preparing a new
+execution. A successful `drive` response carries an opaque outcome reference;
+it cannot establish execution success itself. The resolver returns a confirmed
+typed outcome, which is recorded independently of the native correctness verdict.
+Failure, cancellation and lost execution retain their status. Cleanup reconciles
+all intended agent attempts after native resources and retained inputs have been
+released, including recovery without constructing the old connector.
+
+Lifecycle-only test fixtures explicitly supply a trusted simulated outcome; this
+is not a production fallback. A separate composition test crosses the Benchmark
+SDK subprocess, reverse agent call, real Harness SDK wire server/client, shared
+runner, PostgreSQL journal, native evaluation boundary and controller cleanup.
+Its Harness transport is in memory. Rootless lifecycle regression also covers
+cancellation, controller takeover and regrading; native Pi/OpenCode acceptance
+through this complete benchmark path is a subsequent check.
 
 ## Resource authority and private state
 

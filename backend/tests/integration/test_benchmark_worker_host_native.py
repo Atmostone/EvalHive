@@ -42,6 +42,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import undefer
 
+from tests.fixtures.benchmark_execution_outcome import fixture_execution_outcome
 from tests.runtime.authority_fixture import FixtureArtifacts, manifest
 from tests.runtime.broker_worker_fixture import CASE, Worker
 from tests.runtime.regrade_worker_fixture import RegradeWorker
@@ -323,6 +324,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                 recovery,
                 capture_providers=factories,
                 capture_validator=capture_validator,
+                execution_outcome=fixture_execution_outcome(owner),
                 deadlines=(watchdog,),
                 limits=DriverLimits(
                     phase_seconds=90 if automatic == "regrade" else 35,
@@ -397,6 +399,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                             next_recovery,
                             capture_providers=factories,
                             capture_validator=artifacts.validate_capture,
+                            execution_outcome=fixture_execution_outcome(claimed),
                         ).run(spec)
                         old = await asyncio.wait_for(pending, 12)
                         assert old["controller"] == "detached"
@@ -603,6 +606,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                 recovery,
                 capture_providers=factories,
                 capture_validator=artifacts.validate_capture,
+                execution_outcome=fixture_execution_outcome(claimed),
             )
             result = await controller.run(spec)
             assert result["phase"] == "finished" and result["execution"] == "lost"

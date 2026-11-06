@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from evalhive_benchmark import ProtocolError, validate, validate_spec
 
 from app.benchmarks.async_control import bounded, cancel_tasks, consume
+from app.benchmarks.harness_outcome import HarnessExecutionOutcome
 
 FENCED = {"STALE_GENERATION", "OWNER_EXPIRED", "TRIAL_NOT_FOUND", "TRIAL_FINISHED"}
 
@@ -62,7 +63,8 @@ class PhaseDriver:
         if not callable(capture_validator):
             raise ValueError("A trusted host evidence validator is required")
         self.capture_validator = capture_validator
-        self.deadlines, self.agent_control = tuple(deadlines), agent_control
+        self.deadlines = tuple(deadlines)
+        self.agent_control = agent_control or getattr(host, "agent_gateway", None)
         self.limits = limits or DriverLimits()
         if self.limits.heartbeat_seconds > self.store.lease_seconds / 3:
             raise ValueError("Heartbeat interval must leave two controller lease renewals")
@@ -317,6 +319,7 @@ class PhaseDriver:
             await self._wait(
                 release_inputs(), seconds=self.limits.cleanup_seconds, interruptible=False
             )
+        await self._wait(self._after_release(), interruptible=False)
         self.stopping.set()
         await bounded(
             self.store.transition(self.owner, "cleaning", "finished"), self.limits.service_seconds
@@ -324,6 +327,9 @@ class PhaseDriver:
 
     async def _resolve_spec(self, spec):
         return deepcopy(spec)
+
+    async def _after_release(self):
+        pass
 
     def _check_effective_config(self, spec, effective):
         pass
@@ -351,6 +357,9 @@ class PhaseDriver:
                 "prepare", {"spec": spec, "plan": plan}, timeout=self.limits.phase_seconds
             )
         )
+        bind_prepared = getattr(self.host, "bind_prepared", None)
+        if bind_prepared is not None:
+            await self._wait(bind_prepared(self.workflow.prepared))
         await self._wait(self.store.transition(self.owner, "preparing", "ready"))
         return spec, channel
 
@@ -555,7 +564,28 @@ class PhaseDriver:
 class TrialDriver(PhaseDriver):
     purpose = "execution"
 
+    def __init__(self, *args, execution_outcome=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.execution_outcome = execution_outcome
+
+    async def _after_release(self):
+        import uuid
+
+        from app.benchmarks.agent_calls import AgentCallStore
+
+        calls = AgentCallStore(
+            self.store, self.owner, uuid.uuid5(self.owner.controller_id, "benchmark.actor")
+        )
+        await calls.reconcile()
+
     async def _pipeline(self, spec, *, private_inputs, extra_demands, evaluate):
+        resolve_outcome = self.execution_outcome or getattr(self.agent_control, "outcome", None)
+        if not callable(resolve_outcome):
+            raise ProtocolError(
+                "AGENT_EXECUTOR_REQUIRED",
+                "A trusted Harness outcome resolver is required",
+                "unsupported",
+            )
         spec, channel = await self._prepare(
             spec, private_inputs=private_inputs, extra_demands=extra_demands
         )
@@ -565,7 +595,19 @@ class TrialDriver(PhaseDriver):
                 "drive", self._scoped(self.workflow.prepared), timeout=self.limits.phase_seconds
             )
         )
-        await self._wait(self.store.finish_execution(self.owner, "success"))
+        outcome = await self._wait(resolve_outcome(self.workflow.execution.get("agent_outcome")))
+        if not isinstance(outcome, HarnessExecutionOutcome):
+            raise ProtocolError(
+                "HARNESS_RESULT_INVALID",
+                "Execution requires a confirmed Harness outcome",
+                "recording",
+            )
+        await self._note(
+            "execution.confirmed",
+            private={"attempt_id": str(outcome.attempt_id), "outcome": outcome.reference()},
+            incomplete=outcome.recording_status != "complete",
+        )
+        await self._wait(self.store.finish_execution(self.owner, outcome.status))
         await self._wait(self.store.transition(self.owner, "driving", "capturing"))
         capture = await self._capture(channel)
         if evaluate:

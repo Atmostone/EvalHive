@@ -198,3 +198,38 @@ def test_evaluation_controller_rejects_host_agent_credentials():
             {},
             host_private_inputs={"agent.credentials": b"host-private-fixture"},
         )
+
+
+def test_agent_factory_cannot_bind_another_worker_identity():
+    from app.runtime.managed_spec import ManagedRuntimeError
+
+    host, _, _ = invocation(False)
+
+    def foreign_gateway(selected):
+        return SimpleNamespace(
+            calls=SimpleNamespace(
+                trials=selected.store, owner=selected.owner, actor_id=uuid.uuid4()
+            )
+        )
+
+    with pytest.raises(ManagedRuntimeError, match="ownership"):
+        RootlessWorkerHost(
+            host.store, host.owner, host.manifest, host.assets, {}, agent_factory=foreign_gateway
+        )
+
+
+def test_evaluation_controller_never_invokes_an_agent_factory():
+    from app.runtime.managed_spec import ManagedRuntimeError
+
+    host, _, _ = invocation(True)
+    called = []
+
+    def factory(selected):
+        called.append(selected)
+        raise AssertionError("An evaluation controller must not construct an agent")
+
+    with pytest.raises(ManagedRuntimeError, match="execution controller"):
+        RootlessWorkerHost(
+            host.store, host.owner, host.manifest, host.assets, {}, agent_factory=factory
+        )
+    assert not called
