@@ -49,6 +49,7 @@ class RootlessWorkerHost:
         group_policy=None,
         retained_evidence=None,
         worker_image_pin=None,
+        host_private_inputs=None,
     ):
         validate("manifest", manifest)
         if manifest["kind"] != "benchmark" or (manifest["id"], manifest["version"]) != (
@@ -58,6 +59,9 @@ class RootlessWorkerHost:
             raise ManagedRuntimeError("Worker manifest differs from registered assets")
         self.store, self.owner, self.manifest, self.assets = store, owner, manifest, assets
         self.purpose = "execution" if owner.control_id is None else "evaluation"
+        if host_private_inputs and self.purpose != "execution":
+            raise ManagedRuntimeError("Host agent inputs require an execution controller")
+        self.host_private_inputs = dict(host_private_inputs or {})
         if worker_image_pin is not None and self.purpose != "evaluation":
             raise ManagedRuntimeError("A retained worker image requires an evaluation controller")
         self.worker_image_pin = worker_image_pin
@@ -219,6 +223,8 @@ class RootlessWorkerHost:
             raise ManagedRuntimeError("Task planning requires a started SDK worker")
         validate_spec(self.manifest, spec)
         validate_environment(spec, plan)
+        if set(private_inputs or {}) & set(self.host_private_inputs):
+            raise ManagedRuntimeError("Worker and host private input identities must be distinct")
         if spec.get("purpose", "execution") != self.purpose:
             raise ProtocolError(
                 "PURPOSE_CONFLICT", "Plan purpose differs from its controller", "configuration"
@@ -285,8 +291,15 @@ class RootlessWorkerHost:
             self.owner,
             scope,
             leases=compiled.leases,
-            actors={self.worker_actor: policy, self.host_actor: policy},
-            private_inputs=private_inputs,
+            actors={
+                self.worker_actor: policy,
+                self.host_actor: replace(
+                    policy,
+                    private_input_refs=tuple((private_inputs or {}).keys())
+                    + tuple(self.host_private_inputs),
+                ),
+            },
+            private_inputs={**(private_inputs or {}), **self.host_private_inputs},
             outputs=compiled.output_grants((self.worker_actor, self.host_actor)),
             links=compiled.links,
             registration={

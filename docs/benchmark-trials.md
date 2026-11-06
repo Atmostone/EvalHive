@@ -172,6 +172,22 @@ only; it cannot resume an old conversation. Full gateway tests use the real
 Harness SDK wire server/client with in-memory engineering pipes and PostgreSQL;
 they do not establish native Pi/OpenCode container acceptance.
 
+`RootlessHarnessTransport` validates an in-environment target against the
+installed plan and prepared opaque handle. Services and graders cannot become
+the agent's task. The task must mount the selected connector's exact registered
+runtime bundle read-only at `/evalhive-runtime`; its receipt and file hashes are
+checked again before the fixed entrypoint is started through the host broker's
+owned exec/attach interface. Native task cwd is preserved. A lost attachment
+cannot be retried as another process.
+
+`RootlessWorkerHost.host_private_inputs` supplies execution-only grants separate
+from native worker inputs. Only the host actor receives those references; a
+worker/host ID collision fails before compilation or admission. The Harness
+transport passes a credential-file reference to the exec supervisor, never a raw
+credential in argv or public environment. Evaluation controllers reject these
+agent grants. Runtime unit checks cover the boundary; full native composition
+is still required before enabling the product path.
+
 ## Resource authority and private state
 
 The host installs an immutable plan with resolved image IDs, paths, resource

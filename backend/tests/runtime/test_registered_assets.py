@@ -410,3 +410,15 @@ def test_root_directory_cannot_be_exported_as_a_public_leaf_artifact(path):
             await assets.compile(scope(), value)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("role", ["service", "grader"])
+def test_agent_cannot_select_service_or_grader_as_its_native_task(role):
+    async def scenario():
+        registration = document()
+        registration["assets"]["fixture.task"]["role"] = role
+        native, _ = catalog(registration)
+        with pytest.raises(ManagedRuntimeError, match="task container"):
+            await native.compile(scope(), plan())
+
+    asyncio.run(scenario())

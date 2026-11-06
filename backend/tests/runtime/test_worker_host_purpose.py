@@ -144,3 +144,57 @@ def test_retained_archive_and_spool_must_fit_the_trial_before_admission_or_downl
         host.retained_inputs.materialize.assert_not_awaited()
 
     asyncio.run(scenario())
+
+
+def test_host_credentials_are_not_granted_to_the_benchmark_worker(monkeypatch):
+    async def scenario():
+        install = AsyncMock()
+        monkeypatch.setattr("app.benchmarks.worker_host.install_session", install)
+        host, spec, plan = invocation(False)
+        original = deepcopy(spec)
+        host.host_private_inputs = {"agent.credentials": b"host-private-fixture"}
+        await host.install_plan(
+            spec, plan, private_inputs={"simulator.credentials": b"worker-private-fixture"}
+        )
+        actors = install.await_args.kwargs["actors"]
+        assert actors[host.worker_actor].private_input_refs == ("simulator.credentials",)
+        assert actors[host.host_actor].private_input_refs == (
+            "simulator.credentials",
+            "agent.credentials",
+        )
+        assert install.await_args.kwargs["private_inputs"] == {
+            "simulator.credentials": b"worker-private-fixture",
+            "agent.credentials": b"host-private-fixture",
+        }
+        assert spec == original and "agent.credentials" not in str(spec)
+
+    asyncio.run(scenario())
+
+
+def test_private_input_collisions_are_rejected_before_compilation_and_admission():
+    async def scenario():
+        from app.runtime.managed_spec import ManagedRuntimeError
+
+        host, spec, plan = invocation(False)
+        host.host_private_inputs = {"same": b"host-private-fixture"}
+        with pytest.raises(ManagedRuntimeError, match="distinct"):
+            await host.install_plan(spec, plan, private_inputs={"same": b"worker-private-fixture"})
+        host.assets.compile.assert_not_awaited()
+        host.store.reserve.assert_not_awaited()
+
+    asyncio.run(scenario())
+
+
+def test_evaluation_controller_rejects_host_agent_credentials():
+    from app.runtime.managed_spec import ManagedRuntimeError
+
+    host, _, _ = invocation(True)
+    with pytest.raises(ManagedRuntimeError, match="execution controller"):
+        RootlessWorkerHost(
+            host.store,
+            host.owner,
+            host.manifest,
+            host.assets,
+            {},
+            host_private_inputs={"agent.credentials": b"host-private-fixture"},
+        )

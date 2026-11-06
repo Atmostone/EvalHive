@@ -393,7 +393,11 @@ class RootlessAssets:
         if agent is not None:
             if agent["mode"] == "in_environment":
                 selected = leases.get(agent.get("environment_handle"))
-                if selected is None or selected[1].kind != "container":
+                if (
+                    selected is None
+                    or selected[1].kind != "container"
+                    or selected[1].intent.role != "environment"
+                ):
                     raise ManagedRuntimeError("Agent requires a declared task container")
             absolute_path(agent["cwd"])
         files = {
