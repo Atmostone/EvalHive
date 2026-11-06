@@ -62,12 +62,12 @@ MANIFEST = {
 
 
 @pytest_asyncio.fixture
-async def fixture(_engine, db_session):
+async def fixture(_engine, db_session, request):
     store = TrialStore(_engine, PrivateStore("isolated-benchmark-storage-fixture"))
     trial = await store.create(
         WORKSPACE,
         snapshot={"title": "Fixture case"},
-        deadline_at=datetime.now(UTC) + timedelta(minutes=5),
+        deadline_at=datetime.now(UTC) + timedelta(seconds=getattr(request, "param", 300)),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
     await store.transition(owner, "created", "planning")
@@ -590,6 +590,33 @@ async def test_exec_private_key_and_inputs_survive_database_reconstruction(fixtu
         assert len(restored.intent.control_key) == 32
         assert isinstance(restored.intent, ExecSpec)
         assert encode_lease(restored) == encode_lease(lease)
+
+
+@pytest.mark.parametrize("fixture", [45], indirect=True)
+async def test_inherited_exec_uses_database_parent_budget_and_replays_frozen_grant(fixture):
+    _, _, scope, _, container, authority, _ = fixture
+    provider = RootlessDockerProvider(FakeRuntime(), authority, MANIFEST)
+    await provider.handle(request(scope))
+    command = request(
+        scope, "exec", handle=container.handle, payload={"argv": ["true"], "timeout_seconds": 60}
+    )
+    with pytest.raises(ProtocolError) as strict:
+        async with authority.operation(command) as call:
+            await call.execution(await call.resource(container.handle), command["payload"])
+    assert strict.value.code == "LIMIT_EXCEEDED"
+    command = request(
+        scope,
+        "exec",
+        handle=container.handle,
+        payload={"argv": ["true"], "timeout_seconds": 60, "deadline_policy": "inherit"},
+    )
+    async with authority.operation(command) as call:
+        grant = await call.execution(await call.resource(container.handle), command["payload"])
+        assert 0 < grant.timeout_seconds <= 45
+        receipt = {"effective_timeout_seconds": grant.timeout_seconds}
+        await call.save(replace(grant.lease, state="creating"))
+        await call.complete(receipt)
+    assert await provider.replay(command) == receipt
 
 
 @pytest.mark.parametrize(

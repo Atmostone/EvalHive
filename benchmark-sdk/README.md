@@ -31,6 +31,14 @@ A provider process binds to one trial generation and rejects another provider
 identity or scope. The host still enforces durable leases and authority; this
 process-local check does not grant access to the host or recover native effects.
 
+Owned `exec` requests use strict deadlines by default: an explicit timeout must
+fit both the actor's saved limit and the remaining control deadline. Hosts with
+`host.exec_deadline_inheritance_v1` also accept `deadline_policy: "inherit"`.
+This treats the requested timeout as a maximum and grants the smaller remaining
+parent budget, returned as `effective_timeout_seconds`. It never increases the
+actor's saved limit or extends the trial/evaluation deadline. Connectors must
+declare the capability before depending on this mode.
+
 The transport accepts both command and resource request directions only when the
 provider wrapper explicitly enables them. Ordinary benchmark workers retain their
 original incoming direction. Receipts share bounded pending/active/unacknowledged

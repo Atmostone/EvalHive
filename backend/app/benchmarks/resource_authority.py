@@ -52,6 +52,26 @@ class ActorPolicy:
     max_exec_seconds: float = 60
 
 
+def execution_timeout(payload, maximum, remaining):
+    """A requested maximum may explicitly inherit the enclosing attempt deadline."""
+    policy = payload.get("deadline_policy", "strict")
+    if not isinstance(policy, str) or policy not in {"strict", "inherit"}:
+        raise failure("INVALID_RESOURCE_REQUEST", "Unknown native deadline policy")
+    if remaining <= 0:
+        raise failure("TRIAL_DEADLINE", "The enclosing execution deadline expired", "execution")
+    seconds = payload.get("timeout_seconds", min(maximum, remaining))
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(seconds)
+        or not 0 < seconds <= maximum
+    ):
+        raise failure("LIMIT_EXCEEDED", "Native deadline exceeds the saved grant")
+    if seconds > remaining and policy != "inherit":
+        raise failure("LIMIT_EXCEEDED", "Native deadline exceeds the saved grant")
+    return min(seconds, remaining)
+
+
 async def install_session(
     store,
     owner,
@@ -626,12 +646,9 @@ class SqlResourceCall:
         ):
             raise failure("PRIVATE_INPUT_UNAVAILABLE", "Private input is outside the actor grant")
         now = await self.db.scalar(select(func.clock_timestamp()))
-        maximum = min(
-            self.policy["max_exec_seconds"], (self.trial.deadline_at - now).total_seconds()
+        seconds = execution_timeout(
+            payload, self.policy["max_exec_seconds"], (self.trial.deadline_at - now).total_seconds()
         )
-        seconds = payload.get("timeout_seconds", maximum)
-        if not 0 < seconds <= maximum:
-            raise failure("LIMIT_EXCEEDED", "Native deadline exceeds the saved grant")
         handle = str(uuid.uuid5(self.operation.id, "exec"))
         spec = ExecSpec(
             container.native,

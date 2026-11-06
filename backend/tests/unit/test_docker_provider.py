@@ -251,12 +251,52 @@ async def test_exec_persists_private_control_before_start_and_retains_lease(prep
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("inherit", [False, True])
+async def test_host_may_shorten_only_explicit_inherited_budgets_and_reports_effective_timeout(
+    prepared, monkeypatch, inherit
+):
+    from tests.runtime.authority_fixture import FixtureCall
+
+    provider, authority, _, _, _, _ = prepared
+    container = await allocate(prepared)
+    original = FixtureCall.execution
+
+    async def shortened(call, target, payload):
+        grant = await original(call, target, payload)
+        return replace(grant, timeout_seconds=0.5)
+
+    monkeypatch.setattr(FixtureCall, "execution", shortened)
+    provider.owned = MagicMock()
+    provider.owned.create.side_effect = native_exec
+
+    async def start(*args, **options):
+        return fake_process()
+
+    monkeypatch.setattr("app.runtime.docker_provider.OwnedDockerProcess.start", start)
+    payload = {"argv": ["native-command"], "timeout_seconds": 1}
+    if inherit:
+        payload["deadline_policy"] = "inherit"
+        result = await provider.handle(
+            request(authority.scope, "exec", payload, handle=container.handle)
+        )
+        assert result["exit_code"] == 0 and result["effective_timeout_seconds"] == 0.5
+    else:
+        with pytest.raises(ProtocolError):
+            await provider.handle(
+                request(authority.scope, "exec", payload, handle=container.handle)
+            )
+        provider.owned.create.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [
         {"argv": []},
         {"argv": ["bad\0command"]},
         {"argv": ["command"], "mode": "restart"},
+        {"argv": ["command"], "deadline_policy": []},
+        {"argv": ["command"], "deadline_policy": "unknown"},
         {"argv": ["command"], "timeout_seconds": True},
         {"argv": ["command"], "timeout_seconds": 31},
         {"argv": ["command"], "private_input_refs": {"CONFIG": "foreign"}},

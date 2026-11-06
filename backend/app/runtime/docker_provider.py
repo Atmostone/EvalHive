@@ -300,7 +300,15 @@ class RootlessDockerProvider(EnvironmentProvider):
         _shape(
             payload,
             {"argv"},
-            {"cwd", "user", "environment", "private_input_refs", "mode", "timeout_seconds"},
+            {
+                "cwd",
+                "user",
+                "environment",
+                "private_input_refs",
+                "mode",
+                "timeout_seconds",
+                "deadline_policy",
+            },
         )
         if (
             container.kind != "container"
@@ -345,6 +353,8 @@ class RootlessDockerProvider(EnvironmentProvider):
             )
             or set(environment) & set(references)
             or payload.get("mode", "wait") not in {"wait", "attach"}
+            or not isinstance(payload.get("deadline_policy", "strict"), str)
+            or payload.get("deadline_policy", "strict") not in {"strict", "inherit"}
             or (
                 "user" in payload
                 and (
@@ -392,7 +402,14 @@ class RootlessDockerProvider(EnvironmentProvider):
             or lease.intent.environment != payload.get("environment", {})
             or set(lease.intent.private_inputs) != set(payload.get("private_input_refs", {}))
             or (
-                "timeout_seconds" in payload and payload["timeout_seconds"] != grant.timeout_seconds
+                "timeout_seconds" in payload
+                and (
+                    grant.timeout_seconds > payload["timeout_seconds"]
+                    or (
+                        payload.get("deadline_policy", "strict") != "inherit"
+                        and payload["timeout_seconds"] != grant.timeout_seconds
+                    )
+                )
             )
         ):
             raise ManagedRuntimeError("Execution grant changed the requested native settings")
@@ -430,6 +447,11 @@ class RootlessDockerProvider(EnvironmentProvider):
                         "kind": "exec",
                         "state": "running",
                         "deadline_at": lease.deadline_at,
+                        **(
+                            {"effective_timeout_seconds": grant.timeout_seconds}
+                            if payload.get("deadline_policy") == "inherit"
+                            else {}
+                        ),
                     }
                 async with call.observation():
                     while chunk := await process.stdout.read():
@@ -484,6 +506,11 @@ class RootlessDockerProvider(EnvironmentProvider):
             "stderr": bytes(process.stderr).decode("utf-8", errors="replace"),
             "stdout_truncated": truncated,
             "stderr_truncated": process.stderr_truncated,
+            **(
+                {"effective_timeout_seconds": grant.timeout_seconds}
+                if payload.get("deadline_policy") == "inherit"
+                else {}
+            ),
         }
 
     async def _stop(self, call, lease, *, release):
