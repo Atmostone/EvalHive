@@ -155,6 +155,71 @@ not release resource leases or bypass the current owner's resource authority.
 Resource cleanup remains the responsibility of the durable controller/recovery
 service. A blocked journal writer likewise prevents final stream sealing.
 
+## Server resource registration and worker provisioning
+
+`SqlBroker` routes a registered actor's requests to installed provider factories.
+It resolves logical names and opaque handles using scoped SQL rows. Workers cannot
+choose a session, actor, image or host path. A prior operation is looked up before
+the current resource name: releasing or replacing a resource cannot redirect a
+retry into another session. The request ID is unique across the actor's entire
+trial generation, matching the SDK's process-wide broker ledger. Conflicting
+concurrent requests are rejected before a second effect. Database triggers freeze
+the route, request, receipt and terminal outcome. Removed providers produce an
+explicit error; there is no fallback provider. IPC receipt readback calls only
+the provider's pure replay path.
+
+The rootless provider's `RootlessAssets` consumes bounded JSON installation data,
+separate from the benchmark's public configuration. The registration identifies
+the connector/version, provider, worker asset and named container/network assets.
+It is a bounded resource view for the selected case, not an obligation to load a
+whole large dataset into one JSON file. Installers can provide per-case views
+alongside the shared worker declaration using their verified dataset inventory.
+Container assets specify immutable local images, native startup defaults, quotas,
+unchanged native minima, registered file mounts and output rules. File grants come
+from the host's verified installation inventory, with a content digest and a
+separate writable permission. File verification belongs to that installer; a
+worker cannot manufacture an installation receipt. Source digests participate in
+the effective fingerprint, without including relocatable host paths.
+The complete group must fit the trial's requested memory, CPU and disk budget as
+well as host/group policy. Worker overhead and independent harness resources
+count toward that budget; native resource requirements are never lowered to fit.
+A registered runtime file reference may resolve to the standalone supervisor or
+the selected harness's complete runtime bundle. The host chooses one mount for
+that reference, preserving the task image and avoiding a combined image for every
+harness/benchmark pair. Bundle compatibility remains a pre-model launch check.
+
+A task plan's rootless resource config selects `asset_id`, optional logical
+`network`/`namespace` dependencies and private-bridge DNS aliases. It cannot supply
+images, host mounts, startup commands or quotas. Benchmark-native command and
+configuration details remain in its worker, using owned execs in the granted
+environment. Other providers own their own registration/config vocabulary.
+Outputs must match registered paths, visibility and requiredness exactly; a
+required output cannot disappear from a plan. Whole-rootfs exports stay private.
+The canonical SDK plan remains independent of rootless installation details.
+
+Declared dependencies become immutable lease metadata even when no native network
+link is involved. Allocation requires those dependencies to be allocated; a
+provider cannot drop them when saving a lease. Recovery uses the same graph in
+reverse. Logical IDs are unique among live resources, including networks, so a
+name cannot ambiguously identify two sessions.
+
+`RootlessWorkerHost` composes these pieces without importing native benchmark
+modules. It admits and starts a registered planner container, attaches its JSONL
+transport, installs durable broker handling/readback and checks its SDK identity,
+schema, capabilities and requirements. The worker's reported image reference is
+not a self-referential Docker digest: the actual immutable image is checked and
+recorded by the host. After the worker returns a plan, the host resolves it against
+installed assets, finalizes group admission and freezes session grants. The
+benchmark worker and host controller have distinct actor identities; the worker
+has no permission to control its own planner container. Harness resources can be
+admitted independently as additional group demands. This provisioner does not
+choose a harness or infer a correctness verdict.
+
+The automatic phase driver, its concurrent supervision and the capture/evaluation
+policy remain separate composition work. These APIs do not enable production
+launch by themselves. The native acceptance test currently sequences their calls
+explicitly to exercise the complete process/SQL/resource boundary.
+
 ## Recovery and deadlines
 
 `RecoveryService` dispatches unreleased leases to registered provider factories.
@@ -217,6 +282,20 @@ stale-controller rejection, stopped-rootfs capture, transport loss and durable
 deadlines for active/completed processes. Runtime unit checks cover uncertain
 cleanup, identity mismatches, dependency ordering and completion/expiry races.
 The automatic worker phase driver is still a remaining B04 acceptance gate.
+
+`test_benchmark_broker.py` checks dispatch across sessions, global command identity,
+pure receipt readback, actor/workspace scoping, immutable routes/outcomes and
+dependency enforcement on PostgreSQL. Alembic `bg04` adds the global identity and
+outcome guards; its upgrade/downgrade roundtrip is checked with the same database.
+
+`test_benchmark_worker_host_native.py` runs a fresh SDK-only worker image with no
+backend/Docker modules or daemon socket. It uses the real SQL broker to allocate
+a separate native task, transfer private input references, run bounded native
+commands, preserve a background service and export the result. The worker's
+commands/events pass through the durable channel. Its task remains alive through
+capture and worker shutdown, then all leases and the host reservation are released.
+The engineering fixture uses a local execution stub and an in-memory artifact
+sink; it proves neither real benchmark acceptance nor production artifact storage.
 
 The fence follows PostgreSQL's
 [session advisory lock semantics](https://www.postgresql.org/docs/16/explicit-locking.html#ADVISORY-LOCKS).

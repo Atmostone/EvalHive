@@ -355,15 +355,19 @@ async def test_missing_oversized_or_unconsumed_evidence_cannot_succeed(prepared)
 
 
 @pytest.mark.asyncio
-async def test_full_rootfs_is_private_and_cannot_be_a_public_artifact(prepared):
+@pytest.mark.parametrize("path,rootfs", [("/", True), ("/", False), ("//", False)])
+async def test_full_rootfs_is_private_and_cannot_be_a_public_artifact(prepared, path, rootfs):
     provider, authority, runtime, lease, _, _ = prepared
     await allocate(prepared)
-    authority.outputs[lease.handle, "snapshot"] = ExportGrant("snapshot", "/", "user", 1000, True)
+    authority.outputs[lease.handle, "snapshot"] = ExportGrant(
+        "snapshot", path, "user", 1000, rootfs
+    )
     with pytest.raises(ProtocolError):
         await provider.handle(
             request(authority.scope, "export", {"output_id": "snapshot"}, handle=lease.handle)
         )
     runtime.container.return_value.export.assert_not_called()
+    runtime.container.return_value.get_archive.assert_not_called()
 
 
 @pytest.mark.asyncio

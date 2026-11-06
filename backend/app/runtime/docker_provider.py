@@ -501,13 +501,14 @@ class RootlessDockerProvider(EnvironmentProvider):
                 "INVALID_RESOURCE_REQUEST", "Export requires a task container", "configuration"
             )
         grant = await call.output(lease, _identifier(payload["output_id"]))
-        absolute_path(grant.path)
+        path = absolute_path(grant.path)
         if (
             grant.visibility not in {"agent", "user", "evaluator", "private"}
             or type(grant.max_archive_bytes) is not int
             or not 1 <= grant.max_archive_bytes <= 64 * 1024**3
             or type(grant.rootfs) is not bool
             or (grant.rootfs and grant.visibility != "private")
+            or (len(path.parts) == 1 and grant.visibility != "private")
             or (grant.rootfs and grant.path != "/")
         ):
             raise ManagedRuntimeError("Host output grant is invalid")

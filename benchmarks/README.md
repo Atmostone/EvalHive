@@ -6,6 +6,16 @@ registered worker image. Profiles cannot install packages, change entrypoints or
 grant resource access. Environment-provider declarations use the same contract
 with a different manifest kind.
 
+Rootless packages also supply provider-owned resource registration JSON. It maps
+asset IDs to installed immutable images, native process settings, unchanged
+resource minima, file references and exact output grants. The server resolves
+file references from verified installation receipts; the package does not gain
+permission to mount arbitrary host paths. Worker plans select those asset IDs
+through the common SDK resource declarations. See
+[server registration and provisioning](../docs/benchmark-trials.md#server-resource-registration-and-worker-provisioning).
+Adding package data, images and registrations does not require importing native
+benchmark modules into the backend.
+
 Dataset installation is a server operation, separate from selecting a dataset in
 the UI. The installer verifies native source/data bytes, resolves the worker
 image to a digest and writes a `dataset_installation` receipt under the package's

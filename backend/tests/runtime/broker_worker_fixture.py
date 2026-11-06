@@ -9,6 +9,14 @@ from evalhive_benchmark.connector import Connector, serve_stdio
 from evalhive_benchmark.protocol import ProtocolError
 
 PROVIDER = "fixture.rootless"
+
+
+async def broker(context, *args, **kwargs):
+    return await context.broker(
+        *args, **kwargs, durable_host=os.getenv("EVALHIVE_DURABLE_BROKER") == "1"
+    )
+
+
 PLAN = {
     "resources": [
         {
@@ -58,7 +66,7 @@ class Worker(Connector):
         "entrypoint": ["python", "/fixture/worker.py"],
         "image": "evalhive-broker-worker-fixture:development",
         "config_schema": {"type": "object"},
-        "capabilities": {key: "native" for key in ["prepare", "capture", "cleanup"]},
+        "capabilities": {key: "native" for key in ["prepare", "drive", "capture", "cleanup"]},
         "requirements": {},
     }
 
@@ -73,8 +81,13 @@ class Worker(Connector):
             return {"accepted": True, "effective_config": params["spec"]["config"]}
         if method == "prepare":
             scope = params["spec"]["scope"]
-            task = await context.broker(
-                scope, PROVIDER, "allocate", {"resource_id": "task"}, request_id="prepare.allocate"
+            task = await broker(
+                context,
+                scope,
+                PROVIDER,
+                "allocate",
+                {"resource_id": "task"},
+                request_id="prepare.allocate",
             )
             program = """import os,time
 from pathlib import Path
@@ -88,7 +101,8 @@ if child==0:
 while not Path('/tmp/retained-service.pid').exists(): time.sleep(.01)
 print('x'*(2*1024*1024),end='',flush=True)
 """
-            command = await context.broker(
+            command = await broker(
+                context,
                 scope,
                 PROVIDER,
                 "exec",
@@ -121,8 +135,36 @@ print('x'*(2*1024*1024),end='',flush=True)
                 "native_state": {"exec_handle": command["handle"], "isolated": True},
                 "artifacts": [],
             }
+        if method == "drive":
+            scope, task_handle = params["scope"], params["payload"]["session_handle"]
+            await context.emit(
+                scope, "agent.output", {"text": "Local execution fixture"}, source="agent"
+            )
+            executed = await broker(
+                context,
+                scope,
+                PROVIDER,
+                "exec",
+                {
+                    "argv": [
+                        "python",
+                        "-c",
+                        "from pathlib import Path;p=Path('/workspace/result.txt');p.write_text(p.read_text()+'Driven through the Benchmark SDK\\n')",
+                    ],
+                    "timeout_seconds": 10,
+                },
+                handle=task_handle,
+                request_id="drive.exec",
+            )
+            if executed["exit_code"] != 0:
+                raise ProtocolError("FIXTURE_FAILED", "Native execution failed", "execution")
+            await context.emit(
+                scope, "phase.completed", {"phase": "driving", "status": "success"}, source="agent"
+            )
+            return {"finished": True, "exec_handle": executed["handle"]}
         if method == "capture":
-            result = await context.broker(
+            result = await broker(
+                context,
                 params["scope"],
                 PROVIDER,
                 "export",
@@ -133,6 +175,8 @@ print('x'*(2*1024*1024),end='',flush=True)
             return {"artifacts": [result["artifact"]], "regrade": "available"}
         if method == "cleanup":
             return {"cleaned": True}  # The host releases its durable resource graph.
+        if method == "cancel":
+            return {"cancelled": True}
         raise ProtocolError(
             "UNSUPPORTED_CAPABILITY", "Fixture method is unavailable", "unsupported"
         )
