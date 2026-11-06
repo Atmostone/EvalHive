@@ -24,6 +24,7 @@ from app.database import Base
 class BenchmarkEvaluationControl(Base):
     __tablename__ = "benchmark_evaluation_controls"
     __table_args__ = (
+        UniqueConstraint("id", "source_trial_id", name="uq_evaluation_control_trial"),
         UniqueConstraint(
             "id", "source_trial_id", "workspace_id", name="uq_evaluation_control_scope"
         ),
@@ -51,6 +52,7 @@ class BenchmarkEvaluationControl(Base):
     controller_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recording_status: Mapped[str] = mapped_column(String(30), default="open", server_default="open")
     phase: Mapped[str] = mapped_column(String(30))
     next_seq: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -59,13 +61,23 @@ class BenchmarkEvaluationControl(Base):
 
 class BenchmarkEvaluationJournal(Base):
     __tablename__ = "benchmark_evaluation_journal"
-    __table_args__ = (UniqueConstraint("control_id", "seq", name="uq_evaluation_journal_sequence"),)
+    __table_args__ = (
+        UniqueConstraint("control_id", "seq", name="uq_evaluation_journal_sequence"),
+        UniqueConstraint("stream_id", "source_seq", name="uq_evaluation_journal_source_seq"),
+        UniqueConstraint("stream_id", "event_id", name="uq_evaluation_journal_event_id"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     control_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("benchmark_evaluation_controls.id", ondelete="CASCADE"), index=True
     )
     seq: Mapped[int] = mapped_column(BigInteger)
     generation: Mapped[int] = mapped_column(Integer)
+    stream_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("benchmark_event_streams.id", ondelete="CASCADE")
+    )
+    source_seq: Mapped[int | None] = mapped_column(BigInteger)
+    event_id: Mapped[str | None] = mapped_column(String(200))
+    content_hash: Mapped[str | None] = mapped_column(String(64))
     event: Mapped[str] = mapped_column(String(100))
     public_data: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     private_data: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)

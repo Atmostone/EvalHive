@@ -236,7 +236,7 @@ artifact against the original capture and retained storage. Its private output
 contains only declared evaluator model/credential references, excluding agent and
 orchestrator roles and mutable native session handles. Older captures without
 this proof remain unavailable for replay. This source check is implemented;
-resource binding, admission and restoration remain B05 work.
+restoration and lifecycle coordination remain B05 work.
 
 Independent regrade ownership now has dedicated `BenchmarkEvaluationControl` and
 immutable `BenchmarkEvaluationJournal` tables (`bg07`). Creating the new regrade
@@ -249,9 +249,9 @@ owner token. Expired evaluator takeover enters cleanup, records an uncertain
 grading result and fences the old owner; it cannot resume native interaction.
 The failed invocation retains a typed source checkpoint for a later new regrade.
 
-This lease repository is not yet an executable regrade coordinator. Resource
-sessions, worker streams, admission and restoration must explicitly bind to its
-context before it can launch. Source resource leases are not transferred to it.
+This lease repository is not yet an executable regrade coordinator. Restoration
+and lifecycle coordination must use its context before it can launch. Source
+resource leases are not transferred to it.
 
 Resource sessions now carry an immutable optional evaluator control ID (`bg08`).
 Its composite foreign key binds the control, source trial and workspace. Operation
@@ -265,8 +265,22 @@ receipt, and a source execution handle cannot become evaluator authority.
 Evaluation planning reuses the existing whole-group admission transaction. A
 takeover transfers only the reservation whose exact prior owner/generation
 matches the recovering evaluation; another evaluation's reservation is retained.
-This resource boundary is implemented. Worker stream/event binding and the
-complete restore/evaluate coordinator remain required before product launch.
+This resource boundary is implemented. The complete restore/evaluate coordinator
+remains required before product launch.
+
+Worker streams also bind to the evaluator control (`bg09`). Execution and
+evaluation share `StreamLedger` and `CommandStore`, including bounded event
+delivery, duplicate detection, encrypted receipts, delivery barriers and ACKs.
+Stream identity includes its immutable control, so the same actor, request and
+event IDs can exist independently in execution and regrading. Evaluation events
+increment only their own journal counter. Database guards reject cross-context
+journal references and stream rebinding. Late events and command responses are
+fenced after evaluator takeover; recording failures affect only that evaluator.
+An SDK-only worker test exercises describe, validate, event draining and shutdown
+through the evaluator channel without reopening the finished execution.
+Downgrading to a schema without evaluator stream identities rejects historical
+identity collisions rather than merging their records. Release rollback must use
+the matching database snapshot when the older schema cannot represent new data.
 
 ## Durable worker commands
 
@@ -471,6 +485,12 @@ checker failure versus an incorrect answer, and takeover without native resume.
 `test_benchmark_observation.py` checks that native read waits release their locks
 and pool slots, cancellation returns a single pooled connection safely, and old
 generations or finished trials cannot accept late native observations.
+
+`test_evaluation_streams.py` checks independent execution/evaluator receipts,
+encrypted event journals, duplicate/gap/conflict handling, sealed streams and late
+responses after takeover. It also exercises an SDK-only worker through the
+evaluator channel and database rejection of cross-context event references.
+The `bg09` migration is checked by downgrading to `bg01` and upgrading again.
 
 `test_benchmark_broker.py` checks dispatch across sessions, global command identity,
 pure receipt readback, actor/workspace scoping, immutable routes/outcomes and

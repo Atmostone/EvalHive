@@ -181,7 +181,20 @@ class BenchmarkEventStream(Base):
     __tablename__ = "benchmark_event_streams"
     __table_args__ = (
         UniqueConstraint("id", "trial_id", name="uq_benchmark_stream_trial"),
-        UniqueConstraint("trial_id", "generation", "actor_id", name="uq_benchmark_stream_actor"),
+        UniqueConstraint(
+            "trial_id",
+            "control_id",
+            "generation",
+            "actor_id",
+            name="uq_benchmark_stream_actor",
+            postgresql_nulls_not_distinct=True,
+        ),
+        ForeignKeyConstraint(
+            ["control_id", "trial_id"],
+            ["benchmark_evaluation_controls.id", "benchmark_evaluation_controls.source_trial_id"],
+            ondelete="CASCADE",
+            name="fk_benchmark_stream_control",
+        ),
         CheckConstraint("next_seq >= 0", name="ck_benchmark_stream_sequence"),
     )
 
@@ -189,6 +202,7 @@ class BenchmarkEventStream(Base):
     trial_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("benchmark_trials.id", ondelete="CASCADE")
     )
+    control_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     generation: Mapped[int] = mapped_column(Integer)
     actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     next_seq: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")

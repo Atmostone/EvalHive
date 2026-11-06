@@ -9,6 +9,7 @@ from sqlalchemy import func, select, update
 from app.benchmarks.control_repository import SqlControlRepository
 from app.benchmarks.evaluation import terminal
 from app.benchmarks.regrade import retained_source
+from app.benchmarks.streams import StreamLedger
 from app.benchmarks.trials import Controller, database_fence, failure
 from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
 from app.models.benchmark_evaluation_control import (
@@ -26,13 +27,15 @@ EVALUATION_CONTROLS = SqlControlRepository(
 )
 
 
-class EvaluationControls:
+class EvaluationControls(StreamLedger):
     """Lease/journal boundary, not a launch API or permission to resume a world.
 
-    Resource sessions bind explicitly to this context. Worker streams must also
-    bind before a runnable regrade coordinator can use it. Execution APIs reject its
-    owner token rather than interpreting it as an execution controller.
+    Resource sessions and worker streams bind explicitly to this context.
+    Execution APIs reject its owner token rather than interpreting it as an
+    execution controller. Restoration and lifecycle coordination remain separate.
     """
+
+    journal_model = BenchmarkEvaluationJournal
 
     def __init__(self, trials, evidence):
         self.trials, self.evidence = trials, evidence
@@ -267,6 +270,7 @@ class EvaluationControls:
             control.generation += 1
             control.controller_id, control.heartbeat_at = controller_id, now
             control.controller_expires_at = now + timedelta(seconds=self.lease_seconds)
+            control.recording_status = "incomplete"
             control.phase = "cleaning"  # No native conversation/state resume.
             attempt = await db.get(BenchmarkEvaluationAttempt, evaluation_id)
             if attempt.status == "running":

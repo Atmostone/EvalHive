@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
-from app.benchmarks.trials import append_entry, current_trial, failure
+from app.benchmarks.trials import failure
 from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_trial import BenchmarkEventStream, BenchmarkHostReservation
 
@@ -64,7 +64,7 @@ class CommandStore:
         self.trials, self.owner, self.actor_id = trials, owner, uuid.UUID(str(actor_id))
 
     async def _current(self, db):
-        trial, now = await current_trial(db, self.owner, row_lock=True)
+        trial, now = await self.trials.current(db, self.owner, row_lock=True)
         if trial.phase == "finished":
             raise failure("TRIAL_FINISHED", "Finished worker journals are sealed")
         return trial, now
@@ -73,6 +73,7 @@ class CommandStore:
         stream = await db.scalar(
             select(BenchmarkEventStream).where(
                 BenchmarkEventStream.trial_id == self.owner.trial_id,
+                BenchmarkEventStream.control_id == self.owner.control_id,
                 BenchmarkEventStream.generation == self.owner.generation,
                 BenchmarkEventStream.actor_id == self.actor_id,
             )
@@ -163,7 +164,7 @@ class CommandStore:
                     )
             row = BenchmarkCommand(
                 id=uuid.uuid4(),
-                trial_id=trial.id,
+                trial_id=self.owner.trial_id,
                 stream_id=stream.id,
                 request_id=frame["id"],
                 method=frame["method"],
@@ -173,7 +174,7 @@ class CommandStore:
             )
             row.private_request = self.trials.private.seal("command-request:" + str(row.id), frame)
             db.add(row)
-            await append_entry(
+            await self.trials.append(
                 db, trial, "command.sent", {"command_id": str(row.id), "method": row.method}
             )
             await db.commit()
@@ -205,7 +206,7 @@ class CommandStore:
                 "command-response:" + str(row.id), receipt
             )
             row.response_hash, row.received_at, row.state = digest, now, "received"
-            await append_entry(db, trial, "command.received", {"command_id": str(row.id)})
+            await self.trials.append(db, trial, "command.received", {"command_id": str(row.id)})
             await db.commit()
 
     async def complete(self, command_id, *, event_floor):
@@ -242,7 +243,7 @@ class CommandStore:
             stream.checkpoint_seq = stream.next_seq - 1
             row.event_through_seq = stream.checkpoint_seq
             row.state, row.completed_at = "completed", now
-            await append_entry(
+            await self.trials.append(
                 db,
                 trial,
                 "command.completed",
@@ -268,7 +269,9 @@ class CommandStore:
                 )
             if row.acknowledged_at is None:
                 row.acknowledged_at = now
-                await append_entry(db, trial, "command.acknowledged", {"command_id": str(row.id)})
+                await self.trials.append(
+                    db, trial, "command.acknowledged", {"command_id": str(row.id)}
+                )
                 await db.commit()
 
     async def uncertain(self, command_id, *, code="WORKER_DISCONNECTED"):
@@ -286,7 +289,7 @@ class CommandStore:
             if row.state not in {"completed", "uncertain"}:
                 row.state, row.error_code = "uncertain", code
                 trial.recording_status = "incomplete"
-                await append_entry(
+                await self.trials.append(
                     db, trial, "command.uncertain", {"command_id": str(row.id), "reason": code}
                 )
                 await db.commit()
