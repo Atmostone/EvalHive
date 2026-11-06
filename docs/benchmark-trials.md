@@ -132,6 +132,20 @@ and replacing the execution driver's provisional drive-response handling are
 remaining B08 work; the component alone does not advertise `host.agent_api_v1`
 or enable product launches.
 
+`BenchmarkAttemptAPI` lets the shared Harness `AttemptRunner` deliver events,
+effective configuration, heartbeats and native command acknowledgements directly
+through fenced SQL transactions. It accepts only a startup-bound attempt and
+rechecks controller ownership for every write. A cancellation, expired trial
+deadline or cleaning phase queues one deterministic abort command. Configuration
+cannot be prepared after the trial starts stopping. HTTP runners use the same
+bounded heartbeat/command-delivery implementation.
+
+Unlike the ordinary Work runner's HTTP completion callback, this transport does
+not settle a task when the agent finishes: benchmark capture, native evaluation
+and cleanup still own the remaining lifecycle. Integration tests run the actual
+shared runner with an engineering connector and PostgreSQL; native container
+composition remains a separate integration step.
+
 ## Resource authority and private state
 
 The host installs an immutable plan with resolved image IDs, paths, resource

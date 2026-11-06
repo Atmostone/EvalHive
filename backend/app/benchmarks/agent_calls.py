@@ -5,6 +5,7 @@ cover short transitions only; model execution and native waits belong outside.
 """
 
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from evalhive_benchmark import encode_line, validate
@@ -354,3 +355,21 @@ class AgentCallStore:
             )
             result.confirm_reference(reference)
             return result
+
+    @asynccontextmanager
+    async def runner_transaction(self):
+        """Authorize one short Harness write without projecting a benchmark task."""
+        async with AsyncSession(self.trials.engine, expire_on_commit=False) as db:
+            trial, stream, now = await self._current(db)
+            starter = await db.scalar(
+                select(BenchmarkAgentCall.id).where(
+                    BenchmarkAgentCall.stream_id == stream.id,
+                    BenchmarkAgentCall.operation.in_(["run", "open"]),
+                    BenchmarkAgentCall.attempt_id == self.session_id,
+                )
+            )
+            if starter is None:
+                raise failure("AGENT_NOT_BOUND", "Agent execution has no bound startup intent")
+            attempt = await self._attempt(db, trial)
+            yield db, trial, attempt, now
+            await db.commit()

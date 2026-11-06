@@ -79,6 +79,27 @@ async def acknowledge_command(db, attempt_id, command_id, body):
     return {"duplicate": False}
 
 
+async def heartbeat_attempt(db, attempt_id):
+    """Deliver the same bounded command batch through HTTP and local runners."""
+    attempt = await locked_attempt(db, attempt_id)
+    attempt.last_heartbeat_at = _utcnow_naive()
+    pending = []
+    if attempt.status not in TERMINAL:
+        commands = await db.scalars(
+            select(ExecutionCommand)
+            .where(
+                ExecutionCommand.attempt_id == attempt_id,
+                ExecutionCommand.status.in_(["queued", "delivered"]),
+            )
+            .order_by(ExecutionCommand.created_at, ExecutionCommand.id)
+            .limit(32)
+        )
+        for command in commands:
+            command.status = "delivered"
+            pending.append({"id": str(command.id), "name": command.name, "payload": command.payload})
+    return {"status": attempt.status, "commands": pending}
+
+
 async def queue_command(db, attempt_id, name, payload, *, command_id=None):
     """Queue a declared command; both current and compatibility APIs use this."""
     command_id = command_id or uuid.uuid4()
