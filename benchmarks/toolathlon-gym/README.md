@@ -103,6 +103,9 @@ use that mode as an automatic fallback in an installed run. Reviewed native
 package repairs verify original package bytes and are recorded alongside the
 lock digests. Node project compilation is separately cached and fails on errors.
 The final image records Debian package inventory and Python/Node versions.
+Word's Python dependencies are precompiled as checked-hash bytecode without
+importing their modules. The build records this in `python-bytecode.json`; each
+fresh Task can use the compiled image files within the native startup timeout.
 
 Playwright browsers are installed in `/opt/playwright-browsers`, independently of
 the harness's HOME/cache directories. MCP declarations explicitly bind this path

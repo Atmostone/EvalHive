@@ -51,6 +51,8 @@ RUN python /opt/build-mcp.py verify
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN node /opt/local_servers/playwright-mcp/node_modules/playwright/cli.js install chromium
 COPY benchmarks/toolathlon-gym/src/evalhive_toolathlon/environment.py /opt/evalhive-toolathlon/environment.py
+COPY benchmarks/toolathlon-gym/tools/precompile.py /opt/precompile-native.py
+RUN /opt/venv/bin/python /opt/precompile-native.py
 RUN dpkg-query --show > /opt/build-info/debian-packages.lock \
     && /opt/venv/bin/python --version > /opt/build-info/python.txt \
     && node --version > /opt/build-info/node.txt
