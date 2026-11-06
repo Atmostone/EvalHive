@@ -126,6 +126,61 @@ Changing that secret requires an explicit private-record migration. No secret
 value is included in public snapshots or the journal. Engineering tests use an
 isolated fixture key and never read the owner's provider credentials.
 
+## Retained evidence and role usage
+
+B05 is in progress. `EvidenceStore` implements the host artifact sink using an
+explicitly supplied object client and installed bucket. It consumes complete
+archive streams into bounded temporary files, computes SHA-256 and size, uploads
+under scope/visibility/content-addressed keys and checks the storage receipt.
+Only then does it commit an immutable `BenchmarkArtifact` row after rechecking
+the current controller. Failed, oversized, interrupted or fenced transfers never
+publish a successful reference. Object locations are encrypted; SDK references
+contain opaque `artifact:` identities. Unreferenced objects from interrupted
+publication can be collected separately after a retention grace period.
+
+Broker exports publish through the resource call's existing fenced connection.
+Storage never waits for a second pool checkout while that export holds the trial
+fence. The pre-transfer ownership check releases its row lock before object I/O,
+preserving independent heartbeat/cancellation. The post-transfer publication
+rechecks origin and output identity/visibility/size grants before committing.
+
+The first receipt for a session/output identity is immutable. Another capture
+cannot replace its bytes or visibility; repeated identical bytes return the same
+receipt. Cold recovery can publish old-origin data only privately. Migration
+`bg05` enforces reference immutability and the session/workspace/origin foreign
+key. Restore must retain both object bytes and their database receipts.
+
+Consumers explicitly grant allowed visibility. Scoped reads compare the complete
+reference, spool the retained object, and verify its size and digest before
+yielding bytes. Missing or corrupt objects are recording failures. Evaluator and
+private visibility cannot be promoted by modifying the caller's reference.
+Blocking storage calls retain their spool until completion even after caller
+cancellation; deployment clients must use finite network timeouts.
+
+`TrialDriver` requires a trusted capture validator. The production validator
+checks retained bytes and every required output's exact session identity before
+native grading. The frozen session registration includes the canonical output
+plan. A schema-valid artifact URI alone is insufficient. Engineering fixtures
+supply explicit test-only validators; there is no implicit production fallback.
+Object operations use the pinned [MinIO Python 7.2.20 API](https://github.com/minio/minio-py/blob/7.2.20/docs/API.md).
+
+`trial_usage` rebuilds a ledger from the scoped immutable journal in bounded
+pages, with a fixed high-water mark for a live trial. It groups by role, model and
+purpose. Within a registered actor stream, `usage_id` identifies one model
+request. An immutable delta measurement announced again is counted once;
+cumulative snapshots replace earlier snapshots of that request. Adapters must
+use distinct IDs for distinct requests and avoid overlapping summary series.
+Conflicting modes/dimensions or decreasing known token counters invalidate that
+call's projection and remain visible as errors, without rewriting native events.
+
+Unknown tokens and cost remain null. Each projection reports the known subtotal
+and unknown call count, without presenting that subtotal as a complete total.
+Costs use exact decimal arithmetic and retain provider/estimate provenance.
+Out-of-policy cost strings remain unknown with an explicit projection error.
+An empty ledger does not claim complete measurement. Separate evaluation attempts,
+regrade authorization/checkpoints and native aggregation history remain B05/B15
+work; these evidence components do not themselves authorize regrade.
+
 ## Durable worker commands
 
 `BenchmarkCommand` stores one immutable command intent per worker stream and

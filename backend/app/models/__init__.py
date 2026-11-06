@@ -5,6 +5,7 @@ from app.models.benchmark import (
     BenchmarkProfile,
     BenchmarkSecret,
 )
+from app.models.benchmark_artifact import BenchmarkArtifact
 from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
@@ -50,6 +51,7 @@ __all__ = [
     "BenchmarkDatasetCase",
     "BenchmarkTrial",
     "BenchmarkCommand",
+    "BenchmarkArtifact",
     "BenchmarkEnvironmentSession",
     "BenchmarkResourceLease",
     "BenchmarkOperation",

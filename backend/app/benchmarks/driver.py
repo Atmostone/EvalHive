@@ -37,10 +37,21 @@ class DriverLimits:
 
 class TrialDriver:
     def __init__(
-        self, host, recovery, *, capture_providers, deadlines=(), agent_control=None, limits=None
+        self,
+        host,
+        recovery,
+        *,
+        capture_providers,
+        capture_validator,
+        deadlines=(),
+        agent_control=None,
+        limits=None,
     ):
         self.host, self.store, self.owner = host, host.store, host.owner
         self.recovery, self.capture_providers = recovery, dict(capture_providers)
+        if not callable(capture_validator):
+            raise ValueError("A trusted host evidence validator is required")
+        self.capture_validator = capture_validator
         self.deadlines, self.agent_control = tuple(deadlines), agent_control
         self.limits = limits or DriverLimits()
         if self.limits.heartbeat_seconds > self.store.lease_seconds / 3:
@@ -150,8 +161,7 @@ class TrialDriver:
             interruptible=False,
         )
 
-    @staticmethod
-    def _capture_result(result):
+    async def _capture_result(self, result):
         if not isinstance(result, dict) or not isinstance(result.get("artifacts"), list):
             raise ProtocolError(
                 "INVALID_CAPTURE_RESULT",
@@ -160,6 +170,11 @@ class TrialDriver:
             )
         for artifact in result["artifacts"]:
             validate("artifact", artifact)
+        await self._wait(
+            self.capture_validator(self.owner, result),
+            seconds=self.limits.capture_seconds,
+            interruptible=False,
+        )
         return result
 
     async def _interrupt(self, reason):
@@ -239,7 +254,7 @@ class TrialDriver:
                         seconds=self.limits.capture_seconds,
                         interruptible=False,
                     )
-                    self._capture_result(capture)
+                    await self._capture_result(capture)
                     await self._note("capture.completed", private=capture)
                     captured = True
                 except (ProtocolError, TimeoutError):
@@ -380,7 +395,7 @@ class TrialDriver:
                     ),
                     seconds=self.limits.capture_seconds,
                 )
-                self._capture_result(capture)
+                await self._capture_result(capture)
                 await self._note("capture.completed", private=capture)
                 captured = True
                 if evaluate:

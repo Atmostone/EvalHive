@@ -50,7 +50,23 @@ pytestmark = pytest.mark.skipif(
 WORKSPACE = uuid.UUID("00000000-0000-0000-0000-000000000002")
 
 
-@pytest.mark.parametrize("automatic", [False, True, "cancel", "recover", "recover_active"])
+@pytest.mark.parametrize(
+    "automatic",
+    [
+        False,
+        True,
+        "cancel",
+        "recover",
+        "recover_active",
+        pytest.param(
+            "evidence",
+            marks=pytest.mark.skipif(
+                not os.getenv("EVALHIVE_EVIDENCE_MINIO"),
+                reason="Isolated MinIO fixture not configured",
+            ),
+        ),
+    ],
+)
 async def test_real_worker_plans_prepares_executes_and_captures_via_durable_broker(
     _engine, db_session, automatic
 ):
@@ -145,8 +161,27 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
     if automatic in (False, "recover"):
         await store.transition(owner, "created", "planning")
 
+    evidence = None
+    if automatic == "evidence":
+        import urllib3
+        from app.benchmarks.evidence import EvidenceStore
+        from minio import Minio
+
+        client = Minio(
+            os.environ["EVALHIVE_EVIDENCE_MINIO"],
+            access_key="fixture-evidence",
+            secret_key="fixture-evidence-password",
+            secure=False,
+            http_client=urllib3.PoolManager(
+                timeout=urllib3.Timeout(connect=3, read=5), retries=False
+            ),
+        )
+        bucket = "native-evidence-" + uuid.uuid4().hex
+        await asyncio.to_thread(client.make_bucket, bucket)
+        evidence = EvidenceStore(store, client, bucket=bucket)
+
     class Capture(FixtureArtifacts):
-        async def save(self, scope, grant, chunks):
+        async def save(self, scope, grant, chunks, *, publication=None):
             if grant.artifact_id == "result":
                 async with AsyncSession(_engine) as db:
                     rows = (
@@ -169,9 +204,26 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     for lease in leases
                 ]
                 assert any(status["main_done"] and status["children"] == 1 for status in statuses)
-            return await super().save(scope, grant, chunks)
+            if evidence is None:
+                return await super().save(scope, grant, chunks, publication=publication)
+            data = bytearray()
+
+            async def observed():
+                async for chunk in chunks:
+                    data.extend(chunk)
+                    yield chunk
+
+            saved = await evidence.sink(owner).save(
+                scope, grant, observed(), publication=publication
+            )
+            self.values[grant.artifact_id] = bytes(data)
+            self.receipt = saved
+            return saved
 
     artifacts = Capture()
+    capture_validator = (
+        evidence.validate_capture if evidence is not None else artifacts.validate_capture
+    )
     factories = {
         "fixture.rootless": lambda authority: RootlessDockerProvider(
             runtime, authority, manifest(), artifacts=artifacts
@@ -192,7 +244,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         "limits": {"wall_time_seconds": 60, "memory_mb": 768, "cpu_cores": 1.25, "disk_mb": 32},
     }
     try:
-        if automatic in (True, "cancel", "recover_active"):
+        if automatic in (True, "cancel", "recover_active", "evidence"):
             recovery = RecoveryService(
                 store,
                 worker_host.host_actor,
@@ -212,6 +264,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                 worker_host,
                 recovery,
                 capture_providers=factories,
+                capture_validator=capture_validator,
                 deadlines=(watchdog,),
                 limits=DriverLimits(
                     phase_seconds=35,
@@ -282,7 +335,10 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                             },
                         )
                         recovered = await TrialDriver(
-                            new_host, next_recovery, capture_providers=factories
+                            new_host,
+                            next_recovery,
+                            capture_providers=factories,
+                            capture_validator=artifacts.validate_capture,
                         ).run(spec)
                         old = await asyncio.wait_for(pending, 12)
                         assert old["controller"] == "detached"
@@ -300,7 +356,14 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                 with tarfile.open(fileobj=io.BytesIO(artifacts.values["result"])) as archive:
                     content = archive.extractfile("result.txt").read()
                     assert content.startswith(b"Prepared through the Benchmark SDK\n")
-                    assert (b"Driven through the Benchmark SDK\n" in content) == (automatic is True)
+                    assert (b"Driven through the Benchmark SDK\n" in content) == (
+                        automatic in (True, "evidence")
+                    )
+                if evidence is not None:
+                    async with evidence.open_verified(
+                        WORKSPACE, owner.trial_id, artifacts.receipt, visibilities={"user"}
+                    ) as stream:
+                        assert stream.read() == artifacts.values["result"]
                 async with AsyncSession(_engine) as db:
                     assert all(
                         row.state == "released"
@@ -349,7 +412,12 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     )
                 },
             )
-            controller = TrialDriver(new_host, recovery, capture_providers=factories)
+            controller = TrialDriver(
+                new_host,
+                recovery,
+                capture_providers=factories,
+                capture_validator=artifacts.validate_capture,
+            )
             result = await controller.run(spec)
             assert result["phase"] == "finished" and result["execution"] == "lost"
             assert result["recording"] == "incomplete" and result["cleanup"] == "complete"

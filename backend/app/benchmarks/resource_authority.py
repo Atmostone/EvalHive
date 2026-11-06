@@ -438,6 +438,7 @@ class SqlResourceCall:
         self.completed = replay is not None
         self.expected = {}
         self.expected_dependencies = {}
+        self.artifact_grant = None
 
     @asynccontextmanager
     async def observation(self):
@@ -604,7 +605,32 @@ class SqlResourceCall:
                 visibility="private",
                 artifact_id="recovery." + str(uuid.uuid5(self.session.id, output_id)),
             )
+        self.artifact_grant = value
         return value
+
+    async def publish_artifact(self, artifact, locator):
+        from app.benchmarks.evidence import publish_artifact, verify_origin
+
+        if self.request["operation"] != "export" or self.artifact_grant is None:
+            raise failure(
+                "OUTPUT_UNAVAILABLE", "Only granted exports can publish evidence", "recording"
+            )
+        if artifact is None:
+            await verify_origin(self.db, self.authority.owner, self.scope)
+            await self.db.commit()  # Keep heartbeat/cancel row locks free during object I/O.
+            return None
+        validate("artifact", artifact)
+        grant = self.artifact_grant
+        if (artifact["id"], artifact["visibility"]) != (
+            grant.artifact_id,
+            grant.visibility,
+        ) or artifact["size_bytes"] > grant.max_archive_bytes:
+            raise failure(
+                "OUTPUT_UNAVAILABLE", "Evidence receipt differs from its output grant", "recording"
+            )
+        return await publish_artifact(
+            self.db, self.authority.store, self.authority.owner, self.scope, artifact, locator
+        )
 
     async def deadline_expired(self, lease):
         row = await self._row(lease.handle)

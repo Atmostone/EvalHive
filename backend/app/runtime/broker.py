@@ -97,6 +97,15 @@ class ResourceCall(Protocol):
         """Resolve a saved output grant with host-defined path, visibility and byte limit."""
         ...
 
+    async def publish_artifact(self, artifact: dict | None, locator: dict | None) -> dict | None:
+        """Check publication authority, or persist a complete granted artifact.
+
+        Use the existing fenced SQL connection; storage must not acquire another
+        pool slot while a resource operation owns its fence. None checks authority
+        before transfer. Locations are private host storage data, never RPC data.
+        """
+        ...
+
     async def deadline_expired(self, lease: ResourceLease) -> bool:
         """Compare the current persisted lease deadline with the authority's clock."""
         ...
@@ -133,7 +142,12 @@ class ResourceAuthority(Protocol):
 
 class ArtifactSink(Protocol):
     async def save(
-        self, scope: OwnerScope, grant: ExportGrant, chunks: AsyncIterator[bytes]
+        self,
+        scope: OwnerScope,
+        grant: ExportGrant,
+        chunks: AsyncIterator[bytes],
+        *,
+        publication: ResourceCall,
     ) -> dict:
         """Atomically store bytes, calculate digest/size and return the scoped SDK artifact.
 

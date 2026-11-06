@@ -561,7 +561,7 @@ class RootlessDockerProvider(EnvironmentProvider):
                 yield value
 
         try:
-            artifact = await self.artifacts.save(call.scope, grant, chunks())
+            artifact = await self.artifacts.save(call.scope, grant, chunks(), publication=call)
             if not finished:
                 raise ProtocolError(
                     "ARTIFACT_INCOMPLETE",

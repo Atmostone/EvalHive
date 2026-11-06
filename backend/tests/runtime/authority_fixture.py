@@ -159,7 +159,14 @@ class FixtureArtifacts:
     def __init__(self):
         self.values = {}
 
-    async def save(self, scope, grant, chunks):
+    async def validate_capture(self, owner, capture):
+        """Explicit test-only evidence catalog, with no production fallback."""
+        for artifact in capture["artifacts"]:
+            value = self.values[artifact["id"]]
+            assert artifact["digest"] == "sha256:" + hashlib.sha256(value).hexdigest()
+            assert artifact["size_bytes"] == len(value)
+
+    async def save(self, scope, grant, chunks, *, publication=None):
         data = bytearray()
         async for chunk in chunks:
             data.extend(chunk)

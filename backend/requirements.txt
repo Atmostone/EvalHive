@@ -6,7 +6,7 @@ alembic
 docker
 litellm
 qdrant-client[fastembed]
-minio
+minio==7.2.20
 python-multipart
 pydantic[email]
 pydantic-settings

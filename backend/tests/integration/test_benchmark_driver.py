@@ -33,6 +33,11 @@ from tests.fixtures.benchmark_driver_worker import MANIFEST
 from tests.integration.test_benchmark_trials import POLICY, QUOTA, WORKSPACE
 
 
+async def fixture_capture_validator(owner, capture):
+    # This worker intentionally has no filesystem outputs.
+    assert capture["artifacts"] == []
+
+
 class Host:
     manifest = MANIFEST
 
@@ -97,7 +102,11 @@ async def driver(_engine, db_session):
         poll_seconds=0.2,
     )
     controller = TrialDriver(
-        host, RecoveryService(store, uuid.uuid4(), {}), capture_providers={}, limits=limits
+        host,
+        RecoveryService(store, uuid.uuid4(), {}),
+        capture_providers={},
+        capture_validator=fixture_capture_validator,
+        limits=limits,
     )
     spec = {
         "protocol_version": "1.0",
@@ -236,6 +245,7 @@ async def test_trial_deadline_cannot_be_sealed_as_success(driver, _engine):
         Host(store, owner),
         RecoveryService(store, uuid.uuid4(), {}),
         capture_providers={},
+        capture_validator=fixture_capture_validator,
         limits=original.limits,
     )
     spec["scope"]["trial_id"] = str(trial.id)
@@ -356,7 +366,11 @@ async def test_restart_at_each_phase_recovers_without_starting_a_worker(driver, 
     claimed = await store.claim(WORKSPACE, owner.trial_id, uuid.uuid4())
     host = Host(store, claimed)
     recovered = TrialDriver(
-        host, RecoveryService(store, uuid.uuid4(), {}), capture_providers={}, limits=original.limits
+        host,
+        RecoveryService(store, uuid.uuid4(), {}),
+        capture_providers={},
+        capture_validator=fixture_capture_validator,
+        limits=original.limits,
     )
     result = await recovered.run(spec)
     assert result["phase"] == "finished" and result["cleanup"] == "complete"
@@ -421,6 +435,7 @@ async def test_second_driver_cannot_clean_up_an_active_owner_session(driver):
             Host(original.store, original.owner),
             original.recovery,
             capture_providers={},
+            capture_validator=fixture_capture_validator,
             limits=original.limits,
         )
         rejected = await another.run(spec)

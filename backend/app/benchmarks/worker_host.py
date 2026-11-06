@@ -235,6 +235,7 @@ class RootlessWorkerHost:
                 "files": compiled.files,
                 "catalog": self.assets.document,
                 "applied_spec": spec,
+                "output_plan": plan["outputs"],
             },
         )
         self.environment = compiled
