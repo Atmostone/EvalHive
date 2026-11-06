@@ -131,6 +131,7 @@ jobs:
         working-directory: backend
         env:
           TIKTOKEN_CACHE_DIR: ${{ runner.temp }}/evalhive-tokenizers
+          DATA_DIR: ${{ runner.temp }}/evalhive-backend-data
           PYTHONPATH: ${{ github.workspace }}/backend
         # --cov-fail-under enforces the 60% coverage acceptance bar (legacy production-readiness §R4).
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=60
