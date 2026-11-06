@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evalhive-harbor"
+version = "0.1.0"
+description = "Native Harbor and Terminal-Bench task integration for EvalHive"
+requires-python = ">=3.12"
+dependencies = ["evalhive-benchmark==0.1.0", "harbor==0.25.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
