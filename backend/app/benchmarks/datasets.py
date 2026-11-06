@@ -38,7 +38,8 @@ def installed_dataset(connector_id: str, version: str, dataset_id: str, revision
             connector_id, version, dataset_id, revision
         ):
             raise CatalogError("Dataset installation identity does not match the request")
-        if "@sha256:" in manifest["image"] and manifest["image"] != receipt["worker_image"]:
+        pinned = manifest["image"].startswith("sha256:") or "@sha256:" in manifest["image"]
+        if pinned and manifest["image"] != receipt["worker_image"]:
             raise CatalogError("Dataset worker image does not match the installed connector")
     except CatalogError:
         raise

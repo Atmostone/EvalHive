@@ -93,3 +93,16 @@ def test_installation_cannot_escape_its_registry_directory(installed_dataset_fix
     path.symlink_to(outside)
     with pytest.raises(CatalogError, match="bounded installed"):
         installed_dataset("example", "0.1.0", "fixture", "native/v1")
+
+
+@pytest.mark.parametrize("prefix", ["sha256:", "image@sha256:"])
+def test_pinned_worker_identity_must_match_dataset_receipt(installed_dataset_fixture, prefix):
+    path, receipt = installed_dataset_fixture
+    manifest_path = path.parent.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["image"] = prefix + "a" * 64
+    receipt["worker_image"] = prefix + "b" * 64
+    path.write_text(json.dumps(receipt))
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(CatalogError, match="worker image does not match"):
+        installed_dataset("example", "0.1.0", "fixture", "native/v1")
