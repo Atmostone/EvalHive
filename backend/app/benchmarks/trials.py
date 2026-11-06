@@ -22,8 +22,8 @@ from evalhive_benchmark.peer import identity
 from evalhive_benchmark.protocol import MAX_LINE_BYTES, _json_value
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.attributes import set_committed_value
 
+from app.benchmarks.control_repository import EXECUTION_CONTROLS
 from app.models.benchmark import BenchmarkDatasetCase, BenchmarkDatasetRevision, BenchmarkProfile
 from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_trial import (
@@ -66,6 +66,7 @@ class Controller:
     trial_id: uuid.UUID
     generation: int
     controller_id: uuid.UUID
+    control_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -151,49 +152,15 @@ async def database_fence(engine, trial_id, *, host_id=None):
 
 
 async def current_trial(db, owner: Controller, *, allow_expired=False, row_lock=False):
-    statement = (
-        select(BenchmarkTrial)
-        .where(BenchmarkTrial.id == owner.trial_id)
-        .execution_options(populate_existing=True)
+    return await EXECUTION_CONTROLS.current(
+        db, owner, allow_expired=allow_expired, row_lock=row_lock
     )
-    if row_lock:
-        statement = statement.with_for_update()
-    trial = await db.scalar(statement)
-    now = await db.scalar(select(func.clock_timestamp()))
-    if trial is None or trial.workspace_id != owner.workspace_id:
-        raise failure("TRIAL_NOT_FOUND", "Trial is unavailable in this workspace")
-    if trial.generation != owner.generation or trial.controller_id != owner.controller_id:
-        raise failure("STALE_GENERATION", "Controller no longer owns this trial")
-    if not allow_expired and (
-        trial.controller_expires_at is None or trial.controller_expires_at <= now
-    ):
-        raise failure("OWNER_EXPIRED", "Controller lease has expired")
-    return trial, now
 
 
 async def append_entry(db, trial, event, public_data=None, *, private_data=None, **source):
-    # The event receiver must remain live during long native operations. Allocate
-    # the shared journal sequence atomically, rather than from an ORM snapshot
-    # cached by a resource call across multiple durable commits.
-    next_seq = await db.scalar(
-        update(BenchmarkTrial)
-        .where(BenchmarkTrial.id == trial.id)
-        .values(next_seq=BenchmarkTrial.next_seq + 1)
-        .returning(BenchmarkTrial.next_seq)
-        .execution_options(synchronize_session=False)
+    return await EXECUTION_CONTROLS.append(
+        db, trial, event, public_data, private_data=private_data, **source
     )
-    set_committed_value(trial, "next_seq", next_seq)
-    entry = BenchmarkJournalEntry(
-        trial_id=trial.id,
-        seq=next_seq - 1,
-        generation=trial.generation,
-        event=event,
-        public_data=public_data or {},
-        private_data=private_data,
-        **source,
-    )
-    db.add(entry)
-    return entry
 
 
 class TrialStore:

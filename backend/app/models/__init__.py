@@ -8,6 +8,10 @@ from app.models.benchmark import (
 from app.models.benchmark_artifact import BenchmarkArtifact
 from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
+from app.models.benchmark_evaluation_control import (
+    BenchmarkEvaluationControl,
+    BenchmarkEvaluationJournal,
+)
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
     BenchmarkEventStream,
@@ -54,6 +58,8 @@ __all__ = [
     "BenchmarkCommand",
     "BenchmarkArtifact",
     "BenchmarkEvaluationAttempt",
+    "BenchmarkEvaluationControl",
+    "BenchmarkEvaluationJournal",
     "BenchmarkEnvironmentSession",
     "BenchmarkResourceLease",
     "BenchmarkOperation",

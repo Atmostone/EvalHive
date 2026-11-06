@@ -236,7 +236,22 @@ artifact against the original capture and retained storage. Its private output
 contains only declared evaluator model/credential references, excluding agent and
 orchestrator roles and mutable native session handles. Older captures without
 this proof remain unavailable for replay. This source check is implemented;
-independent regrade ownership, resource admission and restoration remain B05 work.
+resource binding, admission and restoration remain B05 work.
+
+Independent regrade ownership now has dedicated `BenchmarkEvaluationControl` and
+immutable `BenchmarkEvaluationJournal` tables (`bg07`). Creating the new regrade
+intent, its controller lease and first journal entry is atomic after source
+verification. Generation/heartbeat/cancellation and the journal counter belong
+to that evaluator, while its source execution remains finished and unchanged.
+Both execution and evaluation contexts use `SqlControlRepository` for current
+owner checks and atomic journal numbering. Execution APIs reject an evaluator
+owner token. Expired evaluator takeover enters cleanup, records an uncertain
+grading result and fences the old owner; it cannot resume native interaction.
+The failed invocation retains a typed source checkpoint for a later new regrade.
+
+This lease repository is not yet an executable regrade coordinator. Resource
+sessions, worker streams, admission and restoration must explicitly bind to its
+context before it can launch. Source resource leases are not transferred to it.
 
 ## Durable worker commands
 
