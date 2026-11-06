@@ -207,6 +207,10 @@ Downloads use the admitted data volume and verify the full immutable reference,
 size and SHA-256 before publication. Cancellation waits for bounded blocking I/O
 to return before releasing the ownership fence. Evidence lookup reuses the same
 SQL connection when that fence already owns a pool slot.
+Creating an evaluation and resolving its source installation authorize artifact
+references without downloading bodies. Full materialization verifies every
+artifact declared by the checkpoint, including artifacts that the worker does
+not select for a mount, before installing the new environment session.
 
 Migration `bg11` records each private materialization intent before local writes.
 Its immutable identity binds workspace, source trial, evaluation controller,
@@ -223,5 +227,19 @@ MinIO, restores it in a fresh rootless container, checks the read-only mount, an
 grades it through a new worker and evaluation attempt without calling `drive`.
 The source execution and verdict remain unchanged. This verifies the generic
 restoration path, not native compatibility of the planned benchmark adapters.
-Resolving a fresh worker strictly from retained installation/image/file pins
-remains a separate required integration step before B05 closes.
+
+The worker session retains its complete manifest, registered asset catalog,
+actual worker image ID and private static-file proofs. The source installation
+loader verifies saved session identities, plan digests, catalog consistency and
+the actual source process declaration. It reconstructs assets from these records
+without consulting the current connector catalog. Fresh evaluation workers use
+the retained image ID even when the source manifest's mutable tag has moved.
+
+Static replay grants require administrator-installed read-only roots. Their
+content proof covers names, types, modes and file bytes, with an aggregate 2 GiB /
+65,536-entry bound and shared-path deduplication. The loader checks their content
+again before launching a worker. Changed, missing or unretained static inputs
+make exact replay unavailable; old writable session paths never become new
+authority. Native mutable world state still comes from the checkpoint archive.
+Historical records lacking a full installation snapshot remain readable and
+report exact replay as unavailable.

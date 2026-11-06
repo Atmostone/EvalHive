@@ -191,9 +191,8 @@ and unknown call count, without presenting that subtotal as a complete total.
 Costs use exact decimal arithmetic and retain provider/estimate provenance.
 Out-of-policy cost strings remain unknown with an explicit projection error.
 An empty ledger does not claim complete measurement. Initial evaluator attempts
-are described below. Product regrade launch, retained-state materialization and
-native aggregation history remain B05/B15 work; retained files alone do not
-authorize regrade.
+are described below. Product regrade launch and native aggregation history remain
+B14/B15 work; retained files alone do not authorize regrade.
 
 ## Initial evaluator attempts
 
@@ -227,9 +226,9 @@ Unavailable/unrequested grading does not fabricate a successful evaluator call.
 Migration `bg06` enforces trial/workspace and source-attempt scope, one initial
 attempt per trial, complete terminal writes and immutable input/result fields.
 Public history contains normalized metrics, status and verdict, without native
-state, hidden assets or raw error messages. Regrade execution is still B05 work:
-it must create another attempt with independent ownership/resources and sufficient
-verified native checkpoint, while preserving the finished execution. No current
+state, hidden assets or raw error messages. Regrade creates another attempt with
+independent ownership/resources and a sufficient verified native checkpoint,
+while preserving the finished execution. No current
 API treats a capture's arbitrary native metadata as permission to regrade.
 
 `regrade.retained_source` now reads a finished source evaluation without changing
@@ -239,8 +238,9 @@ case revision/source digest and connector version. It verifies each checkpoint
 artifact against the original capture and retained storage. Its private output
 contains only declared evaluator model/credential references, excluding agent and
 orchestrator roles and mutable native session handles. Older captures without
-this proof remain unavailable for replay. This source check is implemented;
-restoration and lifecycle coordination remain B05 work.
+this proof remain unavailable for replay. Evaluation creation and installation
+resolution authorize references without downloading bodies; the owned host
+materializer verifies all checkpoint bytes after full disk admission.
 
 Independent regrade ownership now has dedicated `BenchmarkEvaluationControl` and
 immutable `BenchmarkEvaluationJournal` tables (`bg07`). Creating the new regrade
@@ -254,8 +254,8 @@ grading result and fences the old owner; it cannot resume native interaction.
 The failed invocation retains a typed source checkpoint for a later new regrade.
 
 The lease repository supplies ownership to the regrade driver described below.
-Source resource leases are not transferred to it. Product launch still requires
-trusted installed assets and retained-state materialization.
+Source resource leases are not transferred to it. The source installation loader
+and retained-state materializer supply fresh grants; product launch wiring is B14.
 
 Resource sessions now carry an immutable optional evaluator control ID (`bg08`).
 Its composite foreign key binds the control, source trial and workspace. Operation
@@ -340,8 +340,7 @@ the evaluation deadline. A creation retry reads the original receipt and budget;
 it does not regenerate a deadline or change the input digest.
 
 The driver reads that saved spec through `launch_inputs`, checks the input digest
-and verifies the retained checkpoint bytes again before worker startup. The
-verification runs outside SQL locks under the common supervisor. A source with
+and authorizes retained references without unadmitted body downloads. A source with
 missing resource limits cannot create a new runnable invocation. The selected
 worker must match the saved evaluator metadata; native validation cannot silently
 change the frozen effective configuration.
@@ -352,11 +351,31 @@ own attempt ID. Its result uses the exact durable command receipt. The original
 execution and its evaluator result remain unchanged. A caller cancellation waits
 for bounded cleanup before propagating; stale ownership causes local detachment.
 
-SDK-only process tests exercise native inline checkpoint restoration and all
-failure/cancellation paths against PostgreSQL. This is an implemented worker
-workflow, not proof of a real benchmark adapter or large archive restoration.
-Host materialization of retained files, frozen source image/file resolution and
-product launch wiring remain required before standalone regrade is available.
+`RetainedInputs` includes every checkpoint artifact in the complete group disk
+reservation, counting retained copies, one sequential download spool and file
+metadata headroom. Mount selection cannot omit that verification budget. After
+admission it commits `bg11` file intents, verifies bytes on the admitted data
+volume and publishes read-only payloads in the new environment session. The
+connector restores its format inside the task container. EvalHive does not unpack
+native checkpoint archives on the host. Files are released only after all owned
+resource leases, including worker leases, have been released. Pending files block
+terminal cleanup and reservation release. A downgrade below `bg11` refuses live
+file intents; recovered owners clean predecessor files without resuming work.
+
+The source worker session retains its complete manifest/catalog, actual image ID
+and bounded content proofs for installed read-only files. The installation loader
+checks saved session digests, process identity, catalog/file consistency, static
+bytes/modes and availability of the exact native image IDs. It never consults the
+current connector catalog or grants access to old writable world paths. A moved
+manifest image tag cannot change the fresh worker's retained image ID. Missing
+metadata or changed static inputs report exact replay as unavailable.
+
+SDK-only process tests exercise inline checkpoint restoration and failure/stop
+paths. The rootless/MinIO fixture additionally restores an archive larger than
+32 MiB in a fresh worker/task container, checks its read-only grant, native verdict
+and cleanup, rejects changed static files or unavailable image pins, and tolerates
+a reassigned source image tag. These verify the generic worker workflow, not
+acceptance of the planned native benchmark adapters. Product launch wiring is B14.
 
 ## Durable worker commands
 
@@ -492,8 +511,8 @@ A driver instance is single-use. Another driver observing a partially running
 epoch detaches instead of taking over its cleanup. A retry is a new trial; only
 an explicit expired-owner claim permits recovery. Initial evaluator history and
 production evidence storage and the independent regrade worker workflow are
-implemented in B05. Retained-file materialization and source asset resolution
-remain B05 work. Product API and queue wiring are B14 work.
+implemented in B05, including retained-file materialization and source asset
+resolution. Product API and queue wiring are B14 work.
 
 ## Recovery and deadlines
 
@@ -585,8 +604,9 @@ Automatic variants run the complete phase driver, cancel an active native comman
 and recover both a prepared environment and an exec whose controller is lost.
 The native checker observes the completed preparation service still alive during
 warm capture. Cold recovery retains files privately without starting another worker.
-The engineering fixture uses a local execution stub and an in-memory artifact
-sink; it proves neither real benchmark acceptance nor production artifact storage.
+The base fixture uses a local execution stub and an in-memory artifact sink.
+Evidence and regrade variants use isolated MinIO with the production evidence
+store. None of these fixtures proves real benchmark acceptance.
 
 The fence follows PostgreSQL's
 [session advisory lock semantics](https://www.postgresql.org/docs/16/explicit-locking.html#ADVISORY-LOCKS).

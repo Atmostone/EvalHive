@@ -12,11 +12,14 @@ from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
 from app.models.benchmark_trial import BenchmarkTrial
 
 
-async def retained_source(store, evidence, workspace_id, trial_id, evaluation_id):
+async def retained_source(
+    store, evidence, workspace_id, trial_id, evaluation_id, *, verify_bytes=True
+):
     """Private host input for a NEW evaluation controller, never an agent RunSpec.
 
-    A connector declares native replay sufficiency. The host verifies its typed
-    provenance and every retained byte; arbitrary native metadata grants nothing.
+    A connector declares native replay sufficiency. References can be authorized
+    before admission; deferred bodies must be verified by the owned materializer
+    before environment preparation. Arbitrary native metadata grants nothing.
     This read cannot start a worker, mutate a trial or acquire its old resources.
     """
     async with AsyncSession(store.engine) as db:
@@ -42,10 +45,14 @@ async def retained_source(store, evidence, workspace_id, trial_id, evaluation_id
                 "SOURCE_ACTIVE", "Regrade requires a finished source execution", "grading"
             )
         inputs = store.private.open("evaluation-inputs:" + str(attempt.id), attempt.private_inputs)
-    return await verify_source(evidence, workspace_id, trial_id, evaluation_id, inputs)
+    return await verify_source(
+        evidence, workspace_id, trial_id, evaluation_id, inputs, verify_bytes=verify_bytes
+    )
 
 
-async def verify_source(evidence, workspace_id, trial_id, evaluation_id, inputs):
+async def verify_source(
+    evidence, workspace_id, trial_id, evaluation_id, inputs, *, verify_bytes=True
+):
     inputs = deepcopy(inputs)
     checkpoint = inputs["capture"].get("checkpoint")
     if checkpoint is None or inputs["evaluator"].get("capabilities", {}).get("regrade") != "native":
@@ -65,6 +72,10 @@ async def verify_source(evidence, workspace_id, trial_id, evaluation_id, inputs)
     ):
         raise failure("CHECKPOINT_PROVENANCE", "Checkpoint source conditions differ", "grading")
     references = checkpoint["artifacts"]
+    if references and evidence is None:
+        raise failure(
+            "ARTIFACT_STORAGE_UNAVAILABLE", "Retained evidence storage is required", "recording"
+        )
     if len({artifact["id"] for artifact in references}) != len(references):
         raise failure("CHECKPOINT_CONFLICT", "Checkpoint repeats an artifact identity", "recording")
     for artifact in references:
@@ -72,10 +83,21 @@ async def verify_source(evidence, workspace_id, trial_id, evaluation_id, inputs)
             raise failure(
                 "CHECKPOINT_CONFLICT", "Checkpoint references uncaptured evidence", "recording"
             )
-        async with evidence.open_verified(
-            workspace_id, trial_id, artifact, visibilities={"private", "evaluator", "user", "agent"}
-        ):
-            pass
+        if verify_bytes:
+            async with evidence.open_verified(
+                workspace_id,
+                trial_id,
+                artifact,
+                visibilities={"private", "evaluator", "user", "agent"},
+            ):
+                pass
+        else:
+            await evidence.resolve(
+                workspace_id,
+                trial_id,
+                artifact,
+                visibilities={"private", "evaluator", "user", "agent"},
+            )
     roles = checkpoint["evaluator_roles"]
     if any(role not in spec["models"] for role in roles):
         raise failure(

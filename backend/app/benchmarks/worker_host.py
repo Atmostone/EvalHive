@@ -19,10 +19,12 @@ from evalhive_benchmark.peer import identity
 
 from app.benchmarks.broker import SqlBroker
 from app.benchmarks.catalog import merged_requirements
+from app.benchmarks.evidence import _io
 from app.benchmarks.resource_authority import ActorPolicy, install_session
 from app.benchmarks.retained_inputs import RetainedInputs
 from app.benchmarks.worker_channel import WorkerChannel
 from app.runtime.admission import GroupPolicy, host_capacity
+from app.runtime.file_pins import freeze_files
 from app.runtime.managed_spec import ManagedRuntimeError, OwnerScope
 
 
@@ -46,6 +48,7 @@ class RootlessWorkerHost:
         *,
         group_policy=None,
         retained_evidence=None,
+        worker_image_pin=None,
     ):
         validate("manifest", manifest)
         if manifest["kind"] != "benchmark" or (manifest["id"], manifest["version"]) != (
@@ -55,6 +58,9 @@ class RootlessWorkerHost:
             raise ManagedRuntimeError("Worker manifest differs from registered assets")
         self.store, self.owner, self.manifest, self.assets = store, owner, manifest, assets
         self.purpose = "execution" if owner.control_id is None else "evaluation"
+        if worker_image_pin is not None and self.purpose != "evaluation":
+            raise ManagedRuntimeError("A retained worker image requires an evaluation controller")
+        self.worker_image_pin = worker_image_pin
         self.group_policy = group_policy or GroupPolicy()
         self.host_actor = uuid.uuid5(owner.controller_id, "host.actor")
         self.worker_actor = uuid.uuid5(owner.controller_id, "benchmark.actor")
@@ -107,7 +113,7 @@ class RootlessWorkerHost:
             self.scope, self.WORKER_ID, self.assets.worker_asset, kind="container"
         )
         declared_image = await asyncio.to_thread(
-            self.assets.runtime.resolve_image, self.manifest["image"]
+            self.assets.runtime.resolve_image, self.worker_image_pin or self.manifest["image"]
         )
         if declared_image["image_id"] != lease.intent.image_id:
             raise ManagedRuntimeError("Worker asset image differs from its installed manifest")
@@ -120,6 +126,11 @@ class RootlessWorkerHost:
             intent=replace(lease.intent, entrypoint=tuple(self.manifest["entrypoint"]), command=()),
         )
         self.worker_demand = demand
+        file_pins = {}
+        if self.manifest["capabilities"].get("regrade") == "native":
+            file_pins = await _io(
+                lambda: freeze_files(self.assets.files, self.assets.runtime.policy)
+            )
         await self.store.reserve(
             self.owner,
             demands=(demand,),
@@ -158,6 +169,8 @@ class RootlessWorkerHost:
                 "fingerprint": identity(self.assets.document),
                 "catalog": self.assets.document,
                 "worker_image_id": lease.intent.image_id,
+                "manifest": self.manifest,
+                "file_pins": file_pins,
             },
             purpose=self.purpose,
         )

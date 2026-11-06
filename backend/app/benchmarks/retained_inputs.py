@@ -54,9 +54,11 @@ class RetainedInputs:
                 raise failure("INVALID_RETAINED_INPUT", "Retained inputs must select artifact IDs")
             selected.update(values)
         available = {item["id"]: item for item in spec.get("checkpoint", {}).get("artifacts", [])}
-        if selected - available.keys() or selected and self.owner.control_id is None:
+        if selected - available.keys() or available and self.owner.control_id is None:
             raise failure("INVALID_RETAINED_INPUT", "Retained input is outside the checkpoint")
-        artifacts = tuple(deepcopy(available[key]) for key in sorted(selected))
+        # Every declared checkpoint byte must be verified under admission, even
+        # when the worker does not request a mount for one of its artifacts.
+        artifacts = tuple(deepcopy(available[key]) for key in sorted(available))
         if any(item["size_bytes"] > MAX_EVIDENCE_BYTES for item in artifacts):
             raise failure(
                 "ARTIFACT_TOO_LARGE", "Retained input exceeds storage policy", "recording"

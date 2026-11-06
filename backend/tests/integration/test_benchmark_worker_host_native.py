@@ -12,6 +12,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import docker
 import pytest
@@ -33,7 +34,7 @@ from app.runtime.docker_provider import RootlessDockerProvider
 from app.runtime.lease_codec import decode_lease
 from app.runtime.managed_docker import RootlessDockerRuntime
 from app.runtime.managed_exec import OwnedExecRuntime
-from app.runtime.managed_spec import PathMapping, Quota, RuntimePolicy
+from app.runtime.managed_spec import ManagedRuntimeError, PathMapping, Quota, RuntimePolicy
 from app.runtime.reconcile import RootlessReconciler
 from app.runtime.registered_assets import RegisteredFile, RootlessAssets
 from evalhive_benchmark import ProtocolError
@@ -277,6 +278,13 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
     }
     worker_host = RootlessWorkerHost(store, owner, declaration, assets, factories)
     hosts = [worker_host]
+    source_alias = None
+    if automatic == "regrade":
+        source_alias = "evalhive-regrade-source-fixture:" + uuid.uuid4().hex
+        await asyncio.to_thread(
+            docker_client.images.get(worker_image["image_id"]).tag, source_alias
+        )
+        declaration["image"] = source_alias
     spec = {
         "protocol_version": "1.0",
         "scope": {
@@ -435,6 +443,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     from app.benchmarks.evaluation_controls import EvaluationControls
                     from app.benchmarks.evidence import EvidenceStore
                     from app.benchmarks.regrade_driver import RegradeDriver
+                    from app.benchmarks.retained_installation import load_retained_installation
                     from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
                     from app.models.benchmark_evaluation_input import BenchmarkEvaluationInput
 
@@ -443,6 +452,13 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                         before = (await db.get(BenchmarkTrial, owner.trial_id)).next_seq
                         source_digest = source.result_digest
                     grading = EvaluationControls(store, evidence)
+                    download_calls, original_get = [], evidence.client.get_object
+
+                    def count_downloads(*args, **kwargs):
+                        download_calls.append(True)
+                        return original_get(*args, **kwargs)
+
+                    evidence.client.get_object = count_downloads
                     grading_owner = await grading.create(
                         WORKSPACE,
                         owner.trial_id,
@@ -453,14 +469,40 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     grading_evidence = EvidenceStore(
                         grading, evidence.client, bucket=evidence.bucket
                     )
+                    original_binary = (bundle / "supervisor").read_bytes()
+                    try:
+                        (bundle / "supervisor").write_bytes(b"changed installed fixture")
+                        with pytest.raises(ProtocolError) as changed:
+                            await load_retained_installation(grading, grading_owner, runtime)
+                        assert changed.value.code == "STATIC_INPUT_CONFLICT"
+                    finally:
+                        (bundle / "supervisor").write_bytes(original_binary)
+                    frozen = await load_retained_installation(grading, grading_owner, runtime)
+                    assert download_calls == []
+                    with patch.object(
+                        runtime,
+                        "resolve_image",
+                        side_effect=ManagedRuntimeError("fixture image unavailable"),
+                    ):
+                        with pytest.raises(ProtocolError) as missing_image:
+                            await load_retained_installation(grading, grading_owner, runtime)
+                        assert missing_image.value.code == "PINNED_IMAGE_UNAVAILABLE"
+                    assert frozen.worker_image_id == worker_image["image_id"]
+                    await asyncio.to_thread(
+                        docker_client.images.get(task_image["image_id"]).tag, source_alias
+                    )
+                    assert (await asyncio.to_thread(runtime.resolve_image, source_alias))[
+                        "image_id"
+                    ] != frozen.worker_image_id
                     artifacts = Capture(grading_evidence, grading_owner)
                     fresh_host = RootlessWorkerHost(
                         grading,
                         grading_owner,
-                        declaration,
-                        assets,
+                        frozen.manifest,
+                        frozen.assets,
                         factories,
                         retained_evidence=grading_evidence,
+                        worker_image_pin=frozen.worker_image_id,
                     )
                     hosts.append(fresh_host)
                     fresh_recovery = RecoveryService(
@@ -672,4 +714,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     await selected_host.channel.close(grace=0.2)
             await selected_host.host_broker.close()
             await selected_host.worker_broker.close()
+        if source_alias is not None:
+            with suppress(Exception):
+                await asyncio.to_thread(docker_client.images.remove, source_alias)
         docker_client.close()

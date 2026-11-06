@@ -190,7 +190,12 @@ class EvaluationControls(HostAdmission, ControlLifecycle, StreamLedger):
                     raise failure("EVALUATION_CONFLICT", "Evaluation creation identity differs")
                 return Controller(workspace_id, trial_id, 1, controller_id, evaluation_id)
         source = await retained_source(
-            self.trials, self.evidence, workspace_id, trial_id, source_evaluation_id
+            self.trials,
+            self.evidence,
+            workspace_id,
+            trial_id,
+            source_evaluation_id,
+            verify_bytes=False,
         )
         if source["limits"] is None:
             raise failure(
@@ -342,7 +347,12 @@ class EvaluationControls(HostAdmission, ControlLifecycle, StreamLedger):
                 "SOURCE_SPEC_UNAVAILABLE", "Evaluation launch spec was not retained", "unsupported"
             )
         await verify_source(
-            self.evidence, owner.workspace_id, owner.trial_id, owner.control_id, inputs
+            self.evidence,
+            owner.workspace_id,
+            owner.trial_id,
+            owner.control_id,
+            inputs,
+            verify_bytes=False,
         )
         return inputs
 

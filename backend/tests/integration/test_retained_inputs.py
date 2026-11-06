@@ -347,7 +347,7 @@ async def test_checkpoint_selection_cannot_introduce_foreign_references(retained
         item.inputs.plan(
             {"checkpoint": {"artifacts": [item.ref]}}, {"resources": []}, scope
         ).disk_mb
-        == 0
+        == item.plan.disk_mb
     )
     changed = deepcopy(item.ref)
     changed["size_bytes"] = 1024**3 + 1

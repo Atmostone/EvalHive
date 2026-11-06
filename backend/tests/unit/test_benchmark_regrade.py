@@ -53,6 +53,12 @@ def inputs():
 class Evidence:
     def __init__(self, missing=False):
         self.verified, self.missing = [], missing
+        self.authorized = []
+
+    async def resolve(self, workspace, trial, artifact, **kwargs):
+        assert (workspace, trial) == ("workspace", "trial")
+        self.authorized.append(artifact)
+        return {"private": "opaque storage locator"}
 
     @asynccontextmanager
     async def open_verified(self, workspace, trial, artifact, **kwargs):
@@ -72,6 +78,23 @@ async def test_verified_source_omits_agent_credentials_and_mutable_native_sessio
     assert result["models"] == {"judge": original["spec"]["models"]["judge"]}
     assert result["credential_refs"] == {"judge-key": "private-judge-reference"}
     assert evidence.verified == original["capture"]["artifacts"] and original == before
+
+
+@pytest.mark.asyncio
+async def test_creation_can_authorize_references_without_unadmitted_body_downloads():
+    original, evidence = inputs(), Evidence(missing=True)
+    result = await verify_source(
+        evidence, "workspace", "trial", "evaluation", original, verify_bytes=False
+    )
+    assert evidence.verified == [] and evidence.authorized == original["capture"]["artifacts"]
+    assert result["checkpoint"]["artifacts"] == original["capture"]["artifacts"]
+
+
+@pytest.mark.asyncio
+async def test_nonempty_checkpoint_requires_an_installed_evidence_store():
+    with pytest.raises(ProtocolError) as error:
+        await verify_source(None, "workspace", "trial", "evaluation", inputs(), verify_bytes=False)
+    assert error.value.code == "ARTIFACT_STORAGE_UNAVAILABLE"
 
 
 @pytest.mark.parametrize(
