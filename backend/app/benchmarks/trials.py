@@ -1,0 +1,613 @@
+"""Benchmark lifecycle and contiguous private/public journal on PostgreSQL.
+
+Every ownership/phase mutation shares a session advisory fence. The physical
+connection remains checked out across commits, including runtime side effects.
+Heartbeat and a monotonic cancellation request use conditional SQL separately so
+long native commands cannot prevent either from reaching the controller.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import uuid
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass
+from datetime import timedelta
+
+from evalhive_benchmark import ProtocolError, encode_line, validate
+from evalhive_benchmark.peer import identity
+from evalhive_benchmark.protocol import MAX_LINE_BYTES, _json_value
+from sqlalchemy import func, or_, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
+
+from app.models.benchmark import BenchmarkDatasetCase, BenchmarkDatasetRevision, BenchmarkProfile
+from app.models.benchmark_trial import (
+    BenchmarkEventStream,
+    BenchmarkHostReservation,
+    BenchmarkJournalEntry,
+    BenchmarkOperation,
+    BenchmarkResourceLease,
+    BenchmarkTrial,
+)
+from app.models.task import Task
+from app.runtime.admission import check_group
+
+PHASES = {
+    "created": {"planning", "cleaning"},
+    "planning": {"preparing", "cleaning"},
+    "preparing": {"ready", "cleaning"},
+    "ready": {"driving", "cleaning"},
+    "driving": {"capturing", "cleaning"},
+    "capturing": {"evaluating", "cleaning"},
+    "evaluating": {"cleaning"},
+    "cleaning": {"finished"},
+    "finished": set(),
+}
+
+
+def failure(code, message, kind="configuration"):
+    return ProtocolError(code, message, kind)
+
+
+def _key(value):
+    return int.from_bytes(
+        hashlib.blake2b(value.encode(), digest_size=8).digest(), "big", signed=True
+    )
+
+
+@dataclass(frozen=True)
+class Controller:
+    workspace_id: uuid.UUID
+    trial_id: uuid.UUID
+    generation: int
+    controller_id: uuid.UUID
+
+
+@asynccontextmanager
+async def database_fence(engine, trial_id, *, host_id=None):
+    """Never return a connection with session locks to the pool, even on cancel."""
+    connection = await engine.connect()
+    keys = ([] if host_id is None else [_key("benchmark-host:" + host_id)]) + [
+        _key("benchmark-trial:" + str(trial_id))
+    ]
+    try:
+        for key in keys:
+            # No transaction lock: resource intents must commit before effects.
+            await connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+            await connection.commit()
+        async with AsyncSession(bind=connection, expire_on_commit=False) as db:
+            yield db
+    finally:
+
+        async def release():
+            try:
+                await connection.rollback()
+                for key in reversed(keys):
+                    await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+                await connection.commit()
+            except BaseException:
+                # A failed unlock must destroy the physical connection rather
+                # than strand a session lock in a reusable pool connection.
+                await connection.invalidate()
+            finally:
+                await connection.close()
+
+        task = asyncio.create_task(release())
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+
+async def current_trial(db, owner: Controller, *, allow_expired=False, row_lock=False):
+    statement = (
+        select(BenchmarkTrial)
+        .where(BenchmarkTrial.id == owner.trial_id)
+        .execution_options(populate_existing=True)
+    )
+    if row_lock:
+        statement = statement.with_for_update()
+    trial = await db.scalar(statement)
+    now = await db.scalar(select(func.clock_timestamp()))
+    if trial is None or trial.workspace_id != owner.workspace_id:
+        raise failure("TRIAL_NOT_FOUND", "Trial is unavailable in this workspace")
+    if trial.generation != owner.generation or trial.controller_id != owner.controller_id:
+        raise failure("STALE_GENERATION", "Controller no longer owns this trial")
+    if not allow_expired and (
+        trial.controller_expires_at is None or trial.controller_expires_at <= now
+    ):
+        raise failure("OWNER_EXPIRED", "Controller lease has expired")
+    return trial, now
+
+
+async def append_entry(db, trial, event, public_data=None, *, private_data=None, **source):
+    # The event receiver must remain live during long native operations. Allocate
+    # the shared journal sequence atomically, rather than from an ORM snapshot
+    # cached by a resource call across multiple durable commits.
+    next_seq = await db.scalar(
+        update(BenchmarkTrial)
+        .where(BenchmarkTrial.id == trial.id)
+        .values(next_seq=BenchmarkTrial.next_seq + 1)
+        .returning(BenchmarkTrial.next_seq)
+        .execution_options(synchronize_session=False)
+    )
+    set_committed_value(trial, "next_seq", next_seq)
+    entry = BenchmarkJournalEntry(
+        trial_id=trial.id,
+        seq=next_seq - 1,
+        generation=trial.generation,
+        event=event,
+        public_data=public_data or {},
+        private_data=private_data,
+        **source,
+    )
+    db.add(entry)
+    return entry
+
+
+class TrialStore:
+    def __init__(self, engine, private_store, *, host_id="evalhive-rootless", lease_seconds=90):
+        if type(lease_seconds) is not int or not 10 <= lease_seconds <= 600:
+            raise ValueError("Controller lease must be between 10 and 600 seconds")
+        self.engine, self.private = engine, private_store
+        self.host_id, self.lease_seconds = host_id, lease_seconds
+
+    async def create(
+        self,
+        workspace_id,
+        *,
+        snapshot,
+        deadline_at,
+        task_id=None,
+        dataset_case_id=None,
+        profile_id=None,
+        retry_of_id=None,
+        trial_id=None,
+    ):
+        """Called with a server-redacted snapshot, never a raw worker configuration."""
+        workspace_id, trial_id = uuid.UUID(str(workspace_id)), trial_id or uuid.uuid4()
+        _json_value(snapshot)
+        if not isinstance(snapshot, dict) or len(json.dumps(snapshot).encode()) > MAX_LINE_BYTES:
+            raise failure("INVALID_SNAPSHOT", "Trial snapshot exceeds its JSON object limit")
+        async with database_fence(self.engine, trial_id) as db:
+            now = await db.scalar(select(func.clock_timestamp()))
+            if deadline_at.tzinfo is None or not now < deadline_at <= now + timedelta(days=7):
+                raise failure("INVALID_DEADLINE", "Trial requires a future bounded UTC deadline")
+            for model, selected in [
+                (Task, task_id),
+                (BenchmarkProfile, profile_id),
+                (BenchmarkTrial, retry_of_id),
+            ]:
+                if selected is not None:
+                    item = await db.get(model, selected)
+                    if item is None or item.workspace_id != workspace_id:
+                        raise failure(
+                            "INVALID_SCOPE", "Trial input is unavailable in this workspace"
+                        )
+            if dataset_case_id is not None:
+                case = await db.get(BenchmarkDatasetCase, dataset_case_id)
+                dataset = (
+                    None
+                    if case is None
+                    else await db.get(BenchmarkDatasetRevision, case.dataset_revision_id)
+                )
+                if dataset is None or dataset.workspace_id != workspace_id:
+                    raise failure("INVALID_SCOPE", "Dataset case is unavailable in this workspace")
+            validate(
+                "scope",
+                {"workspace_id": str(workspace_id), "trial_id": str(trial_id), "generation": 1},
+            )
+            trial = BenchmarkTrial(
+                id=trial_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                dataset_case_id=dataset_case_id,
+                profile_id=profile_id,
+                retry_of_id=retry_of_id,
+                snapshot=snapshot,
+                deadline_at=deadline_at,
+                generation=1,
+                phase="created",
+                next_seq=0,
+            )
+            db.add(trial)
+            await db.flush()
+            await append_entry(db, trial, "trial.created")
+            await db.commit()
+            return trial
+
+    async def claim(self, workspace_id, trial_id, controller_id):
+        """Expired ownership is fenced; uncertain native sessions are never resumed."""
+        async with database_fence(self.engine, trial_id, host_id=self.host_id) as db:
+            trial = await db.get(BenchmarkTrial, trial_id)
+            now = await db.scalar(select(func.clock_timestamp()))
+            if trial is None or trial.workspace_id != workspace_id:
+                raise failure("TRIAL_NOT_FOUND", "Trial is unavailable in this workspace")
+            if trial.phase == "finished":
+                raise failure("TRIAL_FINISHED", "Finished trials cannot be reclaimed")
+            if trial.controller_id is not None:
+                if trial.controller_expires_at > now:
+                    raise failure("OWNER_ACTIVE", "Trial already has a live controller")
+                trial.generation += 1
+                # A reconnect cannot recreate the native conversation/stream.
+                # Retain all resource origins for scoped recovery and cleanup.
+                if trial.execution_status in {"pending", "running"}:
+                    trial.execution_status = "lost"
+                if trial.evaluation_status == "running":
+                    trial.evaluation_status = "error"
+                trial.recording_status = "incomplete"
+                trial.phase, trial.cleanup_status = "cleaning", "pending"
+            trial.controller_id = controller_id
+            trial.controller_expires_at = now + timedelta(seconds=self.lease_seconds)
+            trial.heartbeat_at = now
+            reservation = await db.get(BenchmarkHostReservation, self.host_id)
+            if reservation is not None and reservation.trial_id == trial.id:
+                reservation.generation = trial.generation
+                reservation.controller_id = controller_id
+            await append_entry(
+                db,
+                trial,
+                "controller.claimed",
+                {"generation": trial.generation, "recovery": trial.phase == "cleaning"},
+            )
+            await db.commit()
+            return Controller(trial.workspace_id, trial.id, trial.generation, controller_id)
+
+    async def heartbeat(self, owner):
+        async with self.engine.begin() as conn:
+            now = func.clock_timestamp()
+            result = await conn.execute(
+                update(BenchmarkTrial)
+                .where(
+                    BenchmarkTrial.id == owner.trial_id,
+                    BenchmarkTrial.workspace_id == owner.workspace_id,
+                    BenchmarkTrial.generation == owner.generation,
+                    BenchmarkTrial.controller_id == owner.controller_id,
+                    BenchmarkTrial.controller_expires_at > now,
+                    BenchmarkTrial.phase != "finished",
+                )
+                .values(
+                    heartbeat_at=now,
+                    controller_expires_at=now + timedelta(seconds=self.lease_seconds),
+                )
+            )
+            if result.rowcount != 1:
+                raise failure("STALE_GENERATION", "Controller heartbeat was fenced")
+
+    async def request_cancel(self, workspace_id, trial_id):
+        async with self.engine.begin() as conn:
+            result = await conn.execute(
+                update(BenchmarkTrial)
+                .where(
+                    BenchmarkTrial.id == trial_id,
+                    BenchmarkTrial.workspace_id == workspace_id,
+                    BenchmarkTrial.phase != "finished",
+                )
+                .values(
+                    cancel_requested_at=func.coalesce(
+                        BenchmarkTrial.cancel_requested_at, func.clock_timestamp()
+                    )
+                )
+            )
+            return result.rowcount == 1
+
+    async def reserve(
+        self, owner, *, demands, native_resources, measure, runtime_policy, group_policy
+    ):
+        """Measure and persist the entire group atomically before preparation."""
+        async with database_fence(self.engine, owner.trial_id, host_id=self.host_id) as db:
+            trial, now = await current_trial(db, owner)
+            if (
+                trial.phase != "planning"
+                or trial.cancel_requested_at is not None
+                or trial.deadline_at <= now
+            ):
+                raise failure("INVALID_PHASE", "Host admission requires an active planning phase")
+            reservation = await db.get(BenchmarkHostReservation, self.host_id)
+            if reservation is not None:
+                if (reservation.trial_id, reservation.generation, reservation.controller_id) == (
+                    owner.trial_id,
+                    owner.generation,
+                    owner.controller_id,
+                ):
+                    if (
+                        reservation.budget["resources"] != [asdict(item) for item in demands]
+                        or reservation.budget["native_resources"] != native_resources
+                    ):
+                        raise failure(
+                            "ADMISSION_CONFLICT",
+                            "Host reservation has different resource requirements",
+                        )
+                    return reservation.budget
+                raise failure("HOST_BUSY", "Execution host remains reserved", "preparation")
+            measured = await measure()
+            # Measurement may yield while a cancellation request arrives.
+            await db.refresh(trial)
+            now = await db.scalar(select(func.clock_timestamp()))
+            if trial.cancel_requested_at is not None or trial.deadline_at <= now:
+                raise failure("TRIAL_STOPPING", "Trial stopped during host admission", "execution")
+            decision = check_group(
+                demands, native_resources, measured, runtime_policy, group_policy, active_trials=0
+            )
+            if not decision["eligible"]:
+                raise failure(
+                    "CAPACITY_UNAVAILABLE",
+                    "Native group does not fit the execution host",
+                    "preparation",
+                )
+            budget = {
+                **decision,
+                "runtime_admission": "reserved",
+                "can_run": False,
+                "resources": [asdict(item) for item in demands],
+                "native_resources": native_resources,
+            }
+            db.add(
+                BenchmarkHostReservation(
+                    host_id=self.host_id,
+                    trial_id=trial.id,
+                    generation=owner.generation,
+                    controller_id=owner.controller_id,
+                    budget=budget,
+                )
+            )
+            await append_entry(
+                db, trial, "host.reserved", {"group_resources": decision["group_resources"]}
+            )
+            await db.commit()
+            return budget
+
+    async def transition(self, owner, expected, target):
+        async with database_fence(
+            self.engine, owner.trial_id, host_id=self.host_id if target == "finished" else None
+        ) as db:
+            trial, now = await current_trial(db, owner, row_lock=True)
+            if trial.phase == target:
+                return {"duplicate": True, "phase": target}
+            if trial.phase != expected or target not in PHASES.get(expected, set()):
+                raise failure("INVALID_PHASE", "Lifecycle transition is not permitted")
+            if target not in {"cleaning", "finished"}:
+                if trial.cancel_requested_at is not None or trial.deadline_at <= now:
+                    raise failure(
+                        "TRIAL_STOPPING",
+                        "Trial cancellation or deadline requires cleanup",
+                        "execution",
+                    )
+            if target == "preparing":
+                reservation = await db.get(BenchmarkHostReservation, self.host_id)
+                if reservation is None or (
+                    reservation.trial_id,
+                    reservation.generation,
+                    reservation.controller_id,
+                ) != (owner.trial_id, owner.generation, owner.controller_id):
+                    raise failure(
+                        "NO_RESERVATION",
+                        "Preparation requires an owned host reservation",
+                        "preparation",
+                    )
+            if target == "driving":
+                trial.execution_status = "running"
+            if target == "evaluating":
+                if trial.execution_status in {"pending", "running"}:
+                    raise failure(
+                        "EXECUTION_OPEN", "Execution must be sealed before evaluation", "recording"
+                    )
+                trial.evaluation_status = "running"
+            if target == "cleaning":
+                if trial.execution_status in {"pending", "running"}:
+                    trial.execution_status = "cancelled" if trial.cancel_requested_at else "failed"
+                if trial.evaluation_status == "running":
+                    trial.evaluation_status = "error"
+                trial.cleanup_status = "running"
+            if target == "finished":
+                live = await db.scalar(
+                    select(BenchmarkResourceLease.id)
+                    .where(
+                        BenchmarkResourceLease.trial_id == trial.id,
+                        BenchmarkResourceLease.state != "released",
+                    )
+                    .limit(1)
+                )
+                if live is not None:
+                    raise failure(
+                        "CLEANUP_PENDING", "Resource leases remain unreconciled", "cleanup"
+                    )
+                reservation = await db.get(BenchmarkHostReservation, self.host_id)
+                if reservation is not None and reservation.trial_id == trial.id:
+                    await db.delete(reservation)
+                trial.cleanup_status, trial.finished_at = "complete", now
+                if trial.recording_status == "open":
+                    unsealed = await db.scalar(
+                        select(BenchmarkEventStream.id)
+                        .where(
+                            BenchmarkEventStream.trial_id == trial.id,
+                            BenchmarkEventStream.final_seq.is_(None),
+                        )
+                        .limit(1)
+                    )
+                    uncertain = await db.scalar(
+                        select(BenchmarkOperation.id)
+                        .where(
+                            BenchmarkOperation.trial_id == trial.id,
+                            BenchmarkOperation.state.in_(["started", "uncertain"]),
+                        )
+                        .limit(1)
+                    )
+                    trial.recording_status = (
+                        "complete" if unsealed is None and uncertain is None else "incomplete"
+                    )
+            trial.phase = target
+            await append_entry(db, trial, "phase.changed", {"from": expected, "to": target})
+            await db.commit()
+            return {"duplicate": False, "phase": target}
+
+    async def register_stream(self, owner, actor_id):
+        async with database_fence(self.engine, owner.trial_id) as db:
+            trial, _ = await current_trial(db, owner)
+            if trial.phase == "finished":
+                raise failure("TRIAL_FINISHED", "Finished journals cannot register new streams")
+            stream = await db.scalar(
+                select(BenchmarkEventStream).where(
+                    BenchmarkEventStream.trial_id == trial.id,
+                    BenchmarkEventStream.generation == owner.generation,
+                    BenchmarkEventStream.actor_id == actor_id,
+                )
+            )
+            if stream is None:
+                stream = BenchmarkEventStream(
+                    trial_id=trial.id, generation=owner.generation, actor_id=actor_id, next_seq=0
+                )
+                db.add(stream)
+                await db.commit()
+            return stream.id
+
+    async def ingest(self, owner, actor_id, events):
+        """Persist 1..128 contiguous records before acknowledging their delivery.
+
+        Raw worker data is private by default. Consumers must opt into an explicit
+        redacted projection; an event name does not grant public visibility.
+        """
+        if not 1 <= len(events) <= 128:
+            raise failure("INVALID_BATCH", "Event delivery requires 1 to 128 records")
+        for event in events:
+            validate("event", event)
+            encode_line(event)
+            if event["scope"] != {
+                "workspace_id": str(owner.workspace_id),
+                "trial_id": str(owner.trial_id),
+                "generation": owner.generation,
+            }:
+                raise failure("STALE_GENERATION", "Event scope is not current")
+        async with AsyncSession(self.engine, expire_on_commit=False) as db:
+            trial, _ = await current_trial(db, owner, row_lock=True)
+            if trial.phase == "finished":
+                raise failure("TRIAL_FINISHED", "Finished journal is sealed")
+            stream = await db.scalar(
+                select(BenchmarkEventStream).where(
+                    BenchmarkEventStream.trial_id == trial.id,
+                    BenchmarkEventStream.generation == owner.generation,
+                    BenchmarkEventStream.actor_id == actor_id,
+                )
+            )
+            if stream is None:
+                raise failure("UNKNOWN_ACTOR", "Event stream is not registered")
+            for event in events:
+                previous = await db.scalar(
+                    select(BenchmarkJournalEntry).where(
+                        BenchmarkJournalEntry.stream_id == stream.id,
+                        BenchmarkJournalEntry.event_id == event["id"],
+                    )
+                )
+                digest = identity(event)
+                if previous is not None:
+                    if previous.content_hash != digest:
+                        raise failure(
+                            "EVENT_CONFLICT", "Event identity was reused with different content"
+                        )
+                    continue
+                if stream.final_seq is not None:
+                    raise failure("STREAM_SEALED", "Event stream is sealed")
+                if event["seq"] != stream.next_seq:
+                    raise failure("EVENT_GAP", "Event sequence must be contiguous", "recording")
+                entry_id = uuid.uuid4()
+                await append_entry(
+                    db,
+                    trial,
+                    event["event"],
+                    {"source": event["source"]},
+                    id=entry_id,
+                    stream_id=stream.id,
+                    source_seq=event["seq"],
+                    event_id=event["id"],
+                    content_hash=digest,
+                    private_data=self.private.seal("journal:" + str(entry_id), event),
+                )
+                stream.next_seq += 1
+            await db.commit()
+            return {"accepted_through": stream.next_seq - 1}
+
+    async def seal_stream(self, owner, actor_id, final_seq):
+        async with database_fence(self.engine, owner.trial_id) as db:
+            trial, _ = await current_trial(db, owner, row_lock=True)
+            stream = await db.scalar(
+                select(BenchmarkEventStream).where(
+                    BenchmarkEventStream.trial_id == trial.id,
+                    BenchmarkEventStream.generation == owner.generation,
+                    BenchmarkEventStream.actor_id == actor_id,
+                )
+            )
+            if stream is None or type(final_seq) is not int or final_seq != stream.next_seq - 1:
+                raise failure("EVENT_GAP", "Completion requires all preceding events", "recording")
+            if stream.final_seq is None:
+                stream.final_seq = final_seq
+                stream.checkpoint_seq = final_seq
+                await append_entry(
+                    db, trial, "stream.sealed", {"actor_id": str(actor_id), "final_seq": final_seq}
+                )
+                await db.commit()
+            return {"accepted_through": final_seq}
+
+    async def checkpoint_stream(self, owner, actor_id, through_seq):
+        """Persist a phase delivery barrier without ending the worker's stream.
+
+        The host invokes this after the command response and durable draining of
+        all earlier ordered JSONL frames. Capture/evaluation may emit later events
+        from the same process. Only final shutdown permanently seals a stream.
+        """
+        async with database_fence(self.engine, owner.trial_id) as db:
+            trial, _ = await current_trial(db, owner, row_lock=True)
+            stream = await db.scalar(
+                select(BenchmarkEventStream).where(
+                    BenchmarkEventStream.trial_id == trial.id,
+                    BenchmarkEventStream.generation == owner.generation,
+                    BenchmarkEventStream.actor_id == actor_id,
+                )
+            )
+            if stream is None or type(through_seq) is not int or through_seq != stream.next_seq - 1:
+                raise failure("EVENT_GAP", "Checkpoint requires all preceding events", "recording")
+            if stream.checkpoint_seq != through_seq:
+                stream.checkpoint_seq = through_seq
+                await append_entry(
+                    db,
+                    trial,
+                    "stream.checkpoint",
+                    {"actor_id": str(actor_id), "through_seq": through_seq},
+                )
+                await db.commit()
+            return {"accepted_through": through_seq}
+
+    async def finish_execution(self, owner, status):
+        if status not in {"success", "failed", "cancelled", "lost"}:
+            raise failure("INVALID_OUTCOME", "Execution outcome is invalid")
+        async with database_fence(self.engine, owner.trial_id) as db:
+            trial, _ = await current_trial(db, owner, row_lock=True)
+            if trial.execution_status == status:
+                return
+            if trial.phase not in {"driving", "capturing"} or trial.execution_status != "running":
+                raise failure("INVALID_PHASE", "Execution outcome cannot be changed")
+            open_stream = await db.scalar(
+                select(BenchmarkEventStream.id)
+                .where(
+                    BenchmarkEventStream.trial_id == trial.id,
+                    BenchmarkEventStream.generation == owner.generation,
+                    or_(
+                        BenchmarkEventStream.checkpoint_seq.is_(None),
+                        BenchmarkEventStream.checkpoint_seq != BenchmarkEventStream.next_seq - 1,
+                    ),
+                )
+                .limit(1)
+            )
+            if open_stream is not None:
+                raise failure(
+                    "STREAM_OPEN",
+                    "Execution completion requires acknowledged event barriers",
+                    "recording",
+                )
+            trial.execution_status = status
+            await append_entry(db, trial, "execution.finished", {"status": status})
+            # Deliberately do not stop/release environments or finish grading.
+            await db.commit()

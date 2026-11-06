@@ -5,6 +5,15 @@ from app.models.benchmark import (
     BenchmarkProfile,
     BenchmarkSecret,
 )
+from app.models.benchmark_trial import (
+    BenchmarkEnvironmentSession,
+    BenchmarkEventStream,
+    BenchmarkHostReservation,
+    BenchmarkJournalEntry,
+    BenchmarkOperation,
+    BenchmarkResourceLease,
+    BenchmarkTrial,
+)
 from app.models.bias_report import BiasReport
 from app.models.chat_message import ChatMessage
 from app.models.event import AgentEvent
@@ -38,6 +47,13 @@ __all__ = [
     "BenchmarkSecret",
     "BenchmarkDatasetRevision",
     "BenchmarkDatasetCase",
+    "BenchmarkTrial",
+    "BenchmarkEnvironmentSession",
+    "BenchmarkResourceLease",
+    "BenchmarkOperation",
+    "BenchmarkEventStream",
+    "BenchmarkJournalEntry",
+    "BenchmarkHostReservation",
     "Workspace",
     "WorkspaceMember",
     "ServiceToken",

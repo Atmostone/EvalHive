@@ -22,6 +22,7 @@ icalendar
 apscheduler
 bcrypt
 pyjwt
+cryptography==50.0.2
 redis
 pyarrow
 pyyaml

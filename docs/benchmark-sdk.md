@@ -34,6 +34,10 @@ boundary; their absence is an incompatibility, not an invitation to emulate them
 
 ## Durable ownership and evidence
 
+The current PostgreSQL storage and resource authority are detailed in
+[Durable benchmark trials](benchmark-trials.md), including implemented behavior,
+delivery barriers and the remaining coordinator acceptance work.
+
 `BenchmarkTrial` is one actual case/configuration/repeat attempt. It owns an
 `EnvironmentSession`, harness `ExecutionAttempt` and one or more
 `EvaluationAttempt` records. The matrix cell remains a selection/current-pointer
