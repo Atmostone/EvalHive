@@ -6,7 +6,7 @@ import asyncio
 import sys
 
 from .peer import Context, Peer
-from .protocol import MAX_LINE_BYTES, ProtocolError, validate, validate_spec
+from .protocol import MAX_LINE_BYTES, ProtocolError, validate, validate_environment, validate_spec
 
 RESULT_TYPES = {
     "describe": "manifest",
@@ -33,8 +33,10 @@ class Connector:
 async def serve(connector: Connector, lines, write, **limits):
     validate("manifest", connector.manifest)
     context = None
+    purpose = None
 
     async def handle(request):
+        nonlocal purpose
         method, params = request["method"], request["params"]
         if method == "describe":
             return connector.manifest
@@ -43,8 +45,20 @@ async def serve(connector: Connector, lines, write, **limits):
             return {"stopped": True}
         if "spec" in params:
             validate_spec(connector.manifest, params["spec"])
+            selected = params["spec"].get("purpose", "execution")
+            if purpose is not None and selected != purpose:
+                raise ProtocolError(
+                    "PURPOSE_CONFLICT",
+                    "A worker cannot change its execution purpose",
+                    "configuration",
+                )
+            purpose = selected
         if "plan" in params:
-            validate("environment_plan", params["plan"])
+            validate_environment(params["spec"], params["plan"])
+        if method == "drive" and purpose == "evaluation":
+            raise ProtocolError(
+                "EVALUATION_ONLY", "An evaluation worker cannot drive an agent", "unsupported"
+            )
         if method in {"prepare", "drive", "capture", "evaluate", "cleanup", "cancel"}:
             context.bind(params["spec"]["scope"] if "spec" in params else params["scope"])
         if method in {"prepare", "drive"} and context.cancelled.is_set():
@@ -57,6 +71,8 @@ async def serve(connector: Connector, lines, write, **limits):
         result = await connector.handle(method, params, context)
         if kind := RESULT_TYPES.get(method):
             validate(kind, result)
+        if method in {"plan", "prepare"}:
+            validate_environment(params["spec"], result, kind=RESULT_TYPES[method])
         return result
 
     peer = Peer(write, handler=handle, **limits)

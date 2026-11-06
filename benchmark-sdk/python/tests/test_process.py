@@ -80,6 +80,39 @@ def test_external_package_lifecycle_and_broker(language):
 
 
 @pytest.mark.parametrize("language", ["python", "typescript"])
+def test_evaluation_worker_restores_without_agent_and_cannot_change_purpose(language):
+    async def scenario():
+        async def broker(request):
+            return {"handle": "restored-environment"}
+
+        client = await ConnectorClient.launch(argv(language), broker=broker)
+        spec = copy.deepcopy(FIXTURE["evaluation_spec"])
+        try:
+            assert (await client.request("validate", {"spec": spec}))["accepted"]
+            plan = await client.request("plan", {"spec": spec})
+            assert plan["purpose"] == "evaluation" and "agent" not in plan
+            with pytest.raises(ProtocolError) as bad_plan:
+                await client.request("prepare", {"spec": spec, "plan": FIXTURE["plan"]})
+            assert bad_plan.value.code == "PURPOSE_CONFLICT"
+            prepared = await client.request("prepare", {"spec": spec, "plan": plan})
+            assert "agent" not in prepared and prepared["purpose"] == "evaluation"
+            assert prepared["native_state"] == spec["checkpoint"]["state"]
+            with pytest.raises(ProtocolError) as forbidden:
+                await client.request("drive", {"scope": spec["scope"], "payload": {}})
+            assert forbidden.value.code == "EVALUATION_ONLY"
+            with pytest.raises(ProtocolError) as changed:
+                await client.request("validate", {"spec": FIXTURE["spec"]})
+            assert changed.value.code == "PURPOSE_CONFLICT"
+            assert (await client.request("evaluate", {"scope": spec["scope"], "payload": {}}))[
+                "success"
+            ]
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("language", ["python", "typescript"])
 def test_cancellation_while_prepare_is_pending(language):
     async def scenario():
         client = await ConnectorClient.launch(argv(language))

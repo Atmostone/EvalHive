@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from evalhive_benchmark.connector import Connector, serve_stdio
@@ -24,6 +25,11 @@ class FakeConnector(Connector):
                 "effective_config": {"prefix": "", **params["spec"]["config"]},
             }
         if method == "plan":
+            if params["spec"].get("purpose") == "evaluation":
+                return {
+                    "purpose": "evaluation",
+                    **{key: value for key, value in FIXTURE["plan"].items() if key != "agent"},
+                }
             return FIXTURE["plan"]
         if method == "prepare":
             spec = params["spec"]
@@ -40,20 +46,26 @@ class FakeConnector(Connector):
             await context.emit(
                 spec["scope"], "environment.ready", {"session_handle": result["handle"]}
             )
-            return {
+            prepared = {
                 "ready": True,
                 "session_handle": result["handle"],
-                "agent": FIXTURE["plan"]["agent"],
                 "native_state": {"fixture": True},
                 "artifacts": [],
             }
+            if spec.get("purpose") == "evaluation":
+                prepared.update(
+                    purpose="evaluation", native_state=deepcopy(spec["checkpoint"]["state"])
+                )
+            else:
+                prepared["agent"] = FIXTURE["plan"]["agent"]
+            return prepared
         if method == "drive":
             await context.emit(
                 params["scope"], "agent.request", {"input_id": "turn-1", "text": "Fixture input"}
             )
             return {"finished": True}
         if method == "capture":
-            return {"artifacts": [], "regrade": "available"}
+            return {"artifacts": [], "regrade": "available", "checkpoint": FIXTURE["checkpoint"]}
         if method == "evaluate":
             return FIXTURE["evaluation"]
         if method == "aggregate":

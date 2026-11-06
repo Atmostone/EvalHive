@@ -338,6 +338,12 @@ class TrialDriver:
                         "uncertain",
                     )
                 validate_spec(self.host.manifest, spec)
+                if spec.get("purpose", "execution") != "execution":
+                    raise ProtocolError(
+                        "PURPOSE_CONFLICT",
+                        "Execution driver requires an execution spec",
+                        "configuration",
+                    )
                 if evaluate and self.host.manifest["capabilities"].get("evaluate") not in {
                     "native",
                     "emulated",

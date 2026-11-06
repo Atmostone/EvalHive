@@ -84,3 +84,24 @@ for (const language of ['python','typescript']) {
     } finally {await client.close();}
   });
 }
+
+for (const language of ['python', 'typescript']) {
+  test(`evaluation worker cannot drive an agent or change purpose: ${language}`, async () => {
+    const argv = language === 'python' ? [python, fileURLToPath(new URL('../../examples/fake/connector.py', import.meta.url))] :
+      [process.execPath, fileURLToPath(new URL('../../examples/fake/connector.mjs', import.meta.url))];
+    const client = ConnectorClient.launch(argv, {broker: async () => ({handle:'restored-environment'})});
+    const spec = structuredClone(fixture.evaluation_spec);
+    try {
+      assert.equal((await client.request('validate', {spec})).accepted, true);
+      const plan = await client.request('plan', {spec});
+      assert.equal(plan.purpose, 'evaluation'); assert.equal('agent' in plan, false);
+      await assert.rejects(client.request('prepare', {spec, plan:fixture.plan}), error => error.code === 'PURPOSE_CONFLICT');
+      const prepared = await client.request('prepare', {spec, plan});
+      assert.equal(prepared.purpose, 'evaluation'); assert.equal('agent' in prepared, false);
+      assert.deepEqual(prepared.native_state, spec.checkpoint.state);
+      await assert.rejects(client.request('drive', {scope:spec.scope, payload:{}}), error => error.code === 'EVALUATION_ONLY');
+      await assert.rejects(client.request('validate', {spec:fixture.spec}), error => error.code === 'PURPOSE_CONFLICT');
+      assert.equal((await client.request('evaluate', {scope:spec.scope, payload:{}})).success, true);
+    } finally {await client.close();}
+  });
+}

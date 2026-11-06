@@ -45,3 +45,29 @@ test('environment graph and metric identities', () => {
   result.metrics.push({...result.metrics[0]});
   assert.throws(() => validate('evaluation_result', result), error => error.code === 'DUPLICATE_METRIC');
 });
+
+test('evaluation checkpoint, roles and private references match the invocation', async () => {
+  const {validateEnvironment} = await import('../dist/index.js');
+  validateSpec(fixture.manifest, fixture.evaluation_spec);
+  validateEnvironment(fixture.evaluation_spec, fixture.evaluation_plan);
+  validateEnvironment(fixture.evaluation_spec, fixture.evaluation_prepared, 'prepared');
+  assert.throws(() => validateEnvironment(fixture.evaluation_spec, fixture.plan), error => error.code === 'PURPOSE_CONFLICT');
+  assert.throws(() => validateEnvironment(fixture.spec, fixture.evaluation_prepared, 'prepared'), error => error.code === 'PURPOSE_CONFLICT');
+  const mutations = [
+    ['REGRADE_UNAVAILABLE', (manifest, spec) => {manifest.capabilities.regrade = 'unsupported';}],
+    ['CHECKPOINT_INCOMPLETE', (manifest, spec) => {spec.checkpoint.complete = false;}],
+    ['CHECKPOINT_PROVENANCE', (manifest, spec) => {spec.checkpoint.case.case_id = 'foreign';}],
+    ['CHECKPOINT_PROVENANCE', (manifest, spec) => {spec.checkpoint.case.split = 'foreign';}],
+    ['CHECKPOINT_PROVENANCE', (manifest, spec) => {spec.checkpoint.source_digest = 'sha256:' + '9'.repeat(64);}],
+    ['CHECKPOINT_PROVENANCE', (manifest, spec) => {spec.checkpoint.connector.version = '99.0';}],
+    ['EVALUATOR_BINDING_CONFLICT', (manifest, spec) => {spec.checkpoint.evaluator_roles = ['grader'];}],
+  ];
+  for (const [code, mutate] of mutations) {
+    const manifest = structuredClone(fixture.manifest), spec = structuredClone(fixture.evaluation_spec);
+    mutate(manifest, spec);
+    assert.throws(() => validateSpec(manifest, spec), error => error.code === code);
+  }
+  const spec = structuredClone(fixture.evaluation_spec);
+  spec.credential_refs.unrequested = 'private-example-reference';
+  assert.throws(() => validateSpec(fixture.manifest, spec), error => error.code === 'EVALUATOR_BINDING_CONFLICT' && !error.message.includes('private-example-reference'));
+});

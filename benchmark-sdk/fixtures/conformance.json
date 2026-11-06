@@ -40,7 +40,8 @@
       "aggregate": "native",
       "cleanup": "native",
       "capture": "native",
-      "drive": "native"
+      "drive": "native",
+      "regrade": "native"
     },
     "requirements": {
       "capabilities": []
@@ -769,6 +770,544 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation spec with retained checkpoint",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation",
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "evaluation plan without agent",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot",
+        "purpose": "evaluation"
+      },
+      "error": null
+    },
+    {
+      "name": "evaluation readiness without agent",
+      "kind": "prepared",
+      "value": {
+        "ready": true,
+        "session_handle": "evaluation-environment",
+        "purpose": "evaluation",
+        "native_state": {
+          "saved": true
+        },
+        "artifacts": []
+      },
+      "error": null
+    },
+    {
+      "name": "environment_plan evaluation cannot grant an agent",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot",
+        "purpose": "evaluation",
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "environment_plan legacy execution requires an agent",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "prepared evaluation cannot grant an agent",
+      "kind": "prepared",
+      "value": {
+        "ready": true,
+        "session_handle": "evaluation-environment",
+        "purpose": "evaluation",
+        "native_state": {
+          "saved": true
+        },
+        "artifacts": [],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "prepared legacy execution requires an agent",
+      "kind": "prepared",
+      "value": {
+        "ready": true,
+        "session_handle": "evaluation-environment",
+        "native_state": {
+          "saved": true
+        },
+        "artifacts": []
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation requires typed checkpoint",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation forbids agent model",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {
+          "agent": {
+            "name": "fixture",
+            "endpoint": "https://example.invalid",
+            "credential_ref": "owner-key"
+          }
+        },
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation",
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation forbids orchestrator model",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {
+          "orchestrator": {
+            "name": "fixture",
+            "endpoint": "https://example.invalid",
+            "credential_ref": "owner-key"
+          }
+        },
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation",
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "execution cannot carry evaluator checkpoint",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
     }
-  ]
+  ],
+  "evaluation_spec": {
+    "protocol_version": "1.0",
+    "scope": {
+      "workspace_id": "workspace-example",
+      "trial_id": "trial-example",
+      "generation": 1
+    },
+    "case": {
+      "ref": {
+        "dataset_id": "example",
+        "revision": "1",
+        "case_id": "echo"
+      },
+      "title": "Echo and verify",
+      "description": "Create an example artifact",
+      "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "native_ref": {
+        "case": "echo"
+      },
+      "requirements": {
+        "capabilities": []
+      }
+    },
+    "config": {
+      "prefix": "SDK "
+    },
+    "credential_refs": {},
+    "models": {},
+    "limits": {
+      "wall_time_seconds": 60,
+      "memory_mb": 128,
+      "cpu_cores": 1,
+      "disk_mb": 64
+    },
+    "purpose": "evaluation",
+    "checkpoint": {
+      "format_version": "1.0",
+      "connector": {
+        "id": "example.benchmark",
+        "version": "0.1.0"
+      },
+      "case": {
+        "dataset_id": "example",
+        "revision": "1",
+        "case_id": "echo"
+      },
+      "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "state_schema": "fixture.saved-world.v1",
+      "complete": true,
+      "artifacts": [],
+      "evaluator_roles": [],
+      "state": {
+        "saved": true
+      }
+    }
+  },
+  "evaluation_plan": {
+    "resources": [
+      {
+        "id": "workspace",
+        "kind": "container",
+        "provider": "docker",
+        "config": {
+          "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "id": "result",
+        "resource_id": "workspace",
+        "path": "/workspace/result.txt",
+        "visibility": "user",
+        "required": true
+      }
+    ],
+    "requirements": {
+      "capabilities": []
+    },
+    "grading_mode": "snapshot",
+    "purpose": "evaluation"
+  },
+  "evaluation_prepared": {
+    "ready": true,
+    "session_handle": "evaluation-environment",
+    "purpose": "evaluation",
+    "native_state": {
+      "saved": true
+    },
+    "artifacts": []
+  }
 }

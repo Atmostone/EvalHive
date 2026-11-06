@@ -234,6 +234,25 @@ async def test_worker_death_uses_file_policy_and_keeps_recording_incomplete(driv
     assert result["phase"] == "finished"
 
 
+async def test_execution_driver_cannot_start_an_evaluation_only_worker(driver):
+    controller, spec = driver
+    spec["purpose"] = "evaluation"
+    spec["checkpoint"] = {
+        "format_version": "1.0",
+        "connector": {key: MANIFEST[key] for key in ("id", "version")},
+        "case": spec["case"]["ref"],
+        "source_digest": spec["case"]["source_digest"],
+        "state_schema": "fixture.inline.v1",
+        "complete": True,
+        "artifacts": [],
+        "evaluator_roles": [],
+        "state": {"captured": True},
+    }
+    result = await controller.run(spec)
+    assert result["phase"] == "finished" and result["execution"] == "failed"
+    assert not controller.host.started and controller.host.installed_spec is None
+
+
 async def test_trial_deadline_cannot_be_sealed_as_success(driver, _engine):
     original, spec = driver
     store = original.store

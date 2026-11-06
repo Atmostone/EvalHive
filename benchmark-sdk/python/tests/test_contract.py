@@ -9,6 +9,7 @@ from evalhive_benchmark import (
     decode_line,
     encode_line,
     validate,
+    validate_environment,
     validate_spec,
 )
 from evalhive_benchmark.protocol import MAX_LINE_BYTES, validate_config
@@ -131,6 +132,56 @@ def test_metric_identity_and_unknown_values():
     with pytest.raises(ProtocolError) as caught:
         validate("evaluation_result", result)
     assert caught.value.code == "DUPLICATE_METRIC"
+
+
+@pytest.mark.parametrize(
+    "mutation,code",
+    [
+        ("capability", "REGRADE_UNAVAILABLE"),
+        ("incomplete", "CHECKPOINT_INCOMPLETE"),
+        ("case", "CHECKPOINT_PROVENANCE"),
+        ("split", "CHECKPOINT_PROVENANCE"),
+        ("source", "CHECKPOINT_PROVENANCE"),
+        ("connector", "CHECKPOINT_PROVENANCE"),
+        ("roles", "EVALUATOR_BINDING_CONFLICT"),
+        ("credentials", "EVALUATOR_BINDING_CONFLICT"),
+    ],
+)
+def test_evaluation_source_and_bindings(mutation, code):
+    spec, manifest = copy.deepcopy(FIXTURE["evaluation_spec"]), copy.deepcopy(FIXTURE["manifest"])
+    validate_spec(manifest, spec)
+    if mutation == "capability":
+        manifest["capabilities"]["regrade"] = "unsupported"
+    elif mutation == "incomplete":
+        spec["checkpoint"]["complete"] = False
+    elif mutation == "case":
+        spec["checkpoint"]["case"]["case_id"] = "foreign"
+    elif mutation == "split":
+        spec["checkpoint"]["case"]["split"] = "foreign"
+    elif mutation == "source":
+        spec["checkpoint"]["source_digest"] = "sha256:" + "9" * 64
+    elif mutation == "connector":
+        spec["checkpoint"]["connector"]["version"] = "99.0"
+    elif mutation == "roles":
+        spec["checkpoint"]["evaluator_roles"] = ["grader"]
+    else:
+        spec["credential_refs"]["unrequested"] = "private-example-reference"
+    with pytest.raises(ProtocolError) as caught:
+        validate_spec(manifest, spec)
+    assert caught.value.code == code
+    assert "private-example-reference" not in str(caught.value)
+
+
+def test_environment_purpose_matches_plan_and_readiness():
+    spec = FIXTURE["evaluation_spec"]
+    for kind, key in [("environment_plan", "evaluation_plan"), ("prepared", "evaluation_prepared")]:
+        validate_environment(spec, FIXTURE[key], kind=kind)
+    with pytest.raises(ProtocolError) as caught:
+        validate_environment(spec, FIXTURE["plan"])
+    assert caught.value.code == "PURPOSE_CONFLICT"
+    with pytest.raises(ProtocolError) as caught:
+        validate_environment(FIXTURE["spec"], FIXTURE["evaluation_prepared"], kind="prepared")
+    assert caught.value.code == "PURPOSE_CONFLICT"
 
 
 def test_cycles_and_depth_are_bounded():

@@ -8,7 +8,13 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
-from evalhive_benchmark import ConnectorClient, ProtocolError, validate
+from evalhive_benchmark import (
+    ConnectorClient,
+    ProtocolError,
+    validate,
+    validate_environment,
+    validate_spec,
+)
 from evalhive_benchmark.peer import identity
 
 from app.benchmarks.broker import SqlBroker
@@ -37,6 +43,7 @@ class RootlessWorkerHost:
         ):
             raise ManagedRuntimeError("Worker manifest differs from registered assets")
         self.store, self.owner, self.manifest, self.assets = store, owner, manifest, assets
+        self.purpose = "execution" if owner.control_id is None else "evaluation"
         self.group_policy = group_policy or GroupPolicy()
         self.host_actor = uuid.uuid5(owner.controller_id, "host.actor")
         self.worker_actor = uuid.uuid5(owner.controller_id, "benchmark.actor")
@@ -117,14 +124,18 @@ class RootlessWorkerHost:
                 self.host_actor: ActorPolicy(
                     (self.assets.provider_id,),
                     (self.WORKER_ID,),
-                    (
-                        "planning",
-                        "preparing",
-                        "ready",
-                        "driving",
-                        "capturing",
-                        "evaluating",
-                        "cleaning",
+                    tuple(
+                        phase
+                        for phase in (
+                            "planning",
+                            "preparing",
+                            "ready",
+                            "driving",
+                            "capturing",
+                            "evaluating",
+                            "cleaning",
+                        )
+                        if phase != "driving" or self.purpose == "execution"
                     ),
                     ("allocate", "inspect", "stop", "release"),
                 )
@@ -134,6 +145,7 @@ class RootlessWorkerHost:
                 "catalog": self.assets.document,
                 "worker_image_id": lease.intent.image_id,
             },
+            purpose=self.purpose,
         )
         allocated = await self.host_broker.handle(
             self.request(
@@ -178,7 +190,12 @@ class RootlessWorkerHost:
     async def install_plan(self, spec, plan, *, private_inputs=None, extra_demands=()):
         if self.channel is None:
             raise ManagedRuntimeError("Task planning requires a started SDK worker")
-        validate("trial_spec", spec)
+        validate_spec(self.manifest, spec)
+        validate_environment(spec, plan)
+        if spec.get("purpose", "execution") != self.purpose:
+            raise ProtocolError(
+                "PURPOSE_CONFLICT", "Plan purpose differs from its controller", "configuration"
+            )
         if spec["scope"] != {
             "workspace_id": str(self.owner.workspace_id),
             "trial_id": str(self.owner.trial_id),
@@ -215,7 +232,18 @@ class RootlessWorkerHost:
         policy = ActorPolicy(
             (self.assets.provider_id,),
             resources,
-            ("preparing", "ready", "driving", "capturing", "evaluating", "cleaning"),
+            tuple(
+                phase
+                for phase in (
+                    "preparing",
+                    "ready",
+                    "driving",
+                    "capturing",
+                    "evaluating",
+                    "cleaning",
+                )
+                if phase != "driving" or self.purpose == "execution"
+            ),
             ("allocate", "exec", "inspect", "stop", "export", "release"),
             tuple((private_inputs or {}).keys()),
             min(86400, spec["limits"]["wall_time_seconds"]),
@@ -237,6 +265,7 @@ class RootlessWorkerHost:
                 "applied_spec": spec,
                 "output_plan": plan["outputs"],
             },
+            purpose=self.purpose,
         )
         self.environment = compiled
         return compiled

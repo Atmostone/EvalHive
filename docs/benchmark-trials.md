@@ -282,6 +282,18 @@ Downgrading to a schema without evaluator stream identities rejects historical
 identity collisions rather than merging their records. Release rollback must use
 the matching database snapshot when the older schema cannot represent new data.
 
+The SDK now distinguishes execution and evaluation-only specs, plans and readiness.
+An evaluation spec carries the typed source checkpoint and exactly its declared
+evaluator model roles/private references. Plans and readiness omit agent access;
+the wrapper rejects `drive` and purpose changes. `RootlessWorkerHost` validates
+the spec/plan against its controller before compilation or group admission,
+records the session purpose and excludes driving from evaluator actor policies.
+Rootless asset compilation retains the same native grants and resource minima
+without requiring a synthetic agent. The execution driver rejects evaluation-only
+specs before starting a worker. Legacy specs without purpose remain executions.
+Standalone restoration, artifact materialization and evaluator lifecycle
+coordination remain required; these boundaries alone do not launch regrade.
+
 ## Durable worker commands
 
 `BenchmarkCommand` stores one immutable command intent per worker stream and

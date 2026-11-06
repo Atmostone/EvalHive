@@ -10,6 +10,7 @@ from .protocol import (
     decode_line,
     encode_line,
     validate,
+    validate_environment,
     validate_spec,
 )
 from .provider import EnvironmentProvider, serve_provider, serve_provider_stdio
@@ -21,6 +22,7 @@ __all__ = [
     "decode_line",
     "encode_line",
     "validate",
+    "validate_environment",
     "validate_spec",
     "Connector",
     "ConnectorClient",

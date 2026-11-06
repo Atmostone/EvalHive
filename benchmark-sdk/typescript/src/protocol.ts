@@ -13,8 +13,10 @@ export type Manifest = JsonObject & {
   config_schema: JsonObject; capabilities: Record<string, string>; requirements: JsonObject;
 };
 export type TrialSpec = JsonObject & {protocol_version: '1.0'; scope: Scope;
-  case: JsonObject; config: JsonObject; models: JsonObject; credential_refs: JsonObject};
-export type EnvironmentPlan = JsonObject & {resources: JsonObject[]; agent: JsonObject;
+  case: JsonObject; config: JsonObject; models: JsonObject; credential_refs: JsonObject;
+  purpose?: 'execution' | 'evaluation'; checkpoint?: JsonObject};
+export type EnvironmentPlan = JsonObject & {resources: JsonObject[]; agent?: JsonObject;
+  purpose?: 'execution' | 'evaluation';
   outputs: JsonObject[]; requirements: JsonObject; grading_mode: string};
 export type EvaluationResult = JsonObject & {
   status: 'completed' | 'error' | 'unavailable' | 'cancelled'; success: boolean | null;
@@ -127,6 +129,24 @@ export function validateConfig(schema: JsonObject, config: JsonObject): JsonObje
 export function validateSpec(manifest: Manifest, spec: TrialSpec): TrialSpec {
   validate('manifest', manifest); validate('trial_spec', spec);
   validateConfig(manifest.config_schema, spec.config);
+  if ((spec.purpose ?? 'execution') === 'evaluation') {
+    const checkpoint = spec.checkpoint!;
+    if (manifest.capabilities.regrade !== 'native')
+      throw new ProtocolError('REGRADE_UNAVAILABLE', 'Connector cannot restore native evaluation', 'unsupported');
+    if (!checkpoint.complete)
+      throw new ProtocolError('CHECKPOINT_INCOMPLETE', 'Native replay state is incomplete', 'recording');
+    const connector = checkpoint.connector as JsonObject, source = checkpoint.case as JsonObject;
+    const current = spec.case.ref as JsonObject;
+    if (connector.id !== manifest.id || connector.version !== manifest.version ||
+        ['dataset_id', 'revision', 'case_id', 'split'].some(key => source[key] !== current[key]) ||
+        checkpoint.source_digest !== spec.case.source_digest)
+      throw new ProtocolError('CHECKPOINT_PROVENANCE', 'Checkpoint source conditions differ', 'configuration');
+    const roles = new Set(checkpoint.evaluator_roles as string[]);
+    const references = new Set((Object.values(spec.models) as JsonObject[]).map(model => String(model.credential_ref)));
+    if (Object.keys(spec.models).length !== roles.size || Object.keys(spec.models).some(role => !roles.has(role)) ||
+        Object.keys(spec.credential_refs).length !== references.size || Object.keys(spec.credential_refs).some(ref => !references.has(ref)))
+      throw new ProtocolError('EVALUATOR_BINDING_CONFLICT', 'Only checkpoint evaluator roles and references are allowed', 'configuration');
+  }
   for (const model of Object.values(spec.models) as JsonObject[]) {
     let valid = false;
     try {
@@ -139,6 +159,15 @@ export function validateSpec(manifest: Manifest, spec: TrialSpec): TrialSpec {
       throw new ProtocolError('CREDENTIAL_REQUIRED', 'Model credential reference is unavailable');
   }
   return spec;
+}
+
+export function validateEnvironment(spec: TrialSpec, value: JsonObject,
+  kind: 'environment_plan' | 'prepared' = 'environment_plan'): JsonObject {
+  if (kind !== 'environment_plan' && kind !== 'prepared') throw new Error('Unknown environment boundary');
+  validate('trial_spec', spec); validate(kind, value);
+  if ((value.purpose ?? 'execution') !== (spec.purpose ?? 'execution'))
+    throw new ProtocolError('PURPOSE_CONFLICT', 'Environment purpose differs from the trial', 'configuration');
+  return value;
 }
 
 export function command(id: string, method: string, params: JsonObject = {}): WireMessage {

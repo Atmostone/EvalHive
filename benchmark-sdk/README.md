@@ -67,7 +67,7 @@ Generic dispatch errors omit exception text; schema errors omit rejected values.
 | `resolve_case` | Native case reference | Immutable case descriptor |
 | `validate` | `spec` | Accepted public effective configuration |
 | `plan` | `spec` | Environment plan and required capabilities |
-| `prepare` | `spec`, `plan` | Explicit readiness, session handle and agent access |
+| `prepare` | `spec`, `plan` | Explicit readiness, session handle and purpose-specific access |
 | `drive` | `scope`, connector-owned `payload` | Interaction-controller receipt |
 | `capture` | `scope`, connector-owned `payload` | Evidence/checkpoint references |
 | `evaluate` | `scope`, connector-owned `payload` | Structured evaluation result |
@@ -129,6 +129,25 @@ checks provenance and retained bytes. A string such as `regrade: available` is
 not a checkpoint. This prerequisite does not itself start replay or authorize
 reopening an execution; a new evaluator controller still needs resource admission
 and restoration of the retained state.
+
+An explicit `TrialSpec.purpose: evaluation` carries its typed `checkpoint` and
+requires native regrade support. The case, optional split, source digest and
+connector version must match. Its model roles exactly match `evaluator_roles`;
+credential references are limited to those model bindings. Agent/orchestrator
+models and unrelated private references are rejected. The SDK checks the contract;
+the host must still verify retained bytes, authorization and native sufficiency.
+The spec contains private checkpoint state and must never become an agent input
+or a public configuration response.
+
+Evaluation plans and prepared results declare `purpose: evaluation` and omit
+`agent` entirely. `validate_environment` / `validateEnvironment` checks their
+purpose against the spec. The connector wrapper rejects a different result
+purpose, prevents changing purpose within a worker and rejects `drive` for an
+evaluation worker. `prepare` restores connector-owned checkpoint state in new
+resources; an old released handle grants no authority. Absent purpose remains
+`execution` for compatibility and requires agent access in plans/readiness.
+Execution specs cannot carry a replay checkpoint. This contract does not by
+itself implement a durable restore/evaluate coordinator or materialize artifacts.
 
 ## Transport and resource broker
 

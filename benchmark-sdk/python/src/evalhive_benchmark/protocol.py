@@ -163,6 +163,34 @@ def validate_spec(manifest: dict, spec: dict) -> dict:
     validate("manifest", manifest)
     validate("trial_spec", spec)
     validate_config(manifest["config_schema"], spec["config"])
+    if spec.get("purpose", "execution") == "evaluation":
+        checkpoint = spec["checkpoint"]
+        if manifest["capabilities"].get("regrade") != "native":
+            raise ProtocolError(
+                "REGRADE_UNAVAILABLE", "Connector cannot restore native evaluation", "unsupported"
+            )
+        if not checkpoint["complete"]:
+            raise ProtocolError(
+                "CHECKPOINT_INCOMPLETE", "Native replay state is incomplete", "recording"
+            )
+        if (
+            checkpoint["connector"] != {key: manifest[key] for key in ("id", "version")}
+            or checkpoint["case"] != spec["case"]["ref"]
+            or checkpoint["source_digest"] != spec["case"]["source_digest"]
+        ):
+            raise ProtocolError(
+                "CHECKPOINT_PROVENANCE", "Checkpoint source conditions differ", "configuration"
+            )
+        references = {model["credential_ref"] for model in spec["models"].values()}
+        if (
+            set(spec["models"]) != set(checkpoint["evaluator_roles"])
+            or set(spec["credential_refs"]) != references
+        ):
+            raise ProtocolError(
+                "EVALUATOR_BINDING_CONFLICT",
+                "Only checkpoint evaluator roles and references are allowed",
+                "configuration",
+            )
     from urllib.parse import urlsplit
 
     for model in spec["models"].values():
@@ -184,6 +212,19 @@ def validate_spec(manifest: dict, spec: dict) -> dict:
         if model["credential_ref"] not in spec["credential_refs"]:
             raise ProtocolError("CREDENTIAL_REQUIRED", "Model credential reference is unavailable")
     return spec
+
+
+def validate_environment(spec: dict, value: dict, *, kind="environment_plan") -> dict:
+    """Match the native plan/readiness boundary to its execution purpose."""
+    if kind not in {"environment_plan", "prepared"}:
+        raise ValueError("Unknown environment boundary")
+    validate("trial_spec", spec)
+    validate(kind, value)
+    if value.get("purpose", "execution") != spec.get("purpose", "execution"):
+        raise ProtocolError(
+            "PURPOSE_CONFLICT", "Environment purpose differs from the trial", "configuration"
+        )
+    return value
 
 
 def command(request_id: str, method: str, params: dict | None = None) -> dict:

@@ -127,6 +127,23 @@ def test_compile_freezes_native_process_defaults_images_requirements_and_outputs
     asyncio.run(scenario())
 
 
+def test_evaluation_plan_compiles_without_an_agent_grant():
+    async def scenario():
+        assets, _ = catalog()
+        native = plan()
+        del native["agent"]
+        native["purpose"] = "evaluation"
+        compiled = await assets.compile(scope(), native)
+        assert tuple(compiled.leases) == ("task",)
+        assert compiled.demands[0].minimum_memory_mb == 256
+        assert compiled.outputs["task"]["result"].path == OUTPUT["path"]
+        native["agent"] = plan()["agent"]
+        with pytest.raises(ProtocolError):
+            await assets.compile(scope(), native)
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "config",
     [

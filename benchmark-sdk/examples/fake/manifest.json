@@ -39,7 +39,8 @@
     "aggregate": "native",
     "cleanup": "native",
     "capture": "native",
-    "drive": "native"
+    "drive": "native",
+    "regrade": "native"
   },
   "requirements": {
     "capabilities": []

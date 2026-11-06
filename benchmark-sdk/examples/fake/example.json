@@ -40,7 +40,8 @@
       "aggregate": "native",
       "cleanup": "native",
       "capture": "native",
-      "drive": "native"
+      "drive": "native",
+      "regrade": "native"
     },
     "requirements": {
       "capabilities": []
@@ -112,6 +113,26 @@
     "artifacts": [],
     "completeness": {
       "state": "captured"
+    }
+  },
+  "checkpoint": {
+    "format_version": "1.0",
+    "connector": {
+      "id": "example.benchmark",
+      "version": "0.1.0"
+    },
+    "case": {
+      "dataset_id": "example",
+      "revision": "1",
+      "case_id": "echo"
+    },
+    "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "state_schema": "fixture.saved-world.v1",
+    "complete": true,
+    "artifacts": [],
+    "evaluator_roles": [],
+    "state": {
+      "saved": true
     }
   }
 }

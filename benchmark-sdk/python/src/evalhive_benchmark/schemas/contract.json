@@ -477,6 +477,15 @@
             "disk_mb"
           ],
           "additionalProperties": false
+        },
+        "purpose": {
+          "enum": [
+            "execution",
+            "evaluation"
+          ]
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/regrade_checkpoint"
         }
       },
       "required": [
@@ -488,7 +497,45 @@
         "models",
         "limits"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "evaluation"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "then": {
+            "required": [
+              "checkpoint"
+            ],
+            "properties": {
+              "models": {
+                "propertyNames": {
+                  "not": {
+                    "enum": [
+                      "agent",
+                      "orchestrator"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "checkpoint"
+              ]
+            }
+          }
+        }
+      ]
     },
     "agent_access": {
       "type": "object",
@@ -683,16 +730,47 @@
             "environment",
             "container_native"
           ]
+        },
+        "purpose": {
+          "enum": [
+            "execution",
+            "evaluation"
+          ]
         }
       },
       "required": [
         "resources",
-        "agent",
         "outputs",
         "requirements",
         "grading_mode"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "evaluation"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "agent"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "agent"
+            ]
+          }
+        }
+      ]
     },
     "evaluation_result": {
       "type": "object",
@@ -887,16 +965,47 @@
             "$ref": "#/$defs/artifact"
           },
           "maxItems": 256
+        },
+        "purpose": {
+          "enum": [
+            "execution",
+            "evaluation"
+          ]
         }
       },
       "required": [
         "ready",
         "session_handle",
-        "agent",
         "native_state",
         "artifacts"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "evaluation"
+              }
+            },
+            "required": [
+              "purpose"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "agent"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "agent"
+            ]
+          }
+        }
+      ]
     },
     "aggregate_result": {
       "type": "object",
