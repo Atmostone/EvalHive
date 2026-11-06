@@ -66,6 +66,7 @@ def extract_native(path, root):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     with tarfile.open(path, "r:") as archive:
+        members = []
         for index, member in enumerate(archive):
             name = PurePosixPath(member.name)
             if (
@@ -76,7 +77,10 @@ def extract_native(path, root):
                 and not member.isdir()
             ):
                 raise ValueError("Native archive contains unsupported state entries")
-            archive.extract(member, root, filter="data")
+            members.append(member)
+        # Validate the complete index before writing. extractall applies directory
+        # permissions after children, including captured read-only directories.
+        archive.extractall(root, members=members, filter="data")
 
 
 def initialize(source, expected_digest):
@@ -91,6 +95,20 @@ def initialize(source, expected_digest):
     extract_native(source, "/gym")
     Path("/reports").mkdir()
     return {"initialized": True}
+
+
+def restore_tree(archive, root):
+    """Replace captured contents, including deletions, without removing a mount root."""
+    root = Path(root)
+    if root.is_symlink():
+        raise ValueError("Native restore root cannot be a link")
+    root.mkdir(parents=True, exist_ok=True)
+    for child in root.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    extract_native(archive, root)
 
 
 def task_root(identity):
@@ -285,8 +303,8 @@ def restore(identity, checkpoint):
             stderr=errors,
             timeout=60,
         )
-    extract_native(saved / "workspace.tar", "/workspace")
-    extract_native(saved / "task.tar", task_root(identity))
+    restore_tree(saved / "workspace.tar", "/workspace")
+    restore_tree(saved / "task.tar", task_root(identity))
     service_file = saved / "services.json"
     if not service_file.is_file() or service_file.stat().st_size > 65536:
         raise ValueError("Native service checkpoint is unavailable")

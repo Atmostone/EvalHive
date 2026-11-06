@@ -90,7 +90,7 @@ def test_native_toolathlon_assets_preserve_budget_gold_boundary_and_evaluation_o
         assert decision["eligible"], decision
         assert decision["group_resources"] == {
             "memory_mb": 2112 if purpose == "execution" else 1088,
-            "cpu_cores": pytest.approx(1.4 if purpose == "execution" else 0.4),
+            "cpu_cores": pytest.approx(1.5 if purpose == "execution" else 0.5),
             "disk_mb": 1536 if purpose == "execution" else 1408,
         }
         assert compiled.leases["world"][1].intent.role == "service"

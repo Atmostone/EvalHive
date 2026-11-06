@@ -287,6 +287,7 @@ class ToolathlonConnector(Connector):
                 "argv": argv,
                 "cwd": cwd,
                 "timeout_seconds": timeout,
+                "deadline_policy": "inherit",
             },
             handle=self.handles["world"],
             request_id=request_id,

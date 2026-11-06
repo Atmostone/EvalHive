@@ -16,6 +16,7 @@ from evalhive_toolathlon.environment import (
     portal_service,
     portals,
     restore_services,
+    restore_tree,
 )
 
 
@@ -65,6 +66,15 @@ def archive(tmp_path, name="answer.txt", *, kind=tarfile.REGTYPE):
 def test_native_state_extracts_only_into_the_selected_owned_root(tmp_path):
     target = tmp_path / "world"
     extract_native(archive(tmp_path), target)
+    assert (target / "answer.txt").read_bytes() == b"native-state"
+
+
+def test_restore_removes_uncaptured_initial_files_instead_of_resurrecting_deleted_state(tmp_path):
+    target = tmp_path / "world"
+    (target / "old-directory").mkdir(parents=True)
+    (target / "old-directory/removed.txt").write_text("not in the captured state")
+    restore_tree(archive(tmp_path), target)
+    assert sorted(path.name for path in target.iterdir()) == ["answer.txt"]
     assert (target / "answer.txt").read_bytes() == b"native-state"
 
 

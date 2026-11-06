@@ -55,6 +55,12 @@ checkpoints explicitly disable
 regrading. Native checker exit codes 0 and 1 represent correct and incorrect;
 other exits are evaluator failures. Deferred quality evaluation remains unknown.
 
+Restore replaces captured directories, preserving deletions rather than merging
+them into the initial source. Private World preparation reserves 0.2 CPU; the
+Task's separate 1 CPU limit is unchanged. Native owned commands explicitly
+inherit the remaining parent deadline, so their maximum timeout cannot extend
+the execution or evaluation budget.
+
 `python -m evalhive_toolathlon.registration` publishes an installed manifest,
 resource catalog and file map using immutable worker/environment/database image
 pins. File grants use installation-relative paths and a host-supplied

@@ -77,7 +77,7 @@ def assets(worker_image, environment_image, postgres_image, *, egress=True):
             environment_image,
             "service",
             512,
-            0.1,
+            0.2,
             512,
             pids=256,
             command=["/opt/venv/bin/python", "-c", "import time;time.sleep(86400)"],
