@@ -14,7 +14,7 @@ import hashlib
 import json
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import timedelta
 
 from evalhive_benchmark import ProtocolError, validate
@@ -22,6 +22,7 @@ from evalhive_benchmark.protocol import MAX_LINE_BYTES, _json_value
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.benchmarks.admission import HostAdmission
 from app.benchmarks.control_repository import EXECUTION_CONTROLS
 from app.benchmarks.lifecycle import ControlLifecycle
 from app.benchmarks.streams import StreamLedger
@@ -34,7 +35,6 @@ from app.models.benchmark_trial import (
     BenchmarkTrial,
 )
 from app.models.task import Task
-from app.runtime.admission import check_group
 
 PHASES = {
     "created": {"planning", "cleaning"},
@@ -162,7 +162,7 @@ async def append_entry(db, trial, event, public_data=None, *, private_data=None,
     )
 
 
-class TrialStore(ControlLifecycle, StreamLedger):
+class TrialStore(HostAdmission, ControlLifecycle, StreamLedger):
     journal_model = BenchmarkJournalEntry
     phases = PHASES
 
@@ -379,112 +379,6 @@ class TrialStore(ControlLifecycle, StreamLedger):
                 )
             )
             return result.rowcount == 1
-
-    async def reserve(
-        self,
-        owner,
-        *,
-        demands,
-        native_resources,
-        measure,
-        runtime_policy,
-        group_policy,
-        stage="full",
-    ):
-        """Admit an isolated planner, then freeze the complete group exactly once.
-
-        A planning reservation only authorizes one registered worker. Finalizing
-        retains its exact demand; no later resize or lowering native minima is
-        allowed. Measurements remain conservative while that worker is alive.
-        """
-        if stage not in {"planning", "full"}:
-            raise failure("INVALID_ADMISSION", "Unknown host admission stage")
-        if stage == "planning" and (len(demands) != 1 or native_resources):
-            raise failure("INVALID_ADMISSION", "Planning admission requires one worker demand")
-        resources = [asdict(item) for item in demands]
-        async with database_fence(self.engine, owner.trial_id, host_id=self.host_id) as db:
-            trial, now = await self.current(db, owner)
-            if (
-                trial.phase != "planning"
-                or trial.cancel_requested_at is not None
-                or trial.deadline_at <= now
-            ):
-                raise failure("INVALID_PHASE", "Host admission requires an active planning phase")
-            reservation = await db.get(BenchmarkHostReservation, self.host_id)
-            if reservation is not None:
-                if (reservation.trial_id, reservation.generation, reservation.controller_id) != (
-                    owner.trial_id,
-                    owner.generation,
-                    owner.controller_id,
-                ):
-                    raise failure("HOST_BUSY", "Execution host remains reserved", "preparation")
-                previous_stage = reservation.budget.get("stage", "full")
-                if previous_stage == stage:
-                    if (
-                        reservation.budget["resources"] != resources
-                        or reservation.budget["native_resources"] != native_resources
-                    ):
-                        raise failure(
-                            "ADMISSION_CONFLICT",
-                            "Host reservation has different resource requirements",
-                        )
-                    return reservation.budget
-                selected = {item["resource_id"]: item for item in resources}
-                if (
-                    previous_stage != "planning"
-                    or stage != "full"
-                    or any(
-                        selected.get(item["resource_id"]) != item
-                        for item in reservation.budget["resources"]
-                    )
-                ):
-                    raise failure(
-                        "ADMISSION_CONFLICT", "Final admission must preserve the planning worker"
-                    )
-            measured = await measure()
-            # Measurement may yield while a cancellation request arrives.
-            await db.refresh(trial)
-            now = await db.scalar(select(func.clock_timestamp()))
-            if trial.cancel_requested_at is not None or trial.deadline_at <= now:
-                raise failure("TRIAL_STOPPING", "Trial stopped during host admission", "execution")
-            decision = check_group(
-                demands, native_resources, measured, runtime_policy, group_policy, active_trials=0
-            )
-            if not decision["eligible"]:
-                raise failure(
-                    "CAPACITY_UNAVAILABLE",
-                    "Native group does not fit the execution host",
-                    "preparation",
-                )
-            budget = {
-                **decision,
-                "stage": stage,
-                "runtime_admission": "reserved",
-                "can_run": False,
-                "resources": resources,
-                "native_resources": native_resources,
-            }
-            finalizing = reservation is not None
-            if finalizing:
-                reservation.budget = budget
-            else:
-                db.add(
-                    BenchmarkHostReservation(
-                        host_id=self.host_id,
-                        trial_id=owner.trial_id,
-                        generation=owner.generation,
-                        controller_id=owner.controller_id,
-                        budget=budget,
-                    )
-                )
-            await self.append(
-                db,
-                trial,
-                "host.reservation_finalized" if finalizing else "host.reserved",
-                {"stage": stage, "group_resources": decision["group_resources"]},
-            )
-            await db.commit()
-            return budget
 
     async def phase_effects(self, db, trial, target, now):
         if target == "driving":

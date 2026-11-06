@@ -43,12 +43,13 @@ class Worker(Connector):
         scope = params.get("scope") or params.get("spec", {}).get("scope")
         if scope:
             await context.emit(scope, "phase.started", {"phase": method})
-        if self.config.get("die_phase") == method:
+        prefix = "regrade_" if getattr(self, "spec", {}).get("purpose") == "evaluation" else ""
+        if self.config.get(prefix + "die_phase") == method:
             os._exit(7)
-        if self.config.get("wait_phase") == method:
+        if self.config.get(prefix + "wait_phase") == method:
             await context.cancelled.wait()
             raise ProtocolError("CANCELLED", "Fixture stopped", "execution")
-        if self.config.get("fail_phase") == method:
+        if self.config.get(prefix + "fail_phase") == method:
             raise ProtocolError(
                 "FIXTURE_FAILED",
                 "Fixture operation failed",
@@ -61,26 +62,48 @@ class Worker(Connector):
         if method == "validate":
             return {
                 "accepted": True,
-                "effective_config": {"effective_marker": "resolved", **self.config},
+                "effective_config": {
+                    **{"effective_marker": "resolved", **self.config},
+                    **(
+                        {"effective_marker": "changed"}
+                        if prefix and self.config.get("regrade_default_drift")
+                        else {}
+                    ),
+                },
             }
         if method == "plan":
             assert self.config["effective_marker"] == "resolved"
-            return {
+            plan = {
                 "resources": [],
                 "agent": AGENT,
                 "outputs": [],
                 "requirements": {},
                 "grading_mode": "snapshot",
             }
+            if self.spec.get("purpose") == "evaluation":
+                del plan["agent"]
+                plan["purpose"] = "evaluation"
+            return plan
         if method == "prepare":
             assert self.config["effective_marker"] == "resolved"
-            return {
+            prepared = {
                 "ready": True,
                 "session_handle": "fixture-session",
                 "agent": AGENT,
                 "native_state": {},
                 "artifacts": [],
             }
+            if self.spec.get("purpose") == "evaluation":
+                checkpoint = self.spec["checkpoint"]
+                if checkpoint["state_schema"] != "fixture.inline.v1" or checkpoint["state"] != {
+                    "captured": True
+                }:
+                    raise ProtocolError(
+                        "RESTORE_FAILED", "Unsupported fixture checkpoint", "preparation"
+                    )
+                del prepared["agent"]
+                prepared.update(purpose="evaluation", native_state=checkpoint["state"])
+            return prepared
         if method == "drive":
             return {"finished": True}
         if method == "capture":

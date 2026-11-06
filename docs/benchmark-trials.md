@@ -191,8 +191,9 @@ and unknown call count, without presenting that subtotal as a complete total.
 Costs use exact decimal arithmetic and retain provider/estimate provenance.
 Out-of-policy cost strings remain unknown with an explicit projection error.
 An empty ledger does not claim complete measurement. Initial evaluator attempts
-are described below. Standalone regrade execution and native aggregation history
-remain B05/B15 work; retained files alone do not authorize regrade.
+are described below. Product regrade launch, retained-state materialization and
+native aggregation history remain B05/B15 work; retained files alone do not
+authorize regrade.
 
 ## Initial evaluator attempts
 
@@ -252,9 +253,9 @@ owner token. Expired evaluator takeover enters cleanup, records an uncertain
 grading result and fences the old owner; it cannot resume native interaction.
 The failed invocation retains a typed source checkpoint for a later new regrade.
 
-This lease repository is not yet an executable regrade coordinator. Restoration
-and lifecycle coordination must use its context before it can launch. Source
-resource leases are not transferred to it.
+The lease repository supplies ownership to the regrade driver described below.
+Source resource leases are not transferred to it. Product launch still requires
+trusted installed assets and retained-state materialization.
 
 Resource sessions now carry an immutable optional evaluator control ID (`bg08`).
 Its composite foreign key binds the control, source trial and workspace. Operation
@@ -294,8 +295,8 @@ records the session purpose and excludes driving from evaluator actor policies.
 Rootless asset compilation retains the same native grants and resource minima
 without requiring a synthetic agent. The execution driver rejects evaluation-only
 specs before starting a worker. Legacy specs without purpose remain executions.
-Standalone restoration, artifact materialization and a supervised worker pipeline
-remain required; these boundaries alone do not launch regrade.
+These SDK boundaries do not themselves materialize retained artifacts or authorize
+product launch.
 
 Execution and evaluator stores now share `ControlLifecycle`: owner-checked
 control snapshots, journal notes, monotonic controller cancellation, phase gates,
@@ -320,9 +321,42 @@ an unfinished grading result as uncertain and enters cleanup. A stale controller
 cannot cancel its replacement through the controller stop method; user-requested
 workspace cancellation remains a separate API.
 
-These lifecycle primitives are implemented. A supervised restore/evaluate worker
-pipeline, sufficient artifact materialization and frozen image resolution remain
-necessary for standalone regrade launch.
+`HostAdmission` provides the same reservation transaction to both stores. Neither
+store borrows another store class's methods or uses an artificial execution row.
+
+## Supervised regrade worker
+
+`PhaseDriver` owns heartbeat, cancellation, database deadlines, bounded phase
+waits, partial workflow state and teardown. `TrialDriver` adds the execution
+workflow; `RegradeDriver` adds restore/capture/evaluate without drive. Preparation,
+capture, evaluation delivery barriers and cleanup share their implementation.
+Partial preparation/execution results remain available to teardown when a later
+phase raises. Recovery enters cleanup without launching a replacement worker.
+
+Creating a regrade freezes a complete evaluation-purpose spec in its immutable
+intent. It preserves the retained case, public configuration, evaluator-only
+models/references and resource limits, with a new wall-clock budget derived from
+the evaluation deadline. A creation retry reads the original receipt and budget;
+it does not regenerate a deadline or change the input digest.
+
+The driver reads that saved spec through `launch_inputs`, checks the input digest
+and verifies the retained checkpoint bytes again before worker startup. The
+verification runs outside SQL locks under the common supervisor. A source with
+missing resource limits cannot create a new runnable invocation. The selected
+worker must match the saved evaluator metadata; native validation cannot silently
+change the frozen effective configuration.
+
+The new SDK worker prepares from `spec.checkpoint`, reports evaluation readiness
+without agent access, captures its restored environment and evaluates under its
+own attempt ID. Its result uses the exact durable command receipt. The original
+execution and its evaluator result remain unchanged. A caller cancellation waits
+for bounded cleanup before propagating; stale ownership causes local detachment.
+
+SDK-only process tests exercise native inline checkpoint restoration and all
+failure/cancellation paths against PostgreSQL. This is an implemented worker
+workflow, not proof of a real benchmark adapter or large archive restoration.
+Host materialization of retained files, frozen source image/file resolution and
+product launch wiring remain required before standalone regrade is available.
 
 ## Durable worker commands
 
@@ -425,8 +459,9 @@ choose a harness or infer a correctness verdict.
 
 ## Automatic controller
 
-`TrialDriver` runs validation, planning, preparation, execution, capture, native
-evaluation and cleanup through that host and its durable SDK channel. Effective
+`TrialDriver`, using the shared phase supervisor, runs validation, planning,
+preparation, execution, capture, native evaluation and cleanup through that host
+and its durable SDK channel. Effective
 configuration is validated and recorded before planning. Typed capture references
 and evaluator results are checked before recording a verdict. RPC completion is
 an execution outcome, not evidence that the answer is correct.
@@ -456,8 +491,9 @@ only its local transport and cannot stop or release the new owner's resources.
 A driver instance is single-use. Another driver observing a partially running
 epoch detaches instead of taking over its cleanup. A retry is a new trial; only
 an explicit expired-owner claim permits recovery. Initial evaluator history and
-production evidence storage are implemented in B05; standalone controlled regrade
-remains B05 work. Product API and queue wiring are B14 work.
+production evidence storage and the independent regrade worker workflow are
+implemented in B05. Retained-file materialization and source asset resolution
+remain B05 work. Product API and queue wiring are B14 work.
 
 ## Recovery and deadlines
 

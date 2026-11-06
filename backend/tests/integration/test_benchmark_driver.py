@@ -64,7 +64,12 @@ class Host:
             [sys.executable, str(worker)],
             env={"PATH": os.defpath, "PYTHONPATH": "/opt/current-benchmark-sdk"},
         )
-        self.channel = await WorkerChannel.attach(self.store, self.owner, uuid.uuid4(), self.client)
+        self.channel = await WorkerChannel.attach(
+            self.store,
+            self.owner,
+            uuid.uuid5(self.owner.controller_id, "benchmark.actor"),
+            self.client,
+        )
         await self.channel.invoke("describe")
         return self.channel
 

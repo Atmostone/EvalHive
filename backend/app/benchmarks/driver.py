@@ -35,7 +35,17 @@ class DriverLimits:
             raise ValueError("Driver limits must be finite positive bounded durations")
 
 
-class TrialDriver:
+@dataclass
+class WorkflowState:
+    prepared: dict | None = None
+    execution: dict | None = None
+    capture: dict | None = None
+    captured: bool = False
+
+
+class PhaseDriver:
+    purpose = None
+
     def __init__(
         self,
         host,
@@ -307,6 +317,73 @@ class TrialDriver:
             self.store.transition(self.owner, "cleaning", "finished"), self.limits.service_seconds
         )
 
+    async def _resolve_spec(self, spec):
+        return deepcopy(spec)
+
+    def _check_effective_config(self, spec, effective):
+        pass
+
+    async def _prepare(self, spec, *, private_inputs, extra_demands):
+        channel = await self._wait(self.host.start())
+        checked = await self._wait(
+            channel.invoke("validate", {"spec": spec}, timeout=self.limits.phase_seconds)
+        )
+        self._check_effective_config(spec, checked["effective_config"])
+        spec = {**deepcopy(spec), "config": checked["effective_config"]}
+        validate_spec(self.host.manifest, spec)
+        await self._note("configuration.applied", private=spec)
+        plan = await self._wait(
+            channel.invoke("plan", {"spec": spec}, timeout=self.limits.phase_seconds)
+        )
+        await self._wait(
+            self.host.install_plan(
+                spec, plan, private_inputs=private_inputs, extra_demands=extra_demands
+            )
+        )
+        await self._wait(self.store.transition(self.owner, "planning", "preparing"))
+        self.workflow.prepared = await self._wait(
+            channel.invoke(
+                "prepare", {"spec": spec, "plan": plan}, timeout=self.limits.phase_seconds
+            )
+        )
+        await self._wait(self.store.transition(self.owner, "preparing", "ready"))
+        return spec, channel
+
+    async def _capture(self, channel):
+        capture = await self._wait(
+            channel.invoke(
+                "capture",
+                self._scoped(self.workflow.prepared, self.workflow.execution),
+                timeout=self.limits.capture_seconds,
+            ),
+            seconds=self.limits.capture_seconds,
+        )
+        await self._capture_result(capture)
+        await self._note("capture.completed", private=capture)
+        self.workflow.capture, self.workflow.captured = capture, True
+        return capture
+
+    async def _grade(self, channel, capture, evaluation_id):
+        params = self._scoped(self.workflow.prepared, self.workflow.execution, capture)
+        params["payload"]["evaluation_id"] = str(evaluation_id)
+        result = await self._wait(
+            channel.invoke(
+                "evaluate",
+                params,
+                request_id="evaluation." + str(evaluation_id),
+                timeout=self.limits.phase_seconds,
+            )
+        )
+        artifacts = list(capture["artifacts"])
+        for artifact in result["artifacts"]:
+            if artifact not in artifacts:
+                artifacts.append(artifact)
+        await self._capture_result(
+            {**capture, "artifacts": artifacts},
+            stage="evaluation" if result["status"] == "completed" else "capture",
+        )
+        await self._wait(self.store.finish_evaluation(self.owner, result, attempt_id=evaluation_id))
+
     async def run(self, spec, *, private_inputs=None, extra_demands=(), evaluate=True):
         if self.used:
             raise ValueError("A driver cannot restart or resume a native session")
@@ -325,7 +402,8 @@ class TrialDriver:
             ],
         ]
         self.services = [asyncio.create_task(self._service(operation)) for operation in loops]
-        prepared, execution, captured, recovered, caller_cancelled = None, None, False, False, False
+        self.workflow = WorkflowState()
+        recovered, caller_cancelled = False, False
         try:
             state = await self._state()
             recovered = state.phase == "cleaning"
@@ -337,11 +415,12 @@ class TrialDriver:
                         "A partial native session requires a new recovery claim",
                         "uncertain",
                     )
+                spec = await self._wait(self._resolve_spec(spec))
                 validate_spec(self.host.manifest, spec)
-                if spec.get("purpose", "execution") != "execution":
+                if spec.get("purpose", "execution") != self.purpose:
                     raise ProtocolError(
                         "PURPOSE_CONFLICT",
-                        "Execution driver requires an execution spec",
+                        "Worker spec differs from the driver purpose",
                         "configuration",
                     )
                 if evaluate and self.host.manifest["capabilities"].get("evaluate") not in {
@@ -363,93 +442,12 @@ class TrialDriver:
                     raise ProtocolError(
                         "OWNER_ACTIVE", "Another driver already entered this epoch", "configuration"
                     )
-                channel = await self._wait(self.host.start())
-                checked = await self._wait(
-                    channel.invoke("validate", {"spec": spec}, timeout=self.limits.phase_seconds)
+                await self._pipeline(
+                    spec,
+                    private_inputs=private_inputs,
+                    extra_demands=extra_demands,
+                    evaluate=evaluate,
                 )
-                spec = {**deepcopy(spec), "config": checked["effective_config"]}
-                validate_spec(self.host.manifest, spec)
-                await self._note("configuration.applied", private=spec)
-                plan = await self._wait(
-                    channel.invoke("plan", {"spec": spec}, timeout=self.limits.phase_seconds)
-                )
-                await self._wait(
-                    self.host.install_plan(
-                        spec, plan, private_inputs=private_inputs, extra_demands=extra_demands
-                    )
-                )
-                await self._wait(self.store.transition(self.owner, "planning", "preparing"))
-                prepared = await self._wait(
-                    channel.invoke(
-                        "prepare", {"spec": spec, "plan": plan}, timeout=self.limits.phase_seconds
-                    )
-                )
-                await self._wait(self.store.transition(self.owner, "preparing", "ready"))
-                await self._wait(self.store.transition(self.owner, "ready", "driving"))
-                execution = await self._wait(
-                    channel.invoke(
-                        "drive", self._scoped(prepared), timeout=self.limits.phase_seconds
-                    )
-                )
-                await self._wait(self.store.finish_execution(self.owner, "success"))
-                await self._wait(self.store.transition(self.owner, "driving", "capturing"))
-                capture = await self._wait(
-                    channel.invoke(
-                        "capture",
-                        self._scoped(prepared, execution),
-                        timeout=self.limits.capture_seconds,
-                    ),
-                    seconds=self.limits.capture_seconds,
-                )
-                await self._capture_result(capture)
-                await self._note("capture.completed", private=capture)
-                captured = True
-                if evaluate:
-                    evaluation_id = await self._wait(
-                        self.store.begin_evaluation(
-                            self.owner,
-                            {
-                                "spec": spec,
-                                "capture": capture,
-                                "prepared": prepared,
-                                "execution": execution,
-                                "worker_actor_id": str(channel.actor_id),
-                                "evaluator": {
-                                    key: self.host.manifest[key]
-                                    for key in (
-                                        "id",
-                                        "version",
-                                        "protocol_version",
-                                        "image",
-                                        "capabilities",
-                                    )
-                                },
-                            },
-                        )
-                    )
-                    params = self._scoped(prepared, execution, capture)
-                    params["payload"]["evaluation_id"] = str(evaluation_id)
-                    result = await self._wait(
-                        channel.invoke(
-                            "evaluate",
-                            params,
-                            request_id="evaluation." + str(evaluation_id),
-                            timeout=self.limits.phase_seconds,
-                        )
-                    )
-                    artifacts = list(capture["artifacts"])
-                    for artifact in result["artifacts"]:
-                        if artifact not in artifacts:
-                            artifacts.append(artifact)
-                    await self._capture_result(
-                        {**capture, "artifacts": artifacts},
-                        stage="evaluation" if result["status"] == "completed" else "capture",
-                    )
-                    await self._wait(
-                        self.store.finish_evaluation(self.owner, result, attempt_id=evaluation_id)
-                    )
-                else:
-                    await self._wait(self.store.finish_evaluation(self.owner))
         except asyncio.CancelledError:
             caller_cancelled = True
             if not self.fenced:
@@ -512,7 +510,10 @@ class TrialDriver:
         try:
             if not self.fenced:
                 await self._cleanup(
-                    recovered=recovered, prepared=prepared, execution=execution, captured=captured
+                    recovered=recovered,
+                    prepared=self.workflow.prepared,
+                    execution=self.workflow.execution,
+                    captured=self.workflow.captured,
                 )
         except Exception:
             # Fenced/unknown effects remain owned by durable recovery. Never mark
@@ -544,3 +545,47 @@ class TrialDriver:
             "recording": state.recording_status,
             "cleanup": state.cleanup_status,
         }
+
+
+class TrialDriver(PhaseDriver):
+    purpose = "execution"
+
+    async def _pipeline(self, spec, *, private_inputs, extra_demands, evaluate):
+        spec, channel = await self._prepare(
+            spec, private_inputs=private_inputs, extra_demands=extra_demands
+        )
+        await self._wait(self.store.transition(self.owner, "ready", "driving"))
+        self.workflow.execution = await self._wait(
+            channel.invoke(
+                "drive", self._scoped(self.workflow.prepared), timeout=self.limits.phase_seconds
+            )
+        )
+        await self._wait(self.store.finish_execution(self.owner, "success"))
+        await self._wait(self.store.transition(self.owner, "driving", "capturing"))
+        capture = await self._capture(channel)
+        if evaluate:
+            evaluation_id = await self._wait(
+                self.store.begin_evaluation(
+                    self.owner,
+                    {
+                        "spec": spec,
+                        "capture": capture,
+                        "prepared": self.workflow.prepared,
+                        "execution": self.workflow.execution,
+                        "worker_actor_id": str(channel.actor_id),
+                        "evaluator": {
+                            key: self.host.manifest[key]
+                            for key in (
+                                "id",
+                                "version",
+                                "protocol_version",
+                                "image",
+                                "capabilities",
+                            )
+                        },
+                    },
+                )
+            )
+            await self._grade(channel, capture, evaluation_id)
+        else:
+            await self._wait(self.store.finish_evaluation(self.owner))

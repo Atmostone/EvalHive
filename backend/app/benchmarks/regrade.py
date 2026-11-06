@@ -93,6 +93,7 @@ async def verify_source(evidence, workspace_id, trial_id, evaluation_id, inputs)
         "checkpoint": checkpoint,
         "case": spec["case"],
         "config": spec["config"],
+        "limits": spec.get("limits"),
         "evaluator": evaluator,
         "environment_sessions": inputs["environment_sessions"],
         "models": models,

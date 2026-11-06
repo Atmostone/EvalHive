@@ -1,16 +1,20 @@
 """Own a new grading invocation without acquiring the finished execution's lease."""
 
+import math
 import uuid
 from datetime import timedelta
 
 from evalhive_benchmark import validate
 from evalhive_benchmark.peer import identity
 from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import undefer
 
+from app.benchmarks.admission import HostAdmission
 from app.benchmarks.control_repository import SqlControlRepository
 from app.benchmarks.evaluation import interrupt_attempt, terminal, verify_receipt
 from app.benchmarks.lifecycle import ControlLifecycle
-from app.benchmarks.regrade import retained_source
+from app.benchmarks.regrade import retained_source, verify_source
 from app.benchmarks.streams import StreamLedger
 from app.benchmarks.trials import Controller, database_fence, failure
 from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
@@ -29,7 +33,7 @@ EVALUATION_CONTROLS = SqlControlRepository(
 )
 
 
-class EvaluationControls(ControlLifecycle, StreamLedger):
+class EvaluationControls(HostAdmission, ControlLifecycle, StreamLedger):
     """Lease/journal boundary, not a launch API or permission to resume a world.
 
     Resource sessions and worker streams bind explicitly to this context.
@@ -155,11 +159,6 @@ class EvaluationControls(ControlLifecycle, StreamLedger):
             await self.append(db, row, "evaluation.finished", {"status": attempt.status})
             await db.commit()
 
-    async def reserve(self, owner, **kwargs):
-        from app.benchmarks.trials import TrialStore
-
-        return await TrialStore.reserve(self, owner, **kwargs)
-
     async def create(
         self,
         workspace_id,
@@ -193,10 +192,18 @@ class EvaluationControls(ControlLifecycle, StreamLedger):
         source = await retained_source(
             self.trials, self.evidence, workspace_id, trial_id, source_evaluation_id
         )
+        if source["limits"] is None:
+            raise failure(
+                "SOURCE_SPEC_UNAVAILABLE", "Source resource limits were not retained", "unsupported"
+            )
         # Keep the same source-input shape as initial evaluations so another
         # regrade can read a failed grading invocation without rerunning agents.
         inputs = {
             "spec": {
+                "protocol_version": "1.0",
+                "purpose": "evaluation",
+                "checkpoint": source["checkpoint"],
+                "limits": {**source["limits"]},
                 "scope": {
                     "workspace_id": str(workspace_id),
                     "trial_id": str(trial_id),
@@ -216,11 +223,18 @@ class EvaluationControls(ControlLifecycle, StreamLedger):
             "source_evaluation_id": str(source_evaluation_id),
         }
         async with database_fence(self.engine, trial_id) as db:
-            now = await db.scalar(select(func.clock_timestamp()))
-            if deadline_at.tzinfo is None or not now < deadline_at <= now + timedelta(days=1):
-                raise failure("INVALID_DEADLINE", "Evaluation deadline is outside host policy")
-            previous = await db.get(BenchmarkEvaluationAttempt, evaluation_id)
+            previous = await db.get(
+                BenchmarkEvaluationAttempt,
+                evaluation_id,
+                options=[undefer(BenchmarkEvaluationAttempt.private_inputs)],
+            )
             if previous is not None:
+                saved = self.private.open(
+                    "evaluation-inputs:" + str(evaluation_id), previous.private_inputs
+                )
+                inputs["spec"]["limits"]["wall_time_seconds"] = saved["spec"]["limits"][
+                    "wall_time_seconds"
+                ]
                 if (
                     previous.workspace_id,
                     previous.trial_id,
@@ -242,6 +256,13 @@ class EvaluationControls(ControlLifecycle, StreamLedger):
                     raise failure("EVALUATION_CONFLICT", "Evaluation control identity differs")
                 # Do not mint a new owner token for a recovered epoch.
                 return Controller(workspace_id, trial_id, 1, controller_id, evaluation_id)
+            now = await db.scalar(select(func.clock_timestamp()))
+            if deadline_at.tzinfo is None or not now < deadline_at <= now + timedelta(days=1):
+                raise failure("INVALID_DEADLINE", "Evaluation deadline is outside host policy")
+            inputs["spec"]["limits"]["wall_time_seconds"] = math.ceil(
+                (deadline_at - now).total_seconds()
+            )
+            validate("trial_spec", inputs["spec"])
             db.add(
                 BenchmarkEvaluationAttempt(
                     id=evaluation_id,
@@ -285,6 +306,45 @@ class EvaluationControls(ControlLifecycle, StreamLedger):
             )
             await db.commit()
             return Controller(workspace_id, trial_id, 1, controller_id, evaluation_id)
+
+    async def launch_inputs(self, owner):
+        """Read an immutable fresh invocation, then verify retained bytes outside SQL locks."""
+        async with AsyncSession(self.engine) as db:
+            row, _ = await self.current(db, owner)
+            attempt = await db.get(
+                BenchmarkEvaluationAttempt,
+                row.id,
+                options=[undefer(BenchmarkEvaluationAttempt.private_inputs)],
+            )
+            if (
+                row.phase != "created"
+                or attempt.status != "running"
+                or (attempt.origin_generation, attempt.controller_id)
+                != (owner.generation, owner.controller_id)
+            ):
+                raise failure(
+                    "NATIVE_RESUME_UNSUPPORTED",
+                    "Evaluation launch requires its fresh invocation",
+                    "uncertain",
+                )
+            inputs = self.private.open(
+                "evaluation-inputs:" + str(attempt.id), attempt.private_inputs
+            )
+            if identity(inputs) != attempt.input_digest:
+                raise failure(
+                    "EVALUATION_CONFLICT",
+                    "Stored evaluator inputs do not match their digest",
+                    "recording",
+                )
+        validate("trial_spec", inputs["spec"])
+        if inputs["spec"].get("purpose") != "evaluation":
+            raise failure(
+                "SOURCE_SPEC_UNAVAILABLE", "Evaluation launch spec was not retained", "unsupported"
+            )
+        await verify_source(
+            self.evidence, owner.workspace_id, owner.trial_id, owner.control_id, inputs
+        )
+        return inputs
 
     async def current(self, db, owner, **kwargs):
         return await EVALUATION_CONTROLS.current(db, owner, **kwargs)
