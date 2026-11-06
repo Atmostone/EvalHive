@@ -15,6 +15,10 @@
     "model_api": "openai-compatible",
     "environment_images": {
       "toolathlon": "evalhive-opencode-toolathlon:1.19.5"
+    },
+    "runtime_bundle": {
+      "image": "evalhive-opencode-bundle:1.19.5",
+      "path": "/bundle"
     }
   },
   "config_schema": {

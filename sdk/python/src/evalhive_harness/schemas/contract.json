@@ -78,7 +78,26 @@
           "minLength": 1
         },
         "requirements": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "runtime_bundle": {
+              "type": "object",
+              "properties": {
+                "image": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "path": {
+                  "const": "/bundle"
+                }
+              },
+              "required": [
+                "image",
+                "path"
+              ],
+              "additionalProperties": false
+            }
+          }
         },
         "config_schema": {
           "type": "object"
@@ -2012,6 +2031,148 @@
         "message_id",
         "batch_id",
         "calls"
+      ],
+      "additionalProperties": false
+    },
+    "runtime_bundle": {
+      "type": "object",
+      "properties": {
+        "bundle_version": {
+          "const": "1.0"
+        },
+        "connector_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]*$"
+        },
+        "connector_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "platform": {
+          "type": "object",
+          "properties": {
+            "os": {
+              "const": "linux"
+            },
+            "architecture": {
+              "const": "amd64"
+            },
+            "libc": {
+              "const": "glibc"
+            }
+          },
+          "required": [
+            "os",
+            "architecture",
+            "libc"
+          ],
+          "additionalProperties": false
+        },
+        "mount_path": {
+          "const": "/evalhive-runtime"
+        },
+        "entrypoint": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "files": {
+          "type": "object",
+          "minProperties": 2,
+          "maxProperties": 100000,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2147483648
+              },
+              "executable": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "sha256",
+              "size",
+              "executable"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "probes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "properties": {
+              "argv": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "stdout": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "argv",
+              "stdout"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "excluded_paths": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "loader_wrappers": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "bundle_version",
+        "connector_id",
+        "connector_version",
+        "platform",
+        "mount_path",
+        "entrypoint",
+        "files",
+        "probes"
       ],
       "additionalProperties": false
     }

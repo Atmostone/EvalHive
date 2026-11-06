@@ -1278,6 +1278,172 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "runtime bundle receipt",
+      "kind": "runtime_bundle",
+      "value": {
+        "bundle_version": "1.0",
+        "connector_id": "example",
+        "connector_version": "0.1.0",
+        "platform": {
+          "os": "linux",
+          "architecture": "amd64",
+          "libc": "glibc"
+        },
+        "mount_path": "/evalhive-runtime",
+        "entrypoint": [
+          "/evalhive-runtime/node"
+        ],
+        "files": {
+          "node": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 42,
+            "executable": true
+          },
+          "supervisor": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "size": 32,
+            "executable": true
+          }
+        },
+        "probes": [
+          {
+            "argv": [
+              "/evalhive-runtime/node",
+              "--version"
+            ],
+            "stdout": "v22.23.1\n"
+          }
+        ],
+        "excluded_paths": [
+          "node_modules/example/optional-x11.node"
+        ],
+        "loader_wrappers": [
+          "node_modules/example/bin/cli"
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "runtime bundle version",
+      "kind": "runtime_bundle",
+      "value": {
+        "bundle_version": "2.0",
+        "connector_id": "example",
+        "connector_version": "0.1.0",
+        "platform": {
+          "os": "linux",
+          "architecture": "amd64",
+          "libc": "glibc"
+        },
+        "mount_path": "/evalhive-runtime",
+        "entrypoint": [
+          "/evalhive-runtime/node"
+        ],
+        "files": {
+          "node": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 42,
+            "executable": true
+          },
+          "supervisor": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "size": 32,
+            "executable": true
+          }
+        },
+        "probes": [
+          {
+            "argv": [
+              "/evalhive-runtime/node",
+              "--version"
+            ],
+            "stdout": "v22.23.1\n"
+          }
+        ]
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "runtime bundle platform",
+      "kind": "runtime_bundle",
+      "value": {
+        "bundle_version": "1.0",
+        "connector_id": "example",
+        "connector_version": "0.1.0",
+        "platform": {
+          "os": "linux",
+          "architecture": "arm64",
+          "libc": "glibc"
+        },
+        "mount_path": "/evalhive-runtime",
+        "entrypoint": [
+          "/evalhive-runtime/node"
+        ],
+        "files": {
+          "node": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 42,
+            "executable": true
+          },
+          "supervisor": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "size": 32,
+            "executable": true
+          }
+        },
+        "probes": [
+          {
+            "argv": [
+              "/evalhive-runtime/node",
+              "--version"
+            ],
+            "stdout": "v22.23.1\n"
+          }
+        ]
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "runtime bundle mount",
+      "kind": "runtime_bundle",
+      "value": {
+        "bundle_version": "1.0",
+        "connector_id": "example",
+        "connector_version": "0.1.0",
+        "platform": {
+          "os": "linux",
+          "architecture": "amd64",
+          "libc": "glibc"
+        },
+        "mount_path": "/opt/replace-task",
+        "entrypoint": [
+          "/evalhive-runtime/node"
+        ],
+        "files": {
+          "node": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": 42,
+            "executable": true
+          },
+          "supervisor": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "size": 32,
+            "executable": true
+          }
+        },
+        "probes": [
+          {
+            "argv": [
+              "/evalhive-runtime/node",
+              "--version"
+            ],
+            "stdout": "v22.23.1\n"
+          }
+        ]
+      },
+      "error": "INVALID_MESSAGE"
     }
   ]
 }

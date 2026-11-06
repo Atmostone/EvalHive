@@ -163,9 +163,12 @@ checks workspace/trial/session/generation ownership for containers, networks and
 native execs. Its static supervisor and SDK process transport retain task state
 after native completion, stop owned descendants independently of task services,
 and detect loss of safe grading state. See [the runtime contract](../environments/runtime/README.md).
-These primitives are not yet a public launch API: bundle installation, resource
-admission and the durable broker/coordinator must be connected before trials can
-run through them.
+Harness manifests now register a separate runtime bundle image. The canonical
+receipt, bounded installer and no-model compatibility checks preserve native task
+dependencies. Pi/OpenCode bundles execute shell tools in distinct task images;
+unsupported libc fails before model access. These primitives are not yet a public
+launch API: provider admission and the durable broker/coordinator must be connected
+before trials can run through them.
 
 Native connector profiles for conversation support use version 0.2.0, with Pi
 1.5.0 and OpenCode 1.19.5 unchanged. B17 must migrate installed 0.1 profile
