@@ -12,8 +12,6 @@ scored as ``deferred`` until those subsystems land. The defaults therefore use
 
 from __future__ import annotations
 
-import uuid
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 

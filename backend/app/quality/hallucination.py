@@ -42,13 +42,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
 from app.plugins.llm import get_llm_provider
-from app.utils.tool_args import error_class, extract_tool_args
 from app.quality.capability import DEFAULT_OUTCOME_THRESHOLD, _outcome_from_profile
 from app.quality.judge import _resolve_judge_model
-from app.utils.cost import llm_call_cost, tokens_from_response
 from app.quality.trace_cleaner import _count_tokens, build_cleaned_trace
 from app.quality.trajectory import fit_trace_to_budget
+from app.utils.cost import llm_call_cost, tokens_from_response
 from app.utils.events import log_event
+from app.utils.tool_args import error_class, extract_tool_args
 
 logger = logging.getLogger(__name__)
 

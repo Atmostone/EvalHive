@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -14,15 +13,14 @@ from app.database import get_db
 from app.models.provider import LLMModel, Provider
 from app.models.workspace import Workspace
 
-
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
 
 class SystemModelsBody(BaseModel):
-    orchestrator_model_id: Optional[str] = None
-    chat_model_id: Optional[str] = None
-    memory_extractor_model_id: Optional[str] = None
-    quality_judge_model_id: Optional[str] = None
+    orchestrator_model_id: str | None = None
+    chat_model_id: str | None = None
+    memory_extractor_model_id: str | None = None
+    quality_judge_model_id: str | None = None
 
 
 def _system_models_dict(ws: Workspace) -> dict:
@@ -35,14 +33,14 @@ def _system_models_dict(ws: Workspace) -> dict:
 
 
 async def _validate_model_in_workspace(
-    model_id_str: Optional[str], workspace: Workspace, db: AsyncSession
-) -> Optional[uuid.UUID]:
+    model_id_str: str | None, workspace: Workspace, db: AsyncSession
+) -> uuid.UUID | None:
     if model_id_str is None:
         return None
     try:
         mid = uuid.UUID(model_id_str)
     except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid model id")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid model id") from None
     model = await db.get(LLMModel, mid)
     if model is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "model not found")

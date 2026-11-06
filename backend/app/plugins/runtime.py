@@ -1,169 +1,45 @@
-"""AgentRuntime abstraction — currently only Docker. Used by orchestrator + api/agents."""
+"""Compatibility management API backed by the harness-neutral process runtime.
 
-from __future__ import annotations
+Execution and control commands belong to attempts, not to this facade. The
+historical import path remains available to the existing management endpoints.
+"""
 
-import os
-import uuid
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+import asyncio
 
+from app.runtime import get_process_runtime
 
-@dataclass
-class AgentSpec:
-    task_id: str
-    task_description: str
-    template_name: str
-    template_id: str
-    soul_md: str
-    tools: list
-    mcp_servers: list
-    env: dict
-    resource_limits: dict  # mem, cpu_quota
-    workspace_id: str
-    agent_token: str
-    memory_context: str = ""
-    extra_labels: dict = field(default_factory=dict)
-    # Extra container env (e.g. AGENT_TOOL_INJECTION for the perturbation judge).
-    extra_env: dict = field(default_factory=dict)
-    # Per-run agent image override (e.g. the Toolathlon derived image); None → runtime default.
-    image: str | None = None
-    # Share another container's network namespace (e.g. "container:tlpre-1234abcd")
-    # so a Toolathlon portal-case agent reaches the mock server on localhost:PORT.
-    network_mode: str | None = None
+_runtime = None
 
 
-class AgentRuntime(ABC):
-    @abstractmethod
-    def spawn(self, spec: AgentSpec) -> str: ...
+class RuntimeManagement:
+    def list_active(self, workspace_id=None):
+        return get_process_runtime().list_active(workspace_id)
 
-    @abstractmethod
-    def kill(self, container_id: str, workspace_id: str | None = None) -> bool: ...
+    def _scope(self, container_id, workspace_id):
+        if workspace_id is not None:
+            return str(workspace_id)
+        matches = [row for row in self.list_active() if row["container_id"] == container_id]
+        return matches[0]["workspace_id"] if len(matches) == 1 else None
 
-    @abstractmethod
-    def list_active(self, workspace_id: str | None = None) -> list[dict]: ...
+    def stats(self, container_id, workspace_id=None):
+        scope = self._scope(container_id, workspace_id)
+        return get_process_runtime().inspect(container_id, scope) if scope else None
 
-    @abstractmethod
-    def kill_all(self, workspace_id: str | None = None) -> int: ...
+    def kill(self, container_id, workspace_id=None):
+        scope = self._scope(container_id, workspace_id)
+        return bool(scope and get_process_runtime().stop(container_id, scope, grace_seconds=0))
 
-    @abstractmethod
-    def stats(self, container_id: str, workspace_id: str | None = None) -> dict | None: ...
+    def kill_all(self, workspace_id=None):
+        return sum(self.kill(row["container_id"], row["workspace_id"]) for row in self.list_active(workspace_id))
 
-    @abstractmethod
-    async def health(self, container_id: str) -> dict | None: ...
-
-    @abstractmethod
-    async def send_command(self, container_id: str, kind: str, payload: dict) -> bool: ...
-
-    def image_id(self, container_id: str) -> str | None:
-        """Id of the image the container is actually running (SPA-84).
-
-        A tag is not an identity: rebuilding ``evalhive-agent:latest`` changes
-        what runs while the name stays put, and that has moved measured pass
-        rates in this project before. Only the resolved id can tell those apart.
-        Not abstract — a runtime that cannot answer returns None, and the caller
-        treats that as missing evidence rather than as evidence of sameness.
-        """
-        return None
+    async def health(self, container_id):
+        return await asyncio.to_thread(self.stats, container_id)
 
 
-class DockerRuntime(AgentRuntime):
-    """Thin adapter over the existing app.orchestrator.docker_manager helpers."""
-
-    def spawn(self, spec: AgentSpec) -> str:
-        from app.orchestrator.docker_manager import spawn_agent
-
-        # docker_manager.spawn_agent currently accepts a Template object directly.
-        # We mirror its signature here to avoid duplicating its implementation.
-        from types import SimpleNamespace
-
-        template = SimpleNamespace(
-            id=uuid.UUID(spec.template_id),
-            name=spec.template_name,
-            soul_md=spec.soul_md,
-            tools=spec.tools,
-            mcp_servers=spec.mcp_servers,
-            max_ram=spec.resource_limits.get("max_ram"),
-            max_cpu=spec.resource_limits.get("max_cpu"),
-        )
-        llm_settings = {
-            "llm_api_key": spec.env.get("OPENAI_API_KEY", ""),
-            "llm_base_url": spec.env.get("OPENAI_BASE_URL", ""),
-            "llm_model": spec.env.get("LLM_MODEL", ""),
-        }
-        return spawn_agent(
-            task_id=spec.task_id,
-            task_description=spec.task_description,
-            template=template,
-            llm_settings=llm_settings,
-            workspace_id=spec.workspace_id,
-            agent_token=spec.agent_token,
-            memory_context=spec.memory_context,
-            extra_env=spec.extra_env or {},
-            image=spec.image,
-            network_mode=spec.network_mode,
-        )
-
-    def image_id(self, container_id: str) -> str | None:
-        from app.orchestrator.docker_manager import container_image_id
-
-        return container_image_id(container_id)
-
-    def kill(self, container_id: str, workspace_id: str | None = None) -> bool:
-        from app.orchestrator.docker_manager import kill_agent
-
-        return kill_agent(container_id, workspace_id=workspace_id)
-
-    def list_active(self, workspace_id: str | None = None) -> list[dict]:
-        from app.orchestrator.docker_manager import list_agents
-
-        return list_agents(workspace_id=workspace_id)
-
-    def kill_all(self, workspace_id: str | None = None) -> int:
-        from app.orchestrator.docker_manager import kill_all_agents
-
-        return kill_all_agents(workspace_id=workspace_id)
-
-    def stats(self, container_id: str, workspace_id: str | None = None) -> dict | None:
-        from app.orchestrator.docker_manager import get_agent_stats
-
-        return get_agent_stats(container_id, workspace_id=workspace_id)
-
-    async def health(self, container_id: str) -> dict | None:
-        from app.orchestrator.docker_manager import get_agent_health
-
-        return await get_agent_health(container_id)
-
-    async def send_command(self, container_id: str, kind: str, payload: dict) -> bool:
-        from app.orchestrator.docker_manager import (
-            abort_agent,
-            send_feedback,
-            switch_agent_model,
-        )
-
-        if kind == "feedback":
-            return await send_feedback(container_id, payload.get("message", ""))
-        if kind == "switch_model":
-            return await switch_agent_model(container_id, payload)
-        if kind == "abort":
-            return await abort_agent(container_id, payload.get("reason", ""))
-        raise ValueError(f"unknown agent command: {kind}")
+def get_agent_runtime():
+    return _runtime if _runtime is not None else RuntimeManagement()
 
 
-_runtime: AgentRuntime | None = None
-
-
-def get_agent_runtime() -> AgentRuntime:
-    global _runtime
-    if _runtime is not None:
-        return _runtime
-    name = os.environ.get("AGENT_RUNTIME", "docker")
-    if name == "docker":
-        _runtime = DockerRuntime()
-    else:
-        raise ValueError(f"unknown AGENT_RUNTIME={name}")
-    return _runtime
-
-
-def set_agent_runtime(runtime: AgentRuntime | None) -> None:
+def set_agent_runtime(runtime):
     global _runtime
     _runtime = runtime

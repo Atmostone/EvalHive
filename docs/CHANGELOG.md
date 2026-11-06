@@ -1,6 +1,131 @@
 # Changelog
 
-Формат: `YYYY-MM-DD — что изменилось — ссылка на блок плана / PR`.
+Format: `YYYY-MM-DD — change — plan section / PR reference`.
+
+## 2026-11-04
+
+- **SPA-132 — preserve the applied harness conditions and archive source.** SDK
+  validation reports effective native settings; the runner saves an idempotent
+  receipt before execution. Attempts, snapshots, matrix fingerprints and traced
+  bundles carry connector/version/image/settings. Trace readers exclude other
+  attempts, and superseded experiment tasks cannot overwrite a cell's conditions.
+  Archived measurements require linked reruns; recorded replay rejects unavailable
+  legacy runtimes or changed dependencies. New quality records name their source
+  attempt, while historical rows remain unchanged. Migrations `ha06` and `ha07`
+  add preparation time and source identity.
+
+- **SPA-131 — run direct work through a selected harness profile.** Work accepts
+  an optional role and explicit profile, shows live attempt control/receipts and
+  schema-declared interactions, and sends feedback or cancellation to that attempt.
+  Direct execution skips orchestration and automatic evaluation. Model/profile
+  validation precedes queuing; active attempts reject reconfiguration/restarts.
+  Unsupported interactions fail explicitly. Authorized file downloads now carry
+  workspace headers. Migration `ha05` adds task selection without rewriting history;
+  shared sampling parameters are translated and checked by the connector.
+
+- **SPA-130 — edit installed harness profiles in Settings and select them in
+  Templates.** Schema-based fields and a structured JSON editor validate native
+  configuration before saving without silently applying defaults. Capabilities
+  and unavailable connector versions are visible. Credentials are stored through
+  separate write-only inputs and referenced by name. Template profile/mode choices
+  survive version rollback; cross-workspace references and deletion of a referenced
+  profile are rejected. Migration `ha04` adds these fields without changing history.
+
+- **SPA-129 — connect OpenCode through its own SDK package.** The pinned 1.19.5
+  CLI/server and official SDK use HTTP/SSE inside an isolated worker. Native
+  snapshots recover final state after reconnects without duplicate tools or
+  usage; context pruning cannot overwrite captured tool evidence. Native hooks
+  separate exact tool selection from approval permissions and enforce hard turn
+  limits before another provider call. Feedback persistence, bounded shutdown,
+  private MCP credentials and provider measurement availability are covered by
+  local native-server tests without external models. Backend execution contains
+  no OpenCode-specific branches.
+
+- **SPA-128 — translate explicit task resources inside connectors.** Shared SDK
+  declarations cover tool selection, MCP, skills, memory and instructions, with
+  private credential references. Pi uses the pinned official MCP client for
+  stdio and Streamable HTTP, preserves native tool names and canonical aliases,
+  and distinguishes empty tools and disabled memory from defaults. Knowledge
+  search uses a read-only MCP endpoint with a separate active-attempt token.
+  Registered environment image variants preserve dependency separation; prepared
+  inputs and external evaluation use isolated attempt workspaces.
+
+- **SPA-127 — execute the official Pi SDK through the Harness SDK.** A pinned
+  TypeScript worker uses Pi's native session, tools, retries and control, waits
+  for final settlement and checks the assistant stop reason. Explicit state stores
+  avoid global discovery. Provider stream fields preserve unknown usage rather
+  than reporting SDK default zeros; native/provider records retain adapter version.
+  Feedback, generation/tool cancellation and turn limits are exercised with the
+  actual SDK against a local fixture. Connector-neutral failure facts distinguish
+  provider/auth/transport problems from model limits and recording failures.
+
+- **SPA-126 — connect execution evidence to results and existing viewers.** The
+  journal projects nested/interleaved tools, messages and per-model/purpose usage
+  without multiplying cumulative samples or final snapshots. Unknown costs stay
+  NULL through task/Data Lake storage and grouped averages name their known sample
+  counts. Files are collected after shutdown according to environment policy for
+  every outcome, with attempt-specific paths and digests; failed delivery remains
+  explicit. Finalization is bounded and artifact events precede completion. Live
+  rows merge by identity/version, preserving new results when REST/WS messages
+  race. Historical archives keep their existing read path.
+
+- **SPA-125 — adapt the old loop through the same SDK boundary.** A temporary
+  connector reuses the original agent implementation and translates its native
+  records, tool identities, messages and per-turn usage. Credentials stay in a
+  private mount; the transition bridge preserves the Toolathlon environment and
+  portal namespace. Feedback/abort compatibility routes use attempt commands;
+  legacy write routes cannot mutate attempt-backed tasks. Explicit empty tools
+  stay empty and unsupported options fail. The orchestrator preserves fast
+  terminal results and leaves capacity-limited tasks queued. The entire legacy
+  implementation remains scheduled for deletion when Pi becomes the default.
+
+- **SPA-124 — supervise execution independently of the harness.** The shared
+  runner journals unacknowledged events and command receipts before delivery,
+  retries lost acknowledgements without duplicating records or feedback, tracks
+  heartbeat and enforces execution/stop deadlines. Docker attach keeps its API
+  token outside the worker. Native credentials stay in a separate private mount;
+  event content is redacted before persistence. Recording uses runner observation
+  time and monotonic duration rather than delayed HTTP receipt time. Recovery
+  replays the spool and records missing completion/uncertain cleanup explicitly.
+
+- **SPA-123 — run a registered process rather than an agent-shaped Docker call.**
+  The new process runtime accepts argv, opaque environment, mounts, cwd, resource
+  limits and network mode. It requires rootless Docker, resolves registered images
+  to immutable IDs, isolates attempt work trees and keeps private inputs outside
+  artifacts. Namespace sharing checks task/workspace/environment ownership; the
+  Toolathlon helpers now provide those labels. Agent-specific prompt/model/HTTP
+  behavior stays in a temporary legacy adapter while the common runner is wired.
+
+- **SPA-122 — give each execution its own evidence boundary.** Explicit attempts
+  retain their specification and connector identity. Runner tokens bind the
+  workspace, task and attempt; a newer retry fences late events from its
+  predecessor. Event batches commit atomically and in order, acknowledge exact
+  duplicates and reject conflicting identities or gaps. Terminal delivery cannot
+  outrun earlier evidence. Read APIs expose attempts, control declarations and
+  ordered normalized/native records. Recording loss is declared independently of
+  model quality, and historical agent logs remain readable without backfill.
+
+- **SPA-121 — register harnesses without teaching the backend their code.** A
+  server-owned manifest directory supplies the catalog and configuration schemas.
+  Workspace profiles pin connector versions, validate native settings and reject
+  foreign model/credential references. Credentials are write-only and stored
+  separately; validation errors do not echo rejected values. Pi profiles are
+  seeded for new/existing workspaces. Default changes are serialized and protected
+  by a unique index. The backend image now installs the independent SDK from the
+  repository root, with an allowlisted build context. Existing agent execution
+  remains on its transition path until the runner and real connectors land.
+
+- **SPA-120 — define the harness boundary before replacing the agent loop.** One
+  JSON Schema governs manifests, RunSpec, command acknowledgements, normalized
+  events and terminal results. Independent Python/TypeScript packages validate
+  the same fixtures, launch connector processes and expose feedback/cancellation
+  without importing the backend or an LLM client. Separate fake connector workers
+  demonstrate a native setting added outside the core. IDs correlate responses
+  independently of order; queue overflow, invalid streams and unsupported
+  versions fail explicitly. Usage retains unknown values, native evidence names
+  its adapter version, and concurrent tools carry identity rather than adjacency.
+  Existing production execution is unchanged; attempts, durable delivery and real
+  Pi/OpenCode integration follow in the remaining Harness SDK epic tasks.
 
 ## 2026-09-21 (2)
 

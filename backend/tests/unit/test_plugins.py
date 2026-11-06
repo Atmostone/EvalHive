@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-
 from app.plugins import embeddings as emb_mod
 from app.plugins import notifier as notif_mod
 from app.plugins import runtime as rt_mod
 from app.plugins import secrets as sec_mod
-
 
 # --- EmbeddingProvider --------------------------------------------------------
 
@@ -117,100 +114,42 @@ def test_get_embedding_provider_unknown_raises(monkeypatch):
     emb_mod.set_embedding_provider(None)
 
 
-# --- AgentRuntime / DockerRuntime --------------------------------------------
-
-def test_docker_runtime_spawn_translates_spec(monkeypatch):
-    captured = {}
-
-    def fake_spawn(**kwargs):
-        captured.update(kwargs)
-        return "ctr-id"
-
-    monkeypatch.setattr("app.orchestrator.docker_manager.spawn_agent", fake_spawn)
-
-    spec = rt_mod.AgentSpec(
-        task_id="t",
-        task_description="d",
-        template_name="alpha",
-        template_id=str(uuid.uuid4()),
-        soul_md="# s",
-        tools=[],
-        mcp_servers=[],
-        env={"OPENAI_API_KEY": "K", "OPENAI_BASE_URL": "U", "LLM_MODEL": "M"},
-        resource_limits={"max_ram": "1g", "max_cpu": 100000},
-        workspace_id="ws",
-        agent_token="TKN",
-        memory_context="ctx",
-    )
-    cid = rt_mod.DockerRuntime().spawn(spec)
-    assert cid == "ctr-id"
-    assert captured["task_id"] == "t"
-    assert captured["llm_settings"]["llm_api_key"] == "K"
-    assert captured["agent_token"] == "TKN"
-    assert captured["memory_context"] == "ctx"
+# --- Runtime management --------------------------------------------------------
 
 
-def test_docker_runtime_kill_calls_through(monkeypatch):
-    fake = MagicMock(return_value=True)
-    monkeypatch.setattr("app.orchestrator.docker_manager.kill_agent", fake)
-    assert rt_mod.DockerRuntime().kill("c", workspace_id="W") is True
-    fake.assert_called_once_with("c", workspace_id="W")
+def test_runtime_management_scopes_inspection_and_stop(monkeypatch):
+    process = MagicMock()
+    process.list_active.return_value = [{"container_id": "owned", "workspace_id": "workspace"}]
+    process.inspect.return_value = {"container_id": "owned", "status": "running"}
+    process.stop.return_value = True
+    monkeypatch.setattr(rt_mod, "get_process_runtime", lambda: process)
+    rt = rt_mod.RuntimeManagement()
+    assert rt.stats("owned")["status"] == "running"
+    process.inspect.assert_called_once_with("owned", "workspace")
+    assert rt.kill("owned", "workspace") is True
+    process.stop.assert_called_once_with("owned", "workspace", grace_seconds=0)
+    assert rt.kill("unowned") is False
+    assert rt.stats("unowned") is None
 
 
-def test_docker_runtime_list_active_calls_through(monkeypatch):
-    monkeypatch.setattr("app.orchestrator.docker_manager.list_agents", MagicMock(return_value=[{"x": 1}]))
-    assert rt_mod.DockerRuntime().list_active(workspace_id="W") == [{"x": 1}]
+def test_kill_all_only_stops_listed_runners_in_their_scope(monkeypatch):
+    process = MagicMock()
+    process.list_active.return_value = [{"container_id": "owned", "workspace_id": "workspace"}]
+    process.stop.return_value = True
+    monkeypatch.setattr(rt_mod, "get_process_runtime", lambda: process)
+    assert rt_mod.RuntimeManagement().kill_all("workspace") == 1
+    process.list_active.assert_called_once_with("workspace")
+    process.stop.assert_called_once_with("owned", "workspace", grace_seconds=0)
 
 
-def test_docker_runtime_kill_all_calls_through(monkeypatch):
-    monkeypatch.setattr("app.orchestrator.docker_manager.kill_all_agents", MagicMock(return_value=3))
-    assert rt_mod.DockerRuntime().kill_all(workspace_id="W") == 3
-
-
-def test_docker_runtime_stats_calls_through(monkeypatch):
-    monkeypatch.setattr("app.orchestrator.docker_manager.get_agent_stats", MagicMock(return_value={"a": 1}))
-    assert rt_mod.DockerRuntime().stats("c", workspace_id="W") == {"a": 1}
-
-
-@pytest.mark.asyncio
-async def test_docker_runtime_health_calls_through(monkeypatch):
-    mock = AsyncMock(return_value={"ok": True})
-    monkeypatch.setattr("app.orchestrator.docker_manager.get_agent_health", mock)
-    assert await rt_mod.DockerRuntime().health("c") == {"ok": True}
-
-
-@pytest.mark.asyncio
-async def test_docker_runtime_send_command_dispatches(monkeypatch):
-    fb = AsyncMock(return_value=True)
-    sw = AsyncMock(return_value=True)
-    ab = AsyncMock(return_value=True)
-    monkeypatch.setattr("app.orchestrator.docker_manager.send_feedback", fb)
-    monkeypatch.setattr("app.orchestrator.docker_manager.switch_agent_model", sw)
-    monkeypatch.setattr("app.orchestrator.docker_manager.abort_agent", ab)
-
-    rt = rt_mod.DockerRuntime()
-    assert await rt.send_command("c", "feedback", {"message": "hi"})
-    fb.assert_called_once_with("c", "hi")
-    assert await rt.send_command("c", "switch_model", {"model": "X"})
-    assert await rt.send_command("c", "abort", {"reason": "user"})
-
-    with pytest.raises(ValueError):
-        await rt.send_command("c", "unknown", {})
-
-
-def test_get_agent_runtime_env_unknown_raises(monkeypatch):
-    rt_mod.set_agent_runtime(None)
-    monkeypatch.setenv("AGENT_RUNTIME", "k8s")
-    with pytest.raises(ValueError):
-        rt_mod.get_agent_runtime()
-    rt_mod.set_agent_runtime(None)
-
-
-def test_get_agent_runtime_default_is_docker(monkeypatch):
-    rt_mod.set_agent_runtime(None)
-    monkeypatch.delenv("AGENT_RUNTIME", raising=False)
-    assert isinstance(rt_mod.get_agent_runtime(), rt_mod.DockerRuntime)
-    rt_mod.set_agent_runtime(None)
+def test_management_facade_can_be_injected_without_loading_a_connector():
+    runtime = object()
+    try:
+        rt_mod.set_agent_runtime(runtime)
+        assert rt_mod.get_agent_runtime() is runtime
+    finally:
+        rt_mod.set_agent_runtime(None)
+    assert isinstance(rt_mod.get_agent_runtime(), rt_mod.RuntimeManagement)
 
 
 # --- Notifier -----------------------------------------------------------------

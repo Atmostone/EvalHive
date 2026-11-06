@@ -55,6 +55,111 @@ Token: HS256, ttl=24h, payload `{sub: user_id, ws: default_workspace_id, iat, ex
 
 ## Endpoint groups
 
+### Harness catalog, profiles and credentials (SPA-121)
+
+All routes use the authenticated workspace. Members may read declarations and
+profiles; writes and saved-profile validation require owner/admin. Manifests are
+installed on the server under `HARNESS_MANIFEST_DIR/*/manifest.json`; no endpoint
+installs executable code or imports a connector module.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/api/harnesses` | Registered manifests, settings schemas and capabilities; 503 for an invalid catalog |
+| GET/POST | `/api/harness-profiles` | List/create workspace profiles |
+| GET/PATCH/DELETE | `/api/harness-profiles/{id}` | Read, update or delete a profile |
+| POST | `/api/harness-profiles/{id}/validate` | Validate pinned connector version, settings, model and credential references; no harness/model execution |
+| GET/POST | `/api/harness-secrets` | List credential metadata or create a write-only value |
+| PUT/DELETE | `/api/harness-secrets/{id}` | Replace a credential or delete an unreferenced one |
+
+A profile contains `name`, `connector_id`, `connector_version`, `config`,
+`secret_refs` (slot → credential UUID), optional workspace `model_id`, and
+`is_default`. Creation pins the installed version when omitted. Updates never
+silently select another connector/version. Configuration is checked against the
+connector's JSON Schema; unsupported fields, inline credentials and foreign
+references fail before execution. Credential values are accepted separately and
+never returned, including validation errors. Storage follows the existing private
+provider credential store; public configurations contain references only.
+
+New workspaces receive a Pi profile. Migration `ha01` seeds existing workspaces;
+startup repairs workspaces with no profiles. Exactly one profile is default;
+select a replacement before deleting or clearing the current default. Concurrent
+changes serialize on the workspace row and a partial unique index enforces the
+invariant. Referenced credentials cannot be deleted. A missing/pinned connector
+version fails validation explicitly. Catalog registration does not assert that
+its image is built or that a model is connected; runtime preflight verifies those
+before a real attempt. This change alone does not switch legacy task execution.
+
+### Execution attempts and event delivery (SPA-122)
+
+| Method | Path | Authentication / behavior |
+| --- | --- | --- |
+| GET | `/api/tasks/{task_id}/attempts?limit=&before_number=` | Workspace JWT; newest attempts first, paginated by attempt number |
+| GET | `/api/attempts/{id}` | Workspace JWT; lifecycle, connector identity, recording completeness and control declarations |
+| GET | `/api/attempts/{id}/events?after_seq=&limit=` | Workspace JWT; ordered original protocol records, including native evidence |
+| POST | `/api/v1/attempts/{id}/events` | Runner token scoped to workspace, task and attempt; body `{events: [...]}` |
+
+Event batches contain 1–128 records, at most 4 MiB total; each protocol record is
+limited to 1 MiB. The API authenticates before reading a bounded UTF-8 JSON body.
+User JWTs and legacy per-task tokens cannot write attempt events. Every event
+must identify the authenticated attempt. A task's current-attempt pointer fences
+earlier attempts, including valid unexpired tokens: a late batch gets 409
+`STALE_ATTEMPT` and cannot change either journal or current result.
+
+Sequence numbers start at zero with `run.started`. New records must be contiguous;
+409 `EVENT_GAP` asks the sender to deliver earlier records first. The entire batch
+rolls back on any error. Identical prior records are acknowledged as duplicates;
+a changed payload, reused event ID or reused sequence fails with `EVENT_CONFLICT`.
+The receipt is `{accepted, duplicates, next_seq, acked_through}`. Losing a receipt
+and resending the local unacknowledged journal is safe. A terminal event commits
+only with all its predecessors. Subsequent new records are rejected; exact
+terminal replays do not change finish time.
+
+`completeness.event_delivery=contiguous` certifies delivery order only. Tool,
+native-event and reasoning completeness remain unknown until independently
+established. Transport loss becomes an explicit `lost` attempt with interrupted
+recording; it never invents a successful terminal record. Historical task logs
+remain on their existing read path until journal projections are connected.
+
+### Runner control delivery (SPA-124)
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| POST | `/api/attempts/{id}/commands` | Workspace owner/admin; members may send feedback. Body `{id?: UUID, name, payload?}`; identical IDs replay the original receipt |
+| GET | `/api/attempts/{id}/commands` | Workspace-scoped command acknowledgement state |
+| POST | `/api/v1/attempts/{id}/heartbeat` | Runner token; refresh liveness and fetch queued/unacknowledged commands |
+| POST | `/api/v1/attempts/{id}/commands/{command_id}/ack` | Runner token; canonical SDK response, immutable and idempotent |
+
+Commands validate against the attempt's frozen manifest. Cancellation also has a
+runtime fallback when a connector has no native abort. Unacknowledged commands
+become `unknown` when an attempt ends; a real late acknowledgement can resolve
+that state. A timeout is not a claim that the native operation did not happen.
+Runner command receipts are persisted before HTTP acknowledgement and retried
+without applying feedback twice.
+
+Event `observed_at` records UTC time at the runner, independently of backend
+receipt. Terminal metadata includes `runner_elapsed_seconds` measured with a
+monotonic clock; missing terminal observations remain null. Delivery retries and
+artifact collection do not turn into measured model execution time.
+
+For attempt-backed tasks, existing `/api/agents/{container_id}/feedback` and
+`/abort` routes queue SDK commands and return their `command_id`. `/health` reads
+attempt liveness. Model switching is explicitly unavailable for these attempts.
+Legacy agent-webhook and agent-log write routes reject any task with a current
+attempt (`409`), including callers holding an otherwise valid legacy service
+token. Historical log reads remain supported.
+
+Attempt log responses include `attempt_id`, `attempt_number`, `completeness` and
+compatibility chunks with `updated_seq`. A tool row keeps its original
+`chunk_seq` while updates replace its content. Clients must merge by ID and latest
+`updated_seq`, rather than dropping every repeated ID. Live log messages include
+the attempt number so delayed updates cannot switch the viewer back to an older
+execution. Full normalized/native evidence is still available through the attempt
+event endpoint.
+
+Unreported execution `cost_usd` is `null` in task and Data Lake responses. Grouped
+Data Lake results include `cost_known_count` and `tokens_known_count`; averages
+use only reported measurements and remain `null` when none were reported.
+
 ### Tasks (`/api/tasks`)
 
 | Method | Path | Description |
@@ -131,7 +236,7 @@ off` cells pin the template for the engine fast path) with evaluation always on.
 | GET | `/api/agents/{cid}` | Stats |
 | POST | `/api/agents/{cid}/kill` | |
 | POST | `/api/agents/kill-all` | Kill switch |
-| GET | `/api/agents/{cid}/health` | Forwarded from the agent's `:8080/health` (uptime/iteration/tokens) |
+| GET | `/api/agents/{cid}/health` | Current attempt status and runner heartbeat |
 | POST | `/api/agents/{cid}/feedback` | Body `{message}` → injected as a user message into the agent loop |
 | POST | `/api/agents/{cid}/switch_model` | Body `{model_id}` — resolved server-side to (provider, model); creds are forwarded to the agent. |
 | POST | `/api/agents/{cid}/abort` | Body `{reason}` → the agent finishes its loop with `event=aborted` |
@@ -140,8 +245,8 @@ off` cells pin the template for the engine fast path) with evaluation always on.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/agent-webhook/{task_id}` | Canonical. Pydantic validation (see `webhooks.md`). 422 on invalid event/data. Requires `Authorization: Bearer $EVALHIVE_AGENT_TOKEN` and `idempotency_key`. |
-| POST | `/api/agent-webhook/{task_id}` | Legacy alias. Adds `Sunset: Sat, 01 Aug 2026 00:00:00 GMT`, `Deprecation: true`, `Link: rel="successor-version"` headers (even on 401/422 responses). |
+| POST | `/api/v1/agent-webhook/{task_id}` | Retired. Legacy-token authentication remains; current attempt writes return 409, historical task writes return 410. Use the attempt event API. |
+| POST | `/api/agent-webhook/{task_id}` | Retired alias with the same authentication and 409/410 behavior. A 410 response includes deprecation and successor-link headers. |
 
 ### Events (`/api/events`)
 

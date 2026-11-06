@@ -25,7 +25,7 @@ import time
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
@@ -47,21 +47,17 @@ from app.quality import external_eval as ext_eval
 from app.quality.benchmark import _capability_spec_for, load_cases
 from app.quality.runs_common import (
     SUCCESS_TASK as _SUCCESS_TASK,
+)
+from app.quality.runs_common import (
     TERMINAL_TASK as _TERMINAL_TASK,
+)
+from app.quality.runs_common import (
     inflight_target,
 )
 from app.utils.events import log_event
 from app.utils.failures import FAILURE_INFRA, merge_failure_type
 
 logger = logging.getLogger(__name__)
-
-# Toolathlon executable-eval cases (gold.external_eval) run on a dedicated image
-# with the case's MCP servers force-enabled, and a higher iteration ceiling.
-TOOLATHLON_AGENT_IMAGE = "evalhive-agent-toolathlon:latest"
-# The image a plain (non-executable-eval) case runs on; mirrors
-# app/orchestrator/docker_manager.AGENT_IMAGE, imported lazily there to keep the
-# docker dependency out of this module's import path.
-DEFAULT_AGENT_IMAGE = "evalhive-agent:latest"
 
 # The two halves of "what is still part of this experiment" (SPA-84). Retiring a
 # configuration keeps its lineage but takes it out of the matrix, and every
@@ -103,6 +99,8 @@ CONFIG_AXES = (
     "soul_md",
     "tools_override",
     "memory_mode",
+    "harness_profile_id",
+    "harness_config",
 )
 MEMORY_MODES = ("off", "flat", "structured")
 
@@ -180,12 +178,16 @@ def _config_label(cfg: dict) -> str:
         parts.append("tools=override")
     if cfg.get("memory_mode"):
         parts.append(f"mem={cfg['memory_mode']}")
+    if cfg.get("harness_profile_id"):
+        parts.append(f"harness={str(cfg['harness_profile_id'])[:8]}")
     parts.append("orch=on" if cfg.get("orchestrator") else "orch=off")
     return " ".join(parts)
 
 
 def _config_errors(cfg: dict) -> list[str]:
     errors = []
+    if cfg.get("harness_config") is not None and not isinstance(cfg["harness_config"], dict):
+        errors.append("harness_config must be an object")
     if cfg["orchestrator"]:
         if cfg.get("template_id"):
             errors.append("orchestrator:on configuration must not pin template_id")
@@ -229,7 +231,7 @@ def expand_matrix(
         keys = [k for k in CONFIG_AXES if axes.get(k)]
         if keys:
             for combo in itertools.product(*(axes[k] for k in keys)):
-                raw.append(dict(zip(keys, combo)))
+                raw.append(dict(zip(keys, combo, strict=True)))
     if not raw:
         raise ValueError("experiment needs at least one configuration")
 
@@ -264,21 +266,21 @@ class UploadCaseInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=500)
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class UploadRubricDimension(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: str = Field(min_length=1, max_length=100)
-    name: Optional[str] = Field(default=None, max_length=255)
-    description: Optional[str] = None
+    name: str | None = Field(default=None, max_length=255)
+    description: str | None = None
     evaluator: str = Field(default="judge", pattern="^(judge|reference|objective|human)$")
     weight: float = Field(gt=0)
-    threshold: Optional[int] = Field(default=None, ge=0, le=10)
+    threshold: int | None = Field(default=None, ge=0, le=10)
     critical: bool = False
-    reference_mode: Optional[str] = None
-    probe: Optional[str] = None
+    reference_mode: str | None = None
+    probe: str | None = None
 
 
 class UploadRubric(BaseModel):
@@ -287,7 +289,7 @@ class UploadRubric(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: Optional[str] = Field(default=None, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
     dimensions: list[UploadRubricDimension] = Field(min_length=1, max_length=20)
 
 
@@ -297,11 +299,11 @@ class UploadCase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_input: UploadCaseInput
-    case_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    reference_answer: Optional[str] = None
-    rubric: Optional[UploadRubric] = None
-    canonical_trajectory: Optional[Any] = None
-    capability_spec: Optional[dict] = None
+    case_id: str | None = Field(default=None, min_length=1, max_length=128)
+    reference_answer: str | None = None
+    rubric: UploadRubric | None = None
+    canonical_trajectory: Any | None = None
+    capability_spec: dict | None = None
 
 
 def _frozen_case(case_key: str, title: str, **optional) -> dict:
@@ -440,8 +442,32 @@ async def _validate_config_refs(
 ) -> None:
     """Check that every template/model/registry reference exists in the workspace."""
     errors: list[str] = []
+    from app.harnesses.profiles import validate_profile
+    from app.models.harness_profile import HarnessProfile
 
-    def _uuid(value, what: str) -> Optional[uuid.UUID]:
+    for cfg in configs:
+        if cfg.get("harness_profile_id") or cfg.get("harness_config") is not None:
+            identity = cfg.get("harness_profile_id")
+            if not identity and cfg.get("template_id"):
+                template = await db.get(Template, uuid.UUID(str(cfg["template_id"])))
+                identity = getattr(template, "harness_profile_id", None)
+            if identity:
+                try:
+                    identity = uuid.UUID(str(identity))
+                except ValueError:
+                    raise ValueError("Invalid harness profile reference") from None
+                profile = await db.get(HarnessProfile, identity)
+            else:
+                profile = await db.scalar(select(HarnessProfile).where(
+                    HarnessProfile.workspace_id == workspace_id, HarnessProfile.is_default.is_(True)))
+            if profile is None or profile.workspace_id != workspace_id:
+                raise ValueError("Harness profile is unavailable in this workspace")
+            await validate_profile(db, workspace_id, connector_id=profile.connector_id,
+                connector_version=profile.connector_version,
+                config={**profile.config, **cfg.get("harness_config", {})},
+                secret_refs=profile.secret_refs, model_id=profile.model_id)
+
+    def _uuid(value, what: str) -> uuid.UUID | None:
         try:
             return uuid.UUID(str(value))
         except (ValueError, AttributeError, TypeError):
@@ -490,8 +516,8 @@ async def create_experiment(
     workspace_id: uuid.UUID,
     payload: dict,
     created_by: str = "user",
-    frozen_cases: Optional[list[dict]] = None,
-    exclude_fingerprints: Optional[set[str]] = None,
+    frozen_cases: list[dict] | None = None,
+    exclude_fingerprints: set[str] | None = None,
 ) -> Experiment:
     """Validate + freeze the experiment request into a draft Experiment.
 
@@ -529,7 +555,7 @@ async def create_experiment(
             try:
                 ids.append(uuid.UUID(str(raw)))
             except ValueError:
-                raise ValueError(f"invalid task id in dataset: {raw!r}")
+                raise ValueError(f"invalid task id in dataset: {raw!r}") from None
         rows = (
             await db.execute(
                 select(Task).where(
@@ -622,7 +648,7 @@ async def start_experiment(db: AsyncSession, exp: Experiment) -> None:
             resolved_configs.append(cfg)
             continue
         resolved_configs.append(
-            {**cfg, "resolved": await _resolve_config_state(db, cfg, images)}
+            {**cfg, "resolved": await _resolve_config_state(db, cfg, images, workspace_id=exp.workspace_id)}
         )
         for case in exp.dataset_cases:
             for idx in range(exp.n_runs_per_cell):
@@ -715,7 +741,7 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
         for t in tasks:
             if t.agent_container_id and t.status not in _TERMINAL_TASK:
                 try:
-                    get_agent_runtime().kill(t.agent_container_id)
+                    get_agent_runtime().kill(t.agent_container_id, workspace_id=str(t.workspace_id))
                     t.status = TaskStatus.FAILED.value
                     t.completed_at = now
                 except Exception as e:
@@ -741,6 +767,8 @@ _TEMPLATE_IDENTITY_FIELDS = (
     "max_ram",
     "max_cpu",
     "timeout_minutes",
+    "harness_profile_id",
+    "execution_mode",
 )
 
 
@@ -775,7 +803,15 @@ def _agent_image_ids() -> dict:
         import docker
 
         client = docker.from_env()
-        for name in (DEFAULT_AGENT_IMAGE, TOOLATHLON_AGENT_IMAGE):
+        from app.harnesses.catalog import load_catalog
+
+        if "name=rootless" not in client.info().get("SecurityOptions", []):
+            raise ValueError("Execution evidence requires the EvalHive rootless daemon")
+        names = set()
+        for manifest in load_catalog().values():
+            names.add(manifest["image"])
+            names.update(manifest.get("requirements", {}).get("environment_images", {}).values())
+        for name in sorted(names):
             try:
                 out[name] = client.images.get(name).id
             except Exception:
@@ -786,7 +822,7 @@ def _agent_image_ids() -> dict:
     return out
 
 
-async def _resolve_config_state(db: AsyncSession, cfg: dict, images: dict) -> dict:
+async def _resolve_config_state(db: AsyncSession, cfg: dict, images: dict, *, workspace_id=None) -> dict:
     """Freeze what a configuration actually resolves to right now (SPA-84).
 
     The fingerprint covers ids and overrides; it cannot see that the template
@@ -808,9 +844,34 @@ async def _resolve_config_state(db: AsyncSession, cfg: dict, images: dict) -> di
     if tpl is not None:
         resolved["template_name"] = tpl.name
         resolved["template_content_sha256"] = _template_content_hash(tpl)
+    from app.harnesses.catalog import CatalogError, get_manifest
+    from app.models.harness_profile import HarnessProfile
+
+    profile_id = cfg.get("harness_profile_id") or getattr(tpl, "harness_profile_id", None)
+    workspace_id = workspace_id or getattr(tpl, "workspace_id", None)
+    profile_query = select(HarnessProfile).where(HarnessProfile.workspace_id == workspace_id)
+    if profile_id:
+        profile = await db.get(HarnessProfile, uuid.UUID(str(profile_id)))
+    else:
+        profile = await db.scalar(profile_query.where(HarnessProfile.is_default.is_(True)))
+    if profile is not None and workspace_id is not None and profile.workspace_id != workspace_id:
+        profile = None
+    if profile is not None:
+        try:
+            manifest = get_manifest(profile.connector_id, profile.connector_version)
+        except CatalogError:
+            manifest = {}
+        resolved["harness"] = {
+            "profile_id": str(profile.id), "connector_id": profile.connector_id,
+            "connector_version": profile.connector_version, "protocol_version": manifest.get("protocol_version"),
+            "image": manifest.get("image"), "image_id": images.get(manifest.get("image")),
+            "available": bool(manifest),
+            "requested_config": {**profile.config, **(cfg.get("harness_config") or {})},
+            "config_state": "requested; effective defaults are captured by each attempt",
+        }
     # The effective model is the config's, else the template's — a config that
     # omits model_id inherits it, which is exactly the case that drifted here.
-    model_id = cfg.get("model_id") or (getattr(tpl, "model_id", None) if tpl else None)
+    model_id = cfg.get("model_id") or (profile.model_id if profile else None) or (getattr(tpl, "model_id", None) if tpl else None)
     if model_id:
         try:
             model = await db.get(LLMModel, uuid.UUID(str(model_id)))
@@ -825,7 +886,7 @@ async def _resolve_config_state(db: AsyncSession, cfg: dict, images: dict) -> di
     return resolved
 
 
-async def _retire_task_tag(db: AsyncSession, task_id: Optional[uuid.UUID]) -> None:
+async def _retire_task_tag(db: AsyncSession, task_id: uuid.UUID | None) -> None:
     """Move a superseded run's task and quality record to the retired suite tag.
 
     Retrying a cell used to leave its old task tagged as part of the experiment,
@@ -928,7 +989,7 @@ async def _snapshot_attempt(db: AsyncSession, run: ExperimentRun, reason: str) -
             attempt_index=index,
             task_id=run.task_id,
             status=run.status,
-            cost_usd=run.cost_usd or Decimal(0),
+            cost_usd=run.cost_usd,
             weighted_score=run.weighted_score,
             trajectory_score=run.trajectory_score,
             duration_seconds=run.duration_seconds,
@@ -1049,7 +1110,7 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     cfg["config_key"] = f"cfg-{(max(nums) + 1) if nums else 1:02d}"
     # A config added after the start still gets its resolution frozen, or it
     # would be the one condition in the matrix with no record of what it meant.
-    cfg["resolved"] = await _resolve_config_state(db, cfg, _agent_image_ids())
+    cfg["resolved"] = await _resolve_config_state(db, cfg, _agent_image_ids(), workspace_id=exp.workspace_id)
     exp.configurations = existing + [cfg]  # reassign so the JSONB column is marked dirty
     ms = dict(exp.matrix_spec or {})
     ms["configurations"] = list(ms.get("configurations") or []) + [cfg_input]
@@ -1219,7 +1280,7 @@ async def remove_config_from_experiment(
         for t in tasks:
             if t.agent_container_id and t.status not in _TERMINAL_TASK:
                 try:
-                    get_agent_runtime().kill(t.agent_container_id)
+                    get_agent_runtime().kill(t.agent_container_id, workspace_id=str(t.workspace_id))
                     t.status = TaskStatus.FAILED.value
                     t.completed_at = now
                 except Exception as e:
@@ -1244,7 +1305,8 @@ def child_run_config(
     }
     if not cfg.get("orchestrator") and cfg.get("template_id"):
         rc["template_id"] = str(cfg["template_id"])
-    for key in ("model_id", "temperature", "seed", "soul_md", "tools_override", "memory_mode"):
+    rc["execution_mode"] = "orchestrated" if cfg.get("orchestrator") else "direct"
+    for key in ("model_id", "temperature", "seed", "soul_md", "tools_override", "memory_mode", "harness_profile_id", "harness_config"):
         if cfg.get(key) is not None:
             rc[key] = cfg[key]
     return rc
@@ -1359,7 +1421,7 @@ def _validate_eval_config(eval_config: dict | None) -> None:
         try:
             value = float(value)
         except (TypeError, ValueError):
-            raise ValueError("eval_config.judge_threshold must be a number")
+            raise ValueError("eval_config.judge_threshold must be a number") from None
         if not JUDGE_THRESHOLD_MIN <= value <= JUDGE_THRESHOLD_MAX:
             raise ValueError(
                 "eval_config.judge_threshold must be between "
@@ -1373,7 +1435,7 @@ def _validate_eval_config(eval_config: dict | None) -> None:
         try:
             value = float(value)
         except (TypeError, ValueError):
-            raise ValueError("eval_config.equivalence_margin must be a number")
+            raise ValueError("eval_config.equivalence_margin must be a number") from None
         if not EQUIVALENCE_MARGIN_MIN < value <= EQUIVALENCE_MARGIN_MAX:
             raise ValueError(
                 "eval_config.equivalence_margin must be greater than "
@@ -1428,7 +1490,7 @@ def _validate_trace_config(eval_config: dict | None) -> None:
         try:
             value = int(block[key])
         except (TypeError, ValueError):
-            raise ValueError(f"eval_config.trace.{key} must be an integer")
+            raise ValueError(f"eval_config.trace.{key} must be an integer") from None
         if value < 0:
             raise ValueError(f"eval_config.trace.{key} must be >= 0 (0 disables trimming)")
 
@@ -1555,7 +1617,7 @@ async def _apply_toolathlon_run_config(
     PG lane, carry the lane host in ``rc["pg_host"]`` so the orchestrator points the
     agent's MCP servers at ``toolathlon_pg_lane_<i>`` (otherwise the shared default)."""
     tool_ids = await _resolve_toolathlon_tools(db, exp.workspace_id, case)
-    rc["agent_image"] = TOOLATHLON_AGENT_IMAGE
+    rc["environment_id"] = "toolathlon"
     rc["max_iterations"] = TOOLATHLON_MAX_ITERATIONS
     pg_host = _pg_host_for_lane(run_row.lane_index)
     if pg_host:
@@ -1599,6 +1661,8 @@ async def _make_child(
         workspace_id=exp.workspace_id,
         origin="experiment",
         template_id=pinned,
+        harness_profile_id=uuid.UUID(str(cfg["harness_profile_id"])) if cfg.get("harness_profile_id") else None,
+        execution_mode="orchestrated" if cfg.get("orchestrator") else "direct",
         run_config=rc,
         max_retries=0,
         reference_answer=case.get("reference_answer"),
@@ -1737,10 +1801,12 @@ async def _evaluate_child(
             logger.warning(f"experiment: failure-mode eval failed for {task.id}: {e}")
 
 
-def _run_cost(task: Task, rec: QualityRecord | None) -> Decimal:
+def _run_cost(task: Task, rec: QualityRecord | None) -> Decimal | None:
     # Agent + orchestrator + every evaluator. The orchestrator's share was missing
     # until SPA-111, which made both this figure and the budget cap undercounts.
-    total = Decimal(task.cost_usd or 0) + Decimal(task.orchestrator_cost_usd or 0)
+    if task.cost_usd is None:
+        return None
+    total = Decimal(task.cost_usd) + Decimal(task.orchestrator_cost_usd or 0)
     if rec is not None:
         for prof in (rec.quality_profile, rec.trajectory_profile, rec.failure_profile):
             if prof:
@@ -1748,7 +1814,7 @@ def _run_cost(task: Task, rec: QualityRecord | None) -> Decimal:
     return total
 
 
-def _run_duration(task: Task, rec: QualityRecord | None) -> Optional[int]:
+def _run_duration(task: Task, rec: QualityRecord | None) -> int | None:
     if rec is not None and rec.duration_seconds is not None:
         return rec.duration_seconds
     if task.started_at and task.completed_at:
@@ -1794,6 +1860,7 @@ async def _start_toolathlon_run(
             long_lt,
             keep_alive=portal,
             pg_host=_pg_host_for_lane(run.lane_index),
+            workspace_id=exp.workspace_id,
         )
         # Portal case: the agent shares the (kept-alive) preprocess container's
         # netns so it can reach the mock localhost:PORT server.
@@ -1890,6 +1957,7 @@ async def _advance_preprocessing(
                 short_lt,
                 keep_alive=_requires_portal(case),
                 pg_host=_pg_host_for_lane(run.lane_index),
+                workspace_id=exp.workspace_id,
             )
         except Exception as e:
             run.preprocess_log = f"preprocess retry failed: {e}"[:4000]
@@ -1914,6 +1982,8 @@ async def _start_eval(
     """Agent settled → start the eval container detached (run → EVALUATING). If
     the eval cannot even launch, settle now with verdict=None."""
     try:
+        task = await db.get(Task, run.task_id)
+        workspace_scope = {"attempt_id": task.current_attempt_id} if task and task.current_attempt_id else {}
         run.eval_container_id = ext_eval.start_eval(
             run.task_id,
             _case_task_path(case),
@@ -1921,6 +1991,8 @@ async def _start_eval(
             case["external_eval"].get("groundtruth_path"),
             run.launch_time,
             pg_host=_pg_host_for_lane(run.lane_index),
+            workspace_id=exp.workspace_id,
+            **workspace_scope,
         )
         run.status = ExperimentRunStatus.EVALUATING.value
     except Exception as e:
@@ -2334,8 +2406,8 @@ async def clone_experiment(
     db: AsyncSession,
     exp: Experiment,
     *,
-    name: Optional[str] = None,
-    changes: Optional[dict] = None,
+    name: str | None = None,
+    changes: dict | None = None,
     created_by: str = "user",
 ) -> Experiment:
     """New draft from an existing experiment, with optional field overrides.

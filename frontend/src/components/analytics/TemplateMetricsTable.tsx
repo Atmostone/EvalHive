@@ -68,7 +68,7 @@ export default function TemplateMetricsTable({ data }: { data: TemplateAnalytics
       sorted.map((r) => ({
         name: r.template_name.length > 16 ? `${r.template_name.slice(0, 14)}…` : r.template_name,
         approval_pct: Number((r.approval_rate * 100).toFixed(1)),
-        cost_per_task: Number(r.cost_per_task_usd.toFixed(4)),
+        cost_per_task: r.cost_per_task_usd === null ? null : Number(r.cost_per_task_usd.toFixed(4)),
       })),
     [sorted],
   )

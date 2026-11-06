@@ -1,9 +1,8 @@
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
-
 
 # 256 KB cap per chunk — agent splits longer outputs into N consecutive chunks.
 MAX_CHUNK_BYTES = 256 * 1024
@@ -60,13 +59,13 @@ def clip_arguments(args: dict | None) -> tuple[dict | None, bool]:
 class AgentLogChunkIn(BaseModel):
     chunk_seq: int = Field(..., ge=0)
     content: str = Field(..., max_length=MAX_CHUNK_BYTES)
-    tool_name: Optional[str] = Field(None, max_length=255)
+    tool_name: str | None = Field(None, max_length=255)
     # SPA-86: the call that produced this output. `arguments` is what the process
     # judge needs to score parameter_quality at all; `tool_call_id` + `part_index`
     # let the cleaner re-join a split output into the single call it came from.
-    arguments: Optional[dict] = None
+    arguments: dict | None = None
     arguments_truncated: bool = False
-    tool_call_id: Optional[str] = Field(None, max_length=128)
+    tool_call_id: str | None = Field(None, max_length=128)
     part_index: int = Field(0, ge=0)
     part_total: int = Field(1, ge=1)
     # SPA-114: the deliberation that PRECEDED this step, kept out of `content`.
@@ -74,7 +73,7 @@ class AgentLogChunkIn(BaseModel):
     # and «what the model thought» vs «what it did» is exactly the distinction
     # worth keeping — a reasoning model's answer to «how did it work?» lives
     # almost entirely on this side of it.
-    reasoning: Optional[str] = Field(None, max_length=MAX_REASONING_BYTES)
+    reasoning: str | None = Field(None, max_length=MAX_REASONING_BYTES)
     idempotency_key: str = Field(..., min_length=1, max_length=64)
 
     @model_validator(mode="after")
@@ -92,11 +91,11 @@ class AgentLogChunkOut(BaseModel):
     id: str
     chunk_seq: int
     content: str
-    tool_name: Optional[str] = None
-    arguments: Optional[dict] = None
+    tool_name: str | None = None
+    arguments: dict | None = None
     arguments_truncated: bool = False
-    tool_call_id: Optional[str] = None
+    tool_call_id: str | None = None
     part_index: int = 0
     part_total: int = 1
-    reasoning: Optional[str] = None
+    reasoning: str | None = None
     created_at: datetime

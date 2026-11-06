@@ -24,11 +24,11 @@ import math
 import re
 from difflib import SequenceMatcher
 
-from app.plugins.llm import get_llm_provider
-from app.utils.tool_args import error_class, extract_tool_args
 from app.models.task import Task
-from app.quality.judge import JUDGE_TOOL, _MAX_SCALE
+from app.plugins.llm import get_llm_provider
+from app.quality.judge import _MAX_SCALE, JUDGE_TOOL
 from app.utils.cost import tokens_from_response
+from app.utils.tool_args import error_class, extract_tool_args
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def fuzzy_match(result: str, reference: str) -> float:
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0.0 or nb == 0.0:

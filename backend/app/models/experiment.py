@@ -1,8 +1,6 @@
-import enum
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -20,9 +18,10 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
+from app.utils.enums import HistoricalStringEnum
 
 
-class ExperimentStatus(str, enum.Enum):
+class ExperimentStatus(HistoricalStringEnum):
     DRAFT = "draft"
     RUNNING = "running"
     PAUSED = "paused"
@@ -33,7 +32,7 @@ class ExperimentStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
-class ExperimentRunStatus(str, enum.Enum):
+class ExperimentRunStatus(HistoricalStringEnum):
     PENDING = "pending"
     # Toolathlon-style executable cases (gold.external_eval) pass through two
     # extra states the container lifecycle needs; plain cases never enter them
@@ -78,7 +77,7 @@ class Experiment(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -101,25 +100,25 @@ class Experiment(Base):
     n_runs_per_cell: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
-    budget_limit_usd: Mapped[Optional[Decimal]] = mapped_column(
+    budget_limit_usd: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 6), nullable=True
     )
-    max_parallel: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    max_parallel: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # SPA-69: number of isolated Toolathlon PG lanes to run in parallel. None/0 →
     # serial (one Toolathlon cell at a time — the safe default, since all cases share
     # one mock postgres). >1 lets the scheduler claim up to that many Toolathlon cells
     # at once, each pinned to its own ``toolathlon_pg_lane_<i>`` instance so their
     # preprocess re-seeding cannot clobber each other.
-    n_toolathlon_lanes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    n_toolathlon_lanes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # {trajectory: bool=true, failure_modes: bool=false} — E-02 always runs.
     eval_config: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 
     accumulated_cost_usd: Mapped[Decimal] = mapped_column(
-        Numeric(10, 6), default=Decimal("0"), server_default="0"
+        Numeric(), default=Decimal("0"), server_default="0"
     )
     # Cached assembled report (experiment_report.build_report output).
-    report: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- SPA-84 immutability -----------------------------------------------------
     # Bumped by every mutation (retry / add-config / retire-config). A cached
@@ -132,7 +131,7 @@ class Experiment(Base):
     # n_runs_per_cell, eval_config). Catches input that changed without going
     # through a mutation — a hand-edited row, a restored dump — where the
     # revision counter cannot.
-    input_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    input_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_by: Mapped[str] = mapped_column(
         String(255), default="user", server_default="user"
@@ -141,8 +140,8 @@ class Experiment(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()
     )
-    started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class ExperimentRun(Base):
@@ -180,7 +179,7 @@ class ExperimentRun(Base):
     config_key: Mapped[str] = mapped_column(String(64), nullable=False)
     case_key: Mapped[str] = mapped_column(String(128), nullable=False)
     run_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
     status: Mapped[str] = mapped_column(
@@ -190,17 +189,17 @@ class ExperimentRun(Base):
         server_default=ExperimentRunStatus.PENDING.value,
     )
 
-    cost_usd: Mapped[Decimal] = mapped_column(
-        Numeric(10, 6), default=Decimal("0"), server_default="0"
+    cost_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric().evaluates_none(), nullable=True, default=Decimal("0"), server_default="0"
     )
-    weighted_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    trajectory_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    weighted_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trajectory_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Denormalised from the task, like the scores above (SPA-87). Infrastructure
     # failure types are excluded from the report's aggregates, so a leaderboard
     # cannot show a provider outage as a weak model. NULL = not classified, and
     # counts. Vocabulary + the contaminating subset: app/utils/failures.py.
-    failure_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    failure_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # --- Toolathlon executable evaluation (gold.external_eval) ------------------
     # ``external_verdict`` is the executable checker's pass/fail, kept SEPARATE
@@ -209,21 +208,21 @@ class ExperimentRun(Base):
     # None = no executable verdict (plain case, or eval infra error). The same
     # ``launch_time`` is reused for preprocess + eval (date-relative checks);
     # the *_container_id columns let a later tick re-inspect a detached container.
-    external_verdict: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
-    launch_time: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    preprocess_container_id: Mapped[Optional[str]] = mapped_column(
+    external_verdict: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    launch_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preprocess_container_id: Mapped[str | None] = mapped_column(
         String(128), nullable=True
     )
-    eval_container_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    preprocess_retried: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
-    preprocess_started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    preprocess_log: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    eval_log: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    eval_container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    preprocess_retried: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    preprocess_started_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    preprocess_log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    eval_log: Mapped[str | None] = mapped_column(Text, nullable=True)
     # SPA-69: which isolated PG lane (0..n_toolathlon_lanes-1) this Toolathlon run is
     # pinned to while in flight — its preprocess/eval/agent all target
     # ``toolathlon_pg_lane_<lane_index>``. None for plain runs and once settled (the
     # lane is freed for the next claim).
-    lane_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    lane_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # --- SPA-84 immutability -----------------------------------------------------
     # Executions this cell has had, the current one included. 0 = never claimed.
@@ -234,23 +233,23 @@ class ExperimentRun(Base):
     )
     # Set when this cell's configuration is retired. Row and lineage are kept;
     # the default report selection skips it.
-    retired_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(nullable=True)
     # What this run ACTUALLY ran under, resolved at claim time: the effective
     # model's api_name, the template's content hash and the agent image it will
     # use. The config-level pin records the intent at start; the runtime
     # re-resolves at spawn, so only this can prove that every cell of a
     # config_key ran under one condition. NULL = never claimed.
-    condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+    condition_fingerprint: Mapped[str | None] = mapped_column(
         String(32), nullable=True
     )
     # The same, minus the case-derived tool set — comparable across every cell of
     # a configuration, which the full hash is not.
-    core_condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+    core_condition_fingerprint: Mapped[str | None] = mapped_column(
         String(32), nullable=True
     )
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class ExperimentAttempt(Base):
@@ -285,32 +284,32 @@ class ExperimentAttempt(Base):
     )
     # 1-based, in execution order.
     attempt_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False)
 
-    cost_usd: Mapped[Decimal] = mapped_column(
-        Numeric(10, 6), default=Decimal("0"), server_default="0"
+    cost_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric().evaluates_none(), nullable=True, default=Decimal("0"), server_default="0"
     )
-    weighted_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    trajectory_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    failure_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    external_verdict: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
-    launch_time: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    lane_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    weighted_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trajectory_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failure_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    external_verdict: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    launch_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lane_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # What this attempt ran under. Kept so a disagreement between the attempts of
     # one cell stays visible after the cell is reset.
-    condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+    condition_fingerprint: Mapped[str | None] = mapped_column(
         String(32), nullable=True
     )
-    core_condition_fingerprint: Mapped[Optional[str]] = mapped_column(
+    core_condition_fingerprint: Mapped[str | None] = mapped_column(
         String(32), nullable=True
     )
 
     # Why this attempt stopped being current: 'retry' | 'config_retired'.
-    retired_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retired_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)

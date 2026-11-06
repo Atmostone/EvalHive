@@ -1,0 +1,1283 @@
+{
+  "manifest": {
+    "protocol_version": "1.0",
+    "id": "example.fake",
+    "version": "0.1.0",
+    "display_name": "External fake connector",
+    "entrypoint": [
+      "python",
+      "connector.py"
+    ],
+    "image": "evalhive-fake:0.1.0",
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "wait": {
+          "type": "boolean"
+        },
+        "fail": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "feedback": "native",
+      "abort": "native",
+      "approval": "unsupported"
+    },
+    "commands": {
+      "feedback": {
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "abort": {
+        "input_schema": {
+          "type": "object",
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "run_spec": {
+    "protocol_version": "1.0",
+    "task_id": "task-1",
+    "attempt_id": "attempt-1",
+    "workspace_id": "workspace-1",
+    "task": {
+      "prompt": "Write a file"
+    },
+    "cwd": "/workspace",
+    "instructions": [
+      "Do the task"
+    ],
+    "config": {
+      "prefix": "Hello world 🌍"
+    },
+    "model": null,
+    "credential_refs": {},
+    "environment": {
+      "id": "plain",
+      "resources": []
+    },
+    "limits": {
+      "wall_time_seconds": 30,
+      "cpu_cores": 1,
+      "memory_mb": 128
+    },
+    "required_capabilities": [
+      "feedback"
+    ]
+  },
+  "cases": [
+    {
+      "name": "applied configuration is explicit",
+      "kind": "validation_result",
+      "value": {
+        "accepted": true,
+        "effective_config": {
+          "nativeDefault": false
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "missing applied configuration is rejected",
+      "kind": "validation_result",
+      "value": {
+        "accepted": true
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "external connector manifest",
+      "kind": "manifest",
+      "value": {
+        "protocol_version": "1.0",
+        "id": "example.fake",
+        "version": "0.1.0",
+        "display_name": "External fake connector",
+        "entrypoint": [
+          "python",
+          "connector.py"
+        ],
+        "image": "evalhive-fake:0.1.0",
+        "config_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string"
+            },
+            "wait": {
+              "type": "boolean"
+            },
+            "fail": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "feedback": "native",
+          "abort": "native",
+          "approval": "unsupported"
+        },
+        "commands": {
+          "feedback": {
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "abort": {
+            "input_schema": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "isolated task specification",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback"
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "command describe",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "req-describe",
+        "method": "describe",
+        "params": {}
+      },
+      "error": null
+    },
+    {
+      "name": "command validate",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "req-validate",
+        "method": "validate",
+        "params": {
+          "run": {
+            "protocol_version": "1.0",
+            "task_id": "task-1",
+            "attempt_id": "attempt-1",
+            "workspace_id": "workspace-1",
+            "task": {
+              "prompt": "Write a file"
+            },
+            "cwd": "/workspace",
+            "instructions": [
+              "Do the task"
+            ],
+            "config": {
+              "prefix": "Hello world 🌍"
+            },
+            "model": null,
+            "credential_refs": {},
+            "environment": {
+              "id": "plain",
+              "resources": []
+            },
+            "limits": {
+              "wall_time_seconds": 30,
+              "cpu_cores": 1,
+              "memory_mb": 128
+            },
+            "required_capabilities": [
+              "feedback"
+            ]
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "command start",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "req-start",
+        "method": "start",
+        "params": {
+          "run": {
+            "protocol_version": "1.0",
+            "task_id": "task-1",
+            "attempt_id": "attempt-1",
+            "workspace_id": "workspace-1",
+            "task": {
+              "prompt": "Write a file"
+            },
+            "cwd": "/workspace",
+            "instructions": [
+              "Do the task"
+            ],
+            "config": {
+              "prefix": "Hello world 🌍"
+            },
+            "model": null,
+            "credential_refs": {},
+            "environment": {
+              "id": "plain",
+              "resources": []
+            },
+            "limits": {
+              "wall_time_seconds": 30,
+              "cpu_cores": 1,
+              "memory_mb": 128
+            },
+            "required_capabilities": [
+              "feedback"
+            ]
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "command control",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "req-control",
+        "method": "control",
+        "params": {
+          "attempt_id": "attempt-1",
+          "command": "feedback",
+          "payload": {
+            "text": "Continue"
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "command shutdown",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "req-shutdown",
+        "method": "shutdown",
+        "params": {}
+      },
+      "error": null
+    },
+    {
+      "name": "result success",
+      "kind": "result",
+      "value": {
+        "status": "success",
+        "summary": "Done"
+      },
+      "error": null
+    },
+    {
+      "name": "result cancelled",
+      "kind": "result",
+      "value": {
+        "status": "cancelled",
+        "summary": "Stopped"
+      },
+      "error": null
+    },
+    {
+      "name": "result failed",
+      "kind": "result",
+      "value": {
+        "status": "failed",
+        "summary": "Error",
+        "error": {
+          "code": "TEST",
+          "message": "Failure"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "response True",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "response",
+        "id": "req-1",
+        "ok": true,
+        "result": {
+          "protocol_version": "1.0",
+          "id": "example.fake",
+          "version": "0.1.0",
+          "display_name": "External fake connector",
+          "entrypoint": [
+            "python",
+            "connector.py"
+          ],
+          "image": "evalhive-fake:0.1.0",
+          "config_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "prefix": {
+                "type": "string"
+              },
+              "wait": {
+                "type": "boolean"
+              },
+              "fail": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "capabilities": {
+            "feedback": "native",
+            "abort": "native",
+            "approval": "unsupported"
+          },
+          "commands": {
+            "feedback": {
+              "input_schema": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "abort": {
+              "input_schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "response False",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "response",
+        "id": "req-1",
+        "ok": false,
+        "error": {
+          "code": "INVALID_CONFIG",
+          "message": "Invalid"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event run.started",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "run.started",
+        "data": {}
+      },
+      "error": null
+    },
+    {
+      "name": "event message.start",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-1",
+        "attempt_id": "attempt-1",
+        "seq": 1,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "message.start",
+        "data": {
+          "message_id": "m1",
+          "role": "assistant",
+          "channel": "reasoning"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event message.delta",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-2",
+        "attempt_id": "attempt-1",
+        "seq": 2,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "message.delta",
+        "data": {
+          "message_id": "m1",
+          "delta": "Thinking…",
+          "channel": "reasoning"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event message.end",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-3",
+        "attempt_id": "attempt-1",
+        "seq": 3,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "message.end",
+        "data": {
+          "message_id": "m1",
+          "content": null,
+          "channel": "redacted"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event tool.start",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-4",
+        "attempt_id": "attempt-1",
+        "seq": 4,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "tool.start",
+        "data": {
+          "call_id": "c1",
+          "name": "read",
+          "arguments": {
+            "path": "one"
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event tool.start",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-5",
+        "attempt_id": "attempt-1",
+        "seq": 5,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "tool.start",
+        "data": {
+          "call_id": "c2",
+          "name": "write",
+          "arguments": {
+            "path": "two"
+          },
+          "parent_call_id": "c1"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event tool.update",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-6",
+        "attempt_id": "attempt-1",
+        "seq": 6,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "tool.update",
+        "data": {
+          "call_id": "c1",
+          "content": "partial",
+          "mode": "delta"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event tool.end",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-7",
+        "attempt_id": "attempt-1",
+        "seq": 7,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "tool.end",
+        "data": {
+          "call_id": "c2",
+          "result": "ok",
+          "status": "completed"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event tool.end",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-8",
+        "attempt_id": "attempt-1",
+        "seq": 8,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "tool.end",
+        "data": {
+          "call_id": "c1",
+          "result": null,
+          "status": "cancelled"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event usage",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-9",
+        "attempt_id": "attempt-1",
+        "seq": 9,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "usage",
+        "data": {
+          "usage_id": "u1",
+          "mode": "cumulative",
+          "purpose": "agent",
+          "model": null,
+          "input_tokens": 12,
+          "output_tokens": 5,
+          "reasoning_tokens": null,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": null,
+          "cost": {
+            "amount": "0.00012",
+            "currency": "USD",
+            "source": "provider"
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event artifact",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-10",
+        "attempt_id": "attempt-1",
+        "seq": 10,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "artifact",
+        "data": {
+          "path": "output/result.txt"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event interaction.request",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-11",
+        "attempt_id": "attempt-1",
+        "seq": 11,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "interaction.request",
+        "data": {
+          "request_id": "approval-1",
+          "kind": "approval",
+          "payload": {
+            "text": "Allow?"
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event native",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-12",
+        "attempt_id": "attempt-1",
+        "seq": 12,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "native",
+        "data": {
+          "name": "native.message",
+          "adapter_version": "1",
+          "payload": {
+            "unknown": [
+              "one",
+              null
+            ]
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "event run.finished",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-13",
+        "attempt_id": "attempt-1",
+        "seq": 13,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "run.finished",
+        "data": {
+          "status": "success",
+          "summary": "Done"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "incompatible version",
+      "kind": "manifest",
+      "value": {
+        "protocol_version": "2.0",
+        "id": "example.fake",
+        "version": "0.1.0",
+        "display_name": "External fake connector",
+        "entrypoint": [
+          "python",
+          "connector.py"
+        ],
+        "image": "evalhive-fake:0.1.0",
+        "config_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string"
+            },
+            "wait": {
+              "type": "boolean"
+            },
+            "fail": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "feedback": "native",
+          "abort": "native",
+          "approval": "unsupported"
+        },
+        "commands": {
+          "feedback": {
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "abort": {
+            "input_schema": {
+              "type": "object",
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "error": "UNSUPPORTED_PROTOCOL"
+    },
+    {
+      "name": "unknown platform parameter",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback"
+        ],
+        "extra": true
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid resources",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 0
+        },
+        "required_capabilities": [
+          "feedback"
+        ]
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "duplicate capabilities",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback",
+          "feedback"
+        ]
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid event message.delta 30",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "bad",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "event": "message.delta",
+        "data": {
+          "message_id": "m1"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid event tool.end 31",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "bad",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "event": "tool.end",
+        "data": {
+          "call_id": "c1",
+          "result": "ok"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid event usage 32",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "bad",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "event": "usage",
+        "data": {
+          "usage_id": "u1",
+          "mode": "cumulative",
+          "purpose": "agent",
+          "input_tokens": 1.5
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid event usage 33",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "bad",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "event": "usage",
+        "data": {
+          "usage_id": "u1",
+          "mode": "cumulative",
+          "purpose": "agent",
+          "input_tokens": -1
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid event native 34",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "bad",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "event": "native",
+        "data": {
+          "name": "event",
+          "payload": {}
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid event run.finished 35",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "bad",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "event": "run.finished",
+        "data": {
+          "status": "failed",
+          "summary": "Error"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "unsafe integer",
+      "kind": "response",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "response",
+        "id": "r",
+        "ok": true,
+        "result": 9007199254740992
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "response result and error",
+      "kind": "response",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "response",
+        "id": "r",
+        "ok": true,
+        "result": {},
+        "error": {
+          "code": "bad",
+          "message": "bad"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "runner observation timestamp",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "run.started",
+        "data": {},
+        "observed_at": "2026-11-04T14:00:01.123Z"
+      },
+      "error": null
+    },
+    {
+      "name": "invalid observation timestamp",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "run.started",
+        "data": {},
+        "observed_at": 42
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "model HTTP failure facts",
+      "kind": "error",
+      "value": {
+        "code": "MODEL_FAILED",
+        "message": "Model request failed",
+        "details": {
+          "normalized_failure": {
+            "kind": "model_error",
+            "status_code": 401,
+            "exception": null
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "unknown normalized failure kind",
+      "kind": "error",
+      "value": {
+        "code": "MODEL_FAILED",
+        "message": "Model request failed",
+        "details": {
+          "normalized_failure": {
+            "kind": "pi_only"
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid normalized HTTP status",
+      "kind": "error",
+      "value": {
+        "code": "MODEL_FAILED",
+        "message": "Model request failed",
+        "details": {
+          "normalized_failure": {
+            "kind": "model_error",
+            "status_code": 700
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "resource tools valid",
+      "kind": "resource",
+      "value": {
+        "id": "tools",
+        "kind": "tools",
+        "config": {
+          "names": []
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource memory valid",
+      "kind": "resource",
+      "value": {
+        "id": "memory",
+        "kind": "memory",
+        "config": {
+          "mode": "off"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource mcp stdio",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "stdio",
+          "command": "node",
+          "args": []
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource mcp http",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "http",
+          "url": "http://fixture/mcp"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "resource skill valid",
+      "kind": "resource",
+      "value": {
+        "id": "skill",
+        "kind": "skill",
+        "config": {
+          "path": "/resources/skill/SKILL.md"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "memory off rejects hidden content",
+      "kind": "resource",
+      "value": {
+        "id": "memory",
+        "kind": "memory",
+        "config": {
+          "mode": "off",
+          "content": "should not leak"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "MCP transport rejects mixed options",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "http",
+          "url": "http://fixture/mcp",
+          "command": "node"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "resource rejects unknown kind",
+      "kind": "resource",
+      "value": {
+        "id": "r",
+        "kind": "invented",
+        "config": {}
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "resource private header reference",
+      "kind": "resource",
+      "value": {
+        "id": "mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "http",
+          "url": "http://fixture/mcp"
+        },
+        "credential_refs": {
+          "headers.Authorization": "private-ref"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "recovered provider failure remains observable",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "failure.observed",
+        "data": {
+          "request_id": "request-1",
+          "purpose": "compaction",
+          "facts": {
+            "kind": "model_error",
+            "status_code": 500,
+            "exception": null
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "failure observation requires typed facts",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "event",
+        "event_id": "e-0",
+        "attempt_id": "attempt-1",
+        "seq": 0,
+        "source": "agent",
+        "session_id": "s1",
+        "event": "failure.observed",
+        "data": {
+          "request_id": "request-1",
+          "purpose": "compaction"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    }
+  ]
+}

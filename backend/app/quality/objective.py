@@ -74,10 +74,10 @@ async def _exec(cmd: list[str], cwd: str) -> tuple[int, str, str]:
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT_S)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
-        raise RuntimeError(f"probe timed out after {_PROBE_TIMEOUT_S}s")
+        raise RuntimeError(f"probe timed out after {_PROBE_TIMEOUT_S}s") from None
     return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
@@ -89,7 +89,7 @@ async def _run_ruff(files: list[str], cwd: str) -> int:
     try:
         data = json.loads(out) if out.strip() else []
     except json.JSONDecodeError:
-        raise RuntimeError(f"ruff produced no parseable output: {(err or out)[:200]}")
+        raise RuntimeError(f"ruff produced no parseable output: {(err or out)[:200]}") from None
     return len(data)
 
 

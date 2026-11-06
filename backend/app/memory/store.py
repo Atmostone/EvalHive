@@ -228,7 +228,7 @@ def serialize_context_md(
     for e in entities:
         grouped.setdefault(e.type, []).append(e)
 
-    for type_, items in grouped.items():
+    for _type, items in grouped.items():
         for e in items:
             lines.append(f"## {e.type}:{e.name}")
             for k, v in (e.attributes or {}).items():

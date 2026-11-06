@@ -1,6 +1,6 @@
 # Architecture
 
-> Snapshot as of 2026-07-10. Any PR that changes components or data flows must update this file.
+> Execution architecture updated on 2026-11-05. The Harness SDK sections describe current launches and controls. Historical agent/callback notes explain pre-SDK archives. Changes to components or data flows must update this file.
 
 ## Services (docker compose)
 
@@ -50,6 +50,221 @@ Two **optional** profiles add Postgres sandboxes for the Toolathlon-GYM benchmar
 With both profiles the compose stack defines 18 services (the 9 core services above + `toolathlon_pg` + 8 lanes).
 
 ## Main flows
+
+### Harness boundary (SPA-120, protocol 1.0)
+
+The language-independent [Harness SDK](../sdk/README.md) defines the manifest,
+RunSpec, commands, normalized/native events and result in one JSON Schema. Python
+and TypeScript packages validate the same fixtures and communicate over bounded
+UTF-8 JSONL process pipes. A connector owns native configuration and the harness
+loop; runtime owns containers and environments; runner owns attempt lifecycle,
+durable delivery, control deadlines and artifacts. The SDK is independent of
+backend and LLM libraries. SPA-120–SPA-124 supply the contract, catalog, attempts,
+runtime and shared runner. SPA-125 moves existing agent execution through that
+boundary; Pi and OpenCode replace the temporary connector before release.
+
+SPA-121 adds the server-installed manifest catalog (`HARNESS_MANIFEST_DIR`) and
+workspace profiles. Catalog loading validates JSON/schema/protocol without
+importing worker code. Profile CRUD pins connector versions and validates settings
+and workspace references; credentials are stored separately and returned only by
+the runner's private resolver. Default selection and reference deletion serialize
+on the workspace row. Backend builds use the repository root as context to install
+the independent Python SDK and copy declarations; `.dockerignore` limits that
+context to the application, SDK and harness directories.
+
+SPA-122 adds explicit attempts and an atomic event journal. A task points to its
+current attempt; runner tokens bind workspace/task/attempt, and late prior-attempt
+delivery is rejected under the same task lock used for retries. Event sequences
+are contiguous and immutable after completion, with identical retries acknowledged
+without duplication. Snapshotted declarations/specifications belong to the attempt;
+normalized and versioned native records retain their original payloads. A lost
+transport records interrupted evidence rather than synthesizing success. The
+existing task/result projection is connected in SPA-126.
+
+SPA-123 introduces `app.runtime.ProcessRuntime`: opaque argv/environment, bind
+mounts, cwd, CPU/memory/PID limits and a task-environment network. Docker execution
+requires rootless mode and selects an installed catalog image by connector/version,
+then starts its resolved immutable image ID. Writable mounts stay within the
+attempt tree; shared/environment dependencies are read-only and server registered.
+Private inputs live beside the work tree, outside artifact collection. A portal
+namespace must belong to the same task/workspace and carry the environment role.
+Toolathlon helpers declare that scope. SPA-134 removed AgentSpec, DockerRuntime
+and the legacy execution manager. Current launches use the neutral runtime; the
+management compatibility facade lists, inspects and stops owned runner containers.
+
+SPA-124 runs the shared Python runner **outside** the connector container. Docker
+attach transports JSONL stdin/stdout with bounded multiplexed buffers; the event
+API token is never mounted or passed into the worker. A private native-credential
+file is separate from the artifact tree and removed on termination. Docker logging
+is disabled for this pipe, so redaction happens before records reach persistent
+storage rather than after an unredacted Docker log has already been written.
+
+The SQLite WAL spool commits records before HTTP delivery and removes them only
+after durable server acknowledgement; its sequence counter survives compaction.
+Command receipts follow the same pattern. SDK event observation time and monotonic
+duration are independent of delivery latency. Abort first requests native stop,
+then enforces bounded shutdown; missing terminal records or unconfirmed shutdown
+cannot become success. The server replays an orphaned spool after heartbeat loss
+and declares interrupted evidence explicitly. Image ID and runner policy are
+frozen before execution; one runner slot is the default server resource policy.
+
+SPA-125 provided a temporary adapter around the former built-in agent during
+migration. SPA-134 removed that worker, bridge, executable loop and build inputs.
+Pi is now the default, and OpenCode uses the same connector contract. Feedback,
+abort and health compatibility routes address the current attempt. Retired
+webhooks authenticate legacy tokens, reject attempt writes with 409 and return
+410 for pre-SDK tasks. Historical log archives remain readable.
+
+All launch modes use the shared runner. The task workflow separately performs
+orchestrated review, bounded retry and final archival; direct mode never calls an
+orchestrator or automatic evaluator. A durable review claim prevents replaying an
+uncertain paid review after interruption. Configuration, native outcome and event
+evidence remain attached to their original attempt. See
+[engineering validation](harness-sdk-validation.md) for acceptance boundaries.
+
+SPA-126 projects the immutable journal into existing task logs, traces and data
+lake records. Call identity includes the session; nested/interleaved calls retain
+their own arguments, final result and parent links. Final message/tool snapshots
+replace deltas instead of being concatenated twice. Missing starts/results and
+unavailable measurements remain explicit. Native evidence stays in the journal.
+Cumulative usage replaces earlier samples of the same identity; delta usage adds
+exact decimal costs. Totals stay unknown if a contributing call omits a metric.
+
+After worker shutdown the server collects files according to the frozen task
+environment policy, on success, failure and cancellation. Private input siblings
+and symlinks are never harvested. Files have attempt-specific storage paths and
+SHA-256 metadata; upload errors make delivery incomplete and preserve the native
+outcome separately. Artifact events precede terminal acknowledgement. Finalization
+has a deadline and a record-size fallback, so collecting files cannot keep the
+task running indefinitely. The terminal projection updates task results/usage,
+recording completeness, lifecycle events and parent completion idempotently.
+Recovery also finds terminal attempts whose task projection was not committed:
+a restart after the final event receipt cannot strand an in-progress task.
+
+Live compatibility rows retain their original position and a latest event
+sequence. REST snapshots and WebSocket updates merge by identity/version, and
+older attempts cannot replace a newer attempt in the viewer. Historical legacy
+archives retain their original read path. Data Lake summaries permit unknown
+costs and expose known sample counts alongside grouped averages.
+
+SPA-127 embeds the pinned official Pi 1.5.0 SDK in a TypeScript worker. It uses
+`createAgentSession`; EvalHive supplies no replacement LLM/tool loop. Each worker
+has explicit isolated model/auth, settings, session and resource directories.
+Global credentials and project extension discovery are disabled; a profile cannot
+install executable extensions. Native settings are schema-checked, including
+sampling overrides applied through Pi's provider-request extension hook.
+
+Pi messages/tool execution events and provider stream usage become normalized
+events alongside versioned native evidence. Provider fields determine measurement
+availability; Pi's numeric SDK defaults do not turn absent usage into zero. Native
+provider-billed cost is distinguished from Pi's local catalog estimates. Auxiliary
+compaction usage is recorded separately, with unavailable fields left unknown.
+The connector observes the public model runtime's transport callbacks for every
+native request, including compaction calls that bypass agent extension hooks.
+Explicit provider zero counts remain zero; SDK-generated defaults stay unknown.
+An 8 MiB worker event queue aborts on overflow rather than growing indefinitely.
+
+The worker waits for `agent_settled`, including automatic retries and queued
+feedback, and checks the final assistant stop reason. Abort reaches both a live
+provider stream and native tools. A configured turn budget stops before the next
+request; omitted budgets retain Pi's native behavior. Error parsing belongs to the
+connector and produces SDK failure facts. Backend classification consumes those
+facts and common runner errors, without branches naming Pi or OpenCode.
+`failure.observed` preserves provider failures recovered by native retry without
+changing a successful native result into a failed one. Infrastructure failures
+still mark the measurement as contaminated under the common classifier.
+
+Execution cost remains nullable through task, record, experiment cell and attempt
+ledger storage. Decimal storage has no fixed fractional scale. Cost means exclude
+unreported observations and expose their sample count; monetary rollups identify
+known subtotals and report missing coverage rather than inventing free requests.
+Historical execution snapshots stay frozen. Evaluation annotations can be added
+later with an `evaluation_spec_changed` audit event, without rewriting execution
+inputs or archived evidence.
+
+SPA-128 defines common tools, MCP, skills, memory and instructions resources in
+the SDK. Connectors translate them to native configuration; Pi connects explicit
+servers through the pinned standalone MCP SDK and loads only declared skills.
+An omitted toolset selects native defaults; an explicit empty set disables tools.
+Memory off excludes both memory content and shared memory files. Native tool
+names and canonical aliases are retained together in attempt evidence.
+
+The read-only knowledge MCP endpoint uses a separate service token scoped to the
+current active workspace/task/attempt. Runner tokens cannot authorize knowledge
+calls; completed/replaced attempts lose access. Secrets are resolved only in the
+worker credential input. Environment image variants are registered declarations,
+prepared inputs are copied into isolated attempt workspaces, and external
+evaluation reads the selected attempt's files.
+
+SPA-129 adds OpenCode 1.19.5 as another installed package and manifest, without
+backend-specific dispatch. Its private `opencode serve` process owns the native
+agent loop. The worker uses supported session HTTP endpoints and SSE, recovers
+authoritative messages after reconnects, and settles only after the latest input
+has a completed assistant response and the native session is idle. Replayed
+snapshots do not duplicate tools or usage; unavailable stream deltas remain an
+explicit recording limitation. Captured tool outputs survive later native
+context pruning, while outputs first observed after pruning remain missing.
+
+Native hooks enforce an exact tool mask independently of permission rules and
+check hard turn budgets before additional provider calls. Feedback is acknowledged
+after its message is persisted. Permission requests use the declared approval
+command; unsupported question input fails explicitly. A local transport observer
+records available provider usage by request/model/purpose without implementing
+an LLM loop or treating native catalog estimates as billed cost. Private HOME/XDG
+state and the image's pinned plugin dependency tree avoid owner configuration and
+runtime dependency downloads.
+
+SPA-130 exposes installed connector declarations and workspace profiles in
+Settings. The browser renders common schema fields, offers structured JSON for
+other native settings and validates with the same JSON Schema dialect without
+mutating values or applying defaults. Credentials are entered separately and
+only their names/references return to the browser. Owner/admin permissions govern
+profile/credential changes; installation remains a server operation.
+
+Templates select a profile or inherit the workspace default, and retain a direct
+or orchestrated execution preference. These choices are versioned with the role.
+Profile references are workspace scoped and prevent deletion while a template
+uses them. Restoring a version whose profile is gone fails explicitly rather than
+substituting a different execution condition.
+
+SPA-131 adds direct execution through the existing Work board. A task chooses a
+profile explicitly, inherits its role's profile, or uses the workspace default.
+The direct path resolves the model from the chosen profile or optional role and
+does not call the orchestrator or an automatic evaluator. A shared launch service
+builds neutral resources/limits/network/artifact policy and passes the resulting
+RunSpec to the runner. Model sampling overrides are translated and validated
+inside each connector, including explicit rejection of unsupported options.
+
+The task start endpoint validates selection and model availability before queuing.
+Active attempts fence task reconfiguration and requeueing. Work shows live logs,
+attempt status, control receipts, feedback, cancellation and schema-declared
+interaction actions. Control retries reuse command identity until acknowledged.
+An unsupported interaction fails in the runner rather than waiting indefinitely.
+File downloads send the caller's authorization/workspace headers and retain the
+environment's paths; no connector-specific output directory is imposed.
+
+SPA-132 freezes the connector's validated effective settings before `start`.
+Scoped, idempotent configuration receipts retain the requested settings separately;
+changed receipts are rejected. Applied conditions, immutable image identity and
+connector/native versions drive attempt fingerprints and schema-2 reproducibility
+snapshots. Matrix configurations accept a profile and native setting overrides.
+An old experiment cell cannot receive a late condition fingerprint from a
+superseded task. Trace and Data Lake readers scope SDK activity to its attempt;
+unscoped historical orchestration is retained in activity history separately.
+
+New quality records identify their execution attempt. Archiving and attempt
+creation serialize on the task row. Once a record exists, a linked rerun creates a
+new task instead of replacing its measured evidence; a post-archive rejection
+creates a linked revision carrying feedback. Historical records remain readable.
+Recorded replay preserves public applied settings and checks connector declaration,
+image, model connection and MCP resources. Missing legacy execution, unknown
+settings/images and changed dependencies produce explicit unavailability. A new
+run with current settings is a separate condition, never an exact legacy replay.
+Remote model revisions, credential versions and external system state remain gaps.
+
+Bundles include harness-aware snapshot coverage. With traces, SDK attempt headers
+and ordered normalized/native journals accompany legacy log archives, with sequence
+checks, expected counts and digests. Corrupt or missing journals fail verification.
 
 ### Creating and running a task
 
@@ -1474,8 +1689,8 @@ nothing on one side makes no claim at all.
 | `app/api/*` | REST + WS endpoints |
 | `app/orchestrator/engine.py` | Polling loop, decomposition, template selection, spawn, timeout check |
 | `app/orchestrator/llm.py` | LLM-powered orchestrator decisions + reasoning trail |
-| `app/orchestrator/docker_manager.py` | Docker SDK wrapper: spawn/kill/list/health/feedback/abort/switch (low-level — go through `app.plugins.runtime`) |
-| `app/plugins/runtime.py` | `AgentRuntime` ABC + `DockerRuntime` impl. Every call-site (engine, api/agents, api/chat, api/events, scheduler) goes through this. |
+| `app/runtime/*` | Rootless process isolation, registered images, workspaces, resource limits and owned environment networks |
+| `app/plugins/runtime.py` | Compatibility management facade for inspecting and stopping owned runner containers |
 | `app/plugins/embeddings.py` | `EmbeddingProvider` ABC + `FastembedProvider`/`OpenAIEmbeddingProvider`/`SettingsDispatchProvider`. `fastembed`/`httpx` are imported ONLY inside the plugin |
 | `app/plugins/llm.py` | `LLMProvider` ABC + `LiteLLMProvider`. Every `acompletion(...)` call goes through it. Adds transient 429/5xx retry (exp backoff, `LLM_TRANSIENT_RETRIES`/`LLM_RETRY_BASE_SECONDS`) and a per-provider `asyncio.Semaphore` registry fed by `providers.max_concurrency` (SPA-47) |
 | `app/plugins/secrets.py` | `SecretsProvider` ABC + `DBSecretsProvider`/`EnvSecretsProvider`. `llm_api_key` is read through it |
@@ -1520,14 +1735,15 @@ multiplicity-corrected statistics on top of it (`_significance_cells` /
 | `app/utils/failures.py` | SPA-87 Why a run died, as a type: the failure vocabulary, the single LLM-error classifier (also the backend's retry predicate, so «retry this?» and «did infrastructure decide this?» cannot drift apart), and `is_contaminated` — the subset the experiment report excludes |
 | `app/schemas/webhooks.py` | Pydantic discriminated union for agent → orchestrator events |
 
-## Agent components (container)
+## Execution components
 
-| File | What it does |
-|------|--------------|
-| `entrypoint.py` | Runs feedback_server alongside run_agent, sends the final webhook |
-| `agent.py` | LLM tool-calling loop, MCP integration, periodic progress, control-queue drain; honors `AGENT_TOOL_INJECTION` (E-12) — appends a perturbation payload to the first tool result |
-| `feedback_server.py` | FastAPI on :8080 — health/feedback/switch_model/abort |
-| `time_server.py` | Sample MCP server (used to verify the MCP integration) |
+| Component | Responsibility |
+|-----------|----------------|
+| `harnesses/pi` | TypeScript worker over the official Pi SDK |
+| `harnesses/opencode` | Isolated native server, official HTTP SDK and SSE observation |
+| `runner` | JSONL lifecycle, heartbeat, command receipts, durable delivery and shutdown |
+| `app/harnesses/workflow.py` | Task review, retry and archive stages after native completion |
+| `environments/workspace` | Independent Python/MCP dependencies and existing time/web servers |
 
 ## Plugin layer (R5 + R6 wiring)
 

@@ -19,7 +19,9 @@ def _alembic_cfg() -> Config:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_migrations_round_trip():
+async def test_migrations_round_trip(db_session):
+    # Request the database fixture so this historical-schema test does not
+    # inherit application rows from whichever API test ran immediately before it.
     cfg = _alembic_cfg()
     script = ScriptDirectory.from_config(cfg)
     revisions = list(script.walk_revisions())

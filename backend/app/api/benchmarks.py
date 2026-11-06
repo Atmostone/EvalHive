@@ -38,9 +38,9 @@ async def get_suite(suite: str, _ws: Workspace = Depends(get_current_workspace))
     try:
         cases = load_cases(suite)
     except FileNotFoundError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"suite '{suite}' not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"suite '{suite}' not found") from None
     except Exception as exc:  # malformed case file
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     items = []
     for c in cases:
         g = c.gold

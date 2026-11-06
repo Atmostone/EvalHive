@@ -30,7 +30,6 @@ import logging
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,14 +40,16 @@ from app.models.task import Task, TaskStatus
 from app.models.template import Template
 from app.orchestrator.rerun import clone_task_for_rerun
 from app.plugins.llm import get_llm_provider
-from app.utils.tool_args import extract_tool_args
 from app.quality.judge import _resolve_judge_model
-from app.utils.cost import llm_call_cost, tokens_from_response
 from app.quality.runs_common import (
     SUCCESS_TASK as _SUCCESS_TASK,
+)
+from app.quality.runs_common import (
     ensure_child_evaluated as _ensure_child_evaluated,
 )
+from app.utils.cost import llm_call_cost, tokens_from_response
 from app.utils.events import log_event
+from app.utils.tool_args import extract_tool_args
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def _prompt_label(soul_md: str) -> str:
     return f"{first[:80]} · {digest}" if first else f"prompt:{digest}"
 
 
-async def _template_name(db: AsyncSession, task: Task) -> Optional[str]:
+async def _template_name(db: AsyncSession, task: Task) -> str | None:
     if task.template_id is None:
         return None
     tmpl = await db.get(Template, task.template_id)
@@ -128,7 +129,7 @@ async def _template_name(db: AsyncSession, task: Task) -> Optional[str]:
     return str(task.template_id)
 
 
-async def _resolve_player(db: AsyncSession, task: Task, subject: str) -> Optional[str]:
+async def _resolve_player(db: AsyncSession, task: Task, subject: str) -> str | None:
     """The leaderboard identity of a task on the chosen ``subject`` axis.
 
     ``model`` → the denormalized ``model_used``; ``template`` → the readable
@@ -156,7 +157,7 @@ def _answer_block(task: Task) -> str:
     return "\n".join(parts)
 
 
-def build_pair_context(task_a: Task, task_b: Task, *, reference: Optional[str] = None) -> str:
+def build_pair_context(task_a: Task, task_b: Task, *, reference: str | None = None) -> str:
     """Pure: the side-by-side context for the judge — the shared task input once,
     an optional reference answer, then Answer A and Answer B (each capped). The
     A/B order is exactly the order the two tasks are passed in, which is what the
@@ -228,7 +229,7 @@ async def judge_pair_llm(
     task_b: Task,
     *,
     mitigate_position: bool = True,
-    reference: Optional[str] = None,
+    reference: str | None = None,
 ) -> dict:
     """LLM-judge a pair. With ``mitigate_position`` (default) the same pair is
     judged in both orders and reconciled (agree → winner, disagree → tie +
@@ -322,9 +323,9 @@ async def create_comparison(
     workspace_id: uuid.UUID,
     subject: str = "model",
     task_a_id: uuid.UUID,
-    task_b_id: Optional[uuid.UUID] = None,
-    b_run_config: Optional[dict] = None,
-    source_task_id: Optional[uuid.UUID] = None,
+    task_b_id: uuid.UUID | None = None,
+    b_run_config: dict | None = None,
+    source_task_id: uuid.UUID | None = None,
     judge_mode: str = "llm",
     created_by: str = "user",
 ) -> PairwiseComparison:
@@ -489,9 +490,9 @@ async def record_human_verdict(
     comp_id: uuid.UUID,
     *,
     verdict: str,
-    reasoning: Optional[str] = None,
+    reasoning: str | None = None,
     submitted_by: str = "user",
-    workspace_id: Optional[uuid.UUID] = None,
+    workspace_id: uuid.UUID | None = None,
 ) -> PairwiseComparison:
     """Record a human winner ('a'|'b'|'tie') on the comparison row (E-17 linkage).
     Requires the comparison to be ready/judged; a ready comparison becomes
@@ -659,7 +660,7 @@ async def comparison_sides(db: AsyncSession, comp: PairwiseComparison) -> dict:
 
 async def get_comparison(
     db: AsyncSession, comp_id: uuid.UUID, *, workspace_id: uuid.UUID, with_sides: bool = False
-) -> Optional[dict]:
+) -> dict | None:
     comp = await db.get(PairwiseComparison, comp_id)
     if comp is None or comp.workspace_id != workspace_id:
         return None
@@ -673,8 +674,8 @@ async def list_comparisons(
     db: AsyncSession,
     *,
     workspace_id: uuid.UUID,
-    subject: Optional[str] = None,
-    status: Optional[str] = None,
+    subject: str | None = None,
+    status: str | None = None,
     limit: int = 100,
 ) -> list[dict]:
     q = select(PairwiseComparison).where(PairwiseComparison.workspace_id == workspace_id)

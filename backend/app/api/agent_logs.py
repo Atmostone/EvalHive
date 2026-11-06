@@ -61,15 +61,17 @@ async def ingest_log_chunk(
     try:
         task_uuid = uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid task id")
+        raise HTTPException(status_code=400, detail="invalid task id") from None
 
     token_row = await verify_agent_token(db, plain=plain, task_id=task_uuid)
     if token_row is None:
         raise HTTPException(status_code=401, detail="invalid or expired agent token")
 
-    task = await db.get(Task, task_uuid)
+    task = await db.scalar(select(Task).where(Task.id == task_uuid).with_for_update())
     if task is None:
         return {"status": "error", "detail": "Task not found"}
+    if task.current_attempt_id is not None:
+        raise HTTPException(409, "Attempt tasks accept writes only through the runner protocol")
 
     existing_delivery = await db.execute(
         select(AgentLogDelivery).where(
@@ -137,7 +139,7 @@ async def list_log_chunks(
     try:
         task_uuid = uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid task id")
+        raise HTTPException(status_code=400, detail="invalid task id") from None
 
     task = await db.get(Task, task_uuid)
     if task is None or task.workspace_id != workspace.id:
@@ -145,6 +147,17 @@ async def list_log_chunks(
 
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be 1..1000")
+
+    if task.current_attempt_id is not None:
+        from app.harnesses.projection import load_attempt_view
+
+        view = await load_attempt_view(db, task.current_attempt_id)
+        return {
+            "archived": False, "archive_path": None, "attempt_id": str(task.current_attempt_id),
+            "attempt_number": view["attempt"].number,
+            "completeness": view["completeness"],
+            "chunks": [row for row in view["chunks"] if row["chunk_seq"] >= from_seq][:limit],
+        }
 
     if task.log_archive_s3_path:
         try:

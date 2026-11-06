@@ -2,6 +2,37 @@ import { authHeaders, useAuth } from '../stores/auth'
 
 const BASE = '/api'
 
+import type { HarnessManifest, HarnessProfile, HarnessSecret } from '@/types'
+import type { ExecutionAttempt, AttemptEvent, AttemptCommand } from '@/types'
+
+export const attemptsApi = {
+  list: (taskId: string) => request<ExecutionAttempt[]>(`/tasks/${taskId}/attempts?limit=1`),
+  events: (id: string, after: number) => request<AttemptEvent[]>(
+    `/attempts/${id}/events?after_seq=${after}&limit=500&event_type=interaction.request&event_type=interaction.resolved`),
+  commands: (id: string) => request<AttemptCommand[]>(`/attempts/${id}/commands`),
+  control: (id: string, name: string, payload: Record<string, unknown>, commandId: string) =>
+    request<{ id: string; status: string }>(`/attempts/${id}/commands`, {
+      method: 'POST', body: JSON.stringify({ id: commandId, name, payload }),
+    }),
+}
+
+export const harnessesApi = {
+  list: () => request<HarnessManifest[]>('/harnesses'),
+  profiles: () => request<HarnessProfile[]>('/harness-profiles'),
+  create: (data: Omit<HarnessProfile, 'id'>) =>
+    request<HarnessProfile>('/harness-profiles', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<Omit<HarnessProfile, 'id' | 'connector_id'>>) =>
+    request<HarnessProfile>(`/harness-profiles/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  delete: (id: string) => request<void>(`/harness-profiles/${id}`, { method: 'DELETE' }),
+  validate: (id: string) => request<{ valid: boolean }>(`/harness-profiles/${id}/validate`, { method: 'POST' }),
+  secrets: () => request<HarnessSecret[]>('/harness-secrets'),
+  createSecret: (name: string, value: string) =>
+    request<HarnessSecret>('/harness-secrets', { method: 'POST', body: JSON.stringify({ name, value }) }),
+  updateSecret: (id: string, name: string, value: string) =>
+    request<HarnessSecret>(`/harness-secrets/${id}`, { method: 'PUT', body: JSON.stringify({ name, value }) }),
+  deleteSecret: (id: string) => request<void>(`/harness-secrets/${id}`, { method: 'DELETE' }),
+}
+
 class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -81,6 +112,12 @@ export const authApi = {
 
 // Tasks
 export const tasksApi = {
+  download: async (id: string, path?: string): Promise<Blob> => {
+    const relative = path ? `/files/${path.split('/').map(encodeURIComponent).join('/')}` : '/files.zip'
+    const response = await fetch(`${BASE}/tasks/${id}${relative}`, { headers: authHeaders() })
+    if (!response.ok) throw new ApiError(response.status, extractErrorMessage(await response.text(), response.status))
+    return response.blob()
+  },
   list: (params?: { status?: string; parent_id?: string; include_experiments?: boolean }) => {
     const qs = new URLSearchParams()
     if (params?.status) qs.set('status', params.status)
@@ -90,10 +127,15 @@ export const tasksApi = {
     return request<Task[]>(`/tasks${s ? `?${s}` : ''}`)
   },
   get: (id: string) => request<Task & { subtasks: Task[] }>(`/tasks/${id}`),
-  create: (data: { title: string; description?: string; priority?: string; reference_answer?: string }) =>
+  create: (data: { title: string; description?: string; priority?: string; reference_answer?: string;
+    template_id?: string | null; harness_profile_id?: string | null; execution_mode?: 'direct' | 'orchestrated' | null }) =>
     request<Task>('/tasks', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: string, data: Partial<Task>) =>
     request<Task>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  start: (id: string) => request<Task>(`/tasks/${id}/start`, { method: 'POST' }),
+  rerun: (id: string) => request<Task>(`/tasks/${id}/rerun`, {
+    method: 'POST', body: JSON.stringify({ reuse_conditions: false, execution_mode: 'direct' }),
+  }),
   approve: (id: string) =>
     request<Task>(`/tasks/${id}/approve`, { method: 'PATCH' }),
   reject: (id: string, feedback: string) =>
@@ -720,10 +762,12 @@ export interface TemplateAnalytics {
   retry_rate: number
   failure_rate: number
   avg_time_seconds: number
-  avg_input_tokens: number
-  avg_output_tokens: number
-  total_cost_usd: number
-  cost_per_task_usd: number
+  avg_input_tokens: number | null
+  avg_output_tokens: number | null
+  total_cost_usd: number | null
+  cost_known_subtotal_usd: number
+  cost_known_count: number
+  cost_per_task_usd: number | null
 }
 
 export interface ConfigAnalytics {
@@ -749,16 +793,21 @@ export interface ConfigAnalytics {
 export interface TimelinePoint {
   date: string | null
   task_count: number
-  total_cost_usd: number
-  total_tokens: number
+  total_cost_usd: number | null
+  cost_known_subtotal_usd: number
+  cost_known_count: number
+  total_tokens: number | null
+  tokens_known_count: number
 }
 
 export interface ModelAnalytics {
   model: string
   task_count: number
-  total_cost_usd: number
-  avg_input_tokens: number
-  avg_output_tokens: number
+  total_cost_usd: number | null
+  cost_known_subtotal_usd: number
+  cost_known_count: number
+  avg_input_tokens: number | null
+  avg_output_tokens: number | null
 }
 
 function analyticsQs(params: Record<string, string | number | undefined>): string {

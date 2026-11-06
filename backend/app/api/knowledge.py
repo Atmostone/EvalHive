@@ -133,7 +133,7 @@ async def upload_document(
         }
     except Exception as e:
         logger.error(f"Document upload failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from None
 
 
 @router.delete(
@@ -188,7 +188,7 @@ async def search_knowledge(
         try:
             task_uuid = uuid.UUID(task_id_str)
         except ValueError:
-            raise HTTPException(status_code=400, detail="invalid task_id")
+            raise HTTPException(status_code=400, detail="invalid task_id") from None
         st = await verify_agent_token(db, plain=token, task_id=task_uuid)
         if st:
             task = await db.get(Task, task_uuid)
@@ -197,7 +197,8 @@ async def search_knowledge(
 
     if workspace_id is None:
         # Fall back to user JWT auth
-        from app.auth.dependencies import get_current_user, get_current_workspace as _gcws
+        from app.auth.dependencies import get_current_user
+        from app.auth.dependencies import get_current_workspace as _gcws
 
         user = await get_current_user(request, db)
         ws = await _gcws(request, user, db)

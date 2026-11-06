@@ -1,5 +1,0 @@
-litellm
-httpx
-mcp
-fastapi
-uvicorn

@@ -16,7 +16,7 @@ export default function ModelChart({ data }: { data: ModelAnalytics[] }) {
     () =>
       data.map((m) => ({
         name: m.model.length > 20 ? `${m.model.slice(0, 18)}…` : m.model,
-        cost: Number(m.total_cost_usd.toFixed(4)),
+        cost: m.total_cost_usd === null ? null : Number(m.total_cost_usd.toFixed(4)),
         tasks: m.task_count,
       })),
     [data],

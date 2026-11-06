@@ -12,7 +12,8 @@ services:
 
   api:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       args:
         # Stamps the commit into the image so a reproduction bundle can name the
         # checkout that produced it: GIT_SHA=$(git rev-parse HEAD) docker compose build api
@@ -28,11 +29,7 @@ services:
       # services here are one fact in two files, and the test that claims to
       # compare them can only do so if it can read this one (SPA-94).
       - ./docker-compose.yml:/app/docker-compose.yml:ro
-      # Read-only, for tests only: nothing in agent-image/ has ever been under
-      # test, and the one place that matters — which field each vendor puts a
-      # model's reasoning in — is exactly where an unverified assumption hides
-      # (SPA-114). The API never imports from here at runtime.
-      - ./agent-image:/agent-image:ro
+
       - ./backend/alembic:/app/alembic
       - ./backend/tests:/app/tests
       - ./backend/benchmarks:/app/benchmarks
@@ -66,7 +63,9 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   orchestrator:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data/shared:/data/shared
@@ -93,7 +92,9 @@ services:
     command: python -m app.workers.orchestrator_main
 
   scheduler:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     # docker.sock: the experiment tick spawns Toolathlon preprocess/eval
     # containers (gold.external_eval) directly via the host daemon, like the
     # orchestrator spawns agents. TOOLATHLON_GYM_PATH is the absolute HOST path

@@ -19,18 +19,18 @@ import hashlib
 import statistics
 import uuid
 from datetime import datetime
-from typing import Optional
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.annotation import Annotation
 from app.models.experiment import (
     Experiment,
     ExperimentAttempt,
     ExperimentRun,
     ExperimentRunStatus,
 )
-from app.models.annotation import Annotation
 from app.models.quality_record import QualityRecord
 from app.quality.aggregation import rank
 from app.quality.experiments import (
@@ -158,19 +158,19 @@ _SETTLED = {
 }
 
 
-def _mean(values: list[float]) -> Optional[float]:
+def _mean(values: list[float]) -> float | None:
     vals = [float(v) for v in values if v is not None]
     return round(statistics.fmean(vals), 4) if vals else None
 
 
-def _std(values: list[float]) -> Optional[float]:
+def _std(values: list[float]) -> float | None:
     vals = [float(v) for v in values if v is not None]
     if len(vals) < 2:
         return None
     return round(statistics.pstdev(vals), 4)
 
 
-def _median(values) -> Optional[float]:
+def _median(values) -> float | None:
     vals = [float(v) for v in values if v is not None]
     return round(statistics.median(vals), 4) if vals else None
 
@@ -181,7 +181,7 @@ def _median(values) -> Optional[float]:
 # (denormalized from task.token_usage), not on ExperimentRun; cost is sparse
 # ($0 for un-metered providers — ~74% of runs), so tokens are the primary signal
 # and cost is the priced secondary.
-def _run_effort_tokens(rec) -> Optional[float]:
+def _run_effort_tokens(rec) -> float | None:
     """Total LLM tokens (input + output) for a run, or None when unrecorded."""
     if rec is None:
         return None
@@ -192,7 +192,7 @@ def _run_effort_tokens(rec) -> Optional[float]:
     return float((it or 0) + (ot or 0))
 
 
-def _run_reasoning_tokens(rec) -> Optional[float]:
+def _run_reasoning_tokens(rec) -> float | None:
     """Output tokens the model spent thinking, or None when unrecorded (SPA-114).
 
     A SUBSET of the output tokens `_run_effort_tokens` already counts, never an
@@ -206,7 +206,7 @@ def _run_reasoning_tokens(rec) -> Optional[float]:
     return None if rt is None else float(rt)
 
 
-def _run_steps(rec) -> Optional[float]:
+def _run_steps(rec) -> float | None:
     """Agent step count — tool_call_count (near-100% populated), else the E-06
     trace steps_total fallback."""
     if rec is None:
@@ -227,8 +227,8 @@ def _run_steps(rec) -> Optional[float]:
 
 
 def _traj_score(
-    rec, stored: Optional[float], *, allowed: Optional[frozenset[str]] = None
-) -> Optional[float]:
+    rec, stored: float | None, *, allowed: frozenset[str] | None = None
+) -> float | None:
     """Trajectory aggregate over the axes the judge actually scored.
 
     Recomputed from the stored per-axis scores; falls back to the stored overall
@@ -254,7 +254,7 @@ def _traj_score(
     return None if allowed is not None else stored
 
 
-def _judge_loop_verdict(tprof: dict) -> Optional[bool]:
+def _judge_loop_verdict(tprof: dict) -> bool | None:
     """The E-07 judge's loop verdict on one run, or ``None`` if it never gave one.
 
     ``None`` covers both shapes of silence: the loop axis missing from the profile,
@@ -273,7 +273,7 @@ def _judge_loop_verdict(tprof: dict) -> Optional[bool]:
     return None
 
 
-def _trusted_weighted(rec, allowed: frozenset[str]) -> Optional[float]:
+def _trusted_weighted(rec, allowed: frozenset[str]) -> float | None:
     """The outcome score recomputed over the trusted rubric dimensions only.
 
     Same arithmetic as the judge's own aggregate (:mod:`app.quality.judge`): a
@@ -296,7 +296,7 @@ def _trusted_weighted(rec, allowed: frozenset[str]) -> Optional[float]:
     return round(num / den, 4) if den else None
 
 
-def _binary_kappa(both_yes: int, a_only: int, b_only: int, both_no: int) -> Optional[float]:
+def _binary_kappa(both_yes: int, a_only: int, b_only: int, both_no: int) -> float | None:
     """Cohen's κ for two binary raters on a 2×2 (chance-corrected agreement). None
     when undefined — no data, or perfect-by-base-rate where p_e == 1 (e.g. every
     run agrees and all-negative): κ is 0/0 there, which a raw agreement % hides."""
@@ -362,11 +362,11 @@ RANK_TRUST = frozenset({TRUST_RELIABLE_ABSOLUTE, TRUST_MODERATE, TRUST_RANK_ONLY
 
 
 def _classify_reliability(
-    kappa: Optional[float],
+    kappa: float | None,
     n: int,
     *,
     has_source: bool,
-    rho: Optional[float] = None,
+    rho: float | None = None,
     binary_evidence: bool = False,
 ) -> str:
     """Bucket a judged axis into the trust taxonomy (SPA-88, +binary_only SPA-89).
@@ -444,7 +444,7 @@ def _trust_split(reliability: dict) -> tuple[frozenset[str], frozenset[str], dic
 
 
 def _axis_reliability(
-    calibration: Optional[dict],
+    calibration: dict | None,
     loop_detection: dict,
     axis_labels: dict[str, str],
 ) -> dict:
@@ -542,7 +542,7 @@ def _axis_reliability(
     }
 
 
-def _outcome_axis_reliability(calibration: Optional[dict]) -> dict:
+def _outcome_axis_reliability(calibration: dict | None) -> dict:
     """The same reliability traffic light, applied to the OUTCOME rubric
     dimensions. Unlike the fixed six trajectory axes, the outcome axis list is
     rubric-dependent — so it is whatever dimensions the humans actually rated on
@@ -825,7 +825,7 @@ def significance_matrix(
     families: dict[str, dict] = {}
     for family in sorted({r["family"] for r in out}):
         idx = [i for i, r in enumerate(out) if r["family"] == family]
-        for i, q in zip(idx, benjamini_hochberg([out[i]["p"] for i in idx])):
+        for i, q in zip(idx, benjamini_hochberg([out[i]["p"] for i in idx]), strict=True):
             out[i]["q"] = q
             out[i]["significant"] = q < SIGNIFICANCE_ALPHA
         families[family] = {
@@ -902,6 +902,11 @@ def _significance_cells(
     }
 
 
+def _mean_cost(runs) -> float | None:
+    values = [Decimal(str(run.cost_usd)) for run in runs if run.cost_usd is not None]
+    return float(sum(values, Decimal(0)) / len(values)) if values else None
+
+
 def _group_means(
     runs: list[ExperimentRun],
     records_by_task: dict,
@@ -933,7 +938,8 @@ def _group_means(
         "trajectory_mean": _mean(
             [_traj_score(records_by_task.get(r.task_id), r.trajectory_score) for r in success]
         ),
-        "cost_mean": _mean([float(r.cost_usd or 0) for r in settled]),
+        "cost_mean": _mean_cost(settled),
+        "n_cost": sum(r.cost_usd is not None for r in settled),
         "duration_mean": _mean([r.duration_seconds for r in settled]),
         "tokens_mean": _mean(tokens),
         "n_tokens": len(tokens),
@@ -1029,6 +1035,8 @@ def build_report(
             1 for r in runs if r.status == ExperimentRunStatus.SKIPPED.value
         ),
         "accumulated_cost_usd": float(exp.accumulated_cost_usd or 0),
+        "cost_basis": "known_subtotal",
+        "cost_unknown_runs": sum(r.cost_usd is None for r in runs if r.status in _SETTLED),
         "budget_limit_usd": float(exp.budget_limit_usd)
         if exp.budget_limit_usd is not None
         else None,
@@ -1459,7 +1467,8 @@ def build_report(
                 "trajectory_mean": _mean(
                     [_traj_score(records_by_task.get(r.task_id), r.trajectory_score) for r in succ]
                 ),
-                "cost_mean": _mean([float(r.cost_usd or 0) for r in grp]),
+                "cost_mean": _mean_cost(grp),
+                "n_cost": sum(r.cost_usd is not None for r in grp),
                 "tokens_mean": _mean(toks),  # SPA-77: token effort across repetitions
             }
         )
@@ -1569,35 +1578,40 @@ def build_report(
 
     def _cost_row(group: list[ExperimentRun]) -> dict:
         settled = [r for r in group if r.status in _SETTLED]
-        parts = {"agent": 0.0, "orchestrator": 0.0, "judge_total": 0.0, "total": 0.0}
+        parts = {"agent": Decimal(0), "orchestrator": Decimal(0), "judge_total": Decimal(0), "total": Decimal(0)}
         for k, _ in _JUDGE_COST_KEYS:
-            parts[k] = 0.0
+            parts[k] = Decimal(0)
+        unknown_agent = 0
         for r in settled:
             rec = records_by_task.get(r.task_id)
+            if (rec.cost_usd if rec is not None else r.cost_usd) is None:
+                unknown_agent += 1
             agent = (
-                float(getattr(rec, "cost_usd", 0) or 0)
+                Decimal(str(getattr(rec, "cost_usd", 0) or 0))
                 if rec is not None
-                else float(r.cost_usd or 0)
+                else Decimal(str(r.cost_usd or 0))
             )
             parts["agent"] += agent
             parts["orchestrator"] += (
-                float(getattr(rec, "orchestrator_cost_usd", 0) or 0)
+                Decimal(str(getattr(rec, "orchestrator_cost_usd", 0) or 0))
                 if rec is not None
-                else 0.0
+                else Decimal(0)
             )
-            judges = 0.0
+            judges = Decimal(0)
             for k, attr in _JUDGE_COST_KEYS:
                 prof = getattr(rec, attr, None) if rec is not None else None
-                c = float((prof or {}).get("judge_cost_usd") or 0) if prof else 0.0
+                c = Decimal(str((prof or {}).get("judge_cost_usd") or 0)) if prof else Decimal(0)
                 parts[k] += c
                 judges += c
             parts["judge_total"] += judges
             parts["total"] += (
-                agent + judges + float(getattr(rec, "orchestrator_cost_usd", 0) or 0)
+                agent + judges + Decimal(str(getattr(rec, "orchestrator_cost_usd", 0) or 0))
                 if rec is not None
                 else agent + judges
             )
-        return {k: round(v, 6) for k, v in parts.items()}
+        return {**{k: float(v) for k, v in parts.items()},
+                "cost_basis": "known_subtotal", "unknown_agent_runs": unknown_agent,
+                "measured_runs": len(settled) - unknown_agent, "settled_runs": len(settled)}
 
     # Orchestration alone can be the only thing that cost money — a config whose
     # agent ran on a zero-priced model still pays for its decision calls, and a
@@ -1612,7 +1626,7 @@ def build_report(
     ]
     cost_totals = _cost_row(runs)
     cost_breakdown = {
-        "available": any_cost,
+        "available": any_cost or any(r.cost_usd is None for r in runs if r.status in _SETTLED),
         # Whether ANY run here had its orchestrator turns metered. False means the
         # zero in the orchestrator column is an absence of measurement — the whole
         # corpus predates SPA-111 — so the total is a lower bound, not a figure.
@@ -1846,7 +1860,7 @@ def build_report(
             "status": r.status,
             "outcome": r.weighted_score,
             "trajectory": _traj_score(records_by_task.get(r.task_id), r.trajectory_score),
-            "cost": float(r.cost_usd or 0),
+            "cost": float(r.cost_usd) if r.cost_usd is not None else None,
             "duration": r.duration_seconds,
             "tokens": _run_effort_tokens(records_by_task.get(r.task_id)),
             "task_id": str(r.task_id) if r.task_id else None,
@@ -2193,7 +2207,7 @@ def build_report(
     on_keys = [k for k, c in configs.items() if c.get("orchestrator")]
     off_keys = [k for k, c in configs.items() if not c.get("orchestrator")]
 
-    def _side(keys: list[str]) -> Optional[dict]:
+    def _side(keys: list[str]) -> dict | None:
         group = [r for k in keys for r in by_config.get(k, [])]
         if not group:
             return None
@@ -2428,13 +2442,14 @@ async def config_drift(db: AsyncSession, exp: Experiment) -> list[dict]:
     out: list[dict] = []
     for cfg in pinned:
         was = cfg["resolved"]
-        now = await _resolve_config_state(db, cfg, images)
+        now = await _resolve_config_state(db, cfg, images, workspace_id=exp.workspace_id)
         changed = {
             field: {"pinned": was.get(field), "current": now.get(field)}
             for field in (
                 "model_api_name",
                 "template_content_sha256",
                 "provider_name",
+                "harness",
             )
             # A field absent from the pin predates it; only a real change counts.
             if field in was and was.get(field) != now.get(field)
@@ -2523,12 +2538,12 @@ async def compute_report(
     # experiments). Empty until some of these runs carry human feedback.
     calibration = None
     if task_ids:
+        from app.api.settings import get_setting
         from app.quality.judge_calibration import (
             DEFAULT_MIN_KAPPA,
             _compute_report,
             collect_judge_human_pairs,
         )
-        from app.api.settings import get_setting
 
         pairs = await collect_judge_human_pairs(
             db, exp.workspace_id, task_ids=task_ids

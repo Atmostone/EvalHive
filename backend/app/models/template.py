@@ -1,8 +1,7 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
-from sqlalchemy import ForeignKey, String, Text, Integer, func
+from sqlalchemy import CheckConstraint, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,6 +10,9 @@ from app.database import Base
 
 class Template(Base):
     __tablename__ = "templates"
+    __table_args__ = (
+        CheckConstraint("execution_mode IN ('direct', 'orchestrated')", name="ck_template_execution_mode"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -18,17 +20,23 @@ class Template(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     soul_md: Mapped[str] = mapped_column(Text, nullable=False)
-    model_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    model_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("llm_models.id", ondelete="SET NULL"),
         nullable=True,
     )
     # Quality rubric used to score this template's task results (E-02). Optional;
     # falls back to a tag/default rubric when unset (see app.quality.rubric).
-    rubric_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    rubric_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("rubrics.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    harness_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("harness_profiles.id", ondelete="RESTRICT"), nullable=True
+    )
+    execution_mode: Mapped[str] = mapped_column(
+        String(20), default="orchestrated", server_default="orchestrated", nullable=False
     )
     # References into the workspace Tool & MCP Registry (SPA-41) — registry entry
     # ids (uuid strings). Replaces the old inline tools/mcp_servers; the spawn-time

@@ -33,14 +33,13 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from random import Random
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.perturbation_run import PerturbationRun
 from app.models.quality_record import QualityRecord
-from app.models.task import Task, TaskStatus
+from app.models.task import Task
 from app.orchestrator.rerun import clone_task_for_rerun
 from app.plugins.llm import get_llm_provider
 from app.quality.judge import _resolve_judge_model
@@ -158,7 +157,7 @@ def _injection_payload(canary: str) -> str:
 
 
 async def _apply_transform(
-    key: str, title: str, description: str, *, rng: Random, llm, canary: Optional[str]
+    key: str, title: str, description: str, *, rng: Random, llm, canary: str | None
 ) -> tuple[str, str, dict]:
     if key == "paraphrase":
         return await _t_paraphrase(title, description, rng=rng, llm=llm)
@@ -171,7 +170,7 @@ async def _apply_transform(
     raise ValueError(f"unknown transform: {key}")
 
 
-def injection_followed(task: Task, canary: Optional[str]) -> bool:
+def injection_followed(task: Task, canary: str | None) -> bool:
     """Did the agent obey the injected instruction? Deterministic canary check."""
     if not canary:
         return False
@@ -188,12 +187,12 @@ async def run_perturbation(
     *,
     workspace_id: uuid.UUID,
     source_task_id: uuid.UUID,
-    transforms: Optional[list[str]] = None,
+    transforms: list[str] | None = None,
     variants_per_transform: int = 1,
     base_n: int = 2,
     parallel: bool = True,
-    cost_cap_usd: Optional[Decimal] = None,
-    template_id: Optional[uuid.UUID] = None,
+    cost_cap_usd: Decimal | None = None,
+    template_id: uuid.UUID | None = None,
 ) -> PerturbationRun:
     """Create a perturbation run and kick off the first batch of children.
 
@@ -361,14 +360,14 @@ async def _finalize(
     await db.commit()
 
 
-def _mean(vals: list[float]) -> Optional[float]:
+def _mean(vals: list[float]) -> float | None:
     vals = [v for v in vals if v is not None]
     return sum(vals) / len(vals) if vals else None
 
 
 def _robustness(
-    base_score: Optional[float], perturbed_score: Optional[float]
-) -> tuple[Optional[float], Optional[float]]:
+    base_score: float | None, perturbed_score: float | None
+) -> tuple[float | None, float | None]:
     """Robustness (1.0 = no degradation) + signed score delta vs the baseline."""
     if not (base_score and base_score > 0) or perturbed_score is None:
         return None, None

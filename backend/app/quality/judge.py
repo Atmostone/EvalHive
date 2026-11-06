@@ -24,13 +24,13 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.plugins.llm import get_llm_provider
-from app.utils.tool_args import error_class, extract_tool_args
 from app.models.quality_record import QualityRecord
 from app.models.task import Task
+from app.plugins.llm import get_llm_provider
 from app.quality.rubric import resolve_rubric_for_task
 from app.utils.cost import llm_call_cost, tokens_from_response
 from app.utils.events import log_event
+from app.utils.tool_args import error_class, extract_tool_args
 
 logger = logging.getLogger(__name__)
 
@@ -473,8 +473,8 @@ async def evaluate_task_quality(
     context = _result_context(task, include_summary=not files_only) + await _deliverable_context(task)
     dims = list(rubric.dimensions or [])
 
-    from app.quality.reference import evaluate_reference_dimension
     from app.quality.objective import evaluate_objective_dimension
+    from app.quality.reference import evaluate_reference_dimension
 
     # Score judge + reference + objective dimensions concurrently; each call is
     # isolated so one failure never blocks the rest. human evaluators stay deferred.
@@ -492,7 +492,7 @@ async def evaluate_task_quality(
             coros.append(evaluate_objective_dimension(d, task))
             coro_idx.append(i)
     results = await asyncio.gather(*coros)
-    by_idx = dict(zip(coro_idx, results))
+    by_idx = dict(zip(coro_idx, results, strict=True))
 
     out_dims: list[dict] = []
     errors: list[dict] = []

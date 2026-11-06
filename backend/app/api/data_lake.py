@@ -9,7 +9,6 @@ import io
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import case, func, select
@@ -42,7 +41,7 @@ def _record_summary(r: QualityRecord) -> dict:
         "model_used": r.model_used,
         "final_status": r.final_status,
         "is_decomposition_root": r.is_decomposition_root,
-        "cost_usd": float(r.cost_usd or 0),
+        "cost_usd": float(r.cost_usd) if r.cost_usd is not None else None,
         "input_tokens": r.input_tokens,
         "output_tokens": r.output_tokens,
         "duration_seconds": r.duration_seconds,
@@ -78,12 +77,12 @@ def _with_title(stmt, title_contains):
 
 @router.get("/records")
 async def list_records(
-    template_id: Optional[str] = None,
-    model_used: Optional[str] = None,
-    final_status: Optional[str] = None,
-    title_contains: Optional[str] = None,
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    template_id: str | None = None,
+    model_used: str | None = None,
+    final_status: str | None = None,
+    title_contains: str | None = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     workspace: Workspace = Depends(get_current_workspace),
@@ -130,12 +129,12 @@ async def get_record(
 @router.get("/query")
 async def query_records(
     group_by: str = Query(default="template_name"),
-    model_used: Optional[str] = None,
-    final_status: Optional[str] = None,
-    template_id: Optional[str] = None,
-    title_contains: Optional[str] = None,
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    model_used: str | None = None,
+    final_status: str | None = None,
+    template_id: str | None = None,
+    title_contains: str | None = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -146,16 +145,16 @@ async def query_records(
         )
     col = _GROUP_COLUMNS[group_by]
     approved = case((QualityRecord.final_status == TaskStatus.DONE.value, 1), else_=0)
-    tokens = func.coalesce(QualityRecord.input_tokens, 0) + func.coalesce(
-        QualityRecord.output_tokens, 0
-    )
+    tokens = QualityRecord.input_tokens + QualityRecord.output_tokens
 
     stmt = select(
         col.label("group"),
         func.count(QualityRecord.id).label("count"),
-        func.coalesce(func.avg(QualityRecord.cost_usd), 0).label("avg_cost_usd"),
-        func.coalesce(func.avg(tokens), 0).label("avg_tokens"),
-        func.coalesce(func.avg(QualityRecord.duration_seconds), 0).label("avg_duration_s"),
+        func.avg(QualityRecord.cost_usd).label("avg_cost_usd"),
+        func.count(QualityRecord.cost_usd).label("cost_known_count"),
+        func.avg(tokens).label("avg_tokens"),
+        func.count(tokens).label("tokens_known_count"),
+        func.avg(QualityRecord.duration_seconds).label("avg_duration_s"),
         func.avg(approved).label("approval_rate"),
     ).where(QualityRecord.workspace_id == workspace.id)
     stmt = _apply_filters(
@@ -170,9 +169,11 @@ async def query_records(
         {
             "group": r.group,
             "count": int(r.count),
-            "avg_cost_usd": float(r.avg_cost_usd or 0),
-            "avg_tokens": float(r.avg_tokens or 0),
-            "avg_duration_s": float(r.avg_duration_s or 0),
+            "avg_cost_usd": float(r.avg_cost_usd) if r.avg_cost_usd is not None else None,
+            "cost_known_count": int(r.cost_known_count),
+            "avg_tokens": float(r.avg_tokens) if r.avg_tokens is not None else None,
+            "tokens_known_count": int(r.tokens_known_count),
+            "avg_duration_s": float(r.avg_duration_s) if r.avg_duration_s is not None else None,
             "approval_rate": float(r.approval_rate or 0),
         }
         for r in rows
@@ -182,12 +183,12 @@ async def query_records(
 @router.get("/export")
 async def export_records(
     format: str = Query(default="json"),
-    template_id: Optional[str] = None,
-    model_used: Optional[str] = None,
-    final_status: Optional[str] = None,
-    title_contains: Optional[str] = None,
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    template_id: str | None = None,
+    model_used: str | None = None,
+    final_status: str | None = None,
+    title_contains: str | None = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
     _role=Depends(require_role("owner", "admin")),

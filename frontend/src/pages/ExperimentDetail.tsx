@@ -1212,6 +1212,9 @@ function ReportView({ report, method, setMethod, onRefresh, refreshing, detail }
           <h3 className="font-semibold text-gray-900 mb-2">
             Cost breakdown <span className="text-xs text-gray-400 font-normal">where the money went, per config · settled runs · USD</span>
           </h3>
+          {!!cb.totals.unknown_agent_runs && <p className="text-sm text-amber-700 mb-2">
+            Agent cost is unknown for {cb.totals.unknown_agent_runs} runs. Amounts below are the known subtotal.
+          </p>}
           {!metered && (
             <p className="text-[11px] text-amber-700/90 mb-2 max-w-3xl">
               ⚠ No run here has its orchestrator turns metered — template selection, the
@@ -2145,7 +2148,7 @@ function RunsTab({ id, detail, filter }: {
                     </td>
                     {!verifiable && <td className="px-3 py-2">{fmt(r.weighted_score, 1)}</td>}
                     <td className="px-3 py-2">{fmt(r.trajectory_score, 1)}</td>
-                    <td className="px-3 py-2">${r.cost_usd.toFixed(3)}</td>
+                    <td className="px-3 py-2">{r.cost_usd === null ? 'Unknown' : `$${r.cost_usd.toFixed(3)}`}</td>
                     <td className="px-3 py-2">{r.duration_seconds != null ? `${r.duration_seconds}s` : '—'}</td>
                     <td className="px-3 py-2 text-gray-500 max-w-md truncate" title={r.result_summary || ''}>
                       {r.result_summary || '—'}
@@ -2277,7 +2280,7 @@ export default function ExperimentDetail() {
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {detail.n_configs} configs × {detail.n_cases} cases × {detail.n_runs_per_cell} runs = {detail.total_runs} ·
-            spent ${detail.accumulated_cost_usd.toFixed(2)}
+            known spend ${detail.accumulated_cost_usd.toFixed(2)}
             {detail.budget_limit_usd != null && ` / $${detail.budget_limit_usd.toFixed(2)}`}
             {detail.description ? ` · ${detail.description}` : ''}
           </p>

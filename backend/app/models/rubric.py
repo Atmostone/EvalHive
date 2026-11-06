@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -41,7 +40,7 @@ class Rubric(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", server_default="")
     # Task-type tag for auto-selection (e.g. code/report/content/design/data).
-    applies_to: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    applies_to: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # The workspace's last-resort rubric when nothing else matches.
     is_default: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="false"

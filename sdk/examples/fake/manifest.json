@@ -1,0 +1,55 @@
+{
+  "protocol_version": "1.0",
+  "id": "example.fake",
+  "version": "0.1.0",
+  "display_name": "External fake connector",
+  "entrypoint": [
+    "python",
+    "connector.py"
+  ],
+  "image": "evalhive-fake:0.1.0",
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "prefix": {
+        "type": "string"
+      },
+      "wait": {
+        "type": "boolean"
+      },
+      "fail": {
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "capabilities": {
+    "feedback": "native",
+    "abort": "native",
+    "approval": "unsupported"
+  },
+  "commands": {
+    "feedback": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "abort": {
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    }
+  }
+}

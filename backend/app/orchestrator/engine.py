@@ -1,20 +1,16 @@
 """Orchestrator engine: polls for Ready tasks and manages agent lifecycle."""
 
 import asyncio
-import hashlib
-import json
 import logging
-import os
 import uuid
 from datetime import datetime
 
 from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api._resolve_model import resolve_model_by_id, resolve_workspace_model
+from app.api._resolve_model import resolve_workspace_model
 from app.api.settings import get_setting
 from app.api.templates import template_to_dict
-from app.auth.tokens import issue_agent_token
 from app.database import async_session
 from app.models.experiment import ExperimentRun
 from app.models.task import Task, TaskStatus
@@ -23,7 +19,8 @@ from app.orchestrator.llm import (
     decide_decomposition,
     select_template_for_task,
 )
-from app.plugins.runtime import AgentSpec, get_agent_runtime
+from app.plugins.runtime import get_agent_runtime
+from app.runtime import get_process_runtime
 from app.utils.events import log_event
 from app.utils.failures import (
     FAILURE_INFRA,
@@ -35,129 +32,6 @@ from app.utils.failures import (
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 5  # seconds
-
-# Cap per flat-memory file captured into the spawn snapshot (chars).
-_FLAT_MEMORY_CAP = 20000
-
-
-def _read_flat_memory(workspace_id) -> dict:
-    """Read the rules.md / memory.md the agent is mounted at spawn time.
-
-    These shared files are mounted read-only into the container; capturing
-    their content here is the only durable record of the flat-memory state the
-    agent actually saw. Best-effort: missing files → empty strings.
-    """
-    from app.config import get_settings
-
-    shared = os.path.join(get_settings().data_dir, "shared", str(workspace_id))
-    out = {}
-    for fname, key in (("rules.md", "rules_md"), ("memory.md", "memory_md")):
-        try:
-            with open(os.path.join(shared, fname)) as fh:
-                out[key] = fh.read()[:_FLAT_MEMORY_CAP]
-        except OSError:
-            out[key] = ""
-    return out
-
-
-def _spawn_snapshot(
-    task,
-    template,
-    agent_llm,
-    memory_context: str,
-    soul_md: str | None = None,
-    *,
-    tools: list | None = None,
-    mcp_servers: list | None = None,
-) -> dict:
-    """Full state snapshot captured into the `agent_spawned` event.
-
-    Source of truth for the Quality Data Lake (E-01) `execution` section —
-    soul_md, tools, MCP, model, resource limits, and the memory/RAG context
-    the agent received are not recoverable later, so we record them here.
-    ``soul_md`` defaults to the template's prompt but may be a per-run override.
-    ``tools``/``mcp_servers`` are the resolved registry set (SPA-41) the agent
-    actually received — not the template's references.
-    """
-    return {
-        "template_id": str(template.id),
-        "template_name": template.name,
-        "soul_md": (soul_md if soul_md is not None else (template.soul_md or "")),
-        "tools": list(tools or []),
-        "mcp_servers": list(mcp_servers or []),
-        "model_api_name": agent_llm.model.api_name,
-        "input_price_per_1m_usd": (
-            float(agent_llm.model.input_price_per_1m_usd)
-            if agent_llm.model.input_price_per_1m_usd is not None else None
-        ),
-        "output_price_per_1m_usd": (
-            float(agent_llm.model.output_price_per_1m_usd)
-            if agent_llm.model.output_price_per_1m_usd is not None else None
-        ),
-        "resource_limits": {
-            "max_ram": template.max_ram,
-            "max_cpu": template.max_cpu,
-            "timeout_minutes": template.timeout_minutes,
-        },
-        "memory_context": memory_context or "",
-        "flat_memory": _read_flat_memory(task.workspace_id),
-    }
-
-
-def _hash(canon: dict) -> str:
-    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(blob.encode()).hexdigest()[:16]
-
-
-def spawn_condition_fingerprints(
-    spec, model_api_name: str, image_id: str | None = None
-) -> tuple[str, str]:
-    """What this run actually executed under, as ``(full, core)`` (SPA-84).
-
-    Taken from the assembled ``AgentSpec`` immediately before the spawn, the only
-    moment the answer is authoritative: the template's prompt, the effective
-    model and the resolved tool set are all read live here, well after the runner
-    claimed the cell. Recording it earlier would miss an edit landing in between
-    and would duplicate resolution already done properly once, right here.
-
-    Two hashes because the two comparisons have different scopes:
-
-    * **core** — model, prompt, image and resource limits. Identical for every
-      run of a configuration regardless of case, so it can be compared across
-      the WHOLE config. This is what catches a template edited between two
-      cases and reverted before the report — with the default one run per cell
-      there is nothing to compare inside a case.
-    * **full** — core plus the resolved tool and MCP set, which is derived from
-      the CASE and legitimately differs between cases. Only comparable within
-      one case, where it additionally catches a registry entry changing between
-      repeats or retries.
-
-    Both exclude anything per-run or secret: the task id and description, the
-    agent token, provider credentials in ``env``, the memory context and the
-    container-scoped ``network_mode``. MCP servers contribute names only — their
-    materialized form carries registry secrets.
-    """
-    core = {
-        "model_api_name": model_api_name,
-        "template_id": spec.template_id,
-        "soul_md_sha256": hashlib.sha256((spec.soul_md or "").encode()).hexdigest(),
-        # The resolved image id of the container that actually started, not the
-        # tag: ``spec.image`` is None on the default path and a tag is a moving
-        # target, so a rebuild under the same name would be invisible. None
-        # (the runtime could not tell) is recorded as such — missing evidence,
-        # never evidence of sameness.
-        "image_id": image_id,
-        "resource_limits": spec.resource_limits or {},
-    }
-    full = {
-        **core,
-        "tools": sorted(str(t) for t in (spec.tools or [])),
-        "mcp_servers": sorted(
-            str(m.get("name") if isinstance(m, dict) else m) for m in (spec.mcp_servers or [])
-        ),
-    }
-    return _hash(full), _hash(core)
-
 
 async def _record_run_condition(
     db: AsyncSession, task: Task, full: str, core: str | None = None
@@ -177,211 +51,16 @@ async def _record_run_condition(
             ExperimentRun.config_key == ref.get("config_key"),
             ExperimentRun.case_key == ref.get("case_key"),
             ExperimentRun.run_index == ref.get("run_index"),
+            ExperimentRun.task_id == task.id,
         )
         .values(condition_fingerprint=full, core_condition_fingerprint=core)
     )
 
 
 async def _spawn_agent_for_template(db: AsyncSession, task: Task, template: Template):
-    """Build the AgentSpec for ``template`` and spawn the agent.
-
-    Shared by the normal selection path and the pinned-template path (re-run /
-    variance / replay children). Honors optional per-run overrides in
-    ``task.run_config`` — ``model_id`` (else the template's model) and
-    ``soul_md`` (else the template's prompt). Sets the task FAILED and logs on
-    any spawn error, mirroring the previous inline behavior.
-    """
+    """All task modes use the installed connector and common runner."""
     task.template_id = template.id
-    run_config = task.run_config or {}
-    try:
-        # Build description with feedback if this is a retry after rejection
-        desc_parts = [task.title, "", task.description or ""]
-        if task.user_feedback:
-            desc_parts.append(f"\n\n--- USER FEEDBACK (from rejection) ---\n{task.user_feedback}\nPlease address this feedback. Previous workspace files are available.")
-        if task.orchestrator_feedback:
-            desc_parts.append(f"\n\n--- ORCHESTRATOR FEEDBACK ---\n{task.orchestrator_feedback}")
-
-        if task.depends_on:
-            dep_rows = (
-                await db.execute(select(Task).where(Task.id.in_(task.depends_on)))
-            ).scalars().all()
-            for dep in dep_rows:
-                if dep.status == TaskStatus.DONE.value and (dep.result_summary or dep.result_files):
-                    short_id = str(dep.id)[:8]
-                    files_line = f"Files: {', '.join(dep.result_files or []) or 'none'}"
-                    desc_parts.append(
-                        f"\n\n## Dependency: {dep.title} (#{short_id})\n"
-                        f"{dep.result_summary or '(no summary)'}\n\n{files_line}"
-                    )
-
-        memory_context = ""
-
-        # Per-run memory override (run_config.memory_mode: off|flat|structured),
-        # else the workspace setting. 'off' and 'flat' both skip the structured
-        # context block; flat memory files are mounted regardless.
-        memory_mode = run_config.get("memory_mode") or await get_setting(
-            db, "memory_mode", "flat"
-        )
-        if memory_mode == "structured":
-            from app.memory.store import build_memory_context
-
-            try:
-                memory_context = await build_memory_context(
-                    db,
-                    query_text=f"{task.title}\n{task.description or ''}",
-                    workspace_id=task.workspace_id,
-                )
-            except Exception as e:
-                logger.warning(f"Memory context build failed for task {task.id}: {e}")
-
-        # Per-run model override (run_config.model_id), else the template's model.
-        model_id = run_config.get("model_id") or template.model_id
-        try:
-            agent_llm = await resolve_model_by_id(db, model_id)
-        except Exception as e:
-            logger.error(f"template {template.id} has no model configured: {e}")
-            task.status = TaskStatus.FAILED.value
-            task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
-            await db.commit()
-            await log_event(
-                db, "orchestrator_decision", "orchestrator",
-                {"action": "spawn_failed", "error": "template model not configured"},
-                task_id=task.id,
-            )
-            # No agent will start, so no webhook will ever arrive to roll the
-            # parent up — it would hang until the wall clock relabelled it
-            # `timeout`, turning an infrastructure failure into a slow model.
-            await check_parent_task_completion(db, task)
-            return
-
-        # Per-run prompt override (run_config.soul_md), else the template's prompt.
-        soul = run_config.get("soul_md")
-        if soul is None:
-            soul = template.soul_md or ""
-
-        # Resolve tools & MCP from the workspace registry (SPA-41), applying any
-        # task-level run_config.tools_override. Yields the exact shapes the agent
-        # container consumes (builtin tool names + MCP server dicts with secrets).
-        from app.registry.resolver import resolve_template_tools
-
-        resolved_tools, resolved_mcp = await resolve_template_tools(
-            db, template, run_config=run_config
-        )
-
-        agent_token = await issue_agent_token(
-            db, task_id=task.id, workspace_id=task.workspace_id
-        )
-        await db.commit()
-
-        # Perturbation judge (E-12): a poisoned tool response injected at runtime.
-        extra_env = {}
-        tool_injection = run_config.get("tool_injection")
-        if tool_injection:
-            extra_env["AGENT_TOOL_INJECTION"] = str(tool_injection)
-        # Per-run sampling overrides (SPA-40 experiment axes); the agent applies
-        # them to its completion calls when present.
-        if run_config.get("temperature") is not None:
-            extra_env["LLM_TEMPERATURE"] = str(run_config["temperature"])
-        if run_config.get("seed") is not None:
-            extra_env["LLM_SEED"] = str(run_config["seed"])
-        # Per-run agent iteration budget (benchmark tasks need more than the default 20).
-        if run_config.get("max_iterations") is not None:
-            extra_env["AGENT_MAX_ITERATIONS"] = str(run_config["max_iterations"])
-        # Benchmark mode: deliverables go to /workspace root (exact filenames) and
-        # side effects must go through MCP tools — the executable checker reads the
-        # real systems / workspace root, not the product /workspace/output dir.
-        if run_config.get("benchmark_mode"):
-            extra_env["AGENT_BENCHMARK_MODE"] = "1"
-        # SPA-69: per-lane Toolathlon PG host — the agent's toolathlon MCP servers
-        # connect here instead of the image-baked shared toolathlon_pg, so parallel
-        # lanes never clobber each other's mock state. Allowlisted to the lane naming
-        # scheme so run_config can't redirect the agent at an arbitrary host.
-        pg_host = run_config.get("pg_host")
-        if pg_host and str(pg_host).startswith("toolathlon_pg"):
-            extra_env["PGHOST"] = str(pg_host)
-            extra_env["PG_HOST"] = str(pg_host)
-
-        # Per-run agent image override (run_config.agent_image) — only images from
-        # our own agent family are allowed (e.g. evalhive-agent-toolathlon:latest).
-        agent_image = run_config.get("agent_image")
-        if agent_image is not None and not str(agent_image).startswith("evalhive-agent"):
-            logger.warning(f"task {task.id}: ignoring non-allowlisted agent_image {agent_image!r}")
-            agent_image = None
-
-        # Per-run network namespace share (Toolathlon portal cases) — only the
-        # "container:<name>" form for our own preprocess containers is allowed.
-        network_mode = run_config.get("network_mode")
-        if network_mode is not None and not str(network_mode).startswith("container:tlpre-"):
-            logger.warning(f"task {task.id}: ignoring non-allowlisted network_mode {network_mode!r}")
-            network_mode = None
-
-        runtime = get_agent_runtime()
-        spec = AgentSpec(
-            task_id=str(task.id),
-            task_description="\n".join(desc_parts),
-            template_name=template.name,
-            template_id=str(template.id),
-            soul_md=soul,
-            tools=resolved_tools,
-            mcp_servers=resolved_mcp,
-            env={
-                "OPENAI_API_KEY": agent_llm.provider.api_key,
-                "OPENAI_BASE_URL": agent_llm.provider.endpoint,
-                "LLM_MODEL": agent_llm.model.api_name,
-            },
-            resource_limits={
-                "max_ram": template.max_ram,
-                "max_cpu": template.max_cpu,
-            },
-            workspace_id=str(task.workspace_id),
-            agent_token=agent_token,
-            memory_context=memory_context,
-            extra_env=extra_env,
-            image=agent_image,
-            network_mode=network_mode,
-        )
-        container_id = runtime.spawn(spec)
-        # Record what this run ACTUALLY ran under, from the spec that was just
-        # spawned — not from a re-resolution elsewhere (SPA-84).
-        await _record_run_condition(
-            db,
-            task,
-            *spawn_condition_fingerprints(
-                spec, agent_llm.model.api_name, runtime.image_id(container_id)
-            ),
-        )
-        task.agent_container_id = container_id
-        task.model_used = agent_llm.model.api_name
-        task.input_price_per_1m_usd = agent_llm.model.input_price_per_1m_usd
-        task.output_price_per_1m_usd = agent_llm.model.output_price_per_1m_usd
-        task.status = TaskStatus.IN_PROGRESS.value
-        task.started_at = datetime.utcnow()
-        await db.commit()
-
-        await log_event(
-            db, "agent_spawned", "orchestrator",
-            {"container_id": container_id,
-             **_spawn_snapshot(task, template, agent_llm, memory_context, soul_md=soul,
-                               tools=resolved_tools, mcp_servers=resolved_mcp)},
-            task_id=task.id, agent_container_id=container_id,
-        )
-        logger.info(f"Spawned agent {container_id[:12]} for task {task.id}")
-
-    except Exception as e:
-        logger.error(f"Failed to spawn agent: {e}", exc_info=True)
-        task.status = TaskStatus.FAILED.value
-        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
-        await db.commit()
-        await log_event(
-            db, "orchestrator_decision", "orchestrator",
-            {"action": "spawn_failed", "error": str(e)},
-            task_id=task.id,
-        )
-        # No agent started, so no webhook will ever arrive — and the roll-up used
-        # to live only on that path. The parent hung until the wall clock
-        # relabelled it `timeout`, which is not excluded, so an infrastructure
-        # failure came back as an ordinary slow model (SPA-87).
-        await check_parent_task_completion(db, task)
+    await _spawn_sdk_task(db, task, template)
 
 
 def _subtask_run_config(run_config: dict | None) -> dict | None:
@@ -397,15 +76,70 @@ def _subtask_run_config(run_config: dict | None) -> dict | None:
     inherited = {
         k: v
         for k, v in run_config.items()
-        if k in ("benchmark_mode", "model_id", "temperature", "seed", "memory_mode")
+        if k in ("benchmark_mode", "model_id", "temperature", "seed", "memory_mode",
+                 "harness_config", "harness_profile_id", "execution_mode")
         and v is not None
     }
     return inherited or None
 
 
+async def _spawn_sdk_task(db, task, template=None):
+    from app.harnesses.attempts import AttemptError
+    from app.harnesses.catalog import CatalogError
+    from app.harnesses.launch import launch_task
+    from app.harnesses.profiles import ProfileError
+    from app.models.quality_record import QualityRecord
+    from app.runtime.docker import RuntimeFailure
+
+    archived = await db.scalar(select(QualityRecord).where(QualityRecord.task_id == task.id))
+    if archived is not None:
+        task.status = archived.final_status
+        await db.commit()
+        await log_event(db, "rerun_requires_new_task", "runner", {"reason": "results_archived"},
+                        task_id=task.id, workspace_id=task.workspace_id)
+        return
+
+    try:
+        await launch_task(db, task, template)
+    except Exception as error:
+        if isinstance(error, AttemptError) and error.code == "CAPACITY":
+            await db.rollback()
+            await db.refresh(task)
+            task.status = TaskStatus.READY.value
+            await db.commit()
+            return
+        # Public diagnostics must not expose resolved provider/resource values.
+        await db.rollback()
+        await db.refresh(task)
+        task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
+        task.result_summary = str(error) if isinstance(error, (AttemptError, CatalogError, ProfileError, RuntimeFailure)) else "Execution configuration could not be launched"
+        task.completed_at = datetime.utcnow()
+        await db.commit()
+        await log_event(db, "agent_failed", "runner", {"reason": "launch_configuration"},
+                        task_id=task.id, workspace_id=task.workspace_id)
+        await check_parent_task_completion(db, task)
+
+
 async def process_ready_task(db: AsyncSession, task: Task):
     """Process a single Ready task: decompose or select template + spawn agent."""
     logger.info(f"Processing task {task.id}: {task.title}")
+
+    from app.harnesses.launch import execution_mode, selected_template
+
+    try:
+        pinned = await selected_template(db, task)
+    except ValueError:
+        task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
+        task.result_summary = "Role template is unavailable in this workspace"
+        task.completed_at = datetime.utcnow()
+        await db.commit()
+        await check_parent_task_completion(db, task)
+        return
+    if execution_mode(task, pinned) == "direct":
+        await _spawn_sdk_task(db, task, pinned)
+        return
 
     # Mark as decomposing while we decide
     task.status = TaskStatus.DECOMPOSING.value
@@ -512,6 +246,8 @@ async def process_ready_task(db: AsyncSession, task: Task):
                     workspace_id=task.workspace_id,
                     origin=task.origin,
                     run_config=sub_run_config,
+                    harness_profile_id=task.harness_profile_id,
+                    execution_mode=task.execution_mode,
                 )
                 if benchmark:
                     sub.max_retries = 0
@@ -519,7 +255,7 @@ async def process_ready_task(db: AsyncSession, task: Task):
                 created_subs.append(sub)
 
             await db.flush()
-            for st, sub in zip(subtasks, created_subs):
+            for st, sub in zip(subtasks, created_subs, strict=True):
                 deps = [
                     created_subs[i].id
                     for i in (st.get("depends_on_indices") or [])
@@ -581,18 +317,21 @@ async def process_ready_task(db: AsyncSession, task: Task):
     await _spawn_agent_for_template(db, task, template)
 
 
-async def check_parent_task_completion(db: AsyncSession, task: Task):
+async def check_parent_task_completion(db: AsyncSession, task: Task, *, commit: bool = True):
     """Check if all subtasks of a parent are done, and update parent accordingly."""
     if not task.parent_id:
         return
 
-    parent = await db.get(Task, task.parent_id)
+    parent = await db.scalar(
+        select(Task).where(Task.id == task.parent_id).with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if not parent:
         return
 
     # Get all sibling subtasks
     result = await db.execute(
-        select(Task).where(Task.parent_id == parent.id)
+        select(Task).where(Task.parent_id == parent.id).execution_options(populate_existing=True)
     )
     subtasks = result.scalars().all()
 
@@ -631,12 +370,13 @@ async def check_parent_task_completion(db: AsyncSession, task: Task):
             parts.append(f"## {s.title} [{s.status}]\n{summary}")
         parent.result_summary = "\n\n".join(parts)[:20000]
     parent.completed_at = datetime.utcnow()
-    await db.commit()
+    if commit:
+        await db.commit()
 
-    await log_event(
+    return await log_event(
         db, "task_status_changed", "system",
         {"new_status": parent.status, "reason": "all subtasks completed"},
-        task_id=parent.id,
+        task_id=parent.id, workspace_id=parent.workspace_id, commit=commit,
     )
 
 
@@ -646,12 +386,16 @@ async def check_timed_out_tasks():
 
     try:
         async with async_session() as db:
+            from app.harnesses.executor import reconcile_attempts
+
+            await reconcile_attempts(db)
             timeout_minutes = await get_setting(db, "task_timeout_minutes", 60)
 
             result = await db.execute(
                 select(Task).where(
                     Task.status == TaskStatus.IN_PROGRESS.value,
                     Task.started_at.isnot(None),
+                    Task.current_attempt_id.is_(None),
                 )
             )
             tasks = result.scalars().all()
@@ -750,8 +494,11 @@ async def orchestrator_loop():
                     ).scalar_one_or_none()
                     if locked is not None:
                         from app.api.settings import get_setting
-                        max_agents = await get_setting(db, "max_concurrent_agents", 3)
-                        active = len(get_agent_runtime().list_active())
+                        from app.config import get_settings
+
+                        max_agents = min(int(await get_setting(db, "max_concurrent_agents", 3)),
+                                         get_settings().runtime_max_concurrency)
+                        active = len(await asyncio.to_thread(get_process_runtime().list_active))
                         if active < int(max_agents):
                             await process_ready_task(db, locked)
                         else:
@@ -760,21 +507,11 @@ async def orchestrator_loop():
                                 f"task {locked.id} stays in READY"
                             )
 
-            # Check for timed out tasks every ~60 seconds (12 * 5s); also reap
-            # exited agent containers so finished/crashed/killed agents don't pile
-            # up (they're dead weight once their webhook + log archive land).
+            # Reconcile runner heartbeats and pending result workflows every minute.
             timeout_check_counter += 1
             if timeout_check_counter >= 12:
                 timeout_check_counter = 0
                 await check_timed_out_tasks()
-                try:
-                    from app.orchestrator.docker_manager import (
-                        reap_exited_agent_containers,
-                    )
-
-                    reap_exited_agent_containers()
-                except Exception as e:
-                    logger.warning(f"agent container reap failed: {e}")
 
         except Exception as e:
             logger.error(f"Orchestrator loop error: {e}", exc_info=True)

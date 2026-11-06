@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -22,7 +21,7 @@ class MemoryEntity(Base):
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     attributes: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
-    embedding_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    embedding_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
     created_by: Mapped[str] = mapped_column(

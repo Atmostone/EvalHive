@@ -147,7 +147,7 @@ async def process_document(
                 "workspace_id": str(workspace_id),
             },
         )
-        for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=True))
     ]
 
     qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
@@ -177,7 +177,7 @@ async def delete_document_data(db: AsyncSession, doc: KnowledgeDocument):
     # Qdrant
     try:
         qdrant = get_qdrant_client()
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
         qdrant.delete(
             collection_name=COLLECTION_NAME,
             points_selector=Filter(
@@ -198,8 +198,9 @@ async def reset_collection(db: AsyncSession, workspace_id: uuid.UUID) -> dict:
     For Qdrant, we delete only the points whose payload.workspace_id matches.
     Collections themselves remain so other workspaces aren't affected.
     """
-    from sqlalchemy import select
     from qdrant_client.models import FieldCondition, Filter, MatchValue
+    from sqlalchemy import select
+
     from app.models.memory import MemoryEntity, MemoryRelation
 
     ws_filter = Filter(must=[

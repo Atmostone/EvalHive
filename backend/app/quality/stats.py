@@ -56,7 +56,7 @@ def pearson(xs: list[float], ys: list[float]) -> float | None:
         return None
     mx = sum(xs) / n
     my = sum(ys) / n
-    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
     vx = sum((x - mx) ** 2 for x in xs)
     vy = sum((y - my) ** 2 for y in ys)
     if vx <= 0 or vy <= 0:
@@ -122,7 +122,7 @@ def cohen_kappa(a: list[str], b: list[str], labels: list[str]) -> float | None:
     n = len(a)
     if n != len(b) or n < MIN_SAMPLES:
         return None
-    po = sum(1 for x, y in zip(a, b) if x == y) / n
+    po = sum(1 for x, y in zip(a, b, strict=True) if x == y) / n
     pe = 0.0
     for lab in labels:
         pa = sum(1 for x in a if x == lab) / n
@@ -153,7 +153,7 @@ def mean_bias(judge: list[float], human: list[float]) -> float | None:
     n = len(judge)
     if n == 0 or n != len(human):
         return None
-    return round(sum(j - h for j, h in zip(judge, human)) / n, 3)
+    return round(sum(j - h for j, h in zip(judge, human, strict=True)) / n, 3)
 
 
 # --- significance tests (SPA-40 experiment reports) -------------------------
@@ -348,7 +348,7 @@ def wilcoxon_signed_rank(pairs: list[tuple[float, float]]) -> dict | None:
     if n < MIN_WILCOXON_PAIRS:
         return None
     ranks = _rank([abs(d) for d in nonzero])
-    w_plus = sum(r for d, r in zip(nonzero, ranks) if d > 0)
+    w_plus = sum(r for d, r in zip(nonzero, ranks, strict=True) if d > 0)
     mu = n * (n + 1) / 4.0
     counts: dict[float, int] = {}
     for r in ranks:

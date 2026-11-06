@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import ForeignKey, Index, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -51,22 +50,22 @@ class PairwiseComparison(Base):
     )
 
     # Generated mode: re-run this source task into candidate B with overrides.
-    source_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    source_task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
     # The two competitors. B is null until generated.
-    task_a_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    task_a_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
-    task_b_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    task_b_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
     # The rerun override blob for generated B ({model_id?|template_id?|soul_md?|…}).
-    b_run_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    b_run_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # The identity of each side on the ``subject`` axis (the leaderboard player).
-    player_a: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    player_b: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    player_a: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    player_b: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # pending | generating | ready | judged | failed
     status: Mapped[str] = mapped_column(
@@ -78,12 +77,12 @@ class PairwiseComparison(Base):
     )
 
     # Verdicts: "a" | "b" | "tie". Both may be present (judge + human → agreement).
-    judge_verdict: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
-    human_verdict: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    judge_verdict: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    human_verdict: Mapped[str | None] = mapped_column(String(4), nullable=True)
     # Per-order verdicts, position_bias_detected, judge model, reasoning, tokens.
-    judge_detail: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    human_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    human_reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    judge_detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    human_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    human_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     cost_usd: Mapped[Decimal] = mapped_column(
         Numeric(10, 6), default=Decimal("0"), server_default="0"
@@ -96,4 +95,4 @@ class PairwiseComparison(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)

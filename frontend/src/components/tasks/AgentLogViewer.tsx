@@ -3,6 +3,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Archive, Terminal } from 'lucide-react'
 import { buildWsUrl, logsApi } from '@/api/client'
 import type { LogChunk } from '@/types'
+import { mergeLogChunks } from '@/lib/harnessLogs'
 
 interface AgentLogViewerProps {
   taskId: string
@@ -20,6 +21,7 @@ export default function AgentLogViewer({ taskId, archived }: AgentLogViewerProps
   const seenIds = useRef<Set<string>>(new Set())
   const seenSeq = useRef<Set<number>>(new Set())
   const wsRef = useRef<WebSocket | null>(null)
+  const attemptNumber = useRef<number>(0)
 
   const remember = useCallback((c: LogChunk) => {
     if (c.id) seenIds.current.add(c.id)
@@ -28,13 +30,22 @@ export default function AgentLogViewer({ taskId, archived }: AgentLogViewerProps
 
   useEffect(() => {
     let cancelled = false
+    seenIds.current.clear()
+    seenSeq.current.clear()
+    attemptNumber.current = 0
+    setChunks([])
     setLoading(true)
     logsApi
       .list(taskId, { limit: PAGE_SIZE })
       .then((resp) => {
         if (cancelled) return
+        if ((resp.attempt_number ?? 0) < attemptNumber.current) {
+          setLoading(false)
+          return
+        }
+        attemptNumber.current = resp.attempt_number ?? 0
         resp.chunks.forEach(remember)
-        setChunks(resp.chunks)
+        setChunks((prev) => mergeLogChunks(prev, resp.chunks))
         setHasEarlier(resp.chunks.length === PAGE_SIZE)
         setLoading(false)
       })
@@ -47,32 +58,42 @@ export default function AgentLogViewer({ taskId, archived }: AgentLogViewerProps
   useEffect(() => {
     if (archived) return
     const ws = new WebSocket(buildWsUrl(`/ws/tasks/${taskId}/log`))
+    let closed = false
     wsRef.current = ws
 
     ws.onmessage = (ev) => {
+      if (closed) return
       try {
         const payload = JSON.parse(ev.data)
         if (payload.type !== 'log_chunk') return
+        const incomingAttempt = payload.attempt_number ?? 0
+        if (incomingAttempt < attemptNumber.current) return
+        if (incomingAttempt > attemptNumber.current) {
+          attemptNumber.current = incomingAttempt
+          seenIds.current.clear()
+          seenSeq.current.clear()
+          setChunks([])
+        }
         const chunk: LogChunk = {
           id: payload.id ?? null,
           chunk_seq: payload.chunk_seq,
+          updated_seq: payload.updated_seq,
           content: payload.content,
           tool_name: payload.tool_name ?? null,
           reasoning: payload.reasoning ?? null,
           created_at: payload.created_at ?? null,
         }
         const dupKey = chunk.id ?? `seq-${chunk.chunk_seq}`
-        if (chunk.id && seenIds.current.has(chunk.id)) return
-        if (!chunk.id && seenSeq.current.has(chunk.chunk_seq)) return
         seenIds.current.add(dupKey)
         seenSeq.current.add(chunk.chunk_seq)
-        setChunks((prev) => [...prev, chunk])
+        setChunks((prev) => mergeLogChunks(prev, [chunk]))
       } catch {
         /* ignore */
       }
     }
 
     return () => {
+      closed = true
       ws.close()
       wsRef.current = null
     }
@@ -86,7 +107,7 @@ export default function AgentLogViewer({ taskId, archived }: AgentLogViewerProps
     const resp = await logsApi.list(taskId, { from_seq: fromSeq, limit: minSeq - fromSeq })
     const fresh = resp.chunks.filter((c) => !seenSeq.current.has(c.chunk_seq))
     fresh.forEach(remember)
-    setChunks((prev) => [...fresh, ...prev])
+    setChunks((prev) => mergeLogChunks(prev, fresh))
     setHasEarlier(fromSeq > 0)
   }, [chunks, taskId, remember])
 

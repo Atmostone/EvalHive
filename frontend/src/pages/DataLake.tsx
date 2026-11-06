@@ -134,7 +134,7 @@ export default function DataLake() {
                   <td className="px-3 py-2">{r.template_name || '—'}</td>
                   <td className="px-3 py-2">{r.model_used || '—'}</td>
                   <td className="px-3 py-2">{r.final_status || '—'}</td>
-                  <td className="px-3 py-2 text-right">${fmt(r.cost_usd, 3)}</td>
+                  <td className="px-3 py-2 text-right">{r.cost_usd == null ? '—' : `$${fmt(r.cost_usd, 3)}`}</td>
                   <td className="px-3 py-2 text-right text-gray-600">{(r.input_tokens ?? 0) + (r.output_tokens ?? 0)}</td>
                   <td className="px-3 py-2 text-right text-gray-600">{r.duration_seconds != null ? `${Math.round(r.duration_seconds)}s` : '—'}</td>
                   <td className="px-3 py-2 text-right text-gray-600">{r.tool_call_count ?? '—'}</td>
@@ -173,9 +173,9 @@ export default function DataLake() {
                   <td className="px-3 py-2 font-medium">{g.group ?? '—'}</td>
                   <td className="px-3 py-2 text-right">{g.count}</td>
                   <td className="px-3 py-2 text-right">{(g.approval_rate * 100).toFixed(0)}%</td>
-                  <td className="px-3 py-2 text-right">${fmt(g.avg_cost_usd, 3)}</td>
-                  <td className="px-3 py-2 text-right text-gray-600">{Math.round(g.avg_tokens)}</td>
-                  <td className="px-3 py-2 text-right text-gray-600">{Math.round(g.avg_duration_s)}s</td>
+                  <td className="px-3 py-2 text-right" title={`Reported for ${g.cost_known_count} of ${g.count} runs`}>{g.avg_cost_usd == null ? '—' : `$${fmt(g.avg_cost_usd, 3)}`}</td>
+                  <td className="px-3 py-2 text-right text-gray-600" title={`Reported for ${g.tokens_known_count} of ${g.count} runs`}>{g.avg_tokens == null ? '—' : Math.round(g.avg_tokens)}</td>
+                  <td className="px-3 py-2 text-right text-gray-600">{g.avg_duration_s == null ? '—' : `${Math.round(g.avg_duration_s)}s`}</td>
                 </tr>
               ))}
               {grouped.data && grouped.data.length === 0 && (

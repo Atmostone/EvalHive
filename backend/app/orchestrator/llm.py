@@ -3,7 +3,6 @@
 import logging
 import uuid as _uuid
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 async def _record_reasoning(
-    db: Optional[AsyncSession],
-    task_id: Optional[_uuid.UUID | str],
+    db: AsyncSession | None,
+    task_id: _uuid.UUID | str | None,
     decision: str,
     reasoning: str = "",
     extra: dict | None = None,
@@ -148,8 +147,8 @@ async def select_template_for_task(
     task_description: str,
     templates: list[dict],
     llm: ResolvedModel,
-    db: Optional[AsyncSession] = None,
-    task_id: Optional[_uuid.UUID | str] = None,
+    db: AsyncSession | None = None,
+    task_id: _uuid.UUID | str | None = None,
 ) -> dict | None:
     """Ask LLM to select the best template for a task.
 
@@ -286,8 +285,8 @@ async def decide_decomposition(
     task_description: str,
     templates: list[dict],
     llm: ResolvedModel,
-    db: Optional[AsyncSession] = None,
-    task_id: Optional[_uuid.UUID | str] = None,
+    db: AsyncSession | None = None,
+    task_id: _uuid.UUID | str | None = None,
 ) -> list[dict] | None:
     """Ask LLM whether to decompose a task.
 
@@ -385,8 +384,8 @@ async def evaluate_agent_result(
     result_summary: str,
     result_files: list[str],
     llm: ResolvedModel,
-    db: Optional[AsyncSession] = None,
-    task_id: Optional[_uuid.UUID | str] = None,
+    db: AsyncSession | None = None,
+    task_id: _uuid.UUID | str | None = None,
     *,
     commit: bool = True,
 ) -> dict:
@@ -437,11 +436,11 @@ async def evaluate_agent_result(
         return args
 
     except Exception as e:
-        logger.error(f"LLM evaluation failed: {e}")
+        logger.error("LLM evaluation failed (%s)", type(e).__name__)
         await _record_reasoning(
-            db, task_id, "evaluation_failed", str(e)[:300],
+            db, task_id, "evaluation_failed", "Automatic review unavailable",
             commit=commit,
         )
 
-    # Default to approved on failure (don't block the user)
-    return {"approved": True, "feedback": ""}
+    # An unavailable review is unknown; the task requires the owner's decision.
+    return {"approved": None, "feedback": ""}

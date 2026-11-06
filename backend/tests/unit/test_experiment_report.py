@@ -574,6 +574,20 @@ def test_build_report_cost_breakdown():
     assert cb["orchestrator_metered"] is False
 
 
+def test_unknown_cost_is_not_a_zero_observation_or_a_complete_total():
+    unknown = _run("cfg-01", "case-a", 0, status="success")
+    unknown.cost_usd = None
+    known = _run("cfg-01", "case-b", 0, status="success", cost="0.000000000000000001")
+    report = build_report(_exp(CONFIGS), [unknown, known], {}, partial=False)
+    group = next(row for row in report["summary"]["per_config"] if row["config_key"] == "cfg-01")
+    assert group["cost_mean"] == 1e-18
+    assert group["n_cost"] == 1
+    cost = report["cost_breakdown"]["totals"]
+    assert cost["cost_basis"] == "known_subtotal"
+    assert cost["unknown_agent_runs"] == 1
+    assert cost["agent"] == 1e-18
+
+
 def test_cost_breakdown_counts_the_orchestrators_own_calls():
     """Template selection, the decomposition decision and result evaluation are
     LLM calls the platform makes on the run's behalf. They were spent and never

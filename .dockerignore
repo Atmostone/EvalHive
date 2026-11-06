@@ -1,0 +1,25 @@
+# Backend builds need only the application, SDK and installed declarations.
+**
+!backend/
+!backend/**
+!sdk/
+!sdk/python/
+!sdk/python/**
+!sdk/typescript/
+!sdk/typescript/**
+!harnesses/
+!harnesses/**
+!runner/
+!runner/**
+!environments/
+!environments/**
+**/.env*
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+**/*.egg-info/
+**/build/
+**/dist/
+**/node_modules/
+**/*.log
+**/.coverage*

@@ -19,7 +19,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -39,7 +39,7 @@ _CASE_SUFFIXES = (".yaml", ".yml", ".json")
 
 class CaseInput(BaseModel):
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     context: list = Field(default_factory=list)  # future: RAG doc refs / attachments
 
 
@@ -56,7 +56,7 @@ class CaseExternalEval(BaseModel):
 
     preprocess_command: str
     eval_command: str
-    groundtruth_path: Optional[str] = None
+    groundtruth_path: str | None = None
 
     @field_validator("preprocess_command", "eval_command")
     @classmethod
@@ -69,11 +69,11 @@ class CaseExternalEval(BaseModel):
 class CaseGold(BaseModel):
     """The pluggable gold envelope — each key feeds one eval engine."""
 
-    capability_spec: Optional[dict] = None       # E-13
-    reference_answer: Optional[str] = None        # E-03 / outcome correctness
-    rubric: Optional[Any] = None                  # E-02 (ref or inline)
-    canonical_trajectory: Optional[Any] = None    # E-09
-    external_eval: Optional[CaseExternalEval] = None  # executable checker (E-23)
+    capability_spec: dict | None = None       # E-13
+    reference_answer: str | None = None        # E-03 / outcome correctness
+    rubric: Any | None = None                  # E-02 (ref or inline)
+    canonical_trajectory: Any | None = None    # E-09
+    external_eval: CaseExternalEval | None = None  # executable checker (E-23)
 
 
 class CaseEnvironment(BaseModel):
@@ -89,18 +89,18 @@ class CaseEnvironment(BaseModel):
 
 
 class CaseRepro(BaseModel):
-    template_id: Optional[str] = None
-    model_id: Optional[str] = None
-    seed: Optional[int] = None
+    template_id: str | None = None
+    model_id: str | None = None
+    seed: int | None = None
 
 
 class BenchmarkCase(BaseModel):
     id: str
     suite: str
-    category: Optional[str] = None
+    category: str | None = None
     input: CaseInput
     gold: CaseGold = Field(default_factory=CaseGold)
-    environment: Optional[CaseEnvironment] = None
+    environment: CaseEnvironment | None = None
     repro: CaseRepro = Field(default_factory=CaseRepro)
     meta: dict = Field(default_factory=dict)
 
@@ -142,7 +142,7 @@ def list_suites() -> list[str]:
 # --- materialization + linkage (Layer 2) ----------------------------------
 
 
-def _capability_spec_for(case: BenchmarkCase) -> Optional[dict]:
+def _capability_spec_for(case: BenchmarkCase) -> dict | None:
     """Carry the case category into the capability_spec the harness reads (E-13)."""
     spec = case.gold.capability_spec
     if not spec:
@@ -159,8 +159,8 @@ async def materialize(
     *,
     workspace_id,
     repeat: int = 1,
-    template_id: Optional[uuid.UUID] = None,
-    model_id: Optional[uuid.UUID] = None,
+    template_id: uuid.UUID | None = None,
+    model_id: uuid.UUID | None = None,
     commit: bool = True,
 ) -> list[Task]:
     """Create ``repeat`` runnable READY task instances from ``case``.

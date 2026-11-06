@@ -1,0 +1,30 @@
+{
+  "name": "@evalhive/harness-pi",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "EvalHive connector for the official Pi coding-agent SDK",
+  "exports": {
+    ".": "./dist/connector.js"
+  },
+  "files": [
+    "dist",
+    "manifest.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@evalhive/harness-sdk": "file:../../sdk/typescript",
+    "@earendil-works/pi-mcp": "1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.9.3"
+  }
+}

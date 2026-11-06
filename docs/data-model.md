@@ -5,6 +5,36 @@
 
 ## Migrations
 
+`ha01` (after `fad4e5f6a7b8`, SPA-121) adds `harness_profiles` and
+`harness_secrets`. Both belong to a workspace and cascade on workspace deletion.
+Profiles store connector/version, JSON settings, credential references, optional
+model FK (`SET NULL`), default flag and timestamps. Names are unique per workspace;
+a partial unique index permits one default. Secret values are stored separately
+and are write-only through the API; serializers expose only ID/name/configured.
+The migration seeds a Pi declaration per existing workspace and its downgrade
+drops only these new tables. Historical tasks and results are not rewritten.
+
+`ha02` (SPA-122) adds `execution_attempts`, `execution_events` and
+`execution_commands`, plus nullable `tasks.current_attempt_id` and
+`service_tokens.attempt_id`. Attempts retain the applied RunSpec/manifest and
+connector/protocol versions independently of mutable profiles. Attempt numbers
+are unique per task; a partial index permits one active attempt. Events are
+unique by `(attempt_id, seq)` and a bounded hash of event identity; the full
+original ID and payload remain in JSONB and are compared on replay. Commands
+have their own IDs and belong to one attempt. Runner token verification checks
+workspace/task/attempt together; existing agent tokens retain their legacy scope.
+Mutations lock task then attempt to serialize retries and event delivery. The
+downgrade removes dependent token/task FKs before the attempt tables. No historical
+results or agent logs are backfilled or rewritten.
+
+`ha03` (SPA-126) permits NULL execution cost in `tasks` and `quality_records`,
+and widens it to `NUMERIC(20,12)` so cheap calls are not rounded to zero.
+Existing values are unchanged. New attempts start with unknown cost; normalized
+usage determines whether a final amount is known, including model/purpose and
+cache details. A missing measurement is not a measured zero. Downgrade checks for
+unknown/unrepresentable costs and refuses to fabricate values; rollback after new SDK executions
+must restore the compatible database backup taken before release.
+
 Revision chain:
 
 ```
@@ -143,7 +173,7 @@ fad4e5f6a7b8  agent_log_chunks.reasoning + quality_records.reasoning_tokens — 
 | model_used | VARCHAR(255) | NULL | denormalized api_name of the model used (kept even if LLMModel is later deleted) |
 | input_price_per_1m_usd | NUMERIC(12,6) | NULL | denormalized at spawn time from `llm_models.input_price_per_1m_usd`; used by cost.py so deleting/repricing a model doesn't retro-change cost |
 | output_price_per_1m_usd | NUMERIC(12,6) | NULL | denormalized at spawn time from `llm_models.output_price_per_1m_usd` |
-| cost_usd | NUMERIC(10,6) | 0 | computed cost (input_price × input_tokens / 1M + output_price × output_tokens / 1M) |
+| cost_usd | NUMERIC(20,12) | 0 for unstarted legacy tasks; NULL when unknown | SDK normalized cost, with exact source amount retained in usage; historical legacy computed costs remain unchanged |
 | orchestrator_cost_usd | NUMERIC(10,6) | 0 | what the ORCHESTRATOR spent deciding about this task — template selection, the decomposition decision, result evaluation (migration `fac3d4e5f6a7`, SPA-111). Priced from the live model row, not the task's frozen prices: this is platform overhead, not the measured subject. Deliberately **not** folded into `cost_usd`/`token_usage`, which are the agent's own effort and feed the token-effort comparison (SPA-77) |
 | orchestrator_usage | JSONB | {} | `{input_tokens, output_tokens, calls, by_decision:{template_selection?, decomposition?, result_evaluation?}}` — accumulated across every orchestrator turn the task passes through, including a re-queue's repeats. No backfill: before SPA-111 `usage` was never read at these call sites, so historical rows keep a zero, which is honestly what is known about them |
 | depends_on | UUID[] | {} | ids of dependency tasks (P9) |

@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import Boolean, ForeignKey, Index, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -39,20 +38,20 @@ class VarianceRun(Base):
         nullable=False,
     )
     # Replay an existing finished task N times…
-    source_task_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    source_task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
     )
     # …or run a fresh spec N times: {title, description, reference_answer?}.
-    source_spec: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    source_spec: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Pinned template for the children (denormalized from the source / request);
     # None => children go through normal orchestrator selection each run.
-    template_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
 
     n: Mapped[int] = mapped_column(Integer, nullable=False)
     parallel: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    cost_cap_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 6), nullable=True)
+    cost_cap_usd: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
 
     # pending | running | done | capped | failed
     status: Mapped[str] = mapped_column(
@@ -61,7 +60,7 @@ class VarianceRun(Base):
     child_task_ids: Mapped[list] = mapped_column(
         JSONB, default=list, server_default="[]"
     )
-    aggregate: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    aggregate: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     accumulated_cost_usd: Mapped[Decimal] = mapped_column(
         Numeric(10, 6), default=Decimal("0"), server_default="0"
     )
@@ -70,4 +69,4 @@ class VarianceRun(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now()
     )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)

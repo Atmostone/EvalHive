@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
@@ -20,12 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import get_current_user, get_current_workspace, require_role
 from app.database import get_db
 from app.models.experiment import Experiment, ExperimentRun
+from app.models.perturbation_run import PerturbationRun
 from app.models.quality_record import QualityRecord
 from app.models.rubric import Rubric
 from app.models.task import Task
-from app.models.variance_run import VarianceRun
-from app.models.perturbation_run import PerturbationRun
 from app.models.user import User
+from app.models.variance_run import VarianceRun
 from app.models.workspace import Workspace
 from app.quality.trace_cleaner import (
     DEFAULT_TOOL_ARGS_TOKEN_CAP,
@@ -46,15 +46,15 @@ class DimensionBody(BaseModel):
     description: str = ""
     evaluator: EvaluatorType = "judge"
     # Only meaningful when evaluator == "reference" (E-03); cleared otherwise.
-    reference_mode: Optional[ReferenceMode] = None
+    reference_mode: ReferenceMode | None = None
     # Only meaningful when evaluator == "objective" (E-04); cleared otherwise.
-    probe: Optional[ProbeType] = None
+    probe: ProbeType | None = None
     weight: float = Field(default=1.0, ge=0)
-    threshold: Optional[int] = Field(default=None, ge=0, le=10)
+    threshold: int | None = Field(default=None, ge=0, le=10)
     critical: bool = False
 
     @model_validator(mode="after")
-    def _evaluator_fields_consistency(self) -> "DimensionBody":
+    def _evaluator_fields_consistency(self) -> DimensionBody:
         if self.evaluator == "reference":
             if self.reference_mode is None:
                 self.reference_mode = "pointwise"
@@ -71,40 +71,40 @@ class DimensionBody(BaseModel):
 class RubricCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str = ""
-    applies_to: Optional[str] = Field(default=None, max_length=50)
+    applies_to: str | None = Field(default=None, max_length=50)
     is_default: bool = False
     dimensions: list[DimensionBody] = Field(default_factory=list)
 
 
 class RubricUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    description: Optional[str] = None
-    applies_to: Optional[str] = Field(default=None, max_length=50)
-    is_default: Optional[bool] = None
-    dimensions: Optional[list[DimensionBody]] = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    applies_to: str | None = Field(default=None, max_length=50)
+    is_default: bool | None = None
+    dimensions: list[DimensionBody] | None = None
 
 
 class FeedbackDimensionBody(BaseModel):
     """One human rating, mirroring a quality-profile dimension (E-05)."""
 
     key: str = Field(min_length=1, max_length=100)
-    name: Optional[str] = Field(default=None, max_length=200)
+    name: str | None = Field(default=None, max_length=200)
     score: int = Field(ge=0, le=10)
-    comment: Optional[str] = None
+    comment: str | None = None
 
 
 class HumanFeedbackBody(BaseModel):
-    verdict: Optional[Literal["approve", "reject"]] = None
-    overall_comment: Optional[str] = None
+    verdict: Literal["approve", "reject"] | None = None
+    overall_comment: str | None = None
     dimensions: list[FeedbackDimensionBody] = Field(default_factory=list)
     # Who is rating (SPA-85). `human` is the caller themselves — what tools they
     # used while rating is deliberately not a field. The machine types are for
     # scripted annotators and carry a label instead of a user id.
     annotator_type: Literal["human", "llm_judge", "synthetic"] = "human"
-    annotator_label: Optional[str] = Field(default=None, max_length=255)
+    annotator_label: str | None = Field(default=None, max_length=255)
     # The annotation session that served this annotator their bundle. It, not the
     # body, decides the protocol for a human rating.
-    session_id: Optional[uuid.UUID] = None
+    session_id: uuid.UUID | None = None
     # Declarable ONLY by a scripted annotator, which owns its own protocol. For a
     # human rating these are ignored: an unverifiable self-report is worth nothing.
     blind_to_model: bool = False
@@ -136,7 +136,7 @@ async def _get_owned_rubric(db: AsyncSession, rubric_id: str, workspace: Workspa
     try:
         rid = uuid.UUID(rubric_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid rubric id")
+        raise HTTPException(status_code=400, detail="invalid rubric id") from None
     rubric = await db.get(Rubric, rid)
     if rubric is None or rubric.workspace_id != workspace.id:
         raise HTTPException(status_code=404, detail="rubric not found")
@@ -239,7 +239,7 @@ async def _get_owned_task(db: AsyncSession, task_id: str, workspace: Workspace) 
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid task id")
+        raise HTTPException(status_code=400, detail="invalid task id") from None
     task = await db.get(Task, tid)
     if task is None or task.workspace_id != workspace.id:
         raise HTTPException(status_code=404, detail="task not found")
@@ -516,10 +516,10 @@ async def evaluate_capability_record(
 
 @router.get("/capability/aggregate")
 async def capability_aggregate(
-    category: Optional[str] = Query(None),
-    model_used: Optional[str] = Query(None),
-    template_id: Optional[str] = Query(None),
-    suite: Optional[str] = Query(None),
+    category: str | None = Query(None),
+    model_used: str | None = Query(None),
+    template_id: str | None = Query(None),
+    suite: str | None = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -584,10 +584,10 @@ async def evaluate_failure_modes_record(
 
 @router.get("/failure-modes/aggregate")
 async def failure_modes_aggregate(
-    model_used: Optional[str] = Query(None),
-    template_id: Optional[str] = Query(None),
-    failure_class: Optional[str] = Query(None),
-    suite: Optional[str] = Query(None),
+    model_used: str | None = Query(None),
+    template_id: str | None = Query(None),
+    failure_class: str | None = Query(None),
+    suite: str | None = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -652,10 +652,10 @@ async def evaluate_hallucinations_record(
 
 @router.get("/hallucinations/aggregate")
 async def hallucinations_aggregate(
-    model_used: Optional[str] = Query(None),
-    template_id: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
-    suite: Optional[str] = Query(None),
+    model_used: str | None = Query(None),
+    template_id: str | None = Query(None),
+    category: str | None = Query(None),
+    suite: str | None = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -722,9 +722,9 @@ async def evaluate_calibration_record(
 
 @router.get("/calibration/aggregate")
 async def calibration_aggregate(
-    model_used: Optional[str] = Query(None),
-    template_id: Optional[str] = Query(None),
-    suite: Optional[str] = Query(None),
+    model_used: str | None = Query(None),
+    template_id: str | None = Query(None),
+    suite: str | None = Query(None),
     bins: int = Query(10, ge=2, le=20),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
@@ -1102,8 +1102,8 @@ async def calibration_queue(
 # Judge Calibration Protocol (E-17)
 # --------------------------------------------------------------------------- #
 class JudgeCalibrationRunBody(BaseModel):
-    suite: Optional[str] = None
-    template_id: Optional[str] = None
+    suite: str | None = None
+    template_id: str | None = None
 
 
 @router.post("/judge-calibration/run")
@@ -1130,7 +1130,7 @@ async def run_judge_calibration_endpoint(
 
 @router.get("/judge-calibration")
 async def get_judge_calibration_endpoint(
-    judge_config_key: Optional[str] = Query(None),
+    judge_config_key: str | None = Query(None),
     history: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
@@ -1168,14 +1168,14 @@ async def judge_calibration_badge(
 # Bias Mitigation Toolkit (E-18)
 # --------------------------------------------------------------------------- #
 class BiasReportRunBody(BaseModel):
-    suite: Optional[str] = None
-    template_id: Optional[str] = None
+    suite: str | None = None
+    template_id: str | None = None
     # Per-toggle overrides for the "after" pass. When omitted, the saved
     # bias_mitigation_* settings are used (and a full A/B is run if none are on).
-    verbosity: Optional[bool] = None
-    score_clustering: Optional[bool] = None
-    self_preference: Optional[bool] = None
-    position: Optional[bool] = None
+    verbosity: bool | None = None
+    score_clustering: bool | None = None
+    self_preference: bool | None = None
+    position: bool | None = None
 
 
 @router.post("/bias-report/run")
@@ -1213,7 +1213,7 @@ async def run_bias_report_endpoint(
 
 @router.get("/bias-report")
 async def get_bias_report_endpoint(
-    judge_config_key: Optional[str] = Query(None),
+    judge_config_key: str | None = Query(None),
     history: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
@@ -1247,10 +1247,10 @@ class RankingRunBody(BaseModel):
     # Which axis to rank and how to aggregate.
     subject: Literal["model", "template"] = "model"
     method: Literal["bt", "elo"] = "bt"
-    suite: Optional[str] = None
+    suite: str | None = None
     # Explicit matches bypass the pointwise-score derivation (the literal
     # rank(pairwise_results) API); omit to derive matches from stored scores.
-    matches: Optional[list[MatchBody]] = None
+    matches: list[MatchBody] | None = None
 
 
 @router.post("/ranking/run")
@@ -1281,7 +1281,7 @@ async def run_ranking_endpoint(
 
 @router.get("/ranking")
 async def get_ranking_endpoint(
-    ranking_key: Optional[str] = Query(None),
+    ranking_key: str | None = Query(None),
     history: bool = Query(False),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
@@ -1313,36 +1313,36 @@ async def ranking_badge(
 # --------------------------------------------------------------------------- #
 class VarianceSpecBody(BaseModel):
     title: str = Field(min_length=1, max_length=500)
-    description: Optional[str] = None
-    reference_answer: Optional[str] = None
+    description: str | None = None
+    reference_answer: str | None = None
 
 
 class VarianceCreate(BaseModel):
     # Exactly one source: replay an existing task, or run a fresh spec.
-    source_task_id: Optional[str] = None
-    spec: Optional[VarianceSpecBody] = None
+    source_task_id: str | None = None
+    spec: VarianceSpecBody | None = None
     n: int = Field(default=10, ge=2, le=50)
     parallel: bool = True
-    cost_cap_usd: Optional[float] = Field(default=None, gt=0)
-    template_id: Optional[str] = None
+    cost_cap_usd: float | None = Field(default=None, gt=0)
+    template_id: str | None = None
 
     @model_validator(mode="after")
-    def _exactly_one_source(self) -> "VarianceCreate":
+    def _exactly_one_source(self) -> VarianceCreate:
         if (self.source_task_id is None) == (self.spec is None):
             raise ValueError("provide exactly one of source_task_id or spec")
         return self
 
 
-def _parse_uuid(value: Optional[str], field: str) -> Optional[uuid.UUID]:
+def _parse_uuid(value: str | None, field: str) -> uuid.UUID | None:
     if value is None:
         return None
     try:
         return uuid.UUID(value)
     except ValueError:
-        raise HTTPException(status_code=400, detail=f"invalid {field}")
+        raise HTTPException(status_code=400, detail=f"invalid {field}") from None
 
 
-def _variance_run_out(run: VarianceRun, children: Optional[list[Task]] = None) -> dict:
+def _variance_run_out(run: VarianceRun, children: list[Task] | None = None) -> dict:
     out = {
         "id": str(run.id),
         "workspace_id": str(run.workspace_id),
@@ -1396,13 +1396,13 @@ async def create_variance_run(
             template_id=_parse_uuid(body.template_id, "template_id"),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     return _variance_run_out(run)
 
 
 @router.get("/variance")
 async def list_variance_runs(
-    source_task_id: Optional[str] = Query(None),
+    source_task_id: str | None = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1439,16 +1439,16 @@ async def get_variance_run(
 # --------------------------------------------------------------------------- #
 class PerturbationCreate(BaseModel):
     source_task_id: str
-    transforms: Optional[list[str]] = None  # default: all four
+    transforms: list[str] | None = None  # default: all four
     variants_per_transform: int = Field(default=1, ge=1, le=5)
     base_n: int = Field(default=2, ge=1, le=10)
     parallel: bool = True
-    cost_cap_usd: Optional[float] = Field(default=None, gt=0)
-    template_id: Optional[str] = None
+    cost_cap_usd: float | None = Field(default=None, gt=0)
+    template_id: str | None = None
 
 
 def _perturbation_run_out(
-    run: PerturbationRun, children_by_id: Optional[dict] = None
+    run: PerturbationRun, children_by_id: dict | None = None
 ) -> dict:
     out = {
         "id": str(run.id),
@@ -1519,13 +1519,13 @@ async def create_perturbation_run(
             template_id=_parse_uuid(body.template_id, "template_id"),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     return _perturbation_run_out(run)
 
 
 @router.get("/perturbation")
 async def list_perturbation_runs(
-    source_task_id: Optional[str] = Query(None),
+    source_task_id: str | None = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1568,7 +1568,7 @@ async def _record_for_task(
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid task id")
+        raise HTTPException(status_code=400, detail="invalid task id") from None
     rec = (
         await db.execute(
             select(QualityRecord).where(
@@ -1644,13 +1644,15 @@ async def replay_reproducibility(
 ):
     """Replay a run from its snapshot (E-20): clone the task with a run_config
     derived from the captured state, linked via replay_of_task_id."""
-    from app.quality.reproducibility import replay_from_snapshot
+    from app.quality.reproducibility import ReplayUnavailable, replay_from_snapshot
 
     task = await _get_owned_task(db, task_id, workspace)
     try:
         return await replay_from_snapshot(db, task.id)
+    except ReplayUnavailable as error:
+        raise HTTPException(409, str(error)) from None
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from None
 
 
 # --------------------------------------------------------------------------- #
@@ -1660,14 +1662,14 @@ class ComparisonCreate(BaseModel):
     subject: Literal["model", "template", "prompt"] = "model"
     task_a_id: str
     # Direct mode: an existing candidate B.
-    task_b_id: Optional[str] = None
+    task_b_id: str | None = None
     # Generated mode: rerun source_task_id (defaults to task_a_id) with overrides.
-    source_task_id: Optional[str] = None
-    b_run_config: Optional[dict] = None  # {model_id?|template_id?|soul_md?|seed?|temperature?}
+    source_task_id: str | None = None
+    b_run_config: dict | None = None  # {model_id?|template_id?|soul_md?|seed?|temperature?}
     judge_mode: Literal["llm", "human"] = "llm"
 
     @model_validator(mode="after")
-    def _direct_or_generated(self) -> "ComparisonCreate":
+    def _direct_or_generated(self) -> ComparisonCreate:
         if self.task_b_id is None and not self.b_run_config:
             raise ValueError("provide task_b_id (direct) or b_run_config (generated)")
         return self
@@ -1675,7 +1677,7 @@ class ComparisonCreate(BaseModel):
 
 class HumanVerdictBody(BaseModel):
     verdict: Literal["a", "b", "tie"]
-    reasoning: Optional[str] = None
+    reasoning: str | None = None
 
 
 class PairwiseLeaderboardBody(BaseModel):
@@ -1710,14 +1712,14 @@ async def create_comparison_endpoint(
             created_by=getattr(user, "email", None) or "user",
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     return _serialize(comp)
 
 
 @router.get("/comparison")
 async def list_comparisons_endpoint(
-    subject: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
+    subject: str | None = Query(None),
+    status: str | None = Query(None),
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1796,7 +1798,7 @@ async def judge_comparison_endpoint(
         comp = await judge_comparison_by_id(db, cid, workspace_id=workspace.id)
     except ValueError as e:
         msg = str(e)
-        raise HTTPException(status_code=404 if "not found" in msg else 400, detail=msg)
+        raise HTTPException(status_code=404 if "not found" in msg else 400, detail=msg) from None
     return _serialize(comp)
 
 
@@ -1825,5 +1827,5 @@ async def human_verdict_endpoint(
         )
     except ValueError as e:
         msg = str(e)
-        raise HTTPException(status_code=404 if "not found" in msg else 400, detail=msg)
+        raise HTTPException(status_code=404 if "not found" in msg else 400, detail=msg) from None
     return _serialize(comp)

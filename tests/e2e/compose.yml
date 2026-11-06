@@ -1,0 +1,78 @@
+# Isolated engineering stack: disposable database/storage and a local model fixture.
+name: evalhive-harness-e2e
+services:
+  postgres:
+    image: postgres:16
+    environment: {POSTGRES_DB: evalhive_e2e, POSTGRES_USER: fixture, POSTGRES_PASSWORD: engineering-only}
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U fixture -d evalhive_e2e]
+      interval: 2s
+      retries: 30
+    networks: [fixture]
+  redis:
+    image: redis:7-alpine
+    networks: [fixture]
+  minio:
+    image: evalhive-minio:RELEASE.2025-10-15T17-29-55Z
+    command: server /data
+    environment: {MINIO_ROOT_USER: fixture, MINIO_ROOT_PASSWORD: engineering-only}
+    networks: [fixture]
+  api:
+    image: ${E2E_BACKEND_IMAGE:-evalhive-tests:harness-dev}
+    environment: &backend-environment
+      DATABASE_URL: postgresql+asyncpg://fixture:engineering-only@postgres:5432/evalhive_e2e
+      JWT_SECRET: local-engineering-fixture-not-a-production-secret
+      REQUIRE_STRONG_SECRETS: 'false'
+      ALLOW_OPEN_REGISTRATION: 'true'
+      LLM_API_KEY: ''
+      LLM_BASE_URL: ''
+      LLM_MODEL: ''
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: fixture
+      MINIO_SECRET_KEY: engineering-only
+      REDIS_URL: redis://redis:6379/0
+      DATA_DIR: /data
+      HOST_DATA_DIR: ${E2E_DATA_DIR:?Set an absolute host directory for disposable workspaces}
+      HARNESS_MANIFEST_DIR: /harnesses
+      DOCKER_HOST: unix:///run/evalhive-docker.sock
+      RUNTIME_NETWORK: evalhive-harness-e2e
+      RUNTIME_MAX_CONCURRENCY: '1'
+      RUNNER_API_URL: http://api:8000
+    volumes: &backend-volumes
+      - ${E2E_DATA_DIR}:/data
+      - ${E2E_DOCKER_SOCKET:-/run/user/11001/docker.sock}:/run/evalhive-docker.sock
+      - ${E2E_HARNESS_DIR:?Install the public connector manifests before acceptance}:/harnesses:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+      minio: {condition: service_started}
+    command: [sh, -ec, 'alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000']
+    networks: [fixture]
+  worker:
+    image: ${E2E_BACKEND_IMAGE:-evalhive-tests:harness-dev}
+    environment: *backend-environment
+    volumes: *backend-volumes
+    depends_on: [api]
+    command: [python, -m, app.workers.orchestrator_main]
+    networks: [fixture]
+  browser:
+    image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+    working_dir: /repo
+    environment:
+      E2E_API_URL: http://api:8000
+      E2E_MODEL_URL: http://browser:4100/v1
+      E2E_RESULTS_DIR: /results
+    volumes:
+      - ../..:/repo:ro
+      - ${E2E_RESULTS_DIR:?Set an absolute results directory}:/results
+    command: [node, tests/e2e/run.mjs]
+    mem_limit: 2g
+    cpus: 1
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    depends_on: [api, worker]
+    networks: [fixture]
+networks:
+  fixture: {name: evalhive-harness-e2e}

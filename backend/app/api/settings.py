@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.health import health_check
 from app.auth.dependencies import get_current_user, get_current_workspace, require_role
-from app.config import Settings, get_settings as get_app_settings
+from app.config import Settings
+from app.config import get_settings as get_app_settings
 from app.database import get_db
 from app.models.event import AgentEvent
 from app.models.knowledge_document import KnowledgeDocument
@@ -84,9 +85,10 @@ async def export_all(
 ):
     """Bundle this workspace's tasks/templates/events/settings/rules.md/memory.md into a ZIP."""
     import os
+
+    from app.api.events import event_to_dict
     from app.api.tasks import task_to_dict
     from app.api.templates import template_to_dict
-    from app.api.events import event_to_dict
 
     ws_id = workspace.id
     tasks = (

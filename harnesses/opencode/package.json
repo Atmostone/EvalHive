@@ -1,0 +1,36 @@
+{
+  "name": "@evalhive/harness-opencode",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "EvalHive connector for the official OpenCode server and SDK",
+  "exports": {
+    ".": "./dist/connector.js"
+  },
+  "files": [
+    "dist",
+    "manifest.json",
+    "native-hooks.mjs"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "1.19.5",
+    "opencode-ai": "1.19.5",
+    "opencode-linux-x64-baseline": "1.19.5",
+    "@evalhive/harness-sdk": "file:../../sdk/typescript",
+    "@opencode-ai/plugin": "1.19.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "zod": "4.6.6",
+    "toml": "5.0.1"
+  }
+}

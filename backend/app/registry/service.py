@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -37,7 +36,7 @@ def _mask_secret(value) -> str:
     return f"***{s[-4:]}" if len(s) > 4 else "***"
 
 
-def mask_secrets(secrets: Optional[dict]) -> dict:
+def mask_secrets(secrets: dict | None) -> dict:
     return {k: _mask_secret(v) for k, v in (secrets or {}).items()}
 
 
@@ -74,10 +73,10 @@ async def create_entry(
     workspace_id: uuid.UUID,
     name: str,
     kind: str = "builtin",
-    config: Optional[dict] = None,
-    secrets: Optional[dict] = None,
+    config: dict | None = None,
+    secrets: dict | None = None,
     enabled: bool = True,
-    description: Optional[str] = None,
+    description: str | None = None,
     created_by: str = "user",
 ) -> RegistryEntry:
     config = dict(config or {})
@@ -97,7 +96,7 @@ async def create_entry(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise ValueError(f"a registry entry named '{name}' already exists in this workspace")
+        raise ValueError(f"a registry entry named '{name}' already exists in this workspace") from None
     await db.refresh(entry)
     return entry
 
@@ -123,7 +122,7 @@ async def update_entry(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise ValueError(f"a registry entry named '{entry.name}' already exists in this workspace")
+        raise ValueError(f"a registry entry named '{entry.name}' already exists in this workspace") from None
     await db.refresh(entry)
     return entry
 
@@ -160,7 +159,7 @@ async def delete_entry(
 
 async def get_entry(
     db: AsyncSession, entry_id: uuid.UUID, *, workspace_id: uuid.UUID
-) -> Optional[RegistryEntry]:
+) -> RegistryEntry | None:
     entry = await db.get(RegistryEntry, entry_id)
     if entry is None or entry.workspace_id != workspace_id:
         return None
@@ -168,7 +167,7 @@ async def get_entry(
 
 
 async def list_entries(
-    db: AsyncSession, *, workspace_id: uuid.UUID, kind: Optional[str] = None
+    db: AsyncSession, *, workspace_id: uuid.UUID, kind: str | None = None
 ) -> list[RegistryEntry]:
     q = select(RegistryEntry).where(RegistryEntry.workspace_id == workspace_id)
     if kind:

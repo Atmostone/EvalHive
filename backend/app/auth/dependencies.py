@@ -1,5 +1,4 @@
 import uuid
-from typing import Optional
 
 import jwt
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -23,9 +22,9 @@ async def get_current_user(
     try:
         payload = decode_access_token(token)
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token expired")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token expired") from None
     except jwt.InvalidTokenError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token") from None
 
     user_id = payload.get("sub")
     if not user_id:
@@ -42,7 +41,7 @@ async def get_current_workspace(
     request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
+    x_workspace_id: str | None = Header(default=None, alias="X-Workspace-Id"),
 ) -> Workspace:
     """Resolve workspace from X-Workspace-Id header (or JWT default), check membership."""
     ws_id_str = x_workspace_id
@@ -68,7 +67,7 @@ async def get_current_workspace(
     try:
         ws_id = uuid.UUID(ws_id_str)
     except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid workspace id")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid workspace id") from None
 
     member = await db.execute(
         select(WorkspaceMember).where(

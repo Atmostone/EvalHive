@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_workspace, require_role
 from app.database import get_db
+from app.models.harness_profile import HarnessProfile
 from app.models.provider import LLMModel, Provider
 from app.models.registry_entry import RegistryEntry
 from app.models.rubric import Rubric
@@ -22,8 +23,10 @@ class TemplateCreate(BaseModel):
     name: str
     description: str
     soul_md: str
-    model_id: Optional[str] = None
-    rubric_id: Optional[str] = None
+    model_id: str | None = None
+    rubric_id: str | None = None
+    harness_profile_id: uuid.UUID | None = None
+    execution_mode: Literal["direct", "orchestrated"] = "orchestrated"
     # Registry references (SPA-41) — registry entry ids the agent enables.
     tool_ids: list = []
     max_ram: str = "2g"
@@ -33,21 +36,23 @@ class TemplateCreate(BaseModel):
 
 
 class TemplateUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    soul_md: Optional[str] = None
-    model_id: Optional[str] = None
-    rubric_id: Optional[str] = None
-    tool_ids: Optional[list] = None
-    max_ram: Optional[str] = None
-    max_cpu: Optional[int] = None
-    timeout_minutes: Optional[int] = None
-    tags: Optional[list] = None
+    name: str | None = None
+    description: str | None = None
+    soul_md: str | None = None
+    model_id: str | None = None
+    rubric_id: str | None = None
+    harness_profile_id: uuid.UUID | None = None
+    execution_mode: Literal["direct", "orchestrated"] | None = None
+    tool_ids: list | None = None
+    max_ram: str | None = None
+    max_cpu: int | None = None
+    timeout_minutes: int | None = None
+    tags: list | None = None
 
 
 async def _model_with_provider(
-    db: AsyncSession, model_id: Optional[uuid.UUID], workspace_id: uuid.UUID
-) -> tuple[Optional[LLMModel], Optional[Provider]]:
+    db: AsyncSession, model_id: uuid.UUID | None, workspace_id: uuid.UUID
+) -> tuple[LLMModel | None, Provider | None]:
     """Return (model, provider) if model belongs to this workspace, else (None, None)."""
     if model_id is None:
         return None, None
@@ -63,8 +68,8 @@ async def _model_with_provider(
 def template_to_dict(
     t: Template,
     *,
-    model: Optional[LLMModel] = None,
-    provider: Optional[Provider] = None,
+    model: LLMModel | None = None,
+    provider: Provider | None = None,
 ) -> dict:
     return {
         "id": str(t.id),
@@ -76,6 +81,8 @@ def template_to_dict(
         "model_api_name": model.api_name if model else None,
         "provider_name": provider.name if provider else None,
         "rubric_id": str(t.rubric_id) if t.rubric_id else None,
+        "harness_profile_id": str(t.harness_profile_id) if t.harness_profile_id else None,
+        "execution_mode": t.execution_mode,
         "tool_ids": t.tool_ids or [],
         "max_ram": t.max_ram,
         "max_cpu": t.max_cpu,
@@ -96,14 +103,14 @@ async def _get_scoped_template(
 
 
 async def _validate_model_id(
-    model_id: Optional[str], workspace: Workspace, db: AsyncSession
-) -> Optional[uuid.UUID]:
+    model_id: str | None, workspace: Workspace, db: AsyncSession
+) -> uuid.UUID | None:
     if model_id is None:
         return None
     try:
         mid = uuid.UUID(model_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid model_id")
+        raise HTTPException(status_code=400, detail="invalid model_id") from None
     model = await db.get(LLMModel, mid)
     if not model:
         raise HTTPException(status_code=400, detail="model_id not found")
@@ -116,14 +123,14 @@ async def _validate_model_id(
 
 
 async def _validate_rubric_id(
-    rubric_id: Optional[str], workspace: Workspace, db: AsyncSession
-) -> Optional[uuid.UUID]:
+    rubric_id: str | None, workspace: Workspace, db: AsyncSession
+) -> uuid.UUID | None:
     if rubric_id is None:
         return None
     try:
         rid = uuid.UUID(rubric_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid rubric_id")
+        raise HTTPException(status_code=400, detail="invalid rubric_id") from None
     rubric = await db.get(Rubric, rid)
     if not rubric or rubric.workspace_id != workspace.id:
         raise HTTPException(
@@ -132,8 +139,21 @@ async def _validate_rubric_id(
     return rid
 
 
+async def _validate_harness_profile_id(
+    profile_id: uuid.UUID | None, workspace: Workspace, db: AsyncSession
+) -> uuid.UUID | None:
+    if profile_id is None:
+        return None
+    # Match the profile deletion/default lock order across API replicas.
+    await db.execute(select(Workspace.id).where(Workspace.id == workspace.id).with_for_update())
+    profile = await db.get(HarnessProfile, profile_id)
+    if profile is None or profile.workspace_id != workspace.id:
+        raise HTTPException(422, "Harness profile is unavailable in this workspace")
+    return profile_id
+
+
 async def _validate_tool_ids(
-    tool_ids: Optional[list], workspace: Workspace, db: AsyncSession
+    tool_ids: list | None, workspace: Workspace, db: AsyncSession
 ) -> list:
     """Validate that every id references a registry entry in this workspace (SPA-41).
     Returns the normalized list of id strings."""
@@ -144,7 +164,7 @@ async def _validate_tool_ids(
         try:
             tid = uuid.UUID(str(raw))
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"invalid tool id: {raw}")
+            raise HTTPException(status_code=400, detail=f"invalid tool id: {raw}") from None
         entry = await db.get(RegistryEntry, tid)
         if entry is None or entry.workspace_id != workspace.id:
             raise HTTPException(status_code=400, detail=f"tool id not in registry: {raw}")
@@ -180,6 +200,7 @@ async def create_template(
 ):
     model_uuid = await _validate_model_id(body.model_id, workspace, db)
     rubric_uuid = await _validate_rubric_id(body.rubric_id, workspace, db)
+    profile_id = await _validate_harness_profile_id(body.harness_profile_id, workspace, db)
     tool_ids = await _validate_tool_ids(body.tool_ids, workspace, db)
     template = Template(
         name=body.name,
@@ -187,6 +208,8 @@ async def create_template(
         soul_md=body.soul_md,
         model_id=model_uuid,
         rubric_id=rubric_uuid,
+        harness_profile_id=profile_id,
+        execution_mode=body.execution_mode,
         tool_ids=tool_ids,
         max_ram=body.max_ram,
         max_cpu=body.max_cpu,
@@ -220,6 +243,8 @@ def _full_template_snapshot(t: Template) -> dict:
         "soul_md": t.soul_md,
         "model_id": str(t.model_id) if t.model_id else None,
         "rubric_id": str(t.rubric_id) if t.rubric_id else None,
+        "harness_profile_id": str(t.harness_profile_id) if t.harness_profile_id else None,
+        "execution_mode": t.execution_mode,
         "tool_ids": t.tool_ids or [],
         "max_ram": t.max_ram,
         "max_cpu": t.max_cpu,
@@ -263,6 +288,12 @@ async def update_template(
         payload["model_id"] = await _validate_model_id(payload["model_id"], workspace, db)
     if "rubric_id" in payload:
         payload["rubric_id"] = await _validate_rubric_id(payload["rubric_id"], workspace, db)
+    if "harness_profile_id" in payload:
+        payload["harness_profile_id"] = await _validate_harness_profile_id(
+            payload["harness_profile_id"], workspace, db
+        )
+    if payload.get("execution_mode", "orchestrated") is None:
+        raise HTTPException(422, "Execution mode cannot be null")
     if "tool_ids" in payload:
         payload["tool_ids"] = await _validate_tool_ids(payload["tool_ids"], workspace, db)
     for field, value in payload.items():
@@ -332,12 +363,13 @@ async def get_version(
 _ROLLBACK_FIELDS = {
     "name", "description", "soul_md", "model_id", "rubric_id",
     "tool_ids", "max_ram", "max_cpu", "timeout_minutes", "tags",
+    "harness_profile_id", "execution_mode",
 }
 
 
 async def _rollback_model_id_from_legacy(
     snap: dict, workspace_id: uuid.UUID, db: AsyncSession
-) -> Optional[uuid.UUID]:
+) -> uuid.UUID | None:
     """Best-effort map an old snapshot's `model` string to a current model id."""
     legacy = snap.get("model")
     if not legacy:
@@ -392,6 +424,16 @@ async def rollback_template(
     if "model_id" not in snap and snap.get("model"):
         mapped = await _rollback_model_id_from_legacy(snap, workspace.id, db)
         snap = {**snap, "model_id": str(mapped) if mapped else None}
+
+    # Old snapshots inherit the workspace default; new snapshots retain their choice.
+    profile_id = snap.get("harness_profile_id")
+    snap = {
+        **snap,
+        "harness_profile_id": await _validate_harness_profile_id(
+            uuid.UUID(profile_id) if profile_id else None, workspace, db
+        ),
+        "execution_mode": snap.get("execution_mode", "orchestrated"),
+    }
 
     for field, value in snap.items():
         if field not in _ROLLBACK_FIELDS:

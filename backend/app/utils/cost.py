@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
-from typing import Optional
 
 from app.models.task import Task
 
@@ -13,7 +12,7 @@ logger = logging.getLogger(__name__)
 _warned_tasks: set[str] = set()
 
 
-def calculate_cost(task: Task, token_usage: Optional[dict] = None) -> Decimal:
+def calculate_cost(task: Task, token_usage: dict | None = None) -> Decimal:
     """Compute USD cost from the task's denormalized per-1M token prices.
 
     Prices are captured on the Task row at agent spawn time so the cost is

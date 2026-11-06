@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -8,63 +8,75 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_workspace
+from app.auth.dependencies import get_current_workspace, require_role
 from app.database import get_db
 from app.models.task import Task, TaskPriority, TaskStatus
-from app.utils.failures import is_contaminated
 from app.models.workspace import Workspace
 from app.schemas.decomposition import DecompositionResponse
 from app.utils.events import log_event
+from app.utils.failures import is_contaminated
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
 class TaskCreate(BaseModel):
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     priority: str = TaskPriority.MEDIUM.value
-    parent_id: Optional[str] = None
-    reference_answer: Optional[str] = None
-    canonical_trajectory: Optional[Any] = None
-    capability_spec: Optional[Any] = None
+    parent_id: str | None = None
+    reference_answer: str | None = None
+    canonical_trajectory: Any | None = None
+    capability_spec: Any | None = None
+    template_id: uuid.UUID | None = None
+    harness_profile_id: uuid.UUID | None = None
+    execution_mode: Literal["direct", "orchestrated"] | None = None
 
 
 class TaskUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[str] = None
-    priority: Optional[str] = None
-    reference_answer: Optional[str] = None
-    canonical_trajectory: Optional[Any] = None
-    capability_spec: Optional[Any] = None
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    reference_answer: str | None = None
+    canonical_trajectory: Any | None = None
+    capability_spec: Any | None = None
+    template_id: uuid.UUID | None = None
+    harness_profile_id: uuid.UUID | None = None
+    execution_mode: Literal["direct", "orchestrated"] | None = None
+
+
+class TaskRerun(BaseModel):
+    reuse_conditions: bool = True
+    harness_profile_id: uuid.UUID | None = None
+    execution_mode: Literal["direct", "orchestrated"] | None = None
 
 
 class TaskOut(BaseModel):
     id: str
-    parent_id: Optional[str]
+    parent_id: str | None
     title: str
-    description: Optional[str]
+    description: str | None
     status: str
     priority: str
-    failure_type: Optional[str]
+    failure_type: str | None
     # Whether that reason describes the CONDITION (survives a re-queue) or just
     # this attempt (cleared by one). Two very different futures for the task.
     condition_contaminated: bool = False
-    template_id: Optional[str]
-    agent_container_id: Optional[str]
-    result_summary: Optional[str]
+    template_id: str | None
+    agent_container_id: str | None
+    result_summary: str | None
     result_files: list
     token_usage: dict
     orchestrator_usage: dict = {}
     orchestrator_cost_usd: float = 0.0
     retry_count: int
     max_retries: int
-    user_feedback: Optional[str]
-    orchestrator_feedback: Optional[str]
+    user_feedback: str | None
+    orchestrator_feedback: str | None
     created_at: str
     updated_at: str
-    started_at: Optional[str]
-    completed_at: Optional[str]
+    started_at: str | None
+    completed_at: str | None
 
     class Config:
         from_attributes = True
@@ -74,6 +86,7 @@ def task_to_dict(task: Task) -> dict:
     return {
         "id": str(task.id),
         "parent_id": str(task.parent_id) if task.parent_id else None,
+        "replay_of_task_id": str(task.replay_of_task_id) if task.replay_of_task_id else None,
         "title": task.title,
         # Why this run stopped measuring the model (SPA-87). It was recorded from
         # the start and readable only in SQL: the experiment surfaces carried it,
@@ -86,6 +99,9 @@ def task_to_dict(task: Task) -> dict:
         "priority": task.priority,
         "origin": task.origin,
         "template_id": str(task.template_id) if task.template_id else None,
+        "harness_profile_id": str(task.harness_profile_id) if task.harness_profile_id else None,
+        "execution_mode": task.execution_mode,
+        "current_attempt_id": str(task.current_attempt_id) if task.current_attempt_id else None,
         "agent_container_id": task.agent_container_id,
         "result_summary": task.result_summary,
         "reference_answer": task.reference_answer,
@@ -100,7 +116,7 @@ def task_to_dict(task: Task) -> dict:
         "user_feedback": task.user_feedback,
         "orchestrator_feedback": task.orchestrator_feedback,
         "model_used": task.model_used,
-        "cost_usd": float(task.cost_usd) if task.cost_usd is not None else 0.0,
+        "cost_usd": float(task.cost_usd) if task.cost_usd is not None else None,
         # The orchestrator's own spend on this task, reported apart from the
         # agent's so the two are never summed by accident (SPA-111).
         "orchestrator_usage": task.orchestrator_usage or {},
@@ -113,17 +129,48 @@ def task_to_dict(task: Task) -> dict:
     }
 
 
-async def _get_scoped_task(task_id: str, workspace: Workspace, db: AsyncSession) -> Task:
-    task = await db.get(Task, uuid.UUID(task_id))
+async def _get_scoped_task(task_id: str, workspace: Workspace, db: AsyncSession, *, lock=False) -> Task:
+    query = select(Task).where(Task.id == uuid.UUID(task_id), Task.workspace_id == workspace.id)
+    if lock:
+        query = query.with_for_update()
+    task = await db.scalar(query)
     if not task or task.workspace_id != workspace.id:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
 
+async def _selection(db, workspace, values):
+    from app.api.templates import _validate_harness_profile_id
+    from app.models.template import Template
+
+    if values.get("harness_profile_id"):
+        await _validate_harness_profile_id(values["harness_profile_id"], workspace, db)
+    if values.get("template_id"):
+        template = await db.get(Template, values["template_id"])
+        if template is None or template.workspace_id != workspace.id:
+            raise HTTPException(422, "Role template is unavailable in this workspace")
+
+
+async def _require_inactive(db, task):
+    from app.harnesses.attempts import TERMINAL
+    from app.models.execution_attempt import ExecutionAttempt
+
+    attempt = await db.get(ExecutionAttempt, task.current_attempt_id) if task.current_attempt_id else None
+    if attempt is not None and attempt.status not in TERMINAL:
+        raise HTTPException(409, "Stop the current attempt before changing execution")
+
+
+async def _require_unarchived(db, task):
+    from app.models.quality_record import QualityRecord
+
+    if await db.scalar(select(QualityRecord.id).where(QualityRecord.task_id == task.id)):
+        raise HTTPException(409, "Archived execution is immutable; create a linked rerun")
+
+
 @router.get("")
 async def list_tasks(
-    status: Optional[str] = None,
-    parent_id: Optional[str] = None,
+    status: str | None = None,
+    parent_id: str | None = None,
     include_experiments: bool = False,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
@@ -143,12 +190,13 @@ async def list_tasks(
     return [task_to_dict(t) for t in tasks]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_role("owner", "admin", "member"))])
 async def create_task(
     body: TaskCreate,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
+    await _selection(db, workspace, body.model_dump())
     task = Task(
         title=body.title,
         description=body.description,
@@ -157,6 +205,9 @@ async def create_task(
         reference_answer=body.reference_answer,
         canonical_trajectory=body.canonical_trajectory,
         capability_spec=body.capability_spec,
+        template_id=body.template_id,
+        harness_profile_id=body.harness_profile_id,
+        execution_mode=body.execution_mode,
         workspace_id=workspace.id,
     )
     db.add(task)
@@ -178,6 +229,9 @@ async def get_task(
     task = await _get_scoped_task(task_id, workspace, db)
 
     result = task_to_dict(task)
+    from app.models.quality_record import QualityRecord
+
+    result["results_archived"] = bool(await db.scalar(select(QualityRecord.id).where(QualityRecord.task_id == task.id)))
 
     # Include subtasks (also workspace-scoped)
     sub_query = select(Task).where(Task.parent_id == task.id, Task.workspace_id == workspace.id)
@@ -192,16 +246,43 @@ async def get_task(
 _REQUEUE_STATUSES = (TaskStatus.READY.value, TaskStatus.BACKLOG.value)
 
 
-@router.patch("/{task_id}")
+@router.patch("/{task_id}", dependencies=[Depends(require_role("owner", "admin", "member"))])
 async def update_task(
     task_id: str,
     body: TaskUpdate,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    task = await _get_scoped_task(task_id, workspace, db)
+    task = await _get_scoped_task(task_id, workspace, db, lock=True)
+
+    selected = body.model_dump(exclude_unset=True)
+    if any(key in selected for key in ("title", "description",
+                                      "template_id", "harness_profile_id", "execution_mode")) or body.status in _REQUEUE_STATUSES:
+        await _require_unarchived(db, task)
+    selection = {key: selected[key] for key in ("template_id", "harness_profile_id", "execution_mode") if key in selected}
+    if selection or (body.status is not None and body.status != task.status):
+        await _require_inactive(db, task)
+    await _selection(db, workspace, selection)
+    for key, value in selection.items():
+        setattr(task, key, value)
+    if (task.run_config or {}).get("harness_snapshot"):
+        rc = dict(task.run_config)
+        if "harness_profile_id" in selection:
+            rc.pop("harness_snapshot", None)
+            rc["new_harness_conditions"] = True
+        if "title" in selected or "description" in selected:
+            rc["replay_input_override"] = True
+        rc["replay_overrides"] = sorted(set(rc.get("replay_overrides", [])) | set(selection))
+        task.run_config = rc
 
     old_status = task.status
+    # Evaluation annotations may be added to historical results. They do not
+    # alter the frozen execution input, journal or archived result blob.
+    evaluation_changes = {
+        name: {"before": getattr(task, name), "after": selected[name]}
+        for name in ("reference_answer", "canonical_trajectory", "capability_spec")
+        if name in selected and selected[name] is not None and selected[name] != getattr(task, name)
+    }
     if body.title is not None:
         task.title = body.title
     if body.description is not None:
@@ -244,6 +325,9 @@ async def update_task(
     await db.commit()
     await db.refresh(task)
 
+    if evaluation_changes:
+        await log_event(db, "evaluation_spec_changed", "user", {"changes": evaluation_changes},
+                        task_id=task.id, workspace_id=workspace.id)
     if body.status and body.status != old_status:
         await log_event(
             db, "task_status_changed", "user",
@@ -254,7 +338,84 @@ async def update_task(
     return task_to_dict(task)
 
 
-@router.patch("/{task_id}/approve")
+@router.post("/{task_id}/start", dependencies=[Depends(require_role("owner", "admin", "member"))])
+async def start_task(
+    task_id: str,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    from evalhive_harness import ProtocolError
+
+    from app.harnesses.catalog import CatalogError
+    from app.harnesses.launch import execution_mode, resolve_launch, selected_template
+    from app.harnesses.profiles import ProfileError
+
+    task = await _get_scoped_task(task_id, workspace, db, lock=True)
+    await _require_inactive(db, task)
+    await _require_unarchived(db, task)
+    if task.status not in {"backlog", "ready", "failed", "done", "awaiting_approval"}:
+        raise HTTPException(409, "Task cannot be started in its current state")
+    try:
+        template = await selected_template(db, task)
+        if execution_mode(task, template) == "direct" or task.harness_profile_id or getattr(template, "harness_profile_id", None):
+            await resolve_launch(db, task, template)
+    except (ProfileError, CatalogError, ProtocolError) as error:
+        raise HTTPException(422, str(error)) from None
+    if not (is_contaminated(task.failure_type) and task.condition_contaminated):
+        task.failure_type = None
+    task.status = TaskStatus.READY.value
+    task.completed_at = None
+    await db.commit()
+    await db.refresh(task)
+    await log_event(db, "task_status_changed", "user", {"new_status": "ready"}, task_id=task.id, workspace_id=workspace.id)
+    return task_to_dict(task)
+
+
+@router.post("/{task_id}/rerun", status_code=201, dependencies=[Depends(require_role("owner", "admin", "member"))])
+async def rerun_task(
+    task_id: str,
+    body: TaskRerun,
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.harnesses.launch import resolve_launch
+    from app.models.execution_attempt import ExecutionAttempt
+    from app.orchestrator.rerun import clone_task_for_rerun
+
+    source = await _get_scoped_task(task_id, workspace, db, lock=True)
+    if body.reuse_conditions and body.harness_profile_id:
+        raise HTTPException(422, "Choose new conditions when selecting a harness profile")
+    await _require_inactive(db, source)
+    if source.status not in {"done", "failed", "awaiting_approval"}:
+        raise HTTPException(409, "Only a settled task can be rerun")
+    await _selection(db, workspace, body.model_dump())
+    config = {}
+    if body.reuse_conditions:
+        attempt = await db.get(ExecutionAttempt, source.current_attempt_id) if source.current_attempt_id else None
+        if attempt is None or attempt.connector_id.startswith("legacy"):
+            raise HTTPException(409, "Historical harness replay is unavailable; create a new run with current settings")
+    else:
+        config["new_harness_conditions"] = True
+    if body.harness_profile_id:
+        config["harness_profile_id"] = str(body.harness_profile_id)
+    if body.execution_mode:
+        config["execution_mode"] = body.execution_mode
+    try:
+        clone = await clone_task_for_rerun(db, source, run_config=config,
+            status="backlog", title_suffix=" (rerun)", commit=False)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    if body.reuse_conditions:
+        try:
+            await resolve_launch(db, clone)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from None
+    await db.commit()
+    await db.refresh(clone)
+    return task_to_dict(clone)
+
+
+@router.patch("/{task_id}/approve", dependencies=[Depends(require_role("owner", "admin", "member"))])
 async def approve_task(
     task_id: str,
     workspace: Workspace = Depends(get_current_workspace),
@@ -272,18 +433,38 @@ async def approve_task(
     return task_to_dict(task)
 
 
-@router.patch("/{task_id}/reject")
+@router.patch("/{task_id}/reject", dependencies=[Depends(require_role("owner", "admin", "member"))])
 async def reject_task(
     task_id: str,
     body: dict,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
-    task = await _get_scoped_task(task_id, workspace, db)
+    task = await _get_scoped_task(task_id, workspace, db, lock=True)
     if task.status != TaskStatus.AWAITING_APPROVAL.value:
         raise HTTPException(status_code=400, detail="Task not in awaiting_approval status")
 
-    task.user_feedback = body.get("feedback", "")
+    feedback = body.get("feedback", "")
+    if not isinstance(feedback, str) or len(feedback) > 65536:
+        raise HTTPException(422, "Feedback must be text within the supported size limit")
+    from app.models.quality_record import QualityRecord
+
+    record = await db.scalar(select(QualityRecord).where(QualityRecord.task_id == task.id))
+    if record is not None:
+        from app.orchestrator.rerun import clone_task_for_rerun
+
+        clone = await clone_task_for_rerun(db, task,
+            run_config={"replay_input_override": True, "new_harness_conditions": not bool(task.current_attempt_id)},
+            status="ready", max_retries=task.max_retries, commit=False)
+        clone.user_feedback = feedback
+        task.user_feedback, task.status = feedback, TaskStatus.FAILED.value
+        record.final_status = task.status
+        await db.commit()
+        await db.refresh(clone)
+        await log_event(db, "user_rejection", "user", {"feedback": feedback, "followup_task_id": str(clone.id)},
+                        task_id=task.id, workspace_id=workspace.id)
+        return task_to_dict(clone)
+    task.user_feedback = feedback
     task.status = TaskStatus.READY.value
     task.agent_container_id = None
     await db.commit()
@@ -296,7 +477,7 @@ async def reject_task(
     return task_to_dict(task)
 
 
-@router.delete("/{task_id}")
+@router.delete("/{task_id}", dependencies=[Depends(require_role("owner", "admin", "member"))])
 async def delete_task(
     task_id: str,
     workspace: Workspace = Depends(get_current_workspace),
@@ -306,9 +487,10 @@ async def delete_task(
     if task.status != TaskStatus.BACKLOG.value:
         raise HTTPException(status_code=400, detail="Can only delete tasks in backlog")
     # Delete related events and chat messages first (FK constraints)
-    from app.models.event import AgentEvent
-    from app.models.chat_message import ChatMessage
     from sqlalchemy import delete
+
+    from app.models.chat_message import ChatMessage
+    from app.models.event import AgentEvent
     await db.execute(delete(AgentEvent).where(AgentEvent.task_id == task.id))
     await db.execute(delete(ChatMessage).where(ChatMessage.related_task_id == task.id))
     await db.delete(task)
@@ -405,7 +587,7 @@ async def get_task_decomposition(
             "depends_on": [str(d) for d in (s.depends_on or [])],
             "started_at": s.started_at.isoformat() if s.started_at else None,
             "completed_at": s.completed_at.isoformat() if s.completed_at else None,
-            "cost_usd": float(s.cost_usd) if s.cost_usd is not None else 0.0,
+            "cost_usd": float(s.cost_usd) if s.cost_usd is not None else None,
             "result_files_count": len(s.result_files or []),
             "attempts": _attempts_for(s.id),
         })
@@ -417,7 +599,7 @@ async def get_task_decomposition(
             "status": parent.status,
             "started_at": parent.started_at.isoformat() if parent.started_at else None,
             "completed_at": parent.completed_at.isoformat() if parent.completed_at else None,
-            "cost_usd": float(parent.cost_usd) if parent.cost_usd is not None else 0.0,
+            "cost_usd": float(parent.cost_usd) if parent.cost_usd is not None else None,
         },
         "subtasks": subtasks,
     }
@@ -437,15 +619,25 @@ async def download_task_file(
     s3_path = f"results/{task_id}/{file_name}"
 
     try:
+        from pathlib import PurePosixPath
+        from urllib.parse import quote
+
         from app.storage.minio_client import get_file_stream
         stream = get_file_stream(s3_path)
+        def content():
+            try:
+                yield from stream.stream(amt=65536)
+            finally:
+                stream.close()
+                stream.release_conn()
+
         return StreamingResponse(
-            stream,
+            content(),
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+            headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(PurePosixPath(file_name).name, safe="")},
         )
     except Exception:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="File not found") from None
 
 
 @router.get("/{task_id}/files.zip")
@@ -468,7 +660,8 @@ async def download_task_files_zip(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for s3_path in files:
-            arcname = s3_path.split("/", 2)[-1] if "/" in s3_path else s3_path
+            prefix = f"results/{task.id}/attempts/{task.current_attempt_id}/"
+            arcname = s3_path[len(prefix):] if s3_path.startswith(prefix) else s3_path.split("/", 2)[-1]
             try:
                 stream = get_file_stream(s3_path)
                 try:
@@ -477,8 +670,7 @@ async def download_task_files_zip(
                     stream.close()
                     stream.release_conn()
             except Exception:
-                # Skip missing/unreadable files rather than failing the whole archive.
-                continue
+                raise HTTPException(502, "Unable to download all task files") from None
     buf.seek(0)
 
     fname = f"task_{task_id[:8]}_files.zip"

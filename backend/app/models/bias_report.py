@@ -1,6 +1,5 @@
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -56,7 +55,7 @@ class BiasReport(Base):
     )
     # The judge identity this report was run against — the judge model's api_name.
     judge_config_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    judge_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    judge_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # 1-based, increments per (workspace_id, judge_config_key).
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     # Number of re-judged judge/human dimension pairs and distinct dimensions.

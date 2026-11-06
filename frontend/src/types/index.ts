@@ -13,6 +13,7 @@ export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent'
 export interface Task {
   id: string
   parent_id?: string | null
+  replay_of_task_id?: string | null
   title: string
   description?: string | null
   status: TaskStatus
@@ -21,13 +22,22 @@ export interface Task {
    *  but only readable in SQL until SPA-113. */
   failure_type?: string | null
   template_id?: string | null
+  harness_profile_id?: string | null
+  execution_mode?: 'direct' | 'orchestrated' | null
+  current_attempt_id?: string | null
+  results_archived?: boolean
   agent_container_id?: string | null
   result_summary?: string | null
   reference_answer?: string | null
   canonical_trajectory?: CanonicalTrajectory | null
   capability_spec?: CapabilitySpec | null
   result_files: string[]
-  token_usage: Record<string, number>
+  token_usage: {
+    input_tokens?: number | null
+    output_tokens?: number | null
+    reasoning_tokens?: number | null
+    [key: string]: unknown
+  }
   retry_count: number
   max_retries: number
   user_feedback?: string | null
@@ -83,6 +93,8 @@ export interface Template {
   model_api_name: string | null
   provider_name: string | null
   rubric_id: string | null
+  harness_profile_id: string | null
+  execution_mode: 'direct' | 'orchestrated'
   tool_ids: string[]
   max_ram: string
   max_cpu: number
@@ -90,6 +102,76 @@ export interface Template {
   tags: string[]
   created_at: string
   updated_at: string
+}
+
+export type JsonSchema = Record<string, unknown> & {
+  type?: string | string[]
+  title?: string
+  description?: string
+  properties?: Record<string, JsonSchema>
+  required?: string[]
+  enum?: unknown[]
+  default?: unknown
+  minimum?: number
+  maximum?: number
+  writeOnly?: boolean
+}
+
+export interface HarnessManifest {
+  id: string
+  version: string
+  display_name: string
+  protocol_version: string
+  config_schema: JsonSchema
+  requirements?: { model_api?: string; [key: string]: unknown }
+  capabilities: Record<string, 'native' | 'emulated' | 'unsupported'>
+  commands?: Record<string, { input_schema: JsonSchema }>
+}
+
+export interface HarnessProfile {
+  id: string
+  name: string
+  connector_id: string
+  connector_version: string
+  config: Record<string, unknown>
+  secret_refs: Record<string, string>
+  model_id: string | null
+  is_default: boolean
+}
+
+export interface HarnessSecret {
+  id: string
+  name: string
+  configured: boolean
+}
+
+export interface ExecutionAttempt {
+  id: string
+  number: number
+  connector_id: string
+  connector_version: string
+  profile_id: string | null
+  status: 'created' | 'running' | 'stopping' | 'success' | 'failed' | 'cancelled' | 'lost'
+  capabilities: Record<string, string>
+  commands: Record<string, { input_schema: JsonSchema }>
+  completeness: Record<string, unknown>
+  result: { summary: string; status: string } | null
+}
+
+export interface AttemptEvent {
+  event_id: string
+  seq: number
+  event: string
+  data: { request_id?: string; kind?: string; payload?: Record<string, unknown>; [key: string]: unknown }
+}
+
+export interface AttemptCommand {
+  id: string
+  name: string
+  status: string
+  error: string | null
+  request_id?: string | null
+  result: { ok: boolean; result?: unknown } | null
 }
 
 export interface Provider {
@@ -645,7 +727,7 @@ export interface DataLakeRecordSummary {
   model_used: string | null
   final_status: string | null
   is_decomposition_root: boolean
-  cost_usd: number
+  cost_usd: number | null
   input_tokens: number | null
   output_tokens: number | null
   duration_seconds: number | null
@@ -658,9 +740,11 @@ export interface DataLakeRecordSummary {
 export interface DataLakeGroupRow {
   group: string | null
   count: number
-  avg_cost_usd: number
-  avg_tokens: number
-  avg_duration_s: number
+  avg_cost_usd: number | null
+  cost_known_count: number
+  avg_tokens: number | null
+  tokens_known_count: number
+  avg_duration_s: number | null
   approval_rate: number
 }
 
@@ -1228,6 +1312,7 @@ export const KANBAN_COLUMNS: TaskStatus[] = [
 export interface LogChunk {
   id: string | null
   chunk_seq: number
+  updated_seq?: number
   content: string
   tool_name?: string | null
   // The model's own deliberation preceding this step (SPA-114). Never merged into
@@ -1238,6 +1323,8 @@ export interface LogChunk {
 }
 
 export interface LogChunksResponse {
+  attempt_id?: string
+  attempt_number?: number
   archived: boolean
   archive_path: string | null
   chunks: LogChunk[]
@@ -1263,7 +1350,7 @@ export interface DecompositionSubtask {
   depends_on: string[]
   started_at: string | null
   completed_at: string | null
-  cost_usd: number
+  cost_usd: number | null
   result_files_count: number
   attempts: AgentAttempt[]
 }
@@ -1275,7 +1362,7 @@ export interface DecompositionResponse {
     status: TaskStatus
     started_at: string | null
     completed_at: string | null
-    cost_usd: number
+    cost_usd: number | null
   }
   subtasks: DecompositionSubtask[]
 }
@@ -1477,6 +1564,8 @@ export interface ExperimentConfig {
   soul_md?: string | null
   tools_override?: { enable?: string[]; disable?: string[] } | null
   memory_mode?: 'off' | 'flat' | 'structured' | null
+  harness_profile_id?: string | null
+  harness_config?: Record<string, unknown> | null
   /** SPA-84: set when the configuration was retired. Its cells keep their
    *  lineage but leave the matrix, so it must be shown as retired rather than
    *  drawn as an empty column. */
@@ -1491,6 +1580,9 @@ export interface ExperimentConfig {
     model_display_name?: string
     provider_name?: string
     agent_images?: Record<string, string | null>
+    harness?: { profile_id: string; connector_id: string; connector_version: string;
+      protocol_version: string | null; image: string | null; image_id: string | null;
+      requested_config: Record<string, unknown>; available: boolean; config_state: string }
   } | null
 }
 
@@ -1589,7 +1681,7 @@ export interface ExperimentRunResult {
   external_verdict?: 'pass' | 'fail' | null
   weighted_score?: number | null
   trajectory_score?: number | null
-  cost_usd: number
+  cost_usd: number | null
   duration_seconds?: number | null
   quality_profile?: QualityProfile | null
   trajectory_profile?: TrajectoryProfile | null
@@ -1634,6 +1726,10 @@ export interface ExperimentEffortRow {
 
 // Per-config (or experiment-total) cost decomposition in USD (SPA-73).
 export interface ExperimentCostRow {
+  cost_basis?: string
+  unknown_agent_runs?: number
+  measured_runs?: number
+  settled_runs?: number
   config_key?: string
   label?: string
   agent: number
@@ -2217,7 +2313,7 @@ export interface ExperimentReport {
     status?: string
     outcome?: number | null
     trajectory?: number | null
-    cost: number
+    cost: number | null
     duration?: number | null
     tokens?: number | null
     task_id?: string | null

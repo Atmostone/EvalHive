@@ -1,7 +1,6 @@
 """Aggregated analytics over tasks (per-template, per-model, timeline)."""
 
 from datetime import datetime, timedelta
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import and_, case, func, select
@@ -19,7 +18,7 @@ from app.utils.failures import infrastructure_decided, measures_the_model
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
 
-def _resolve_period(period: str) -> Optional[datetime]:
+def _resolve_period(period: str) -> datetime | None:
     if period == "all":
         return None
     now = datetime.utcnow()
@@ -40,8 +39,8 @@ def _duration_seconds_expr():
 @router.get("/templates")
 async def template_analytics(
     period: str = Query(default="week"),
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -57,8 +56,8 @@ async def template_analytics(
 
     approved = case((Task.status == TaskStatus.DONE.value, 1), else_=0)
     failed = case((Task.status == TaskStatus.FAILED.value, 1), else_=0)
-    inp = func.coalesce(Task.token_usage["input_tokens"].as_integer(), 0)
-    out = func.coalesce(Task.token_usage["output_tokens"].as_integer(), 0)
+    inp = Task.token_usage["input_tokens"].as_integer()
+    out = Task.token_usage["output_tokens"].as_integer()
 
     stmt = (
         select(
@@ -71,7 +70,9 @@ async def template_analytics(
             func.avg(_duration_seconds_expr()).label("avg_time_seconds"),
             func.avg(inp).label("avg_input_tokens"),
             func.avg(out).label("avg_output_tokens"),
-            func.coalesce(func.sum(Task.cost_usd), 0).label("total_cost_usd"),
+            func.sum(Task.cost_usd).label("total_cost_usd"),
+            func.count(Task.cost_usd).label("cost_known_count"),
+            func.avg(Task.cost_usd).label("avg_cost_usd"),
         )
         .join(Task, Task.template_id == Template.id, isouter=True)
         .group_by(Template.id, Template.name)
@@ -91,10 +92,12 @@ async def template_analytics(
             "retry_rate": float(r.retry_rate or 0),
             "failure_rate": float(r.failure_rate or 0),
             "avg_time_seconds": float(r.avg_time_seconds or 0),
-            "avg_input_tokens": float(r.avg_input_tokens or 0),
-            "avg_output_tokens": float(r.avg_output_tokens or 0),
-            "total_cost_usd": float(r.total_cost_usd or 0),
-            "cost_per_task_usd": (float(r.total_cost_usd or 0) / count) if count else 0,
+            "avg_input_tokens": float(r.avg_input_tokens) if r.avg_input_tokens is not None else None,
+            "avg_output_tokens": float(r.avg_output_tokens) if r.avg_output_tokens is not None else None,
+            "total_cost_usd": float(r.total_cost_usd) if r.cost_known_count == count and r.total_cost_usd is not None else None,
+            "cost_known_subtotal_usd": float(r.total_cost_usd or 0),
+            "cost_known_count": int(r.cost_known_count),
+            "cost_per_task_usd": float(r.avg_cost_usd) if r.avg_cost_usd is not None else None,
         })
     return out_list
 
@@ -102,8 +105,8 @@ async def template_analytics(
 @router.get("/configs")
 async def config_analytics(
     period: str = Query(default="week"),
-    from_dt: Optional[str] = None,
-    to_dt: Optional[str] = None,
+    from_dt: str | None = None,
+    to_dt: str | None = None,
     workspace: Workspace = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
 ):
@@ -228,15 +231,18 @@ async def timeline(
     db: AsyncSession = Depends(get_db),
 ):
     since = datetime.utcnow() - timedelta(days=days)
-    inp = func.coalesce(Task.token_usage["input_tokens"].as_integer(), 0)
-    out = func.coalesce(Task.token_usage["output_tokens"].as_integer(), 0)
+    inp = Task.token_usage["input_tokens"].as_integer()
+    out = Task.token_usage["output_tokens"].as_integer()
     bucket = func.date_trunc("day", Task.created_at).label("day")
     stmt = (
         select(
             bucket,
             func.count(Task.id).label("task_count"),
-            func.coalesce(func.sum(Task.cost_usd), 0).label("total_cost_usd"),
-            func.coalesce(func.sum(inp + out), 0).label("total_tokens"),
+            func.sum(Task.cost_usd).label("total_cost_usd"),
+            func.count(Task.cost_usd).label("cost_known_count"),
+            func.avg(Task.cost_usd).label("avg_cost_usd"),
+            func.sum(inp + out).label("total_tokens"),
+            func.count(inp + out).label("tokens_known_count"),
         )
         .where(
             Task.created_at >= since,
@@ -250,8 +256,11 @@ async def timeline(
         {
             "date": r.day.date().isoformat() if r.day else None,
             "task_count": int(r.task_count),
-            "total_cost_usd": float(r.total_cost_usd),
-            "total_tokens": int(r.total_tokens or 0),
+            "total_cost_usd": float(r.total_cost_usd) if r.cost_known_count == r.task_count and r.total_cost_usd is not None else None,
+            "cost_known_subtotal_usd": float(r.total_cost_usd or 0),
+            "cost_known_count": int(r.cost_known_count),
+            "total_tokens": int(r.total_tokens) if r.tokens_known_count == r.task_count and r.total_tokens is not None else None,
+            "tokens_known_count": int(r.tokens_known_count),
         }
         for r in rows
     ]
@@ -264,13 +273,15 @@ async def model_analytics(
     db: AsyncSession = Depends(get_db),
 ):
     cutoff = _resolve_period(period)
-    inp = func.coalesce(Task.token_usage["input_tokens"].as_integer(), 0)
-    out = func.coalesce(Task.token_usage["output_tokens"].as_integer(), 0)
+    inp = Task.token_usage["input_tokens"].as_integer()
+    out = Task.token_usage["output_tokens"].as_integer()
     stmt = (
         select(
             Task.model_used,
             func.count(Task.id).label("task_count"),
-            func.coalesce(func.sum(Task.cost_usd), 0).label("total_cost_usd"),
+            func.sum(Task.cost_usd).label("total_cost_usd"),
+            func.count(Task.cost_usd).label("cost_known_count"),
+            func.avg(Task.cost_usd).label("avg_cost_usd"),
             func.avg(inp).label("avg_input_tokens"),
             func.avg(out).label("avg_output_tokens"),
         )
@@ -284,9 +295,11 @@ async def model_analytics(
         {
             "model": r.model_used or "unknown",
             "task_count": int(r.task_count),
-            "total_cost_usd": float(r.total_cost_usd),
-            "avg_input_tokens": float(r.avg_input_tokens or 0),
-            "avg_output_tokens": float(r.avg_output_tokens or 0),
+            "total_cost_usd": float(r.total_cost_usd) if r.cost_known_count == r.task_count and r.total_cost_usd is not None else None,
+            "cost_known_subtotal_usd": float(r.total_cost_usd or 0),
+            "cost_known_count": int(r.cost_known_count),
+            "avg_input_tokens": float(r.avg_input_tokens) if r.avg_input_tokens is not None else None,
+            "avg_output_tokens": float(r.avg_output_tokens) if r.avg_output_tokens is not None else None,
         }
         for r in rows
     ]

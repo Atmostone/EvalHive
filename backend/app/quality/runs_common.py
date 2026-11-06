@@ -18,7 +18,6 @@ import logging
 import statistics
 from decimal import Decimal
 from math import ceil, floor
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +37,7 @@ TERMINAL_TASK = SUCCESS_TASK | {TaskStatus.FAILED.value}
 # --------------------------------------------------------------------------- #
 # Statistics helpers (pure Python — no numpy dependency)
 # --------------------------------------------------------------------------- #
-def percentile(sorted_vals: list[float], p: float) -> Optional[float]:
+def percentile(sorted_vals: list[float], p: float) -> float | None:
     """Linear-interpolated percentile (p in 0..100) over a pre-sorted list."""
     if not sorted_vals:
         return None

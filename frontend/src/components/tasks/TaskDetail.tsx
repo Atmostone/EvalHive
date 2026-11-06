@@ -21,6 +21,8 @@ import FailureModePanel from '@/components/quality/FailureModePanel'
 import HallucinationPanel from '@/components/quality/HallucinationPanel'
 import CalibrationPanel from '@/components/quality/CalibrationPanel'
 import JudgeCalibrationBadge from '@/components/quality/JudgeCalibrationBadge'
+import TaskExecutionFields from './TaskExecutionFields'
+import AttemptControls from './AttemptControls'
 
 interface TaskDetailProps {
   task: Task
@@ -66,18 +68,35 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   }
 
   const startMutation = useMutation({
-    mutationFn: () => tasksApi.update(task.id, { status: 'ready' }),
+    mutationFn: () => tasksApi.start(task.id),
     onSuccess: invalidate,
+  })
+  const selectionMutation = useMutation({
+    mutationFn: (selection: Partial<Task>) => tasksApi.update(task.id, selection),
+    onSuccess: invalidate,
+  })
+  const downloadMutation = useMutation({
+    mutationFn: async ({ path, name }: { path?: string; name: string }) => {
+      const blob = await tasksApi.download(task.id, path)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url; link.download = name; link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    },
   })
 
   const approveMutation = useMutation({
     mutationFn: () => tasksApi.approve(task.id),
     onSuccess: invalidate,
   })
+  const rerunMutation = useMutation({
+    mutationFn: () => tasksApi.rerun(task.id),
+    onSuccess: () => { invalidate(); onClose() },
+  })
 
   const rejectMutation = useMutation({
     mutationFn: () => tasksApi.reject(task.id, rejectFeedback),
-    onSuccess: () => { setShowReject(false); setRejectFeedback(''); invalidate() },
+    onSuccess: result => { setShowReject(false); setRejectFeedback(''); invalidate(); if (result.id !== task.id) onClose() },
   })
 
   const deleteMutation = useMutation({
@@ -194,35 +213,39 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             <div className="flex items-center justify-between mb-1">
               <h3 className="text-sm font-medium text-gray-500">Files</h3>
               {t.result_files.length > 1 && (
-                <a
-                  href={`/api/tasks/${t.id}/files.zip`}
-                  download
+                <button type="button"
+                  disabled={downloadMutation.isPending}
+                  onClick={() => downloadMutation.mutate({ name: `task_${t.id.slice(0, 8)}_files.zip` })}
                   className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
                 >
                   <Download className="h-3 w-3" />
-                  Скачать все ({t.result_files.length})
-                </a>
+                  Download all ({t.result_files.length})
+                </button>
               )}
             </div>
             <div className="space-y-1">
               {t.result_files.map((f: string) => {
                 const fileName = f.split('/').pop() || f
+                const prefix = `results/${t.id}/`
+                const relative = f.startsWith(prefix) ? f.slice(prefix.length) : f
                 return (
-                  <a key={f} href={`/api/tasks/${t.id}/files/${fileName}`} download
+                  <button type="button" key={f} disabled={downloadMutation.isPending}
+                    onClick={() => downloadMutation.mutate({ path: relative, name: fileName })}
                     className="flex items-center gap-2 text-sm text-blue-600 hover:underline">
                     <Download className="h-4 w-4" />
                     {fileName}
-                  </a>
+                  </button>
                 )
               })}
             </div>
+            {downloadMutation.error && <p role="alert" className="text-sm text-red-600">{downloadMutation.error.message}</p>}
           </div>
         )}
 
         {/* Token usage */}
-        {t.token_usage && (t.token_usage.input_tokens || t.token_usage.output_tokens) && (
+        {t.token_usage && (t.token_usage.input_tokens != null || t.token_usage.output_tokens != null) && (
           <div className="text-xs text-gray-400">
-            Tokens: {(t.token_usage.input_tokens || 0).toLocaleString()} in / {(t.token_usage.output_tokens || 0).toLocaleString()} out
+            Tokens: {t.token_usage.input_tokens?.toLocaleString() ?? '—'} in / {t.token_usage.output_tokens?.toLocaleString() ?? '—'} out
           </div>
         )}
 
@@ -310,8 +333,14 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           </div>
         )}
 
-        {/* Start button for backlog tasks */}
-        {t.status === 'backlog' && (
+        {['backlog', 'failed', 'done', 'awaiting_approval'].includes(t.status) && <>
+          <TaskExecutionFields value={t} onChange={selection => selectionMutation.mutate(selection)} disabled={selectionMutation.isPending || t.results_archived} />
+          {selectionMutation.error && <p role="alert" className="text-sm text-red-600">{selectionMutation.error.message}</p>}
+        </>}
+        <AttemptControls taskId={t.id} />
+
+        {/* Start uses the same preflight for direct and orchestrated work. */}
+        {['backlog', 'failed'].includes(t.status) && !t.results_archived && (
           <div className="pt-2 border-t">
             <button
               onClick={() => startMutation.mutate()}
@@ -320,12 +349,20 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             >
               <Play className="h-4 w-4" /> Start Task
             </button>
+            {startMutation.error && <p role="alert" className="text-sm text-red-600 mt-2">{startMutation.error.message}</p>}
           </div>
         )}
+        {['done', 'failed', 'awaiting_approval'].includes(t.status) && <div className="space-y-2">
+          <button type="button" className="text-sm text-blue-600 disabled:opacity-50" disabled={rerunMutation.isPending}
+            onClick={() => rerunMutation.mutate()}>Create new run with current settings</button>
+          <p className="text-xs text-gray-500">Creates a linked draft. Select its profile and start it separately.</p>
+          {rerunMutation.error && <p role="alert" className="text-sm text-red-600">{rerunMutation.error.message}</p>}
+        </div>}
 
         {/* Approve / Reject buttons */}
         {t.status === 'awaiting_approval' && (
           <div className="space-y-2 pt-2 border-t">
+            {rejectMutation.error && <p role="alert" className="text-sm text-red-600">{rejectMutation.error.message}</p>}
             <div className="flex gap-2">
               <button
                 onClick={() => approveMutation.mutate()}

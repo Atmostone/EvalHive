@@ -1,7 +1,7 @@
 """Integration tests for the Adversarial / Perturbation Judge (E-12).
 
 Covers child creation (baseline + perturbed groups), the runtime tool-injection
-seam (run_config -> AgentSpec.extra_env), the cost cap, the injection safety
+validation of retired execution overrides, the cost cap, the injection safety
 flag and the API. The orchestrator loop is never running here, so children are
 created READY but not actually spawned.
 """
@@ -13,9 +13,6 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from httpx import AsyncClient
-from sqlalchemy import select
-
 from app import database
 from app.models.perturbation_run import PerturbationRun
 from app.models.task import Task, TaskStatus
@@ -23,6 +20,8 @@ from app.models.template import Template
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.orchestrator import engine
 from app.quality import perturbation as pert
+from httpx import AsyncClient
+from sqlalchemy import select
 
 
 def _template(model_id) -> Template:
@@ -112,7 +111,7 @@ async def test_inject_child_carries_tool_injection(db_session, default_model):
 
 
 @pytest.mark.asyncio
-async def test_engine_passes_tool_injection_env(db_session, default_model, monkeypatch):
+async def test_engine_rejects_retired_injection_before_starting_a_connector(db_session, default_model, monkeypatch):
     tpl = _template(default_model.id)
     db_session.add(tpl)
     await db_session.flush()
@@ -126,15 +125,17 @@ async def test_engine_passes_tool_injection_env(db_session, default_model, monke
     await db_session.refresh(task)
 
     fake_runtime = MagicMock()
-    fake_runtime.spawn.return_value = "ctr-inject-0000000000"
-    monkeypatch.setattr(engine, "get_agent_runtime", lambda: fake_runtime)
-    monkeypatch.setattr(engine, "issue_agent_token", AsyncMock(return_value="tok"))
+    monkeypatch.setattr("app.harnesses.executor.get_process_runtime", lambda: fake_runtime)
+    from app.harnesses.profiles import seed_workspace_profile
+
+    await seed_workspace_profile(db_session, DEFAULT_WORKSPACE_ID)
+    await db_session.commit()
 
     await engine.process_ready_task(db_session, task)
 
-    fake_runtime.spawn.assert_called_once()
-    spec = fake_runtime.spawn.call_args.args[0]
-    assert spec.extra_env == {"AGENT_TOOL_INJECTION": "PWN_PAYLOAD"}
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.FAILED.value and "conversion" in task.result_summary
+    fake_runtime.spawn.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -46,7 +46,7 @@ these — do not change):
 |---|---|
 | container/host name | `toolathlon_pg` |
 | user / password / db | `eigent` / `camel` / `toolathlon_gym` |
-| network | `evalhive-net` — the same network agent containers are attached to (`backend/app/orchestrator/docker_manager.py: DOCKER_NETWORK = "evalhive_evalhive-net"`), so agents resolve `toolathlon_pg` via Docker DNS |
+| network | `evalhive-net` — the same network agent containers are attached to (`RUNTIME_NETWORK`, normally `evalhive_evalhive-net`), so agents resolve `toolathlon_pg` via Docker DNS |
 
 Data persists in the named volume `toolathlon-pgdata`. Task `preprocess/main.py`
 scripts reset state before each run; for a **full** re-init from the dump:
@@ -69,15 +69,20 @@ the FK before every run. Our runner glue must do the same.
 #    Heavy: several GB, tens of minutes cold.
 docker build -t toolathlon-pack:latest "$TOOLATHLON_GYM_PATH"
 
-# 2) Our derived agent image: their toolchain + our agent.py/entrypoint.py/…,
-#    python deps (litellm, mcp, fastapi, uvicorn, httpx) installed into THEIR
-#    venv /opt/venv via uv (the venv has no pip).
-docker build -f agent-image/Dockerfile.toolathlon \
-  -t evalhive-agent-toolathlon:latest agent-image/
+# 2) Add either connector to the independent benchmark toolchain.
+#    The connector pins its Node runtime and native SDK; it does not replace
+#    benchmark paths, MCP processes or preprocess/evaluation dependencies.
+docker build --target runtime --build-arg BASE_IMAGE=toolathlon-pack:latest \
+  -f harnesses/pi/Dockerfile -t evalhive-pi-toolathlon:1.5.0 .
+docker build --target runtime --build-arg BASE_IMAGE=toolathlon-pack:latest \
+  -f harnesses/opencode/Dockerfile -t evalhive-opencode-toolathlon:1.19.5 .
 ```
 
-Rebuild #2 whenever `agent-image/*.py` or `requirements.txt` changes (same rule as the
-regular `evalhive-agent:latest`).
+Run these commands from the EvalHive repository root using its rootless Docker
+endpoint. The base must already provide the MCP Python environments declared by
+the registry. Rebuild connector variants when their pinned packages or environment
+base change; record the resulting immutable image IDs with the release. Building
+an image does not run a benchmark.
 
 > Docker Hub geo-block workaround: if pulls of `ubuntu:22.04` / `postgres:15` fail
 > with `403 Forbidden` from registry-1.docker.io, pull the same images from the AWS
@@ -88,8 +93,8 @@ regular `evalhive-agent:latest`).
 ## 3. Agent containers: PG env passthrough
 
 Toolathlon MCP servers and the task `preprocess`/`evaluation` scripts read the DB
-coordinates from the environment. When spawning an agent from
-`evalhive-agent-toolathlon:latest`, pass (mirrors their `run_containerized.sh` /
+coordinates from the environment. The task environment supplies these settings
+to its MCP resource declarations (mirrors their `run_containerized.sh` /
 `run_parallel.sh`, both `PGHOST` and `PG_HOST` spellings are used upstream):
 
 ```
@@ -103,9 +108,10 @@ LOCAL_SERVERS_PATH=/opt/local_servers
 PYTHON_BIN=/opt/venv/bin/python3
 ```
 
-In our stack this goes through `extra_env` of
-`docker_manager.spawn_agent()` — no code change needed for a serialized pilot. The
-image keeps the toolathlon_gym source in `/workspace`; the orchestrator mounts the
+Registry secret references are resolved privately for each MCP resource. The SDK
+launcher selects the registered `toolathlon` environment image and applies the
+owned portal network namespace; the runtime has no provider-specific settings. The
+base image keeps the toolathlon_gym source in `/workspace`; the orchestrator mounts the
 task workspace over it, which is fine — we only use their `preprocess`/`evaluation`
 scripts and `/opt/local_servers`, never their agent loop (`main.py`).
 

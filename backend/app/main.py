@@ -4,32 +4,40 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-logging.basicConfig(level=logging.INFO)
-
+from app.api.agent_logs import router as agent_logs_router
+from app.api.agent_logs import ws_router as agent_logs_ws_router
+from app.api.agents import router as agents_router
+from app.api.analytics import router as analytics_router
+from app.api.attempts import router as attempts_router
 from app.api.auth import router as auth_router
+from app.api.benchmarks import router as benchmarks_router
+from app.api.chat import router as chat_router
+from app.api.data_lake import router as data_lake_router
+from app.api.events import router as events_router
+from app.api.events import ws_router as events_ws_router
+from app.api.experiments import router as experiments_router
+from app.api.harnesses import profiles_router as harness_profiles_router
+from app.api.harnesses import router as harnesses_router
+from app.api.harnesses import secrets_router as harness_secrets_router
 from app.api.health import router as health_router
+from app.api.knowledge import router as knowledge_router
+from app.api.knowledge_mcp import router as knowledge_mcp_router
+from app.api.memory import router as memory_router
+from app.api.providers import models_router
+from app.api.providers import router as providers_router
+from app.api.quality import router as quality_router
+from app.api.registry import router as registry_router
+from app.api.scheduled_jobs import router as scheduled_jobs_router
 from app.api.settings import router as settings_router
 from app.api.tasks import router as tasks_router
 from app.api.templates import router as templates_router
-from app.api.agents import router as agents_router
 from app.api.webhooks import router as webhooks_router
-from app.api.events import router as events_router, ws_router as events_ws_router
-from app.api.chat import router as chat_router
-from app.api.knowledge import router as knowledge_router
-from app.api.memory import router as memory_router
-from app.api.analytics import router as analytics_router
-from app.api.scheduled_jobs import router as scheduled_jobs_router
-from app.api.agent_logs import router as agent_logs_router, ws_router as agent_logs_ws_router
-from app.api.providers import router as providers_router, models_router
-from app.api.data_lake import router as data_lake_router
-from app.api.quality import router as quality_router
-from app.api.registry import router as registry_router
-from app.api.experiments import router as experiments_router
-from app.api.benchmarks import router as benchmarks_router
 from app.api.workspaces import router as workspaces_router
 from app.config import get_settings
 from app.database import async_session
 from app.models.setting import Setting
+
+logging.basicConfig(level=logging.INFO)
 
 
 async def seed_settings():
@@ -69,6 +77,7 @@ async def seed_default_provider():
     Also assigns it to the workspace's three system_*_model_id FKs.
     """
     from sqlalchemy import func, select
+
     from app.models.provider import LLMModel, Provider
     from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace
 
@@ -122,6 +131,7 @@ async def seed_templates():
     model is configured yet, they are seeded without one and the user can pick later.
     """
     from sqlalchemy import func, select
+
     from app.models.template import Template
     from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace
 
@@ -214,6 +224,7 @@ async def seed_default_rubrics():
     New workspaces clone these on registration (see app.api.auth.register).
     """
     from sqlalchemy import func, select
+
     from app.models.rubric import Rubric
     from app.models.workspace import DEFAULT_WORKSPACE_ID
     from app.quality.rubric import iter_default_rubrics
@@ -252,6 +263,11 @@ async def lifespan(app: FastAPI):
     await seed_default_provider()
     await seed_templates()
     await seed_default_rubrics()
+
+    from app.harnesses.profiles import seed_missing_profiles
+
+    async with async_session() as db:
+        await seed_missing_profiles(db)
 
     # Orchestrator + scheduler now run as separate worker containers (R3),
     # holding Postgres advisory locks so only one of each is leader.
@@ -337,6 +353,11 @@ app.include_router(agent_logs_ws_router)
 app.include_router(providers_router)
 app.include_router(models_router)
 app.include_router(workspaces_router)
+app.include_router(harnesses_router)
+app.include_router(harness_profiles_router)
+app.include_router(harness_secrets_router)
+app.include_router(attempts_router)
+app.include_router(knowledge_mcp_router)
 app.include_router(data_lake_router)
 app.include_router(quality_router)
 app.include_router(registry_router)

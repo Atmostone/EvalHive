@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -63,13 +64,14 @@ def gym_host_path() -> str:
     return os.path.abspath(os.path.expanduser(p))
 
 
-def workspace_host_path(task_id) -> str:
-    return os.path.join(_settings().host_data_dir, "workspaces", str(task_id))
+def workspace_host_path(task_id, attempt_id=None) -> str:
+    root = os.path.join(_settings().host_data_dir, "workspaces", str(task_id))
+    return os.path.join(root, str(uuid.UUID(str(attempt_id))), "workspace") if attempt_id else root
 
 
 def ensure_workspace_dir(task_id) -> str:
     """Create the container-local workspace dir so the host bind mount targets a
-    real directory (mirrors ``docker_manager.spawn_agent``)."""
+    real directory, independent of the selected connector."""
     local = os.path.join(_settings().data_dir, "workspaces", str(task_id))
     os.makedirs(local, exist_ok=True)
     return local
@@ -114,7 +116,9 @@ def _remove_name(name: str) -> None:
 
 
 def _run_pack(
-    name: str, task_id, task_path: str, command: str, pg_host: str | None = None
+    name: str, task_id, task_path: str, command: str, pg_host: str | None = None,
+    workspace_id=None,
+    attempt_id=None,
 ) -> str:
     """Start a detached ``toolathlon-pack`` container; return its id. The gym
     (host path) and the task workspace (host path) are bind-mounted; ``PG_ENV``
@@ -133,12 +137,14 @@ def _run_pack(
         network=NETWORK,
         volumes={
             gym_host_path(): {"bind": GYM_MOUNT, "mode": "rw"},
-            workspace_host_path(task_id): {"bind": WS_MOUNT, "mode": "rw"},
+            workspace_host_path(task_id, attempt_id): {"bind": WS_MOUNT, "mode": "rw"},
         },
         environment=env,
         working_dir=f"{GYM_MOUNT}/{task_path}",
         detach=True,
-        labels={"evalhive.toolathlon": "1", "evalhive.task_id": str(task_id)},
+        labels={"evalhive.toolathlon": "1", "evalhive.role": "environment",
+                "evalhive.task_id": str(task_id),
+                **({"evalhive.workspace_id": str(workspace_id)} if workspace_id is not None else {})},
     )
     return container.id
 
@@ -157,6 +163,7 @@ def start_preprocess(
     *,
     keep_alive: bool = False,
     pg_host: str | None = None,
+    workspace_id=None,
 ) -> str:
     """Seed the workspace + run the case's preprocess, detached. Returns the
     container id (poll it with :func:`poll_exit`).
@@ -173,7 +180,8 @@ def start_preprocess(
         cmd = f"{cmd} && tail -f /dev/null"
     cmd = _seed_prefix(task_path) + cmd
     return _run_pack(
-        preprocess_container_name(task_id), task_id, task_path, cmd, pg_host=pg_host
+        preprocess_container_name(task_id), task_id, task_path, cmd, pg_host=pg_host,
+        workspace_id=workspace_id,
     )
 
 
@@ -185,12 +193,15 @@ def start_eval(
     launch_time: str,
     *,
     pg_host: str | None = None,
+    workspace_id=None,
+    attempt_id=None,
 ) -> str:
     """Run the case's evaluation script, detached. Returns the container id;
     a clean exit code of ``0`` is a pass."""
     gt = f"{GYM_MOUNT}/{groundtruth_path}" if groundtruth_path else None
     cmd = substitute(eval_command, gt=gt, launch_time=launch_time, res_log=EVAL_RES_LOG)
-    return _run_pack(f"tlev-{str(task_id)[:8]}", task_id, task_path, cmd, pg_host=pg_host)
+    return _run_pack(f"tlev-{str(task_id)[:8]}", task_id, task_path, cmd, pg_host=pg_host,
+                     workspace_id=workspace_id, attempt_id=attempt_id)
 
 
 def poll_exit(container_id: str) -> tuple[int | None, str]:

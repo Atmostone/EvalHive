@@ -43,13 +43,118 @@ OpenAPI: http://localhost:8002/docs.
 
 ## Agent image
 
+The independent Python/TypeScript connector SDK and its shared protocol checks
+are documented in [sdk/README.md](../sdk/README.md). They run without Docker,
+database services or model credentials. Run both process suites before changing
+the canonical schema; an incompatible change requires a new protocol version.
+
+Backend image builds now use the repository root as their context:
+`docker build -f backend/Dockerfile .`. Compose already supplies this path. The
+image installs `sdk/python` and includes `harnesses`; direct host development must
+also install `pip install -e sdk/python`. `HARNESS_MANIFEST_DIR` can select another
+administrator-controlled declaration directory. Each connector occupies a
+subdirectory containing `manifest.json`; worker packages/images are installed
+separately, and no Python worker module is imported by catalog discovery.
+
+The process runtime requires a rootless Docker daemon. `RUNTIME_NETWORK` selects
+its registered bridge; `RUNTIME_MAX_CPU_QUOTA` (default 200000, with period 100000)
+and `RUNTIME_MAX_MEMORY_MB` (default 2048) set server limits. Additional environment
+dependency trees can be registered through `RUNTIME_READONLY_ROOTS` (JSON array of
+absolute host paths); they cannot be mounted writable. `HOST_DATA_DIR` must be an
+absolute host path. Each attempt gets separate `workspace` and private input
+directories under `workspaces/<task>/<attempt>/`; the runner alone receives the
+private inputs, and artifact collection starts at the workspace directory.
+
+Install the runner alongside the SDK for host development: `pip install -e runner`.
+`RUNNER_API_URL` defaults to the internal `http://api:8000`; `RUNTIME_MAX_CONCURRENCY`
+defaults to one. Capacity is serialized across API replicas. SDK workers must wait
+for the JSONL start command; starting the container alone must not invoke a model.
+The runner's own API token stays outside the worker. Native credentials use a
+separate read-only file named by `EVALHIVE_CREDENTIALS_FILE`; worker code resolves
+the RunSpec references from that map and must not discover global auth caches.
+
+Pi is the built-in default connector; OpenCode uses the same installed-package
+contract. The previous executable agent and transitional adapters have been
+removed. Historical journals, log archives and template versions remain readable.
+Retired webhook endpoints authenticate old service tokens but reject execution
+writes; feedback and cancellation compatibility endpoints queue attempt commands.
+
+Build the shared workspace dependencies before either connector:
+
 ```bash
-docker build -t evalhive-agent:latest agent-image/
+docker build --target runtime -f environments/workspace/Dockerfile -t evalhive-environment-workspace:0.1.0 .
 ```
 
-Rebuild whenever `agent-image/*.py` or `requirements.txt` changes. The API uses this image through the Docker socket.
+This environment contains Python and the existing time/web MCP servers at their
+registry paths. Its Python base is pinned by digest and dependencies by hashes.
+Connector images add their own pinned Node runtime and native SDK, while custom
+benchmark base images provide their independent toolchains.
+
+Build the Pi connector from the repository root. Its Node/Pi/SDK dependency
+versions are pinned by the package lockfile. Native tests use the actual Pi SDK
+with an in-container local OpenAI-compatible fixture; the container needs no
+external network and no model credentials:
+
+```bash
+docker build --target test -f harnesses/pi/Dockerfile -t evalhive-pi-tests:harness-dev .
+docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges:true --init evalhive-pi-tests:harness-dev
+docker build --target runtime -f harnesses/pi/Dockerfile -t evalhive-pi:1.5.0 .
+```
+
+Use the EvalHive rootless Docker endpoint on the VPS. Tests run serially. The
+runtime stage includes production dependencies only. Pi requires an explicit
+OpenAI-compatible `RunSpec.model` (`name`, `endpoint`, `credential_ref`); the key is
+looked up only in the private credential input. Agent/session/auth state stays in
+an isolated temporary directory, outside artifacts. Native resource/MCP/skill
+translation lives at the connector boundary. Pi uses the explicitly pinned
+`@earendil-works/pi-mcp` client for stdio and Streamable HTTP, exposes native MCP
+names with canonical aliases, and closes clients with the session. Native tests
+cover both transports, private authorization, explicit skills, disabled memory
+and an empty toolset.
+
+When a rootless `toolathlon-pack:latest` image is installed, build the registered
+environment variant using the same worker and lockfile:
+
+```bash
+docker build --target runtime --build-arg BASE_IMAGE=toolathlon-pack:latest -f harnesses/pi/Dockerfile -t evalhive-pi-toolathlon:1.5.0 .
+```
+
+The base supplies its Python/MCP/benchmark dependencies; the connector pins its
+own Node runtime. This does not run a benchmark. The task environment must pass
+its MCP environment references (including per-lane database coordinates) and
+prepared inputs. Portal tasks retain their owned environment network namespace.
+
+The [OpenCode connector](../harnesses/opencode/README.md) uses the same SDK and
+resource declarations. Its CLI and official TypeScript SDK are pinned to 1.19.5.
+Build and test it serially with the same rootless endpoint and resource limits:
+
+```bash
+docker build --target test -f harnesses/opencode/Dockerfile -t evalhive-opencode-tests:harness-dev .
+docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 --cap-drop ALL --security-opt no-new-privileges:true --init evalhive-opencode-tests:harness-dev
+docker build --target runtime -f harnesses/opencode/Dockerfile -t evalhive-opencode:1.19.5 .
+```
+
+These tests run the actual native server against local HTTP/MCP fixtures. They
+cover feedback persistence, approval, SSE recovery, generation/tool cancellation,
+server failure, unknown usage, exact tool selection, skills and hard turn limits.
+The initial runtime image targets Linux/amd64. No provider configuration or
+credentials are needed. The environment-image build argument also applies to
+OpenCode; a Toolathlon base must be installed separately before building that
+variant.
 
 ## Migrations
+
+SDK runs save the connector's effective public configuration before execution.
+New Data Lake records identify their source attempt; an archived execution is
+rerun as a linked task. Recorded replay requires the same installed declaration,
+image and model connection. Legacy snapshots remain readable, but their retired
+agent cannot be replayed as Pi under the same conditions.
+
+Bundle exports with `--with-traces` include SDK attempt headers and ordered
+normalized/native JSONL journals in `blobs/attempts/`. Verification checks their
+digests and expected count. Journal export is bounded to 256 MiB and fails
+explicitly rather than truncating evidence. Remote model revisions, credential
+versions and point-in-time external systems are not pinned by a harness image.
 
 Create a new one:
 
@@ -193,3 +298,58 @@ See the root `CLAUDE.md`. It doesn't contradict this folder — it just lists sh
 4. ✅ No new workarounds without a `docs/workarounds.md` entry.
 5. ✅ No backwards-compatibility shims "just in case".
 6. ✅ No stubs/mocks left in production code.
+
+Release acceptance runs the packaged backend, SDK and runner from the built
+image; the engineering Compose file does not overlay their source directories.
+The browser fixture uses disposable storage and a local OpenAI-compatible model
+endpoint, with one native execution at a time. Production provider credentials
+are never required for this suite.
+
+Migration `ha09` records template/profile conversions in
+`harness_template_conversions` and `harness_profile_conversions`. It preserves
+explicit non-legacy connector choices and historical template versions. Legacy
+profiles with unsupported settings or secret references require explicit
+conversion before upgrade. Downgrade restores unedited references; it does not
+rewrite execution attempts, snapshots or bundles. A full release rollback uses
+the previous image set and a matching verified database/object-store backup,
+especially when newer records contain unknown costs or precision older schemas
+cannot represent.
+
+Install a release's public declarations with immutable local image identities:
+
+```bash
+python3 scripts/install-harness-manifests.py --destination /absolute/release/harnesses
+```
+
+Mount that directory read-only at `/harnesses` and set `HARNESS_MANIFEST_DIR` to
+that path in the backend and worker. The installer checks the rootless daemon,
+resolves required connector images before publishing the catalog, and refuses to
+overwrite an existing release directory. Optional environment images remain
+explicitly unavailable until installed. `images.json` records the installed
+image IDs and declaration checksums. The same process accepts external
+connector declarations without importing their executable code into the backend.
+
+Task completion has two independent stages: immutable native attempt evidence,
+and the task's review/archive workflow. Direct runs and benchmark leaves archive
+without an automatic model reviewer. Orchestrated tasks claim a bounded review
+before calling a model; an interrupted or unavailable review requires the owner's
+decision. Recovered review claims never issue a second uncertain paid call.
+Retries retain their own attempt journals and occur before final task archival.
+An archive upload failure remains pending and can resume without re-running the
+connector or reviewer. Disabled memory never schedules extraction.
+
+The engineering review checks attempt fencing, contiguous terminal delivery,
+interleaved/nested tool identity, unknown usage/cost preservation, credential
+redaction, immutable prepared configuration, artifact collection after every
+outcome, and replay source isolation. Native compaction and OpenCode retry/
+subagent observations are tested against local model fixtures. Missing reasoning,
+usage or remote model revisions remain missing evidence; passing fixture tests
+does not establish a scientific model-quality result or deterministic remote
+model weights.
+
+Backup verification includes scalar S3 references, task result-file arrays and
+artifacts delivered by earlier attempt journals. A deployment rehearsal restores
+the paired database/object-store backup into isolated resources, upgrades and
+downgrades the schema, and compares template contents before release. The backup
+manifest names the deployed image's SHA, not the potentially newer checkout that
+runs the backup helper. Use `--source-sha` when quiescing the API before backup.

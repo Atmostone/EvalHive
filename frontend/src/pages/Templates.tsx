@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { providersApi, templatesApi, rubricsApi, registryApi } from '@/api/client'
+import { harnessesApi, providersApi, templatesApi, rubricsApi, registryApi } from '@/api/client'
 import type { Template } from '@/types'
 import { Plus, Edit2, Trash2, Copy, X, Boxes, ServerIcon, AlertTriangle } from 'lucide-react'
 import { ModelSelect } from '@/components/settings/SystemModelsSection'
@@ -15,6 +15,8 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
     soul_md: template?.soul_md || '',
     model_id: template?.model_id ?? null as string | null,
     rubric_id: template?.rubric_id ?? null as string | null,
+    harness_profile_id: template?.harness_profile_id ?? null as string | null,
+    execution_mode: template?.execution_mode ?? 'orchestrated',
     tool_ids: (template?.tool_ids || []) as string[],
     max_ram: template?.max_ram || '2g',
     max_cpu: template?.max_cpu || 100000,
@@ -23,6 +25,13 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
   })
 
   const [tagsInput, setTagsInput] = useState(form.tags.join(', '))
+
+  const profiles = useQuery({ queryKey: ['harness-profiles'], queryFn: harnessesApi.profiles })
+  const catalog = useQuery({ queryKey: ['harnesses'], queryFn: harnessesApi.list })
+  const selectedProfile = profiles.data?.find(profile => profile.id === form.harness_profile_id)
+    ?? (form.harness_profile_id ? undefined : profiles.data?.find(profile => profile.is_default))
+
+  const selectedManifest = catalog.data?.find(manifest => manifest.id === selectedProfile?.connector_id && manifest.version === selectedProfile?.connector_version)
 
   const { data: providers = [] } = useQuery({
     queryKey: ['providers'],
@@ -96,12 +105,32 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
               onChange={(v) => set('model_id', v)}
               placeholder="— Pick a model —"
             />
-            {!form.model_id && (
+            {selectedManifest?.requirements?.model_api && !form.model_id && !selectedProfile?.model_id && (
               <p className="text-xs text-orange-600 mt-1">
-                Without a model, the agent cannot be spawned.
+                Select a model here or in the harness profile before execution.
               </p>
             )}
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-sm font-medium">Harness profile
+              <select aria-label="Template harness profile" value={form.harness_profile_id ?? ''}
+                onChange={event => set('harness_profile_id', event.target.value || null)}
+                className="w-full px-3 py-2 border rounded-lg text-sm mt-1">
+                <option value="">Workspace default</option>
+                {profiles.data?.map(profile => <option key={profile.id} value={profile.id}>{profile.name} · {profile.connector_id}</option>)}
+                {form.harness_profile_id && !selectedProfile && <option value={form.harness_profile_id}>Unavailable profile</option>}
+              </select>
+            </label>
+            <label className="text-sm font-medium">Execution mode
+              <select aria-label="Template execution mode" value={form.execution_mode}
+                onChange={event => set('execution_mode', event.target.value)}
+                className="w-full px-3 py-2 border rounded-lg text-sm mt-1">
+                <option value="orchestrated">Orchestrated</option>
+                <option value="direct">Direct</option>
+              </select>
+            </label>
+          </div>
+          {profiles.error && <p role="alert" className="text-sm text-red-600">{profiles.error.message}</p>}
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Max RAM</label>
@@ -176,8 +205,11 @@ function TemplateForm({ template, onClose }: { template?: Template; onClose: () 
             </p>
           </div>
 
+          {(createMutation.error || updateMutation.error) && <p role="alert" className="text-sm text-red-600">
+            {(createMutation.error ?? updateMutation.error)?.message}
+          </p>}
           <button onClick={handleSubmit}
-            disabled={!form.name.trim() || !form.soul_md.trim()}
+            disabled={!form.name.trim() || !form.soul_md.trim() || createMutation.isPending || updateMutation.isPending}
             className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium">
             {isEdit ? 'Save Changes' : 'Create Template'}
           </button>
@@ -218,6 +250,8 @@ export default function Templates() {
       model_api_name: null,
       provider_name: null,
       rubric_id: t.rubric_id,
+      harness_profile_id: t.harness_profile_id,
+      execution_mode: t.execution_mode,
       tool_ids: t.tool_ids,
       max_ram: t.max_ram,
       max_cpu: t.max_cpu,
