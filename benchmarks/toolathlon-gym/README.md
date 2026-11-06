@@ -36,7 +36,28 @@ owned private environment, not the administrator's source checkout.
 Native corpus checks accept `TOOLATHLON_SOURCE_PATH` for the pinned public source
 and `CASE_CORPUS_PATH` for existing EvalHive case templates. The current support
 checks also accept `TOOLATHLON_SOURCE_ARCHIVE` and `TOOLATHLON_ARCHIVE_DIGEST` for
-complete native archive verification. The support library and metadata installer
-are not an installed/runnable lifecycle connector yet. Worker, private
-reset/checkpoint handling, image build and coordinator launch migration remain
-tracked in SPA-145.
+complete native archive verification.
+
+The JSONL worker delegates agent execution to the common host. Its resource plan
+uses an owned network, PostgreSQL instance, database volume and public workspace.
+A private World container extracts the verified native archive, seeds the native
+database, runs preprocessing and probes required portal resources. The agent Task
+shares the public workspace and World network namespace, with no native task or
+groundtruth mounts. Agent descendants must stop before state capture.
+
+Capture preserves public files independently of the native verdict. A complete
+private checkpoint includes the database, workspace and mutable native task
+state. Evaluation-only workers restore it in fresh resources without resetting,
+preprocessing or running an agent. Incomplete checkpoints explicitly disable
+regrading. Native checker exit codes 0 and 1 represent correct and incorrect;
+other exits are evaluator failures. Deferred quality evaluation remains unknown.
+
+`python -m evalhive_toolathlon.registration` publishes an installed manifest,
+resource catalog and file map using immutable worker/environment/database image
+pins. File grants use installation-relative paths and a host-supplied
+`harness.runtime` binding. Publish only after building and checking the native
+environment. The packaged manifest is not an enabled server installation.
+
+Lifecycle and real JSONL subprocess contract tests are implemented. Complete
+native image acceptance and migration of new legacy launches to the coordinator
+remain tracked in SPA-145. These tests do not establish benchmark scores.

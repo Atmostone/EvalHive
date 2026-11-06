@@ -11,3 +11,6 @@ dependencies = ["evalhive-benchmark==0.1.0", "evalhive-cases==0.1.0", "PyYAML==6
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+evalhive_toolathlon = ["manifest.json"]

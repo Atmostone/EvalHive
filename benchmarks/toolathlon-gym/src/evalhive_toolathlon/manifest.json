@@ -1,0 +1,132 @@
+{
+  "protocol_version": "1.0",
+  "kind": "benchmark",
+  "id": "toolathlon-gym",
+  "version": "0.1.0",
+  "display_name": "Toolathlon-GYM",
+  "entrypoint": [
+    "python",
+    "-m",
+    "evalhive_toolathlon.worker"
+  ],
+  "image": "evalhive-benchmark-toolathlon:0.1.0",
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "launch_time": {
+        "type": "string",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} [A-Za-z]+$"
+      },
+      "prepare_timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 600,
+        "default": 180
+      },
+      "command_timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 600,
+        "default": 90
+      },
+      "evaluation_timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 600,
+        "default": 120
+      },
+      "evaluation_mode": {
+        "enum": [
+          "native",
+          "deferred"
+        ],
+        "default": "native"
+      },
+      "capture_state": {
+        "type": "boolean",
+        "default": true
+      },
+      "portal_checks": {
+        "type": "array",
+        "maxItems": 32,
+        "items": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "default": []
+      },
+      "mcp_overrides": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cwd": {
+              "type": "string",
+              "minLength": 1
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600
+            },
+            "aliases": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "default": {}
+      }
+    },
+    "additionalProperties": false
+  },
+  "secret_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "capabilities": {
+    "prepare": "native",
+    "drive": "native",
+    "capture": "native",
+    "evaluate": "native",
+    "aggregate": "native",
+    "cleanup": "native",
+    "regrade": "native"
+  },
+  "requirements": {
+    "capabilities": [
+      "host.agent_api_v1",
+      "host.rootless_storage_v1",
+      "host.rootless_networks_v1"
+    ],
+    "platform": {
+      "os": "linux",
+      "architecture": "amd64",
+      "libc": "glibc"
+    },
+    "resources": {
+      "memory_mb": 1088,
+      "cpu_cores": 0.4,
+      "disk_mb": 1408
+    }
+  }
+}
