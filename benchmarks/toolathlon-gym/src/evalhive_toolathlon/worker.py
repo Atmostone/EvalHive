@@ -151,7 +151,13 @@ class ToolathlonConnector(Connector):
             "prompt": self.case.agent_input()["prompt"],
             "instructions": list(self.instructions),
             "resources": [
-                {"id": "tools", "kind": "tools", "config": {"names": []}},
+                {
+                    "id": "tools",
+                    "kind": "tools",
+                    "config": {
+                        "names": ["mcp__" + resource["id"] + "__*" for resource in self.resources]
+                    },
+                },
                 *deepcopy(self.resources),
             ],
         }

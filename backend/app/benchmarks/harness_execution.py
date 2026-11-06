@@ -14,6 +14,7 @@ from evalhive_runner.spool import EventSpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.benchmarks.agent_resources import compile_resources, private_inputs
 from app.benchmarks.async_control import consume
 from app.benchmarks.harness_api import BenchmarkAttemptAPI
 from app.benchmarks.trials import failure
@@ -38,6 +39,7 @@ class HarnessExecution:
         spool_path,
         *,
         profile_id=None,
+        credential_ref=None,
         private_values=(),
         policy=None,
         max_pending_bytes=8 * 1024**2,
@@ -57,6 +59,13 @@ class HarnessExecution:
         self.prepared, self.starting = False, False
         self.access_configured = False
         self.job, self.connector, self.spool = None, None, None
+        self.credential_ref, self.resource_values = credential_ref, None
+
+    def plan_private_inputs(self, plan, inputs):
+        _, values = compile_resources(plan.get("agent", {}).get("resources", []))
+        resolved = private_inputs(inputs, self.credential_ref, values)
+        self.resource_values = values
+        return resolved
 
     @property
     def spool_disk_mb(self):
@@ -80,7 +89,12 @@ class HarnessExecution:
         spec["instructions"] = [*spec.get("instructions", []), *agent["instructions"]]
         environment = spec.get("environment", {})
         resources = {resource["id"]: resource for resource in environment.get("resources", [])}
-        for resource in agent["resources"]:
+        declarations, values = compile_resources(agent["resources"])
+        if values != (self.resource_values or {}):
+            raise failure(
+                "AGENT_RESOURCE_CONFLICT", "Native runtime inputs differ from their installed plan"
+            )
+        for resource in declarations:
             if resource["id"] in resources and resources[resource["id"]] != resource:
                 raise failure(
                     "AGENT_RESOURCE_CONFLICT",
@@ -91,6 +105,10 @@ class HarnessExecution:
             **environment,
             "id": environment.get("id", "benchmark"),
             "resources": list(resources.values()),
+        }
+        spec["credential_refs"] = {
+            **spec.get("credential_refs", {}),
+            **{reference: "runtime-injected" for reference in values},
         }
         if "tool_mapping" in agent:
             spec["metadata"] = {

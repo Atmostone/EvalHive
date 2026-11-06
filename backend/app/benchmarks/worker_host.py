@@ -265,6 +265,11 @@ class RootlessWorkerHost:
             session_id=str(uuid.uuid5(self.owner.controller_id, "benchmark.environment")),
         )
         retained = self.retained_inputs.plan(spec, plan, scope)
+        host_inputs = self.host_private_inputs
+        if self.agent_gateway is not None:
+            prepare_inputs = getattr(self.agent_gateway.executor, "plan_private_inputs", None)
+            if prepare_inputs is not None:
+                host_inputs = prepare_inputs(plan, host_inputs)
         compiled = await self.assets.compile(
             scope, plan, reserved_ids=(self.WORKER_ID,), retained_inputs=retained.grants
         )
@@ -327,7 +332,7 @@ class RootlessWorkerHost:
                     + tuple(self.host_private_inputs),
                 ),
             },
-            private_inputs={**(private_inputs or {}), **self.host_private_inputs},
+            private_inputs={**(private_inputs or {}), **host_inputs},
             outputs=compiled.output_grants((self.worker_actor, self.host_actor)),
             links=compiled.links,
             registration={

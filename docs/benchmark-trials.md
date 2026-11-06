@@ -792,3 +792,13 @@ The generic loader checks paths against the runtime's read-only installation
 roots and rejects links, escapes, missing bindings and extra properties. It never
 imports connector code. Native source identities and the byte inventories frozen
 by the worker host are separate proofs; retained regrading checks both.
+
+Native MCP environment/header settings use the existing Harness private-reference
+transport. At plan admission the host compiles deterministic resource roles and
+merges their values into the selected host-only credential grant. Prepared access
+must retain those values; a worker cannot replace them after admission. The
+benchmark actor cannot read the host grant. Owner credentials still require
+private references and explicit secret redaction; ordinary native settings such
+as workspace paths and boolean flags must not become global redaction patterns.
+The Harness attempt record contains references, with no inline MCP environment
+or header values.
