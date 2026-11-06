@@ -23,8 +23,20 @@ Portal readiness will probe the actual public loopback HTTP resources in the
 owned native network namespace. The URL adapter preserves prompt paths rather
 than treating elapsed time or a running process as readiness.
 
+The native dataset exporter creates a tar archive directly from the pinned Git
+revision/tree, verifies its byte digest and indexes task/configuration metadata
+without host extraction. All 503 native tasks can be represented as frozen SDK
+case descriptors. Generated case metadata binds the complete native archive
+digest, so changes to native scripts, data or MCP definitions require a new
+dataset installation. Private groundtruth stays inside that archive; case prompts
+contain only native public task documentation. Installed archive edits fail
+validation before case resolution. Native writable task copies belong in the
+owned private environment, not the administrator's source checkout.
+
 Native corpus checks accept `TOOLATHLON_SOURCE_PATH` for the pinned public source
 and `CASE_CORPUS_PATH` for existing EvalHive case templates. The current support
-library is not an installed/runnable lifecycle connector yet. Worker, private
+checks also accept `TOOLATHLON_SOURCE_ARCHIVE` and `TOOLATHLON_ARCHIVE_DIGEST` for
+complete native archive verification. The support library and metadata installer
+are not an installed/runnable lifecycle connector yet. Worker, private
 reset/checkpoint handling, image build and coordinator launch migration remain
 tracked in SPA-145.
