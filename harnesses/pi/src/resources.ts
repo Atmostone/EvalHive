@@ -51,15 +51,21 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
   return {tools, skills, instructions, mcp};
 }
 
-export async function connectResources(spec: RunSpec, credentials: Record<string, string>, signal: AbortSignal, gate?: ExternalToolGate) {
+export async function connectResources(spec: RunSpec, credentials: Record<string, string>, signal: AbortSignal, gate?: ExternalToolGate,
+  onStatus?: (status: JsonObject) => Promise<void>) {
   const plan = resourcePlan(spec, credentials);
   const clients: McpClient[] = [];
   const tools: ToolDefinition[] = [];
   const aliases: Record<string, string[]> = {read: ['file_read'], write: ['file_write']};
   const mapping: JsonObject[] = [];
+  let initializing: string | undefined;
+  let started = 0;
   const close = async () => { await Promise.allSettled(clients.map((client) => client.close())); };
   try {
     if (plan.tools?.length !== 0) for (const server of plan.mcp) {
+      initializing = server.id;
+      started = Date.now();
+      await onStatus?.({server_id: server.id, status: 'connecting'});
       const config = server.config;
       const client = new McpClient({name: 'evalhive-pi', version: '0.1.0',
         requestTimeoutMs: Number(config.timeout_seconds ?? 30) * 1000});
@@ -73,6 +79,8 @@ export async function connectResources(spec: RunSpec, credentials: Record<string
       await client.connect(transport);
       if (client.instructions) plan.instructions.push(client.instructions);
       const discovered = await client.listTools({signal});
+      await onStatus?.({server_id: server.id, status: 'connected', elapsed_ms: Date.now() - started});
+      initializing = undefined;
       if (discovered.length > 256) throw new ProtocolError('RESOURCE_LIMIT', 'MCP server exposes too many tools');
       for (const tool of discovered) {
         const canonical = `mcp__${server.id}__${tool.name}`;
@@ -114,6 +122,8 @@ export async function connectResources(spec: RunSpec, credentials: Record<string
         return result;
       }};
   } catch (error) {
+    if (initializing) await onStatus?.({server_id: initializing, status: 'failed',
+      elapsed_ms: Date.now() - started, failure_type: error instanceof Error ? error.name : 'Error'});
     await close();
     if (error instanceof ProtocolError) throw error;
     throw new ProtocolError('MCP_UNAVAILABLE', 'A configured MCP server could not be initialized');

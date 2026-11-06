@@ -64,7 +64,8 @@ export class PiConnector implements Connector {
     const abort = () => { void session?.abort().catch(() => {}); };
     context.signal.addEventListener('abort', abort);
     try {
-      resourceSet = await connectResources(context.spec, this.credentials, context.signal, gate);
+      resourceSet = await connectResources(context.spec, this.credentials, context.signal, gate,
+        status => context.emit('native', {name: 'mcp.status', payload: status, adapter_version: manifest.version}, {source: 'pi'}));
       const runtime = await ModelRuntime.create({authPath: join(state, 'auth.json'), modelsPath: null,
         modelsStorePath: join(state, 'models.sqlite'), allowModelNetwork: false, refreshOnCreate: false});
       runtime.registerProvider('evalhive', {

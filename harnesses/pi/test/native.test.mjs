@@ -259,11 +259,14 @@ test('official MCP client exposes calls with native names and canonical aliases'
 });
 
 test('unavailable required MCP fails before any model request', {timeout: 20000}, async () => {
-  const {result, requests} = await runFixture(() => { throw new Error('Model must not run'); },
+  const {result, requests, events} = await runFixture(() => { throw new Error('Model must not run'); },
     {resources: [{id: 'missing', kind: 'mcp', config: {transport: 'stdio', command: '/missing/fixture-mcp'}}]});
   assert.equal(result.status, 'failed');
   assert.equal(result.error.code, 'MCP_UNAVAILABLE');
   assert.equal(requests.length, 0);
+  const failed = events.find(event => event.event === 'native' && event.data.name === 'mcp.status' && event.data.payload.status === 'failed');
+  assert.equal(failed?.data.payload.server_id, 'missing');
+  assert(!JSON.stringify(failed).includes('/missing/fixture-mcp'));
 });
 
 test('HTTP MCP resolves private authorization and knowledge aliases', {timeout: 20000}, async () => {
