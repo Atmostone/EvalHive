@@ -40,6 +40,19 @@ def encode_lease(lease: ResourceLease) -> dict:
         "native": value(lease.native),
         "state": lease.state,
         "deadline_at": lease.deadline_at,
+        "dependencies": sorted(
+            {
+                value.resource_id
+                for value in (
+                    (lease.intent.container,)
+                    if isinstance(lease.intent, ExecSpec)
+                    else (lease.intent.network, lease.intent.namespace)
+                    if isinstance(lease.intent, ContainerSpec)
+                    else ()
+                )
+                if value is not None
+            }
+        ),
     }
     return json.loads(json.dumps(result, allow_nan=False))
 

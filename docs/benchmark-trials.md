@@ -1,8 +1,9 @@
 # Durable benchmark trials
 
 Implementation: SPA-141 / B04. The storage and resource authority described here
-are implemented; the automatic resource reconciler, deadline service and worker
-phase driver remain required before production launch is enabled.
+are implemented, together with resource recovery and deadline services. Durable
+worker commands, the phase driver and production composition remain required
+before production launch is enabled.
 
 ## Ownership and lifecycle
 
@@ -98,6 +99,46 @@ Changing that secret requires an explicit private-record migration. No secret
 value is included in public snapshots or the journal. Engineering tests use an
 isolated fixture key and never read the owner's provider credentials.
 
+## Recovery and deadlines
+
+`RecoveryService` dispatches unreleased leases to registered provider factories.
+Dependency handles belong to provider-independent record metadata; the coordinator
+does not decode a provider's private intent or native-state format. A record
+without valid dependency metadata fails closed and requires a storage migration.
+Execs precede containers, namespace users precede namespace owners, and containers
+precede networks. A failed or unconfirmed child release blocks its dependencies.
+Missing providers remain visible errors. A default sweep quiesces resources; the
+host applies the environment's capture policy before requesting release. The
+service never finishes a trial or releases its host reservation itself.
+
+The rootless reconciler finds unconfirmed creates by exact origin/resource labels
+and image identity. It never repeats startup. An absent unconfirmed create stays
+uncertain: a daemon request can finish after its caller disappears. Absence of a
+previously confirmed identity can complete cleanup. Interrupted stop/remove
+operations retain their intents for another observation.
+
+A missing owned-exec supervisor makes its parent unsafe. Quiescence stops only
+that owned container and preserves its filesystem. A verified stopped/missing
+parent proves that an old exec cannot run there, even if its individual identity
+was lost. Scope/image mismatches never authorize stopping another container.
+
+`DeadlineService` discovers due execs in PostgreSQL and re-enters the current-owner
+authority. It compares the persisted deadline with the database clock. Its loop
+is independent of an attached transport and reports results/errors to a durable
+projection callback owned by the controller. Its reconciler comes from the same
+provider registry; the service contains no native runtime implementation.
+
+Supervisor 1.1 adds authenticated conditional `expire`. It reaps the main process
+when processing the command and starts cancellation only if that process is still
+active. Native completion retains background descendants for grading. Deadline
+enforcement avoids a remote status check followed by an unconditional stop.
+Active cancellation still bounds TERM → KILL for owned descendants; unrelated
+services and the task container remain alive.
+
+Bundle compatibility requires supervisor 1.1 and `conditional_expire`. Older
+bundles need new immutable images and receipts. They cannot silently pass the new
+preflight or have their historical fingerprint changed.
+
 ## Validation
 
 `backend/tests/integration/test_benchmark_trials.py` exercises real PostgreSQL:
@@ -105,8 +146,15 @@ receipt recovery, content conflicts, uncertain/cancelled operations, committed
 intent fencing, independent heartbeat/cancellation, continuous concurrent event
 delivery, phase barriers, recovery with old Docker ownership, admission grants,
 immutable data and private storage authentication. Alembic `bg02` is tested with
-upgrade, downgrade to `bg01` and upgrade again. Native Docker recovery and the
-automatic worker driver are separate remaining B04 acceptance checks.
+upgrade, downgrade to `bg01` and upgrade again. The recovery tests additionally
+check unavailable providers and dependency release barriers.
+
+`test_benchmark_recovery_native.py` runs against an isolated PostgreSQL and the
+actual rootless daemon. It covers lost creation receipts, late native creation,
+stale-controller rejection, stopped-rootfs capture, transport loss and durable
+deadlines for active/completed processes. Runtime unit checks cover uncertain
+cleanup, identity mismatches, dependency ordering and completion/expiry races.
+The automatic worker phase driver is still a remaining B04 acceptance gate.
 
 The fence follows PostgreSQL's
 [session advisory lock semantics](https://www.postgresql.org/docs/16/explicit-locking.html#ADVISORY-LOCKS).

@@ -298,11 +298,12 @@ int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--capabilities") == 0) {
         int fd = (int)syscall(SYS_pidfd_open, getpid(), 0);
         if (fd < 0 || syscall(SYS_pidfd_send_signal, fd, 0, NULL, 0) < 0 || prctl(PR_SET_CHILD_SUBREAPER, 1) < 0) return 2;
-        close(fd); puts("{\"version\":\"1.0\",\"subreaper\":true,\"pidfd\":true,\"private_inputs\":true}"); return 0;
+        close(fd); puts("{\"version\":\"1.1\",\"subreaper\":true,\"pidfd\":true,\"private_inputs\":true,\"conditional_expire\":true}"); return 0;
     }
     if (argc == 3 && strcmp(argv[1], "--status") == 0) return control(argv[2], 'I');
     if (argc == 3 && strcmp(argv[1], "--release") == 0) return control(argv[2], 'R');
     if (argc == 3 && strcmp(argv[1], "--stop") == 0) return control(argv[2], 'S');
+    if (argc == 3 && strcmp(argv[1], "--expire") == 0) return control(argv[2], 'D');
     if (argc < 5 || strcmp(argv[1], "--socket") != 0 || !socket_path(argv[2])) return 2;
     char *names[16];
     unsigned count = 0;
@@ -384,9 +385,12 @@ int main(int argc, char **argv) {
                 unsigned char packet[NONCE_BYTES + 1];
                 ssize_t size = recv(fd, packet, sizeof(packet), MSG_TRUNC);
                 if (size == (ssize_t)sizeof(packet) && nonce_matches(packet + 1)
-                        && (packet[0] == 'I' || packet[0] == 'S' || packet[0] == 'R')) {
+                        && (packet[0] == 'I' || packet[0] == 'S' || packet[0] == 'R' || packet[0] == 'D')) {
                     bool ok = true;
-                    if (packet[0] == 'S' || packet[0] == 'R') {ok = stop_children(); stopped = ok;}
+                    /* Reap immediately before the conditional deadline action.
+                     * A completed main process retains its background services. */
+                    reap();
+                    if (packet[0] == 'S' || packet[0] == 'R' || (packet[0] == 'D' && !main_done)) {ok = stop_children(); stopped = ok;}
                     reap(); int children = 0;
                     if (!signal_owned(0, &children)) ok = false;
                     char reply[256];

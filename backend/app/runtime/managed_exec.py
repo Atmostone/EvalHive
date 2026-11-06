@@ -204,7 +204,7 @@ class OwnedExecRuntime:
             ) from None
 
     def control(self, handle: ManagedExec, operation: str):
-        if operation not in {"status", "stop", "release"}:
+        if operation not in {"status", "stop", "release", "expire"}:
             raise ManagedRuntimeError("Unknown owned exec control operation")
         if not self.inspect(handle)["running"]:
             raise ManagedRuntimeError("Owned exec supervisor is no longer available")
@@ -240,6 +240,10 @@ class OwnedExecRuntime:
                 or (
                     operation in {"stop", "release"}
                     and (not result["stopped"] or result["children"] != 0)
+                )
+                or (
+                    operation == "expire"
+                    and (not result["main_done"] or (result["stopped"] and result["children"] != 0))
                 )
             ):
                 raise ValueError

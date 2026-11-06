@@ -30,7 +30,7 @@ async def check_bundle(runtime, container, bundle, resource_ids):
         (("getconf", "GNU_LIBC_VERSION"), None),
         (
             (SUPERVISOR, "--capabilities"),
-            '{"version":"1.0","subreaper":true,"pidfd":true,"private_inputs":true}\n',
+            '{"version":"1.1","subreaper":true,"pidfd":true,"private_inputs":true,"conditional_expire":true}\n',
         ),
         *bundle.probes,
     ]

@@ -137,6 +137,8 @@ print('{"result":"ready"}',flush=True)
             assert await line(process) == b""
             status = owned.control(process.handle, "status")
             assert status["main_done"] and status["children"] == 1
+            expired = owned.control(process.handle, "expire")
+            assert expired["main_done"] and not expired["stopped"] and expired["children"] == 1
             assert (
                 native.exec_run(
                     [

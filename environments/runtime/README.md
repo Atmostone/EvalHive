@@ -7,6 +7,12 @@ artifact capture finish. Normal native exit retains background descendants;
 `stop` and `release` terminate only the owned descendants, including detached
 processes. Unrelated environment services and container PID 1 remain alive.
 
+Supervisor 1.1 supports conditional `expire` for durable deadlines. The native
+control loop checks main completion when processing that command; an already
+completed main retains its background descendants. Runtime compatibility checks
+require the `conditional_expire` capability, so bundles built with older helpers
+must receive new immutable images and inventory receipts.
+
 The helper requires Linux subreapers and pidfds under the default rootless Docker
 security policy. It never uses host PIDs or requires added capabilities. Build
 dependencies are installed inside a disposable image from a frozen Debian

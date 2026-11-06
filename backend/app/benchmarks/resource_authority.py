@@ -421,7 +421,15 @@ class SqlResourceCall:
         lease = decode_lease(
             self.authority.store.private.open("lease:" + str(row.id), row.private_value)
         )
-        if lease.scope != self.scope or lease.state != row.state or lease.kind != row.kind:
+        deadline = None if lease.deadline_at is None else datetime.fromisoformat(lease.deadline_at)
+        if (
+            lease.scope != self.scope
+            or lease.state != row.state
+            or lease.kind != row.kind
+            or lease.handle != str(row.id)
+            or lease.intent.resource_id != lease.handle
+            or deadline != row.deadline_at
+        ):
             raise failure("CORRUPT_LEASE", "Resource lease failed its stored scope checks")
         return lease
 
@@ -508,6 +516,14 @@ class SqlResourceCall:
         if self.authority.recovery and value.visibility != "private":
             raise failure("OUTPUT_UNAVAILABLE", "Recovery exports require private visibility")
         return value
+
+    async def deadline_expired(self, lease):
+        row = await self._row(lease.handle)
+        current = self._decode(row)
+        if current != lease:
+            raise failure("LEASE_CHANGED", "Resource changed before its deadline check")
+        now = await self.db.scalar(select(func.clock_timestamp()))
+        return row.deadline_at is not None and row.deadline_at <= now
 
     async def save(self, lease):
         if (

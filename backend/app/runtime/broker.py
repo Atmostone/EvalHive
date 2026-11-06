@@ -70,6 +70,10 @@ class ResourceCall(Protocol):
         """Resolve a saved output grant with host-defined path, visibility and byte limit."""
         ...
 
+    async def deadline_expired(self, lease: ResourceLease) -> bool:
+        """Compare the current persisted lease deadline with the authority's clock."""
+        ...
+
     async def save(self, lease: ResourceLease) -> None:
         """Durably commit the intent/native state before the next external effect.
 

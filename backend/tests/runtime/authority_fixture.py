@@ -9,6 +9,7 @@ import copy
 import hashlib
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from app.runtime.broker import ExecutionGrant, ResourceLease
 from app.runtime.managed_spec import ExecSpec
@@ -122,6 +123,11 @@ class FixtureCall:
                 "OUTPUT_UNAVAILABLE", "Output is outside the saved plan", "configuration"
             )
         return value
+
+    async def deadline_expired(self, lease):
+        return lease.deadline_at is not None and datetime.fromisoformat(
+            lease.deadline_at
+        ) <= datetime.now(UTC)
 
     async def save(self, lease):
         self.owner.resources[lease.handle] = lease
