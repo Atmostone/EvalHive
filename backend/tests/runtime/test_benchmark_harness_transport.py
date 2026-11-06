@@ -79,7 +79,7 @@ def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned
         transport = RootlessHarnessTransport(
             host, native, prepared, bundle, manifest, credential_ref="agent.credentials"
         )
-        assert await transport() is process
+        assert (await transport()).process is process
         call = host.host_broker.handle.await_args.args[0]
         assert call["handle"] == prepared["agent"]["environment_handle"]
         assert call["payload"] == {
@@ -93,6 +93,33 @@ def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned
         with pytest.raises(ManagedRuntimeError, match="reattach"):
             await transport()
         host.host_broker.handle.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+def test_main_exit_waits_for_confirmed_descendant_shutdown_even_after_caller_cancellation():
+    from app.benchmarks.harness_transport import QuiescentHarnessProcess
+
+    async def scenario():
+        entered, release = asyncio.Event(), asyncio.Event()
+        process = SimpleNamespace(wait=AsyncMock(return_value=0))
+
+        async def stop():
+            entered.set()
+            await release.wait()
+
+        stopped = AsyncMock(side_effect=stop)
+        wrapped = QuiescentHarnessProcess(process, stopped)
+        pending = asyncio.create_task(wrapped.wait())
+        await entered.wait()
+        assert not pending.done()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        release.set()
+        assert await wrapped.wait() == 0
+        process.wait.assert_awaited_once()
+        stopped.assert_awaited_once()
 
     asyncio.run(scenario())
 

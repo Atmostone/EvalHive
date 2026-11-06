@@ -108,6 +108,15 @@ containers before storage; a volume still referenced by a container cannot be
 released. Failed or uncertain deletion keeps its lease and host reservation.
 Historical container lease records without storage fields remain decodable.
 
+The rootless Harness transport also confirms shutdown of its owned execution
+tree before reporting connector process completion. Main-process exit alone is
+insufficient because a tool may leave detached descendants. A durable
+`harness.quiesce` stop receipt is required even after a clean SDK exit; the Task
+container and independently owned environment services remain available for
+capture and grading. Unconfirmed shutdown fails execution recording instead of
+letting an agent child race with the evaluator. Repeated waits share the same
+confirmation, and cancelling one waiter does not abandon native shutdown.
+
 ## Journal and delivery barriers
 
 Each registered worker UUID and generation has one event stream. Its sequence is

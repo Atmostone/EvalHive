@@ -31,13 +31,16 @@ from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
 from app.models.task import Task
 from app.runtime.bundles import install_bundle
 from app.runtime.docker_provider import RootlessDockerProvider
+from app.runtime.lease_codec import decode_lease
 from app.runtime.managed_docker import RootlessDockerRuntime
+from app.runtime.managed_exec import OwnedExecRuntime
 from app.runtime.managed_spec import PathMapping, Quota, RuntimePolicy
 from app.runtime.reconcile import RootlessReconciler
 from app.runtime.registered_assets import RegisteredFile, RootlessAssets
 from evalhive_runner.runner import RunnerPolicy
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import undefer
 
 from tests.integration.test_benchmark_worker_host_native import WORKSPACE
 from tests.runtime.agent_worker_fixture import SERVER
@@ -182,7 +185,33 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
         deadline_at=datetime.now(UTC) + timedelta(seconds=180),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
-    artifacts = FixtureArtifacts()
+
+    class Capture(FixtureArtifacts):
+        async def save(self, scope, grant, chunks, *, publication=None):
+            async with AsyncSession(engine) as db:
+                rows = list(
+                    await db.scalars(
+                        select(BenchmarkResourceLease)
+                        .where(
+                            BenchmarkResourceLease.trial_id == trial.id,
+                            BenchmarkResourceLease.kind == "exec",
+                        )
+                        .options(undefer(BenchmarkResourceLease.private_value))
+                    )
+                )
+                assert rows and all(row.state == "stopped" for row in rows)
+                leases = [
+                    decode_lease(store.private.open("lease:" + str(row.id), row.private_value))
+                    for row in rows
+                ]
+            for lease in leases:
+                status = await asyncio.to_thread(
+                    OwnedExecRuntime(runtime).control, lease.native, "status"
+                )
+                assert status["main_done"] and status["stopped"] and status["children"] == 0
+            return await super().save(scope, grant, chunks, publication=publication)
+
+    artifacts = Capture()
     factories = {
         provider_id: lambda authority: RootlessDockerProvider(
             runtime, authority, provider_manifest, artifacts=artifacts
@@ -277,6 +306,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
         assert result["phase"] == "finished" and result["cleanup"] == "complete", result
         assert result["execution"] == "success" and result["evaluation"] == "completed", result
         with tarfile.open(fileobj=io.BytesIO(artifacts.values["workspace"])) as archive:
+            assert archive.extractfile("workspace/agent-child.started").read() == b"started"
             assert (
                 b"Driven through the Benchmark SDK"
                 in archive.extractfile("workspace/result.txt").read()

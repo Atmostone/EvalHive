@@ -1,6 +1,7 @@
 """Benchmark fixture drives the host agent API without selecting a harness."""
 
 import asyncio
+import shlex
 from copy import deepcopy
 
 if __package__:
@@ -11,6 +12,20 @@ from evalhive_benchmark import ProtocolError, serve_stdio
 
 # Local endpoint only. A native tool request proves that shell execution retains
 # the task's Python dependencies and filesystem rather than a harness image's.
+TOOL_SCRIPT = r"""
+import os,time
+from pathlib import Path
+p=Path('/workspace/result.txt')
+p.write_text(p.read_text()+'Driven through the Benchmark SDK\n')
+if os.fork()==0:
+ os.setsid()
+ descriptor=os.open('/dev/null',os.O_RDWR)
+ for target in (0,1,2): os.dup2(descriptor,target)
+ Path('/workspace/agent-child.started').write_text('started')
+ while True:
+  Path('/workspace/agent-child.tick').write_text(str(time.monotonic()))
+  time.sleep(.05)
+"""
 SERVER = r"""
 import json,os,socket,time
 from http.server import BaseHTTPRequestHandler,HTTPServer
@@ -28,7 +43,7 @@ if os.fork()==0:
    def send(value):
     data={'id':'fixture-'+str(Handler.count),'object':'chat.completion.chunk','created':1,'model':'fake-model',**value}
     self.wfile.write(('data: '+json.dumps(data)+'\n\n').encode());self.wfile.flush()
-   command="python -c \"from pathlib import Path;p=Path('/workspace/result.txt');p.write_text(p.read_text()+'Driven through the Benchmark SDK\\n')\""
+   command=TOOL_COMMAND_PLACEHOLDER
    delta={'role':'assistant','tool_calls':[{'index':0,'id':'native-shell','type':'function','function':{'name':'bash','arguments':json.dumps({'command':command,'description':'Verify native task dependencies'})}}]} if first else {'content':'Completed'}
    send({'choices':[{'index':0,'delta':delta,'finish_reason':None}]})
    send({'choices':[{'index':0,'delta':{},'finish_reason':'tool_calls' if first else 'stop'}]})
@@ -43,7 +58,7 @@ while time.monotonic()<end:
  except OSError: time.sleep(.02)
 else: raise RuntimeError('Local endpoint did not become ready')
 print('Local endpoint ready')
-"""
+""".replace("TOOL_COMMAND_PLACEHOLDER", repr("python -c " + shlex.quote(TOOL_SCRIPT)))
 
 
 class AgentWorker(Worker):

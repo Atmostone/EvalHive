@@ -10,6 +10,29 @@ from app.runtime.bundles import validate_bundle
 from app.runtime.managed_spec import ContainerSpec, ManagedRuntimeError
 
 
+class QuiescentHarnessProcess:
+    """Main-process exit is insufficient proof that agent descendants stopped."""
+
+    def __init__(self, process, stop):
+        self.process, self.stop, self.settled = process, stop, None
+
+    def __getattr__(self, name):
+        return getattr(self.process, name)
+
+    async def _wait(self):
+        code = await self.process.wait()
+        await self.stop()
+        return code
+
+    async def wait(self):
+        if self.settled is None:
+            self.settled = asyncio.create_task(self._wait())
+            self.settled.add_done_callback(
+                lambda task: task.exception() if not task.cancelled() else None
+            )
+        return await asyncio.shield(self.settled)
+
+
 class RootlessHarnessTransport:
     """One host-only attach; the worker supplies neither an image nor an argv."""
 
@@ -78,7 +101,7 @@ class RootlessHarnessTransport:
                 request_id="harness.exec",
             )
         )
-        return await self.host.host_broker.open_transport(
+        process = await self.host.host_broker.open_transport(
             self.host.request(
                 self.host.scope,
                 "inspect",
@@ -86,3 +109,14 @@ class RootlessHarnessTransport:
                 request_id="harness.attach",
             )
         )
+
+        async def stop():
+            result = await self.host.host_broker.handle(
+                self.host.request(
+                    self.host.scope, "stop", handle=attached["handle"], request_id="harness.quiesce"
+                )
+            )
+            if result.get("handle") != attached["handle"] or result.get("stopped") is not True:
+                raise ManagedRuntimeError("Harness descendant shutdown could not be confirmed")
+
+        return QuiescentHarnessProcess(process, stop)
