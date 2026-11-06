@@ -202,6 +202,12 @@ singletons. Both SDKs expose resource validation and private credential resoluti
 | `memory` | `mode: off/flat/structured`; `off` forbids content, other modes carry the resolved context |
 | `instructions` | Environment/workspace rules as explicit content |
 
+MCP resource `timeout_seconds` preserves native request timeouts from 1 through
+3600 seconds. The execution attempt's independent wall deadline still bounds the
+whole run and cancellation. Installations must rebuild their connector bundles
+with the matching SDK schema before using settings beyond an older schema's
+range.
+
 MCP `credential_refs` map `env.NAME` or `headers.NAME` to private worker credential
 IDs. The backend persists references, not environment/header values. Native
 configuration is constructed inside the connector. Credentials never belong in

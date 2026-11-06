@@ -1444,6 +1444,51 @@
         ]
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "native MCP timeout 1000 seconds",
+      "kind": "resource",
+      "value": {
+        "id": "native-mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "stdio",
+          "command": "native-server",
+          "args": [],
+          "timeout_seconds": 1000
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "native MCP timeout 3600 seconds",
+      "kind": "resource",
+      "value": {
+        "id": "native-mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "stdio",
+          "command": "native-server",
+          "args": [],
+          "timeout_seconds": 3600
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "native MCP timeout 3601 seconds",
+      "kind": "resource",
+      "value": {
+        "id": "native-mcp",
+        "kind": "mcp",
+        "config": {
+          "transport": "stdio",
+          "command": "native-server",
+          "args": [],
+          "timeout_seconds": 3601
+        }
+      },
+      "error": "INVALID_MESSAGE"
     }
   ]
 }
