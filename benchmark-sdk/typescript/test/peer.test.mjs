@@ -47,3 +47,25 @@ test('unknown protocol and private exceptions are explicit and sanitized',async(
   assert.equal(sent[0].error.code,'CONNECTOR_ERROR');assert.equal(sent[1].error.code,'UNSUPPORTED_PROTOCOL');
   assert.ok(!JSON.stringify(sent).includes('private-example-value'));
 });
+
+test('durable host broker ACK bounds reply payloads across a long native loop', async()=>{
+  const {PassThrough}=await import('node:stream');
+  const {Context}=await import('../dist/index.js');
+  const hostInput=new PassThrough(),workerInput=new PassThrough(),committed=new Map();let effects=0,lookups=0;
+  const host=new Peer(async frame=>{workerInput.write(frame);},{requestType:'broker_request',receiptLimit:1,
+    handler:async request=>{effects++;const result={handle:request.id};committed.set(request.id,result);return result;},
+    replayHandler:async request=>{lookups++;return committed.get(request.id);}});
+  const worker=new Peer(async frame=>{hostInput.write(frame);});
+  const jobs=[host.read(hostInput),worker.read(workerInput)];
+  try{
+    const context=new Context(worker);
+    for(let index=0;index<300;index++){
+      const result=await context.broker({workspace_id:'workspace',trial_id:'trial',generation:1},'fixture','inspect',{},
+        {requestId:`resource-${index}`,durableHost:true});
+      assert.deepEqual(result,committed.get(`resource-${index}`));
+    }
+    assert.deepEqual(await context.broker({workspace_id:'workspace',trial_id:'trial',generation:1},'fixture','inspect',{},
+      {requestId:'resource-299',durableHost:true}),committed.get('resource-299'));
+  }finally{hostInput.end();workerInput.end();await Promise.all(jobs);}
+  assert.equal(committed.size,300);assert.equal(effects,300);assert.equal(lookups,1);
+});

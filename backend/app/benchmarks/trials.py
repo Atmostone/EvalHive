@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.models.benchmark import BenchmarkDatasetCase, BenchmarkDatasetRevision, BenchmarkProfile
+from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_trial import (
     BenchmarkEventStream,
     BenchmarkHostReservation,
@@ -437,8 +438,18 @@ class TrialStore:
                         )
                         .limit(1)
                     )
+                    pending_command = await db.scalar(
+                        select(BenchmarkCommand.id)
+                        .where(
+                            BenchmarkCommand.trial_id == trial.id,
+                            BenchmarkCommand.state != "completed",
+                        )
+                        .limit(1)
+                    )
                     trial.recording_status = (
-                        "complete" if unsealed is None and uncertain is None else "incomplete"
+                        "complete"
+                        if unsealed is None and uncertain is None and pending_command is None
+                        else "incomplete"
                     )
             trial.phase = target
             await append_entry(db, trial, "phase.changed", {"from": expected, "to": target})
@@ -589,6 +600,23 @@ class TrialStore:
                 return
             if trial.phase not in {"driving", "capturing"} or trial.execution_status != "running":
                 raise failure("INVALID_PHASE", "Execution outcome cannot be changed")
+            pending_command = await db.scalar(
+                select(BenchmarkCommand.id)
+                .join(BenchmarkEventStream, BenchmarkCommand.stream_id == BenchmarkEventStream.id)
+                .where(
+                    BenchmarkCommand.trial_id == trial.id,
+                    BenchmarkEventStream.generation == owner.generation,
+                    BenchmarkCommand.method.in_(["prepare", "drive"]),
+                    BenchmarkCommand.state != "completed",
+                )
+                .limit(1)
+            )
+            if pending_command is not None:
+                raise failure(
+                    "COMMAND_OPEN",
+                    "Execution completion requires durable worker responses",
+                    "recording",
+                )
             open_stream = await db.scalar(
                 select(BenchmarkEventStream.id)
                 .where(

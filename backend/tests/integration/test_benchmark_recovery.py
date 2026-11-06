@@ -98,3 +98,15 @@ async def test_known_native_rejection_can_finish_cleanup_and_release_host(fixtur
     assert (await recovery.sweep(owner, "release"))[0]["state"] == "released"
     await store.transition(owner, "cleaning", "finished")
     runtime.create.assert_called_once()
+
+
+async def test_retired_resource_receipt_lookup_never_dispatches_missing_operations(fixture):  # noqa: F811
+    _, _, scope, _, _, authority, _ = fixture
+    runtime = FakeRuntime()
+    provider = RootlessDockerProvider(runtime, authority, MANIFEST)
+    original = request(scope)
+    result = await provider.handle(original)
+    assert await provider.replay(original) == result and runtime.creates == 1
+    with pytest.raises(ProtocolError) as missing:
+        await provider.replay(request(scope))
+    assert missing.value.code == "RECEIPT_UNAVAILABLE" and runtime.creates == 1

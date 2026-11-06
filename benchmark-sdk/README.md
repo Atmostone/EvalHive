@@ -141,6 +141,23 @@ dispatch, persist receipts before acknowledging them, and reconcile an uncertain
 operation after a process loss. This library does not promise exactly-once native
 side effects, durable event delivery, automatic recovery or native session resume.
 
+Durable hosts use `request_receipt` (Python) / `requestReceipt` (TypeScript) to
+obtain the full success/error wire response. Transport failures still raise;
+remote error replies remain data. Store the envelope before validating its method
+result, completing an event barrier or sending ACK. The monotonic
+`events_received` / `eventsReceived` counter snapshots how many earlier frames
+entered the client queue; it does not claim those frames were persisted.
+
+Worker broker calls may opt into `durable_host=True` / `durableHost: true` only
+when the host commits successful receipts before replying and supports durable
+readback. Successful calls then ACK their broker receipt, keeping response payloads
+bounded through long loops. Failed calls retain their normal receipt. Configure
+the host client's `broker_replay` / `brokerReplay` with a pure receipt reader;
+the underlying peer's `replay_handler` / `replayHandler` uses it for acknowledged
+tombstones after checking request identity/content. It must never alias a dispatch
+handler or rerun an effect. A missing durable receipt remains an explicit uncertain
+outcome. The default peer still returns `RECEIPT_RETIRED` without such a reader.
+
 Events carry trial scope, source, a monotonically increasing sequence and an ID.
 Each source process sequences events independently; the coordinator maintains the
 durable combined journal. `observed_at` is optional until the runner observes the

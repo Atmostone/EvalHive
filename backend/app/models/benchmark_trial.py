@@ -160,6 +160,7 @@ class BenchmarkOperation(Base):
 class BenchmarkEventStream(Base):
     __tablename__ = "benchmark_event_streams"
     __table_args__ = (
+        UniqueConstraint("id", "trial_id", name="uq_benchmark_stream_trial"),
         UniqueConstraint("trial_id", "generation", "actor_id", name="uq_benchmark_stream_actor"),
         CheckConstraint("next_seq >= 0", name="ck_benchmark_stream_sequence"),
     )

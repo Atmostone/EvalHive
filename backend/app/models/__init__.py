@@ -5,6 +5,7 @@ from app.models.benchmark import (
     BenchmarkProfile,
     BenchmarkSecret,
 )
+from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
     BenchmarkEventStream,
@@ -48,6 +49,7 @@ __all__ = [
     "BenchmarkDatasetRevision",
     "BenchmarkDatasetCase",
     "BenchmarkTrial",
+    "BenchmarkCommand",
     "BenchmarkEnvironmentSession",
     "BenchmarkResourceLease",
     "BenchmarkOperation",

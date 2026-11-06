@@ -11,6 +11,7 @@ def test_timeout_replay_does_not_repeat_native_side_effect():
         inbound, outbound = asyncio.Queue(), asyncio.Queue()
         calls = 0
         gate = asyncio.Event()
+        entered = asyncio.Event()
 
         async def write(frame):
             outbound.put_nowait(frame)
@@ -18,6 +19,7 @@ def test_timeout_replay_does_not_repeat_native_side_effect():
         async def handle(value):
             nonlocal calls
             calls += 1
+            entered.set()
             await gate.wait()
             return {"applied": calls}
 
@@ -30,7 +32,7 @@ def test_timeout_replay_does_not_repeat_native_side_effect():
         frame = encode_line(command("same-operation", "describe"))
         inbound.put_nowait(frame)
         inbound.put_nowait(frame)
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(entered.wait(), 2)
         assert calls == 1
         gate.set()
         assert decode_line(await outbound.get())["result"] == {"applied": 1}
@@ -181,5 +183,76 @@ def test_os_transport_failure_is_normalized_and_fails_pending_requests():
             await pending
         assert caught.value.code == "INVALID_FRAME" and "private" not in str(caught.value)
         assert peer.closed and not peer.pending
+
+    asyncio.run(scenario())
+
+
+def test_durable_host_broker_ack_keeps_payload_ledger_bounded():
+    from evalhive_benchmark import Context
+
+    async def scenario():
+        host_input, worker_input = asyncio.Queue(), asyncio.Queue()
+        committed = {}
+        lookups = []
+
+        async def to_host(frame):
+            await host_input.put(frame)
+
+        async def to_worker(frame):
+            await worker_input.put(frame)
+
+        async def host_handler(request):
+            committed[request["id"]] = {"handle": request["id"]}
+            return committed[request["id"]]
+
+        async def read_receipt(request):
+            lookups.append(request["id"])
+            return committed[request["id"]]
+
+        async def frames(queue):
+            while item := await queue.get():
+                yield item
+
+        host = Peer(
+            to_worker,
+            handler=host_handler,
+            replay_handler=read_receipt,
+            request_type="broker_request",
+            receipt_limit=1,
+        )
+        worker = Peer(to_host)
+        jobs = [
+            asyncio.create_task(host.read(frames(host_input))),
+            asyncio.create_task(worker.read(frames(worker_input))),
+        ]
+        try:
+            context = Context(worker)
+            for index in range(300):
+                result = await context.broker(
+                    {"workspace_id": "workspace", "trial_id": "trial", "generation": 1},
+                    "fixture",
+                    "inspect",
+                    {},
+                    request_id=f"resource-{index}",
+                    durable_host=True,
+                )
+                assert result == committed[f"resource-{index}"]
+            assert (
+                await context.broker(
+                    {"workspace_id": "workspace", "trial_id": "trial", "generation": 1},
+                    "fixture",
+                    "inspect",
+                    {},
+                    request_id="resource-299",
+                    durable_host=True,
+                )
+                == committed["resource-299"]
+            )
+        finally:
+            await host_input.put(b"")
+            await worker_input.put(b"")
+            await asyncio.gather(*jobs)
+        assert len(committed) == 300 and host.unacknowledged == 0
+        assert lookups == ["resource-299"]
 
     asyncio.run(scenario())

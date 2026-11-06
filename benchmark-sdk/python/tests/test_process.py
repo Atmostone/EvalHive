@@ -119,3 +119,34 @@ def test_broker_errors_are_propagated_without_native_side_effect_retry(language)
             await client.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("language", ["python", "typescript"])
+def test_full_wire_receipts_preserve_remote_errors_for_durable_storage(language):
+    async def scenario():
+        async def denied(request):
+            raise ProtocolError("REMOTE_UNCERTAIN", "Private fixture error", "uncertain")
+
+        client = await ConnectorClient.launch(argv(language), broker=denied)
+        try:
+            receipt = await client.request_receipt("describe", request_id="full-description")
+            assert receipt["type"] == "response" and receipt["id"] == "full-description"
+            assert receipt["ok"] and receipt["result"]["kind"] == "benchmark"
+            error = await client.request_receipt(
+                "prepare",
+                {"spec": FIXTURE["spec"], "plan": FIXTURE["plan"]},
+                request_id="full-error",
+            )
+            assert not error["ok"] and error["error"]["kind"] == "uncertain"
+            assert error["error"]["code"] == "REMOTE_UNCERTAIN"
+            with pytest.raises(ProtocolError) as caught:
+                await client.request(
+                    "prepare",
+                    {"spec": FIXTURE["spec"], "plan": FIXTURE["plan"]},
+                    request_id="full-error",
+                )
+            assert caught.value.code == "REMOTE_UNCERTAIN"
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())

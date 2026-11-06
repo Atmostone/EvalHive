@@ -247,6 +247,25 @@ class RootlessDockerProvider(EnvironmentProvider):
             "UNSUPPORTED_CAPABILITY", "Resource operation is unavailable", "unsupported"
         )
 
+    async def replay(self, request):
+        """Resolve an acknowledged IPC tombstone from the authority, never dispatch.
+
+        This pure receipt path can create a rejected lookup record when no
+        original receipt exists, but never invokes a native runtime operation.
+        """
+        validate("broker_request", request)
+        if request["provider"] != self.manifest["id"]:
+            raise ProtocolError(
+                "PROVIDER_MISMATCH", "Receipt targets another provider", "configuration"
+            )
+        async with self.authority.operation(request) as call:
+            self._scope(call, request)
+            if call.replay is None:
+                raise ProtocolError(
+                    "RECEIPT_UNAVAILABLE", "A durable resource receipt is unavailable", "uncertain"
+                )
+            return call.replay
+
     async def _inspect(self, lease):
         if lease.native is None:
             return {"handle": lease.handle, "kind": lease.kind, "state": lease.state}

@@ -12,12 +12,13 @@ from .protocol import MAX_LINE_BYTES, ProtocolError, command, validate
 
 
 class ConnectorClient:
-    def __init__(self, process, *, broker=None, event_buffer=128, **limits):
+    def __init__(self, process, *, broker=None, broker_replay=None, event_buffer=128, **limits):
         if type(event_buffer) is not int or event_buffer < 1:
             raise ValueError("Event buffer must be a positive integer")
         self.process = process
         self.queue = asyncio.Queue(event_buffer)
         self.error = None
+        self.events_received = 0
 
         async def write(frame):
             self.process.stdin.write(frame)
@@ -27,9 +28,15 @@ class ConnectorClient:
             if self.queue.full():
                 raise ProtocolError("EVENT_BUFFER_FULL", "Event consumer fell behind")
             self.queue.put_nowait(event)
+            self.events_received += 1
 
         self.peer = Peer(
-            write, handler=broker, request_type="broker_request", event_handler=on_event, **limits
+            write,
+            handler=broker,
+            replay_handler=broker_replay,
+            request_type="broker_request",
+            event_handler=on_event,
+            **limits,
         )
         self.reading = asyncio.create_task(self._read())
 
@@ -73,12 +80,41 @@ class ConnectorClient:
             validate(kind, result)
         return result
 
-    async def resource(self, scope, provider, operation, payload, *, handle=None, request_id=None, timeout=30):
+    async def request_receipt(self, method, params=None, *, request_id=None, timeout=30):
+        """Return the wire success/error receipt for durable host storage.
+
+        Transport failures still raise. Save the receipt before validating its
+        connector-specific result, completing a delivery barrier, or ACKing it.
+        """
+        return await self.peer.request(
+            command(request_id or uuid.uuid4().hex, method, params), timeout=timeout, receipt=True
+        )
+
+    async def resource(
+        self,
+        scope,
+        provider,
+        operation,
+        payload,
+        *,
+        handle=None,
+        request_id=None,
+        timeout=30,
+        durable_host=False,
+    ):
         """Send an owned resource operation to an environment-provider worker."""
         from .peer import Context
 
-        return await Context(self.peer).broker(scope, provider, operation, payload,
-            handle=handle, request_id=request_id, timeout=timeout)
+        return await Context(self.peer).broker(
+            scope,
+            provider,
+            operation,
+            payload,
+            handle=handle,
+            request_id=request_id,
+            timeout=timeout,
+            durable_host=durable_host,
+        )
 
     async def events(self):
         while not self.reading.done() or not self.queue.empty():
@@ -89,8 +125,8 @@ class ConnectorClient:
         if self.error:
             raise self.error
 
-    async def close(self, grace=3):
-        if not self.peer.closed:
+    async def close(self, grace=3, *, shutdown=True):
+        if shutdown and not self.peer.closed:
             with suppress(ProtocolError, ConnectionError):
                 await self.request("shutdown", timeout=grace)
         self.process.stdin.close()

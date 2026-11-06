@@ -99,6 +99,37 @@ Changing that secret requires an explicit private-record migration. No secret
 value is included in public snapshots or the journal. Engineering tests use an
 isolated fixture key and never read the owner's provider credentials.
 
+## Durable worker commands
+
+`BenchmarkCommand` stores one immutable command intent per worker stream and
+request ID before transmission. The `sent` state means the request might have
+been sent: a crash between commit and write never permits blind replay. The full
+wire success/error receipt is encrypted and committed as `received` before method
+result validation or event delivery is claimed. An interrupted command keeps its
+unknown outcome; another generation cannot save a late result.
+
+`WorkerChannel` drains events concurrently with commands. After a response, it
+snapshots the SDK's received-frame count and waits for durable delivery through
+that count. Future background events do not extend the barrier indefinitely.
+Completing the command records the current stream checkpoint and only then sends
+ACK. Capture and evaluation can continue on the same unsealed stream; shutdown
+and final draining precede permanent sealing. Duplicate commands share an
+in-flight task or read the saved receipt instead of sending another native call.
+Invalid method results remain recorded and explicitly incomplete.
+
+Command metadata uses short trial row locks, without holding the native-resource
+session fence while awaiting a worker. Reverse broker requests, cancellation,
+heartbeats and event persistence remain responsive during native execution.
+Database triggers protect command intent and the first received response.
+Unresolved commands prevent execution completion and preserve incomplete recording.
+
+For reverse RPCs, the host's pure broker receipt reader can resolve acknowledged
+IPC tombstones from its SQL authority. It never dispatches an operation; a missing
+receipt stays uncertain. Workers explicitly opting into that durable-host contract
+ACK successful broker replies, preserving bounded payload buffers through long
+interaction loops. Generic peers without a receipt reader keep their strict
+non-reexecution tombstone behavior.
+
 ## Recovery and deadlines
 
 `RecoveryService` dispatches unreleased leases to registered provider factories.

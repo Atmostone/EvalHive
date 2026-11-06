@@ -34,6 +34,7 @@ class Peer:
         write: Callable[[bytes], Awaitable[None]],
         *,
         handler=None,
+        replay_handler=None,
         request_type="command",
         event_handler=None,
         max_pending=64,
@@ -48,8 +49,13 @@ class Peer:
             raise ValueError("RPC limits must be positive integers")
         self.write = write
         self.handler = handler
-        self.request_types = (request_type,) if isinstance(request_type, str) else tuple(request_type)
-        if not self.request_types or any(kind not in {"command", "broker_request"} for kind in self.request_types):
+        self.replay_handler = replay_handler
+        self.request_types = (
+            (request_type,) if isinstance(request_type, str) else tuple(request_type)
+        )
+        if not self.request_types or any(
+            kind not in {"command", "broker_request"} for kind in self.request_types
+        ):
             raise ValueError("Invalid inbound request types")
         self.event_handler = event_handler
         self.max_pending, self.max_active, self.receipt_limit = (
@@ -60,6 +66,7 @@ class Peer:
         self.tombstone_limit = tombstone_limit
         self.unacknowledged = 0
         self.pending = {}
+        self.pending_receipts = set()
         self.receipts = {}
         self.active = set()
         self.lock = asyncio.Lock()
@@ -73,7 +80,7 @@ class Peer:
             except (BrokenPipeError, ConnectionError):
                 raise ProtocolError("TRANSPORT_CLOSED", "Peer transport is closed") from None
 
-    async def request(self, value, *, timeout=30):
+    async def request(self, value, *, timeout=30, receipt=False):
         if self.closed:
             raise ProtocolError("TRANSPORT_CLOSED", "Peer is closed")
         if len(self.pending) >= self.max_pending:
@@ -84,6 +91,8 @@ class Peer:
             raise ProtocolError("REQUEST_PENDING", "Request already awaits a response")
         future = asyncio.get_running_loop().create_future()
         self.pending[key] = future
+        if receipt:
+            self.pending_receipts.add(key)
         try:
             await self.send(value)
             try:
@@ -95,6 +104,7 @@ class Peer:
                 ) from None
         finally:
             self.pending.pop(key, None)
+            self.pending_receipts.discard(key)
             if not future.done():
                 future.cancel()
             elif not future.cancelled():
@@ -111,11 +121,11 @@ class Peer:
             }
         )
 
-    async def _answer(self, value):
+    async def _answer(self, value, *, handler=None):
         response_type = "broker_response" if value["type"] == "broker_request" else "response"
         base = {"protocol_version": "1.0", "type": response_type, "id": value["id"]}
         try:
-            result = await self.handler(value)
+            result = await (handler or self.handler)(value)
             reply = {**base, "ok": True, "result": result}
             encode_line(reply)
             return reply
@@ -162,6 +172,9 @@ class Peer:
                 await self.send(reply)
                 return
             if previous[1] is None:
+                if self.replay_handler is not None:
+                    await self.send(await self._answer(value, handler=self.replay_handler))
+                    return
                 await self.send(
                     {
                         "protocol_version": "1.0",
@@ -243,7 +256,9 @@ class Peer:
                     key = ("command" if kind == "response" else "broker_request", value["id"])
                     future = self.pending.get(key)
                     if future is not None and not future.done():
-                        if value["ok"]:
+                        if key in self.pending_receipts:
+                            future.set_result(value)
+                        elif value["ok"]:
                             future.set_result(value["result"])
                         else:
                             future.set_exception(
@@ -325,7 +340,16 @@ class Context:
             self.sequences[key] = seq + 1
 
     async def broker(
-        self, scope, provider, operation, payload, *, handle=None, request_id=None, timeout=30
+        self,
+        scope,
+        provider,
+        operation,
+        payload,
+        *,
+        handle=None,
+        request_id=None,
+        timeout=30,
+        durable_host=False,
     ):
         request = {
             "protocol_version": "1.0",
@@ -338,4 +362,13 @@ class Context:
         }
         if handle is not None:
             request["handle"] = handle
-        return await self.peer.request(request, timeout=timeout)
+        if not durable_host:
+            return await self.peer.request(request, timeout=timeout)
+        receipt = await self.peer.request(request, timeout=timeout, receipt=True)
+        if receipt["ok"]:
+            # Opt-in only: the host must commit successful broker receipts before
+            # replying. Failed/uncertain replies retain their normal ledger entry.
+            await self.peer.acknowledge("broker_request", request["id"])
+            return receipt["result"]
+        error = receipt["error"]
+        raise ProtocolError(error["code"], error["message"], error["kind"])

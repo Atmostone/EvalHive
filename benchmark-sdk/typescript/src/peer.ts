@@ -3,7 +3,7 @@ import {command, decodeLine, encodeLine, lines, ProtocolError,
   type ErrorKind, type JsonObject, type JsonValue, type Scope, type WireMessage} from './protocol.js';
 
 type Handler = (request: WireMessage) => Promise<JsonValue>;
-type Pending = {resolve: (value: JsonValue) => void; reject: (error: ProtocolError) => void};
+type Pending = {resolve: (value: JsonValue) => void; reject: (error: ProtocolError) => void; receipt: boolean};
 const key = (type: string, id: string | null) => JSON.stringify([type, id]);
 function stable(value: JsonValue): string {
   if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
@@ -20,7 +20,7 @@ export class Peer {
   private writing: Promise<void> = Promise.resolve();
   closed = false;
   constructor(private write: (frame: Buffer) => Promise<void>, private options: {
-    handler?: Handler; requestType?: string; requestTypes?: string[]; eventHandler?: (event: WireMessage) => Promise<void>;
+    handler?: Handler; replayHandler?: Handler; requestType?: string; requestTypes?: string[]; eventHandler?: (event: WireMessage) => Promise<void>;
     maxPending?: number; maxActive?: number; receiptLimit?: number; tombstoneLimit?: number;
   } = {}) {
     for (const n of [options.maxPending ?? 64, options.maxActive ?? 16, options.receiptLimit ?? 256, options.tombstoneLimit ?? 16384])
@@ -38,7 +38,7 @@ export class Peer {
       throw new ProtocolError('TRANSPORT_CLOSED', 'Peer transport is closed');
     }
   }
-  async request(value: WireMessage, timeout = 30_000): Promise<JsonValue> {
+  async request(value: WireMessage, timeout = 30_000, receipt = false): Promise<JsonValue> {
     if (this.closed) throw new ProtocolError('TRANSPORT_CLOSED', 'Peer is closed');
     if (this.pending.size >= (this.options.maxPending ?? 64)) throw new ProtocolError('PENDING_LIMIT', 'Pending request limit reached');
     encodeLine(value);
@@ -47,7 +47,7 @@ export class Peer {
     let timer: NodeJS.Timeout;
     const result = new Promise<JsonValue>((resolve, reject) => {
       timer = setTimeout(() => reject(new ProtocolError('COMMAND_UNCERTAIN', 'Request timed out; its outcome is unknown')), timeout);
-      this.pending.set(identity, {resolve, reject});
+      this.pending.set(identity, {resolve, reject, receipt});
     });
     // Observe a response failure even when writing the frame fails first.
     void result.catch(() => {});
@@ -57,10 +57,10 @@ export class Peer {
   async acknowledge(requestType: string, requestId: string): Promise<void> {
     await this.send({protocol_version: '1.0', type: 'receipt_ack', id: requestId, request_type: requestType});
   }
-  private async answer(value: WireMessage): Promise<WireMessage> {
+  private async answer(value: WireMessage, handler = this.options.handler): Promise<WireMessage> {
     const base = {protocol_version: '1.0', type: value.type === 'broker_request' ? 'broker_response' : 'response', id: value.id};
     try {
-      const reply = {...base, ok: true, result: await this.options.handler!(value)};
+      const reply = {...base, ok: true, result: await handler!(value)};
       encodeLine(reply); return reply;
     } catch (error) {
       return {...base, ok: false, error: error instanceof ProtocolError ? error.asData() :
@@ -74,6 +74,7 @@ export class Peer {
         await this.send({protocol_version: '1.0', type: value.type === 'broker_request' ? 'broker_response' : 'response',
           id: value.id, ok: false, error: {code: 'COMMAND_CONFLICT', message: 'Request identity has different content', kind: 'configuration'}});
       } else if (previous.response) await this.send(await previous.response);
+      else if (this.options.replayHandler) await this.send(await this.answer(value, this.options.replayHandler));
       else await this.send({protocol_version: '1.0', type: value.type === 'broker_request' ? 'broker_response' : 'response', id: value.id,
         ok: false, error: {code: 'RECEIPT_RETIRED', message: 'Read the acknowledged receipt from durable storage', kind: 'uncertain'}});
       return;
@@ -112,7 +113,8 @@ export class Peer {
         } else if (value.type === 'response' || value.type === 'broker_response') {
           const pending = this.pending.get(key(value.type === 'response' ? 'command' : 'broker_request', value.id));
           if (pending) {
-            if (value.ok) pending.resolve(value.result);
+            if (pending.receipt) pending.resolve(value);
+            else if (value.ok) pending.resolve(value.result);
             else {const error = value.error as JsonObject; pending.reject(new ProtocolError(String(error.code), String(error.message), error.kind as ErrorKind));}
           } else if (value.id === null) {
             const error = value.error as JsonObject;
@@ -157,9 +159,14 @@ export class Context {
     this.emitting = write.catch(() => {}); await write;
   }
   async broker(scope: Scope, provider: string, operation: string, payload: JsonObject,
-    options: {handle?: string; requestId?: string; timeout?: number} = {}): Promise<JsonValue> {
-    return this.peer.request({protocol_version: '1.0', type: 'broker_request', id: options.requestId ?? randomUUID(),
-      scope, provider, operation, payload, ...(options.handle ? {handle: options.handle} : {})}, options.timeout);
+    options: {handle?: string; requestId?: string; timeout?: number; durableHost?: boolean} = {}): Promise<JsonValue> {
+    const request = {protocol_version: '1.0', type: 'broker_request', id: options.requestId ?? randomUUID(),
+      scope, provider, operation, payload, ...(options.handle ? {handle: options.handle} : {})};
+    if (!options.durableHost) return this.peer.request(request, options.timeout);
+    const receipt = await this.peer.request(request, options.timeout, true) as WireMessage;
+    if (receipt.ok) {await this.peer.acknowledge('broker_request', request.id); return receipt.result;}
+    const error = receipt.error as JsonObject;
+    throw new ProtocolError(String(error.code), String(error.message), error.kind as ErrorKind);
   }
 }
 

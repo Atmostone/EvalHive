@@ -11,17 +11,19 @@ export class ConnectorClient {
   private wake: (() => void) | undefined;
   private reading: Promise<void>;
   private error: ProtocolError | undefined;
+  private receivedEvents = 0;
+  get eventsReceived(): number {return this.receivedEvents;}
   constructor(readonly process: ChildProcessWithoutNullStreams, options: {
-    broker?: (request: WireMessage) => Promise<JsonValue>; eventBuffer?: number;
+    broker?: (request: WireMessage) => Promise<JsonValue>; brokerReplay?: (request: WireMessage) => Promise<JsonValue>; eventBuffer?: number;
     maxPending?: number; maxActive?: number; receiptLimit?: number;
   } = {}) {
     const eventBuffer = options.eventBuffer ?? 128;
     if (!Number.isInteger(eventBuffer) || eventBuffer < 1) throw new Error('Event buffer must be a positive integer');
     this.peer = new Peer(frame => new Promise<void>((resolve, reject) => {
       process.stdin.write(frame, error => error ? reject(error) : resolve());
-    }), {...options, handler: options.broker, requestType: 'broker_request', eventHandler: async event => {
+    }), {...options, handler: options.broker, replayHandler: options.brokerReplay, requestType: 'broker_request', eventHandler: async event => {
       if (this.queue.length >= eventBuffer) throw new ProtocolError('EVENT_BUFFER_FULL', 'Event consumer fell behind');
-      this.queue.push(event); this.wake?.();
+      this.queue.push(event); this.receivedEvents++; this.wake?.();
     }});
     process.once('error', () => process.stdout.destroy(new Error('Connector failed to start')));
     process.stdin.on('error', () => {});
@@ -30,7 +32,7 @@ export class ConnectorClient {
     }).finally(() => this.wake?.());
   }
   static launch(argv: string[], options: {cwd?: string; env?: NodeJS.ProcessEnv;
-    broker?: (request: WireMessage) => Promise<JsonValue>; eventBuffer?: number;
+    broker?: (request: WireMessage) => Promise<JsonValue>; brokerReplay?: (request: WireMessage) => Promise<JsonValue>; eventBuffer?: number;
     maxPending?: number; maxActive?: number; receiptLimit?: number} = {}): ConnectorClient {
     if (!argv.length || !argv.every(value => typeof value === 'string' && value.length && !value.includes('\0')))
       throw new Error('Entrypoint must be a nonempty argv list');
@@ -45,6 +47,9 @@ export class ConnectorClient {
     if (RESULT_TYPES[method]) validate(RESULT_TYPES[method], result);
     return result;
   }
+  async requestReceipt(method: string, params: JsonObject = {}, options: {requestId?: string; timeout?: number} = {}): Promise<WireMessage> {
+    return await this.peer.request(command(options.requestId ?? randomUUID(), method, params), options.timeout, true) as WireMessage;
+  }
   async *events(): AsyncGenerator<WireMessage> {
     while (!this.peer.closed || this.queue.length) {
       if (this.queue.length) {yield this.queue.shift()!; continue;}
@@ -53,11 +58,11 @@ export class ConnectorClient {
     if (this.error) throw this.error;
   }
   async resource(scope: Scope, provider: string, operation: string, payload: JsonObject,
-    options: {handle?: string; requestId?: string; timeout?: number} = {}): Promise<JsonValue> {
+    options: {handle?: string; requestId?: string; timeout?: number; durableHost?: boolean} = {}): Promise<JsonValue> {
     return new Context(this.peer).broker(scope, provider, operation, payload, options);
   }
-  async close(grace = 3000): Promise<void> {
-    if (!this.peer.closed) {try {await this.request('shutdown', {}, {timeout: grace});} catch {}}
+  async close(grace = 3000, shutdown = true): Promise<void> {
+    if (shutdown && !this.peer.closed) {try {await this.request('shutdown', {}, {timeout: grace});} catch {}}
     this.process.stdin.end();
     const exited = () => this.process.pid === undefined || this.process.exitCode !== null || this.process.signalCode !== null;
     const wait = async () => {

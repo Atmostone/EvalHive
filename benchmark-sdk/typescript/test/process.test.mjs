@@ -47,3 +47,20 @@ for (const language of ['python','typescript']) {
     } finally {await client.close();}
   });
 }
+
+for (const language of ['python','typescript']) {
+  const argv = language === 'python' ? [python,fileURLToPath(new URL('../../examples/fake/connector.py',import.meta.url))] :
+    [process.execPath,fileURLToPath(new URL('../../examples/fake/connector.mjs',import.meta.url))];
+  test(`durable wire error receipt: ${language}`, async () => {
+    const client = ConnectorClient.launch(argv, {broker: async () => {
+      throw new ProtocolError('REMOTE_UNCERTAIN', 'Private fixture error', 'uncertain');
+    }});
+    try {
+      const receipt = await client.requestReceipt('describe', {}, {requestId:'full-description'});
+      assert.equal(receipt.id,'full-description'); assert.equal(receipt.ok,true);
+      const error = await client.requestReceipt('prepare',{spec:fixture.spec,plan:fixture.plan},{requestId:'full-error'});
+      assert.equal(error.ok,false); assert.equal(error.error.code,'REMOTE_UNCERTAIN');
+      assert.equal(error.error.kind,'uncertain');
+    } finally {await client.close();}
+  });
+}
