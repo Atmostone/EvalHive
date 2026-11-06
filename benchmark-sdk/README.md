@@ -95,6 +95,22 @@ another resource family does not require a benchmark schema change. Provider
 configuration is validated by the selected installed provider. A declaration
 does not grant privileges or access to arbitrary host paths.
 
+Each output can declare `stage: capture` (the default) or `stage: evaluation`.
+Required capture outputs must be retained before grading. Required evaluation
+outputs are produced by the checker and must be retained before its completed
+verdict is accepted; the final check includes both stages. The host chooses the
+validation stage. A worker cannot defer an installed capture requirement by
+changing its plan: stage must match the provider's registered output policy.
+The evaluator returns its retained output references in `evaluation_result.artifacts`.
+
+`required` describes evidence needed to confirm grading, not a task's expected
+successful deliverable. If an absent answer file is a legitimate incorrect
+solution, the native evaluator must judge that condition; it must not be turned
+into a host storage failure by declaring the answer file required. A mandatory
+state archive can instead preserve the filesystem, including absent files. Use
+different output IDs when a native path must be captured both before and after
+grading: an already published identity cannot replace its original bytes.
+
 An evaluation result separates `completed`, `error`, `unavailable` and `cancelled`
 from nullable correctness. Error/cancel/unavailable cannot claim a successful or
 failed solution. Metrics retain names, units, direction and unknown values. The

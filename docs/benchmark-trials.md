@@ -164,6 +164,15 @@ plan. A schema-valid artifact URI alone is insufficient. Engineering fixtures
 supply explicit test-only validators; there is no implicit production fallback.
 Object operations use the pinned [MinIO Python 7.2.20 API](https://github.com/minio/minio-py/blob/7.2.20/docs/API.md).
 
+Output `stage` defaults to `capture`; `evaluation` declares files produced by the
+checker itself. Stage is part of the canonical SDK plan and registered asset
+policy, and a worker cannot change it. Pre-grading validation requires capture
+outputs. Before accepting a completed evaluation, the host validates both stages
+using the combined capture/evaluator references. A failed/unavailable checker
+does not need to fabricate outputs for a completed verdict; any references it
+does report still undergo integrity checks. Different captures of a changing
+native path require different logical output IDs to preserve immutable evidence.
+
 `trial_usage` rebuilds a ledger from the scoped immutable journal in bounded
 pages, with a fixed high-water mark for a live trial. It groups by role, model and
 purpose. Within a registered actor stream, `usage_id` identifies one model

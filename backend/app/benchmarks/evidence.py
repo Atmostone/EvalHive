@@ -52,8 +52,10 @@ class EvidenceStore:
     def sink(self, owner):
         return EvidenceSink(self, owner)
 
-    async def validate_capture(self, owner, capture):
-        """Prove references and required output coverage before native grading."""
+    async def validate_capture(self, owner, capture, *, stage="capture"):
+        """Prove references and stage-specific coverage before accepting a verdict."""
+        if stage not in {"capture", "evaluation"}:
+            raise ValueError("Unknown trusted capture stage")
         supplied = capture["artifacts"]
         identities = [artifact["id"] for artifact in supplied]
         if len(identities) != len(set(identities)):
@@ -81,7 +83,9 @@ class EvidenceStore:
                         "recording",
                     )
                 for output in plan.get("registration", {}).get("output_plan", []):
-                    if output["required"]:
+                    if output["required"] and (
+                        stage == "evaluation" or output.get("stage", "capture") == "capture"
+                    ):
                         required.add(
                             "artifact:" + str(uuid.uuid5(session.id, "artifact:" + output["id"]))
                         )

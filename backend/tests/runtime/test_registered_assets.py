@@ -156,7 +156,13 @@ def test_plan_cannot_grant_itself_resources(config):
 
 
 @pytest.mark.parametrize(
-    "field,value", [("path", "/tests/gold.json"), ("visibility", "private"), ("required", False)]
+    "field,value",
+    [
+        ("path", "/tests/gold.json"),
+        ("visibility", "private"),
+        ("required", False),
+        ("stage", "evaluation"),
+    ],
 )
 def test_output_paths_visibility_and_completeness_cannot_be_changed(field, value):
     async def scenario():
@@ -176,6 +182,23 @@ def test_required_output_cannot_be_omitted():
         changed["outputs"] = []
         with pytest.raises(ManagedRuntimeError):
             await assets.compile(scope(), changed)
+
+    asyncio.run(scenario())
+
+
+def test_output_stage_is_registered_and_participates_in_fingerprint():
+    async def scenario():
+        registered = document()
+        registered["assets"]["fixture.task"]["outputs"]["result"]["stage"] = "evaluation"
+        assets, _ = catalog(registered)
+        declared = plan()
+        with pytest.raises(ManagedRuntimeError):
+            await assets.compile(scope(), declared)
+        declared["outputs"][0]["stage"] = "evaluation"
+        origin = scope()
+        compiled = await assets.compile(origin, declared)
+        normal, _ = catalog()
+        assert compiled.fingerprint != (await normal.compile(origin, plan())).fingerprint
 
     asyncio.run(scenario())
 

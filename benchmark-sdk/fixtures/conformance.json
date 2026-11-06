@@ -637,6 +637,86 @@
         ]
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "output stage evaluation",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true,
+            "stage": "evaluation"
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "output stage after_cleanup",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true,
+            "stage": "after_cleanup"
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
     }
   ]
 }

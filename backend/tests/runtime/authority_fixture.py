@@ -159,7 +159,7 @@ class FixtureArtifacts:
     def __init__(self):
         self.values = {}
 
-    async def validate_capture(self, owner, capture):
+    async def validate_capture(self, owner, capture, *, stage="capture"):
         """Explicit test-only evidence catalog, with no production fallback."""
         for artifact in capture["artifacts"]:
             value = self.values[artifact["id"]]

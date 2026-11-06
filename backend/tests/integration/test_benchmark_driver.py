@@ -33,7 +33,7 @@ from tests.fixtures.benchmark_driver_worker import MANIFEST
 from tests.integration.test_benchmark_trials import POLICY, QUOTA, WORKSPACE
 
 
-async def fixture_capture_validator(owner, capture):
+async def fixture_capture_validator(owner, capture, *, stage="capture"):
     # This worker intentionally has no filesystem outputs.
     assert capture["artifacts"] == []
 

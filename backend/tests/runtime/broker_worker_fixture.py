@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import sys
+from copy import deepcopy
 
 from evalhive_benchmark.connector import Connector, serve_stdio
 from evalhive_benchmark.protocol import ProtocolError
@@ -81,7 +82,19 @@ class Worker(Connector):
         if method == "list_cases":
             return {"cases": [CASE], "next_cursor": None}
         if method == "plan":
-            return PLAN
+            plan = deepcopy(PLAN)
+            if self.config.get("grader_artifact"):
+                plan["outputs"].append(
+                    {
+                        "id": "grade_log",
+                        "resource_id": "task",
+                        "path": "/workspace/grader.txt",
+                        "visibility": "evaluator",
+                        "required": True,
+                        "stage": "evaluation",
+                    }
+                )
+            return plan
         if method == "validate":
             return {"accepted": True, "effective_config": params["spec"]["config"]}
         if method == "prepare":
@@ -180,6 +193,11 @@ while True: time.sleep(1)
             return {"finished": True, "exec_handle": executed["handle"]}
         if method == "evaluate":
             task_handle = params["payload"]["session_handle"]
+            program = "import json;from pathlib import Path;print(json.dumps({'correct':Path('/workspace/result.txt').read_text()=='Prepared through the Benchmark SDK\\nDriven through the Benchmark SDK\\n'}))"
+            if self.config.get("grader_artifact"):
+                program += (
+                    ";Path('/workspace/grader.txt').write_text('native checker completed\\n')"
+                )
             command = await broker(
                 context,
                 params["scope"],
@@ -189,7 +207,7 @@ while True: time.sleep(1)
                     "argv": [
                         "python",
                         "-c",
-                        "import json;from pathlib import Path;print(json.dumps({'correct':Path('/workspace/result.txt').read_text()=='Prepared through the Benchmark SDK\\nDriven through the Benchmark SDK\\n'}))",
+                        program,
                     ],
                     "timeout_seconds": 10,
                 },
@@ -197,13 +215,25 @@ while True: time.sleep(1)
                 request_id="evaluate.exec",
             )
             correct = json.loads(command["stdout"])["correct"]
+            artifacts = []
+            if self.config.get("grader_artifact"):
+                exported = await broker(
+                    context,
+                    params["scope"],
+                    PROVIDER,
+                    "export",
+                    {"output_id": "grade_log"},
+                    handle=task_handle,
+                    request_id="evaluate.grade_log",
+                )
+                artifacts.append(exported["artifact"])
             return {
                 "status": "completed",
                 "success": correct,
                 "metrics": [{"name": "fixture_reward", "value": int(correct)}],
                 "primary_metric": "fixture_reward",
                 "native": {"fixture": True},
-                "artifacts": [],
+                "artifacts": artifacts,
                 "completeness": {"state": "captured"},
             }
         if method == "capture":

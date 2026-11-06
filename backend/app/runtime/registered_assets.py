@@ -51,6 +51,7 @@ OUTPUT = obj(
         "max_archive_bytes": {"type": "integer", "minimum": 1, "maximum": 2**31},
         "required": {"type": "boolean"},
         "rootfs": {"type": "boolean"},
+        "stage": {"enum": ["capture", "evaluation"]},
     },
     ("path", "visibility", "max_archive_bytes", "required"),
 )
@@ -337,8 +338,12 @@ class RootlessAssets:
                     raise ManagedRuntimeError("Plan omits a required registered output")
             for output_id, declaration in declared_outputs.items():
                 rule = asset.get("outputs", {}).get(output_id)
-                if rule is None or any(
-                    declaration[key] != rule[key] for key in ("path", "visibility", "required")
+                if (
+                    rule is None
+                    or any(
+                        declaration[key] != rule[key] for key in ("path", "visibility", "required")
+                    )
+                    or declaration.get("stage", "capture") != rule.get("stage", "capture")
                 ):
                     raise ManagedRuntimeError("Plan output differs from its registered grant")
                 path = absolute_path(rule["path"])

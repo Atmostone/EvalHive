@@ -292,7 +292,8 @@ async def test_recovery_cannot_declassify_old_origin(fixture):
     assert error.value.code == "RECOVERY_PRIVATE_ONLY" and client.puts == 0
 
 
-async def test_required_output_coverage_and_receipts_are_verified(fixture):
+@pytest.mark.parametrize("output_stage", ["capture", "evaluation"])
+async def test_required_output_coverage_and_receipts_are_verified(fixture, output_stage):
     store, owner, scope, evidence, _ = fixture
     # Install an independent immutable fixture plan with a required output.
     async with AsyncSession(store.engine) as db:
@@ -308,23 +309,29 @@ async def test_required_output_coverage_and_receipts_are_verified(fixture):
                 private_plan=store.private.seal(
                     "session:" + str(session_id),
                     {
-                        "registration": {"output_plan": [{"id": "result", "required": True}]},
+                        "registration": {
+                            "output_plan": [
+                                {"id": "result", "required": True, "stage": output_stage}
+                            ]
+                        },
                     },
                 ),
             )
         )
         await db.commit()
-    with pytest.raises(ProtocolError) as missing:
+    if output_stage == "evaluation":
         await evidence.validate_capture(owner, {"artifacts": []})
+    with pytest.raises(ProtocolError) as missing:
+        await evidence.validate_capture(owner, {"artifacts": []}, stage=output_stage)
     assert missing.value.code == "ARTIFACT_MISSING"
     wrong_session = await evidence.sink(owner).save(scope, grant(), chunks(b"wrong result"))
     with pytest.raises(ProtocolError) as foreign:
-        await evidence.validate_capture(owner, {"artifacts": [wrong_session]})
+        await evidence.validate_capture(owner, {"artifacts": [wrong_session]}, stage=output_stage)
     assert foreign.value.code == "ARTIFACT_MISSING"
     artifact = await evidence.sink(owner).save(
         replace(scope, session_id=str(session_id)), grant(), chunks(b"result")
     )
-    await evidence.validate_capture(owner, {"artifacts": [artifact]})
+    await evidence.validate_capture(owner, {"artifacts": [artifact]}, stage=output_stage)
     with pytest.raises(ProtocolError) as repeated:
         await evidence.validate_capture(owner, {"artifacts": [artifact, artifact]})
     assert repeated.value.code == "ARTIFACT_CONFLICT"

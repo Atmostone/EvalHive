@@ -161,7 +161,7 @@ class TrialDriver:
             interruptible=False,
         )
 
-    async def _capture_result(self, result):
+    async def _capture_result(self, result, *, stage="capture"):
         if not isinstance(result, dict) or not isinstance(result.get("artifacts"), list):
             raise ProtocolError(
                 "INVALID_CAPTURE_RESULT",
@@ -171,7 +171,7 @@ class TrialDriver:
         for artifact in result["artifacts"]:
             validate("artifact", artifact)
         await self._wait(
-            self.capture_validator(self.owner, result),
+            self.capture_validator(self.owner, result, stage=stage),
             seconds=self.limits.capture_seconds,
             interruptible=False,
         )
@@ -429,7 +429,10 @@ class TrialDriver:
                     for artifact in result["artifacts"]:
                         if artifact not in artifacts:
                             artifacts.append(artifact)
-                    await self._capture_result({**capture, "artifacts": artifacts})
+                    await self._capture_result(
+                        {**capture, "artifacts": artifacts},
+                        stage="evaluation" if result["status"] == "completed" else "capture",
+                    )
                     await self._wait(
                         self.store.finish_evaluation(self.owner, result, attempt_id=evaluation_id)
                     )

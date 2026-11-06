@@ -15,6 +15,7 @@ from pathlib import Path
 
 import docker
 import pytest
+import pytest_asyncio
 from app.benchmarks.deadlines import DeadlineService
 from app.benchmarks.driver import DriverLimits, TrialDriver
 from app.benchmarks.private_store import PrivateStore
@@ -37,7 +38,7 @@ from app.runtime.reconcile import RootlessReconciler
 from app.runtime.registered_assets import RegisteredFile, RootlessAssets
 from evalhive_benchmark import ProtocolError
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import undefer
 
 from tests.runtime.authority_fixture import FixtureArtifacts, manifest
@@ -48,6 +49,17 @@ pytestmark = pytest.mark.skipif(
     reason="Requires explicit isolated worker/controller checks",
 )
 WORKSPACE = uuid.UUID("00000000-0000-0000-0000-000000000002")
+
+
+@pytest_asyncio.fixture
+async def native_engine(_engine, db_session):
+    # Production reuses connections. Repeated NullPool/SCRAM handshakes from
+    # heartbeat, events and native-state polling otherwise dominate one CPU.
+    pooled = create_async_engine(_engine.url, pool_size=5, max_overflow=5)
+    try:
+        yield pooled
+    finally:
+        await pooled.dispose()
 
 
 @pytest.mark.parametrize(
@@ -68,8 +80,9 @@ WORKSPACE = uuid.UUID("00000000-0000-0000-0000-000000000002")
     ],
 )
 async def test_real_worker_plans_prepares_executes_and_captures_via_durable_broker(
-    _engine, db_session, automatic
+    native_engine, automatic
 ):
+    _engine = native_engine
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"])
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"]
     bundle = local / "bundle"
@@ -96,7 +109,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         ),
     )
     worker_image = await asyncio.to_thread(
-        runtime.resolve_image, "evalhive-broker-worker-fixture:b04-driver"
+        runtime.resolve_image, "evalhive-broker-worker-fixture:b05-stages"
     )
     task_image = await asyncio.to_thread(
         runtime.resolve_image, "evalhive-environment-workspace:0.1.0"
@@ -139,6 +152,14 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             },
         },
     }
+    if automatic == "evidence":
+        registration["assets"]["fixture.task"]["outputs"]["grade_log"] = {
+            "path": "/workspace/grader.txt",
+            "visibility": "evaluator",
+            "required": True,
+            "stage": "evaluation",
+            "max_archive_bytes": 2 * 1024**2,
+        }
     assets = RootlessAssets(
         registration,
         runtime,
@@ -181,6 +202,10 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         evidence = EvidenceStore(store, client, bucket=bucket)
 
     class Capture(FixtureArtifacts):
+        def __init__(self):
+            super().__init__()
+            self.receipts = {}
+
         async def save(self, scope, grant, chunks, *, publication=None):
             if grant.artifact_id == "result":
                 async with AsyncSession(_engine) as db:
@@ -217,7 +242,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                 scope, grant, observed(), publication=publication
             )
             self.values[grant.artifact_id] = bytes(data)
-            self.receipt = saved
+            self.receipts[grant.artifact_id] = saved
             return saved
 
     artifacts = Capture()
@@ -238,7 +263,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             "generation": owner.generation,
         },
         "case": CASE,
-        "config": {},
+        "config": {"grader_artifact": True} if automatic == "evidence" else {},
         "credential_refs": {},
         "models": {},
         "limits": {"wall_time_seconds": 60, "memory_mb": 768, "cpu_cores": 1.25, "disk_mb": 32},
@@ -361,9 +386,23 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     )
                 if evidence is not None:
                     async with evidence.open_verified(
-                        WORKSPACE, owner.trial_id, artifacts.receipt, visibilities={"user"}
+                        WORKSPACE,
+                        owner.trial_id,
+                        artifacts.receipts["result"],
+                        visibilities={"user"},
                     ) as stream:
                         assert stream.read() == artifacts.values["result"]
+                    async with evidence.open_verified(
+                        WORKSPACE,
+                        owner.trial_id,
+                        artifacts.receipts["grade_log"],
+                        visibilities={"evaluator"},
+                    ) as stream:
+                        with tarfile.open(fileobj=stream) as archive:
+                            assert (
+                                archive.extractfile("grader.txt").read()
+                                == b"native checker completed\n"
+                            )
                 async with AsyncSession(_engine) as db:
                     assert all(
                         row.state == "released"
