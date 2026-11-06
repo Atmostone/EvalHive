@@ -22,7 +22,7 @@ from sqlalchemy.orm import undefer
 from app.benchmarks.async_control import critical
 from app.benchmarks.private_store import binary, unbinary
 from app.benchmarks.recovery_order import dependency_order
-from app.benchmarks.trials import append_entry, current_trial, database_fence, failure
+from app.benchmarks.trials import database_fence, failure
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
     BenchmarkHostReservation,
@@ -106,9 +106,11 @@ async def install_session(
     plan = json.loads(json.dumps(plan))
     digest = identity(plan)
     async with database_fence(store.engine, owner.trial_id) as db:
-        trial, now = await current_trial(db, owner)
+        trial, now = await store.current(db, owner)
         allowed_phases = (
-            {"planning", "preparing"} if purpose == "execution" else {"capturing", "evaluating"}
+            {"planning", "preparing"}
+            if purpose == "execution" or owner.control_id is not None
+            else {"capturing", "evaluating"}
         )
         if (
             trial.phase not in allowed_phases
@@ -140,7 +142,11 @@ async def install_session(
             )
         previous = await db.get(BenchmarkEnvironmentSession, uuid.UUID(scope.session_id))
         if previous is not None:
-            if previous.plan_digest != digest or previous.trial_id != owner.trial_id:
+            if (
+                previous.plan_digest != digest
+                or previous.trial_id != owner.trial_id
+                or previous.control_id != owner.control_id
+            ):
                 raise failure("PLAN_CONFLICT", "Installed session plan is immutable")
             return previous.id
         for logical_id, (provider, lease) in leases.items():
@@ -169,8 +175,10 @@ async def install_session(
                     )
             existing = await db.scalar(
                 select(BenchmarkResourceLease.id)
+                .join(BenchmarkEnvironmentSession)
                 .where(
-                    BenchmarkResourceLease.trial_id == trial.id,
+                    BenchmarkEnvironmentSession.control_id == owner.control_id,
+                    BenchmarkResourceLease.trial_id == owner.trial_id,
                     BenchmarkResourceLease.logical_id == logical_id,
                     BenchmarkResourceLease.state != "released",
                 )
@@ -184,6 +192,7 @@ async def install_session(
                 trial_id=owner.trial_id,
                 workspace_id=owner.workspace_id,
                 origin_generation=scope.generation,
+                control_id=owner.control_id,
                 purpose=purpose,
                 state="planned",
                 plan_digest=digest,
@@ -206,7 +215,7 @@ async def install_session(
                     private_value=store.private.seal("lease:" + lease.handle, encode_lease(lease)),
                 )
             )
-        await append_entry(
+        await store.append(
             db,
             trial,
             "environment.planned",
@@ -227,20 +236,24 @@ class SqlResourceAuthority:
         validate("broker_request", request)
         encode_line(request)
         async with database_fence(self.store.engine, self.owner.trial_id) as db:
-            trial, now = await current_trial(db, self.owner)
+            trial, now = await self.store.current(db, self.owner)
             session = await db.scalar(
                 select(BenchmarkEnvironmentSession)
                 .where(
                     BenchmarkEnvironmentSession.id == self.session_id,
-                    BenchmarkEnvironmentSession.trial_id == trial.id,
+                    BenchmarkEnvironmentSession.trial_id == self.owner.trial_id,
                     BenchmarkEnvironmentSession.workspace_id == self.owner.workspace_id,
+                    BenchmarkEnvironmentSession.control_id == self.owner.control_id,
                 )
                 .options(undefer(BenchmarkEnvironmentSession.private_plan))
             )
             if session is None:
                 raise failure("FOREIGN_SESSION", "Environment session is unavailable")
             scope = OwnerScope(
-                str(trial.workspace_id), str(trial.id), str(session.id), session.origin_generation
+                str(trial.workspace_id),
+                str(self.owner.trial_id),
+                str(session.id),
+                session.origin_generation,
             )
             if (
                 request["scope"]
@@ -311,7 +324,8 @@ class SqlResourceAuthority:
             operation = await db.scalar(
                 select(BenchmarkOperation)
                 .where(
-                    BenchmarkOperation.trial_id == trial.id,
+                    BenchmarkOperation.trial_id == self.owner.trial_id,
+                    BenchmarkOperation.control_id == self.owner.control_id,
                     BenchmarkOperation.generation == self.owner.generation,
                     BenchmarkOperation.actor_id == self.actor_id,
                     BenchmarkOperation.request_id == request["id"],
@@ -343,8 +357,9 @@ class SqlResourceAuthority:
             else:
                 operation = BenchmarkOperation(
                     id=uuid.uuid4(),
-                    trial_id=trial.id,
+                    trial_id=self.owner.trial_id,
                     session_id=session.id,
+                    control_id=self.owner.control_id,
                     generation=self.owner.generation,
                     actor_id=self.actor_id,
                     request_id=request["id"],
@@ -355,7 +370,7 @@ class SqlResourceAuthority:
                     "operation-request:" + str(operation.id), request
                 )
                 db.add(operation)
-                await append_entry(
+                await self.store.append(
                     db,
                     trial,
                     "resource.requested",
@@ -397,7 +412,7 @@ class SqlResourceAuthority:
                         stored.error_kind = "uncertain" if uncertain else cause.kind
                         stored.finished_at = finished_at
                         current = await db.get(
-                            type(trial), self.owner.trial_id, populate_existing=True
+                            type(trial), self.store.control_key(self.owner), populate_existing=True
                         )
                         if (
                             (current.generation, current.controller_id)
@@ -408,7 +423,7 @@ class SqlResourceAuthority:
                             and current.controller_expires_at > finished_at
                             and current.phase != "finished"
                         ):
-                            await append_entry(
+                            await self.store.append(
                                 db,
                                 current,
                                 "resource." + stored.state,
@@ -457,7 +472,7 @@ class SqlResourceCall:
 
             async def check():
                 await resume()
-                trial, now = await current_trial(self.db, self.authority.owner)
+                trial, now = await self.authority.store.current(self.db, self.authority.owner)
                 if trial.phase == "finished":
                     raise failure(
                         "TRIAL_FINISHED", "Finished trials cannot accept late native observations"
@@ -481,7 +496,7 @@ class SqlResourceCall:
             .where(
                 BenchmarkResourceLease.id == handle,
                 BenchmarkResourceLease.session_id == self.session.id,
-                BenchmarkResourceLease.trial_id == self.trial.id,
+                BenchmarkResourceLease.trial_id == self.authority.owner.trial_id,
                 BenchmarkResourceLease.workspace_id == self.trial.workspace_id,
                 BenchmarkResourceLease.origin_generation == self.scope.generation,
                 BenchmarkResourceLease.provider_id == self.authority.provider_id,
@@ -616,7 +631,9 @@ class SqlResourceCall:
                 "OUTPUT_UNAVAILABLE", "Only granted exports can publish evidence", "recording"
             )
         if artifact is None:
-            await verify_origin(self.db, self.authority.owner, self.scope)
+            await verify_origin(
+                self.db, self.authority.owner, self.scope, store=self.authority.store
+            )
             await self.db.commit()  # Keep heartbeat/cancel row locks free during object I/O.
             return None
         validate("artifact", artifact)
@@ -654,7 +671,7 @@ class SqlResourceCall:
                 raise failure("UNREGISTERED_RESOURCE", "New resources require an installed plan")
             row = BenchmarkResourceLease(
                 id=uuid.UUID(lease.handle),
-                trial_id=self.trial.id,
+                trial_id=self.authority.owner.trial_id,
                 session_id=self.session.id,
                 workspace_id=self.trial.workspace_id,
                 origin_generation=self.scope.generation,
@@ -672,7 +689,7 @@ class SqlResourceCall:
         row.private_value = self.authority.store.private.seal(
             "lease:" + lease.handle, encode_lease(lease)
         )
-        await append_entry(
+        await self.authority.store.append(
             self.db,
             self.trial,
             "resource.saved",
@@ -689,7 +706,7 @@ class SqlResourceCall:
         )
         self.operation.state = "complete"
         self.operation.finished_at = finished_at
-        await append_entry(
+        await self.authority.store.append(
             self.db, self.trial, "resource.completed", {"operation_id": str(self.operation.id)}
         )
         await self.db.commit()

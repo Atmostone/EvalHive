@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
-from app.benchmarks.trials import current_trial, failure
+from app.benchmarks.trials import failure
 from app.models.benchmark_artifact import BenchmarkArtifact
 from app.models.benchmark_trial import BenchmarkEnvironmentSession
 
@@ -61,14 +61,14 @@ class EvidenceStore:
         if len(identities) != len(set(identities)):
             raise failure("ARTIFACT_CONFLICT", "Capture repeats an evidence identity", "recording")
         async with AsyncSession(self.store.engine) as db:
-            await current_trial(db, owner)
+            await self.store.current(db, owner)
             sessions = (
                 await db.scalars(
                     select(BenchmarkEnvironmentSession)
                     .where(
                         BenchmarkEnvironmentSession.trial_id == owner.trial_id,
                         BenchmarkEnvironmentSession.workspace_id == owner.workspace_id,
-                        BenchmarkEnvironmentSession.purpose == "execution",
+                        BenchmarkEnvironmentSession.control_id == owner.control_id,
                     )
                     .options(undefer(BenchmarkEnvironmentSession.private_plan))
                 )
@@ -213,8 +213,8 @@ async def _io(operation):
     return result
 
 
-async def verify_origin(db, owner, scope):
-    trial, _ = await current_trial(db, owner, row_lock=True)
+async def verify_origin(db, owner, scope, *, store):
+    trial, _ = await store.current(db, owner, row_lock=True)
     if trial.phase == "finished":
         raise failure("TRIAL_FINISHED", "Finished trials cannot publish new evidence", "recording")
     if scope.workspace_id != str(owner.workspace_id) or scope.trial_id != str(owner.trial_id):
@@ -222,10 +222,15 @@ async def verify_origin(db, owner, scope):
     if scope.generation != owner.generation and trial.phase != "cleaning":
         raise failure("RECOVERY_ONLY", "Old evidence origins require recovery", "recording")
     row = await db.get(BenchmarkEnvironmentSession, uuid.UUID(scope.session_id))
-    if row is None or (row.trial_id, row.workspace_id, row.origin_generation) != (
-        owner.trial_id,
-        owner.workspace_id,
-        scope.generation,
+    if (
+        row is None
+        or row.control_id != owner.control_id
+        or (row.trial_id, row.workspace_id, row.origin_generation)
+        != (
+            owner.trial_id,
+            owner.workspace_id,
+            scope.generation,
+        )
     ):
         raise failure("FOREIGN_HANDLE", "Evidence origin is unavailable", "recording")
     return row
@@ -263,7 +268,7 @@ class EvidenceSink:
             await publication.publish_artifact(None, None)
         else:
             async with AsyncSession(evidence.store.engine) as db:
-                await verify_origin(db, self.owner, scope)
+                await verify_origin(db, self.owner, scope, store=evidence.store)
         with tempfile.TemporaryFile(dir=evidence.spool_dir) as spool:
             size, digest = 0, hashlib.sha256()
             async for chunk in chunks:
@@ -328,7 +333,7 @@ class EvidenceSink:
 
 async def publish_artifact(db, store, owner, scope, artifact, locator):
     """Commit through the resource call's existing fenced connection when supplied."""
-    await verify_origin(db, owner, scope)
+    await verify_origin(db, owner, scope, store=store)
     identity = uuid.uuid5(uuid.UUID(scope.session_id), "artifact:" + artifact["id"])
     if artifact["uri"] != "artifact:" + str(identity):
         raise failure("ARTIFACT_CONFLICT", "Evidence identity differs from its origin", "recording")

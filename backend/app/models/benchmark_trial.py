@@ -73,6 +73,16 @@ class BenchmarkTrial(Base):
 class BenchmarkEnvironmentSession(Base):
     __tablename__ = "benchmark_environment_sessions"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["control_id", "trial_id", "workspace_id"],
+            [
+                "benchmark_evaluation_controls.id",
+                "benchmark_evaluation_controls.source_trial_id",
+                "benchmark_evaluation_controls.workspace_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_benchmark_session_control",
+        ),
         UniqueConstraint(
             "id", "trial_id", "workspace_id", "origin_generation", name="uq_benchmark_session_scope"
         ),
@@ -84,6 +94,7 @@ class BenchmarkEnvironmentSession(Base):
         ForeignKey("benchmark_trials.id", ondelete="CASCADE"), index=True
     )
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"))
+    control_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     origin_generation: Mapped[int] = mapped_column(Integer)
     purpose: Mapped[str] = mapped_column(String(30))
     state: Mapped[str] = mapped_column(String(30), default="planned", server_default="planned")
@@ -134,10 +145,12 @@ class BenchmarkOperation(Base):
         ),
         UniqueConstraint(
             "trial_id",
+            "control_id",
             "generation",
             "actor_id",
             "request_id",
             name="uq_benchmark_operation_identity",
+            postgresql_nulls_not_distinct=True,
         ),
     )
 
@@ -147,6 +160,9 @@ class BenchmarkOperation(Base):
     )
     session_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("benchmark_environment_sessions.id", ondelete="CASCADE")
+    )
+    control_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("benchmark_evaluation_controls.id", ondelete="CASCADE")
     )
     generation: Mapped[int] = mapped_column(Integer)
     actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))

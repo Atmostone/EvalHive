@@ -9,7 +9,7 @@ from sqlalchemy.orm import undefer
 
 from app.benchmarks.recovery_order import dependency_order
 from app.benchmarks.resource_authority import SqlResourceAuthority
-from app.benchmarks.trials import current_trial, failure
+from app.benchmarks.trials import failure
 from app.models.benchmark_trial import BenchmarkEnvironmentSession, BenchmarkResourceLease
 from app.runtime.managed_spec import OwnerScope
 from app.runtime.records import resource_dependencies
@@ -45,15 +45,17 @@ class RecoveryService:
         if active_only and operation != "stop":
             raise ValueError("Active quiescence only supports stop")
         async with AsyncSession(self.store.engine, expire_on_commit=False) as db:
-            trial, _ = await current_trial(db, owner)
+            trial, _ = await self.store.current(db, owner)
             if trial.phase != "cleaning":
                 raise failure("INVALID_PHASE", "Resource recovery requires the cleanup phase")
             rows = (
                 await db.scalars(
                     select(BenchmarkResourceLease)
+                    .join(BenchmarkEnvironmentSession)
                     .where(
                         BenchmarkResourceLease.trial_id == owner.trial_id,
                         BenchmarkResourceLease.workspace_id == owner.workspace_id,
+                        BenchmarkEnvironmentSession.control_id == owner.control_id,
                         BenchmarkResourceLease.state != "released",
                     )
                     .options(undefer(BenchmarkResourceLease.private_value))
@@ -166,7 +168,7 @@ class RecoveryService:
         Export-only factories have the same durable authority; no exec/startup.
         """
         async with AsyncSession(self.store.engine, expire_on_commit=False) as db:
-            trial, _ = await current_trial(db, owner)
+            trial, _ = await self.store.current(db, owner)
             if trial.phase != "cleaning":
                 raise failure("INVALID_PHASE", "Recovery capture requires cleanup")
             rows = (
@@ -177,7 +179,9 @@ class RecoveryService:
                         BenchmarkResourceLease.session_id == BenchmarkEnvironmentSession.id,
                     )
                     .where(
-                        BenchmarkResourceLease.trial_id == trial.id,
+                        BenchmarkResourceLease.trial_id == owner.trial_id,
+                        BenchmarkEnvironmentSession.control_id == owner.control_id,
+                        BenchmarkResourceLease.workspace_id == owner.workspace_id,
                         BenchmarkResourceLease.kind == "container",
                         BenchmarkResourceLease.state != "released",
                     )

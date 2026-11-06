@@ -15,6 +15,7 @@ from app.models.benchmark_evaluation_control import (
     BenchmarkEvaluationControl,
     BenchmarkEvaluationJournal,
 )
+from app.models.benchmark_trial import BenchmarkHostReservation
 
 EVALUATION_CONTROLS = SqlControlRepository(
     BenchmarkEvaluationControl,
@@ -28,8 +29,8 @@ EVALUATION_CONTROLS = SqlControlRepository(
 class EvaluationControls:
     """Lease/journal boundary, not a launch API or permission to resume a world.
 
-    Resource sessions and worker streams must bind explicitly to this context
-    before a runnable regrade coordinator can use it. Execution APIs reject its
+    Resource sessions bind explicitly to this context. Worker streams must also
+    bind before a runnable regrade coordinator can use it. Execution APIs reject its
     owner token rather than interpreting it as an execution controller.
     """
 
@@ -40,6 +41,36 @@ class EvaluationControls:
             trials.private,
             trials.lease_seconds,
         )
+
+    @property
+    def host_id(self):
+        return self.trials.host_id
+
+    def control_key(self, owner):
+        return owner.control_id
+
+    async def append(self, db, row, event, public_data=None, **kwargs):
+        return await EVALUATION_CONTROLS.append(db, row, event, public_data, **kwargs)
+
+    async def start_planning(self, owner):
+        async with database_fence(self.engine, owner.trial_id) as db:
+            row, now = await self.current(db, owner, row_lock=True)
+            if (
+                row.phase != "created"
+                or row.cancel_requested_at is not None
+                or row.deadline_at <= now
+            ):
+                raise failure(
+                    "INVALID_PHASE", "Evaluation planning requires a fresh active context"
+                )
+            row.phase = "planning"
+            await self.append(db, row, "phase.changed", {"from": "created", "to": "planning"})
+            await db.commit()
+
+    async def reserve(self, owner, **kwargs):
+        from app.benchmarks.trials import TrialStore
+
+        return await TrialStore.reserve(self, owner, **kwargs)
 
     async def create(
         self,
@@ -213,7 +244,7 @@ class EvaluationControls:
             return changed.rowcount == 1
 
     async def claim(self, workspace_id, trial_id, evaluation_id, controller_id):
-        async with database_fence(self.engine, trial_id) as db:
+        async with database_fence(self.engine, trial_id, host_id=self.host_id) as db:
             control = await db.get(BenchmarkEvaluationControl, evaluation_id)
             now = await db.scalar(select(func.clock_timestamp()))
             if control is None or (control.workspace_id, control.source_trial_id) != (
@@ -225,6 +256,14 @@ class EvaluationControls:
                 raise failure("TRIAL_FINISHED", "Finished evaluation cannot be reclaimed")
             if control.controller_expires_at > now:
                 raise failure("OWNER_ACTIVE", "Evaluation already has a live controller")
+            reservation = await db.get(BenchmarkHostReservation, self.host_id)
+            if reservation is not None and (
+                reservation.trial_id,
+                reservation.generation,
+                reservation.controller_id,
+            ) == (trial_id, control.generation, control.controller_id):
+                reservation.generation = control.generation + 1
+                reservation.controller_id = controller_id
             control.generation += 1
             control.controller_id, control.heartbeat_at = controller_id, now
             control.controller_expires_at = now + timedelta(seconds=self.lease_seconds)

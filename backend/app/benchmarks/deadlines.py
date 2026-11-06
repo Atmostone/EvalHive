@@ -8,8 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.benchmarks.resource_authority import SqlResourceAuthority
-from app.benchmarks.trials import current_trial
-from app.models.benchmark_trial import BenchmarkResourceLease
+from app.models.benchmark_trial import BenchmarkEnvironmentSession, BenchmarkResourceLease
 
 
 class DeadlineService:
@@ -21,14 +20,16 @@ class DeadlineService:
         # Discovery is read-only. Every native observation/effect re-enters the
         # authority and rechecks owner, phase, host reservation and DB deadline.
         async with AsyncSession(self.store.engine, expire_on_commit=False) as db:
-            await current_trial(db, owner)
+            await self.store.current(db, owner)
             rows = (
                 await db.execute(
                     select(
                         BenchmarkResourceLease.id,
                         BenchmarkResourceLease.session_id,
                     )
+                    .join(BenchmarkEnvironmentSession)
                     .where(
+                        BenchmarkEnvironmentSession.control_id == owner.control_id,
                         BenchmarkResourceLease.trial_id == owner.trial_id,
                         BenchmarkResourceLease.workspace_id == owner.workspace_id,
                         BenchmarkResourceLease.origin_generation == owner.generation,

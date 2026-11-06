@@ -8,8 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.benchmarks.resource_authority import SqlResourceAuthority
-from app.benchmarks.trials import current_trial, failure
-from app.models.benchmark_trial import BenchmarkOperation, BenchmarkResourceLease
+from app.benchmarks.trials import failure
+from app.models.benchmark_trial import (
+    BenchmarkEnvironmentSession,
+    BenchmarkOperation,
+    BenchmarkResourceLease,
+)
 
 
 class SqlBroker:
@@ -34,14 +38,15 @@ class SqlBroker:
         }:
             raise failure("STALE_GENERATION", "Broker request is outside its worker scope")
         async with AsyncSession(self.store.engine) as db:
-            trial, _ = await current_trial(db, self.owner)
+            trial, _ = await self.store.current(db, self.owner)
             if trial.phase == "finished":
                 raise failure("TRIAL_FINISHED", "Broker trial has finished")
             # Look up the original session BEFORE considering a current logical
             # resource name. Released/replaced resources never redirect retries.
             previous = await db.scalar(
                 select(BenchmarkOperation).where(
-                    BenchmarkOperation.trial_id == trial.id,
+                    BenchmarkOperation.trial_id == self.owner.trial_id,
+                    BenchmarkOperation.control_id == self.owner.control_id,
                     BenchmarkOperation.generation == self.owner.generation,
                     BenchmarkOperation.actor_id == self.actor_id,
                     BenchmarkOperation.request_id == request["id"],
@@ -54,11 +59,16 @@ class SqlBroker:
             elif replay:
                 raise failure("RECEIPT_UNAVAILABLE", "Broker receipt is unavailable", "uncertain")
             else:
-                statement = select(BenchmarkResourceLease.session_id).where(
-                    BenchmarkResourceLease.trial_id == trial.id,
-                    BenchmarkResourceLease.workspace_id == self.owner.workspace_id,
-                    BenchmarkResourceLease.origin_generation == self.owner.generation,
-                    BenchmarkResourceLease.provider_id == request["provider"],
+                statement = (
+                    select(BenchmarkResourceLease.session_id)
+                    .join(BenchmarkEnvironmentSession)
+                    .where(
+                        BenchmarkEnvironmentSession.control_id == self.owner.control_id,
+                        BenchmarkResourceLease.trial_id == self.owner.trial_id,
+                        BenchmarkResourceLease.workspace_id == self.owner.workspace_id,
+                        BenchmarkResourceLease.origin_generation == self.owner.generation,
+                        BenchmarkResourceLease.provider_id == request["provider"],
+                    )
                 )
                 if request["operation"] == "allocate" and "handle" not in request:
                     statement = statement.where(

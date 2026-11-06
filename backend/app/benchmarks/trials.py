@@ -170,6 +170,15 @@ class TrialStore:
         self.engine, self.private = engine, private_store
         self.host_id, self.lease_seconds = host_id, lease_seconds
 
+    async def current(self, db, owner, **kwargs):
+        return await EXECUTION_CONTROLS.current(db, owner, **kwargs)
+
+    async def append(self, db, row, event, public_data=None, **kwargs):
+        return await EXECUTION_CONTROLS.append(db, row, event, public_data, **kwargs)
+
+    def control_key(self, owner):
+        return owner.trial_id
+
     async def create(
         self,
         workspace_id,
@@ -439,7 +448,7 @@ class TrialStore:
             raise failure("INVALID_ADMISSION", "Planning admission requires one worker demand")
         resources = [asdict(item) for item in demands]
         async with database_fence(self.engine, owner.trial_id, host_id=self.host_id) as db:
-            trial, now = await current_trial(db, owner)
+            trial, now = await self.current(db, owner)
             if (
                 trial.phase != "planning"
                 or trial.cancel_requested_at is not None
@@ -507,13 +516,13 @@ class TrialStore:
                 db.add(
                     BenchmarkHostReservation(
                         host_id=self.host_id,
-                        trial_id=trial.id,
+                        trial_id=owner.trial_id,
                         generation=owner.generation,
                         controller_id=owner.controller_id,
                         budget=budget,
                     )
                 )
-            await append_entry(
+            await self.append(
                 db,
                 trial,
                 "host.reservation_finalized" if finalizing else "host.reserved",

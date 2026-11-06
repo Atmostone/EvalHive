@@ -253,6 +253,21 @@ This lease repository is not yet an executable regrade coordinator. Resource
 sessions, worker streams, admission and restoration must explicitly bind to its
 context before it can launch. Source resource leases are not transferred to it.
 
+Resource sessions now carry an immutable optional evaluator control ID (`bg08`).
+Its composite foreign key binds the control, source trial and workspace. Operation
+receipt identity includes that context, with null treated as the execution
+context. A database trigger prevents receipts from naming another context's
+session and prevents changing an existing binding. Broker routing, direct
+authority, deadline discovery, recovery and evidence publication check the same
+context. A matching actor/request ID from execution cannot replay as an evaluator
+receipt, and a source execution handle cannot become evaluator authority.
+
+Evaluation planning reuses the existing whole-group admission transaction. A
+takeover transfers only the reservation whose exact prior owner/generation
+matches the recovering evaluation; another evaluation's reservation is retained.
+This resource boundary is implemented. Worker stream/event binding and the
+complete restore/evaluate coordinator remain required before product launch.
+
 ## Durable worker commands
 
 `BenchmarkCommand` stores one immutable command intent per worker stream and

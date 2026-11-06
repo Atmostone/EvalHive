@@ -24,6 +24,9 @@ from app.database import Base
 class BenchmarkEvaluationControl(Base):
     __tablename__ = "benchmark_evaluation_controls"
     __table_args__ = (
+        UniqueConstraint(
+            "id", "source_trial_id", "workspace_id", name="uq_evaluation_control_scope"
+        ),
         ForeignKeyConstraint(
             ["id", "source_trial_id", "workspace_id"],
             [
