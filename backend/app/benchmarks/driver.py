@@ -455,7 +455,7 @@ class TrialDriver:
             if not self.fenced:
                 try:
                     await bounded(
-                        self.store.request_cancel(self.owner.workspace_id, self.owner.trial_id),
+                        self.store.request_stop(self.owner),
                         self.limits.service_seconds,
                     )
                     await self._wait(

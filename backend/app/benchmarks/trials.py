@@ -23,6 +23,7 @@ from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.benchmarks.control_repository import EXECUTION_CONTROLS
+from app.benchmarks.lifecycle import ControlLifecycle
 from app.benchmarks.streams import StreamLedger
 from app.models.benchmark import BenchmarkDatasetCase, BenchmarkDatasetRevision, BenchmarkProfile
 from app.models.benchmark_command import BenchmarkCommand
@@ -30,8 +31,6 @@ from app.models.benchmark_trial import (
     BenchmarkEventStream,
     BenchmarkHostReservation,
     BenchmarkJournalEntry,
-    BenchmarkOperation,
-    BenchmarkResourceLease,
     BenchmarkTrial,
 )
 from app.models.task import Task
@@ -163,8 +162,9 @@ async def append_entry(db, trial, event, public_data=None, *, private_data=None,
     )
 
 
-class TrialStore(StreamLedger):
+class TrialStore(ControlLifecycle, StreamLedger):
     journal_model = BenchmarkJournalEntry
+    phases = PHASES
 
     def __init__(self, engine, private_store, *, host_id="evalhive-rootless", lease_seconds=90):
         if type(lease_seconds) is not int or not 10 <= lease_seconds <= 600:
@@ -310,55 +310,8 @@ class TrialStore(StreamLedger):
             if result.rowcount != 1:
                 raise failure("STALE_GENERATION", "Controller heartbeat was fenced")
 
-    async def control(self, owner):
-        """Short owner-checked DB-clock snapshot; no native session fence."""
-        async with AsyncSession(self.engine) as db:
-            trial, now = await current_trial(db, owner)
-            return ControlState(
-                trial.phase,
-                trial.cancel_requested_at is not None,
-                (trial.deadline_at - now).total_seconds(),
-                trial.execution_status,
-                trial.evaluation_status,
-                trial.recording_status,
-                trial.cleanup_status,
-            )
-
-    async def note(
-        self, owner, event, *, code=None, private=None, incomplete=False, cleanup_error=False
-    ):
-        if event not in {
-            "controller.stopping",
-            "controller.failed",
-            "capture.completed",
-            "capture.failed",
-            "cleanup.failed",
-            "deadline.result",
-            "configuration.applied",
-        }:
-            raise ValueError("Unknown controller journal event")
-        async with AsyncSession(self.engine, expire_on_commit=False) as db:
-            trial, _ = await current_trial(db, owner, row_lock=True)
-            if trial.phase == "finished":
-                raise failure("TRIAL_FINISHED", "Finished controller journals are sealed")
-            entry_id = uuid.uuid4()
-            await append_entry(
-                db,
-                trial,
-                event,
-                {"code": code} if code else {},
-                id=entry_id,
-                private_data=None
-                if private is None
-                else self.private.seal("journal:" + str(entry_id), private),
-            )
-            if incomplete:
-                trial.recording_status = "incomplete"
-            if cleanup_error:
-                trial.cleanup_status = "error"
-            elif event == "cleanup.failed" and trial.cleanup_status != "error":
-                trial.cleanup_status = "pending"
-            await db.commit()
+    async def outcome_status(self, db, row):
+        return row.execution_status, row.evaluation_status
 
     async def begin_evaluation(self, owner, inputs):
         from app.benchmarks.evaluation import begin_initial
@@ -533,115 +486,26 @@ class TrialStore(StreamLedger):
             await db.commit()
             return budget
 
-    async def transition(self, owner, expected, target):
-        async with database_fence(
-            self.engine, owner.trial_id, host_id=self.host_id if target == "finished" else None
-        ) as db:
-            trial, now = await current_trial(db, owner, row_lock=True)
-            if trial.phase == target:
-                return {"duplicate": True, "phase": target}
-            if trial.phase != expected or target not in PHASES.get(expected, set()):
-                raise failure("INVALID_PHASE", "Lifecycle transition is not permitted")
-            if target not in {"cleaning", "finished"}:
-                if trial.cancel_requested_at is not None or trial.deadline_at <= now:
-                    raise failure(
-                        "TRIAL_STOPPING",
-                        "Trial cancellation or deadline requires cleanup",
-                        "execution",
-                    )
-            if target == "preparing":
-                reservation = await db.get(BenchmarkHostReservation, self.host_id)
-                if reservation is None or (
-                    reservation.trial_id,
-                    reservation.generation,
-                    reservation.controller_id,
-                ) != (owner.trial_id, owner.generation, owner.controller_id):
-                    raise failure(
-                        "NO_RESERVATION",
-                        "Preparation requires an owned host reservation",
-                        "preparation",
-                    )
-                if reservation.budget.get("stage", "full") != "full":
-                    raise failure(
-                        "GROUP_ADMISSION_REQUIRED",
-                        "Preparation requires the complete environment group reservation",
-                        "preparation",
-                    )
-            if target == "driving":
-                trial.execution_status = "running"
-            if target == "evaluating":
-                if trial.execution_status in {"pending", "running"}:
-                    raise failure(
-                        "EXECUTION_OPEN", "Execution must be sealed before evaluation", "recording"
-                    )
-                trial.evaluation_status = "running"
-            if target == "cleaning":
-                if trial.execution_status in {"pending", "running"}:
-                    trial.execution_status = "cancelled" if trial.cancel_requested_at else "failed"
-                if trial.evaluation_status == "running":
-                    from app.benchmarks.evaluation import interrupt_initial
-
-                    await interrupt_initial(
-                        db, self, trial, cancelled=trial.cancel_requested_at is not None
-                    )
-                    if trial.evaluation_status == "running":
-                        trial.evaluation_status = (
-                            "cancelled" if trial.cancel_requested_at else "error"
-                        )
-                trial.cleanup_status = "running"
-            if target == "finished":
-                live = await db.scalar(
-                    select(BenchmarkResourceLease.id)
-                    .where(
-                        BenchmarkResourceLease.trial_id == trial.id,
-                        BenchmarkResourceLease.state != "released",
-                    )
-                    .limit(1)
+    async def phase_effects(self, db, trial, target, now):
+        if target == "driving":
+            trial.execution_status = "running"
+        if target == "evaluating":
+            if trial.execution_status in {"pending", "running"}:
+                raise failure(
+                    "EXECUTION_OPEN", "Execution must be sealed before evaluation", "recording"
                 )
-                if live is not None:
-                    raise failure(
-                        "CLEANUP_PENDING", "Resource leases remain unreconciled", "cleanup"
-                    )
-                reservation = await db.get(BenchmarkHostReservation, self.host_id)
-                if reservation is not None and reservation.trial_id == trial.id:
-                    await db.delete(reservation)
-                if trial.cleanup_status != "error":
-                    trial.cleanup_status = "complete"
-                trial.finished_at = now
-                if trial.recording_status == "open":
-                    unsealed = await db.scalar(
-                        select(BenchmarkEventStream.id)
-                        .where(
-                            BenchmarkEventStream.trial_id == trial.id,
-                            BenchmarkEventStream.final_seq.is_(None),
-                        )
-                        .limit(1)
-                    )
-                    uncertain = await db.scalar(
-                        select(BenchmarkOperation.id)
-                        .where(
-                            BenchmarkOperation.trial_id == trial.id,
-                            BenchmarkOperation.state.in_(["started", "uncertain"]),
-                        )
-                        .limit(1)
-                    )
-                    pending_command = await db.scalar(
-                        select(BenchmarkCommand.id)
-                        .where(
-                            BenchmarkCommand.trial_id == trial.id,
-                            BenchmarkCommand.state != "completed",
-                        )
-                        .limit(1)
-                    )
-                    trial.recording_status = (
-                        "complete"
-                        if unsealed is None and uncertain is None and pending_command is None
-                        else "incomplete"
-                    )
-            trial.phase = target
-            await append_entry(db, trial, "phase.changed", {"from": expected, "to": target})
-            await db.commit()
-            return {"duplicate": False, "phase": target}
+            trial.evaluation_status = "running"
+        if target == "cleaning":
+            if trial.execution_status in {"pending", "running"}:
+                trial.execution_status = "cancelled" if trial.cancel_requested_at else "failed"
+            if trial.evaluation_status == "running":
+                from app.benchmarks.evaluation import interrupt_initial
+
+                await interrupt_initial(
+                    db, self, trial, cancelled=trial.cancel_requested_at is not None
+                )
+                if trial.evaluation_status == "running":
+                    trial.evaluation_status = "cancelled" if trial.cancel_requested_at else "error"
 
     async def finish_execution(self, owner, status):
         if status not in {"success", "failed", "cancelled", "lost"}:
@@ -665,6 +529,7 @@ class TrialStore(StreamLedger):
                 .join(BenchmarkEventStream, BenchmarkCommand.stream_id == BenchmarkEventStream.id)
                 .where(
                     BenchmarkCommand.trial_id == trial.id,
+                    BenchmarkEventStream.control_id.is_(None),
                     BenchmarkEventStream.generation == owner.generation,
                     BenchmarkCommand.method.in_(["prepare", "drive"]),
                     BenchmarkCommand.state != "completed",
@@ -681,6 +546,7 @@ class TrialStore(StreamLedger):
                 select(BenchmarkEventStream.id)
                 .where(
                     BenchmarkEventStream.trial_id == trial.id,
+                    BenchmarkEventStream.control_id.is_(None),
                     BenchmarkEventStream.generation == owner.generation,
                     or_(
                         BenchmarkEventStream.checkpoint_seq.is_(None),

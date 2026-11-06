@@ -13,7 +13,7 @@ from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_trial import BenchmarkEventStream, BenchmarkJournalEntry, BenchmarkTrial
 from evalhive_benchmark import ConnectorClient, ProtocolError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from tests.integration.test_benchmark_trials import advance_to_driving, fixture, request  # noqa: F401
 
@@ -21,20 +21,32 @@ from tests.integration.test_benchmark_trials import advance_to_driving, fixture,
 @pytest_asyncio.fixture
 async def channel(fixture):  # noqa: F811
     store, owner, _, actor, _, _, _ = fixture
-    await advance_to_driving(store, owner)
-    worker = Path(__file__).parents[1] / "fixtures/benchmark_channel_worker.py"
-    client = await ConnectorClient.launch(
-        [sys.executable, str(worker)],
-        env={"PATH": os.defpath, "PYTHONPATH": "/opt/current-benchmark-sdk"},
-    )
-    bound = await WorkerChannel.attach(store, owner, actor, client)
+    original = store.engine
+    # Match the runner's reusable connections. The two-second cancellation
+    # assertion must not include a fresh SCRAM handshake for every receipt step.
+    store.engine = create_async_engine(original.url, pool_size=5, max_overflow=5)
+    bound, client = None, None
     try:
+        await advance_to_driving(store, owner)
+        worker = Path(__file__).parents[1] / "fixtures/benchmark_channel_worker.py"
+        client = await ConnectorClient.launch(
+            [sys.executable, str(worker)],
+            env={"PATH": os.defpath, "PYTHONPATH": "/opt/current-benchmark-sdk"},
+        )
+        bound = await WorkerChannel.attach(store, owner, actor, client)
         yield bound
     finally:
         try:
-            await asyncio.wait_for(bound.close(grace=1), 8)
-        except ProtocolError:
-            pass  # Recording-error tests deliberately leave an incomplete stream.
+            if bound is not None:
+                try:
+                    await asyncio.wait_for(bound.close(grace=1), 8)
+                except ProtocolError:
+                    pass  # Recording-error tests deliberately leave an incomplete stream.
+            elif client is not None:
+                await client.close(0.2, shutdown=False)
+        finally:
+            await store.engine.dispose()
+            store.engine = original
 
 
 def params(channel, payload=None):

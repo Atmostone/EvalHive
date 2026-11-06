@@ -43,6 +43,14 @@ class BenchmarkEvaluationControl(Base):
             "phase IN ('created','planning','preparing','ready','capturing','evaluating','cleaning','finished')",
             name="ck_evaluation_control_phase",
         ),
+        CheckConstraint(
+            "cleanup_status IN ('pending','running','complete','error')",
+            name="ck_evaluation_control_cleanup",
+        ),
+        CheckConstraint(
+            "(phase = 'finished') = (finished_at IS NOT NULL)",
+            name="ck_evaluation_control_finished",
+        ),
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     source_trial_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
@@ -53,10 +61,14 @@ class BenchmarkEvaluationControl(Base):
     heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     deadline_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recording_status: Mapped[str] = mapped_column(String(30), default="open", server_default="open")
+    cleanup_status: Mapped[str] = mapped_column(
+        String(30), default="pending", server_default="pending"
+    )
     phase: Mapped[str] = mapped_column(String(30))
     next_seq: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BenchmarkEvaluationJournal(Base):

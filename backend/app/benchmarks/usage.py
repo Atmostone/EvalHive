@@ -137,39 +137,67 @@ class UsageLedger:
 
 
 async def trial_usage(store, workspace_id, trial_id):
+    """Read execution usage without including independent evaluator invocations."""
+    from app.models.benchmark_trial import BenchmarkJournalEntry, BenchmarkTrial
+
+    return await _journal_usage(
+        store,
+        BenchmarkTrial,
+        BenchmarkJournalEntry,
+        trial_id,
+        (BenchmarkTrial.workspace_id == workspace_id,),
+        "trial_id",
+        "TRIAL_NOT_FOUND",
+    )
+
+
+async def evaluation_usage(store, workspace_id, trial_id, evaluation_id):
+    """Read only one authorized regrade invocation, with its own journal watermark."""
+    from app.models.benchmark_evaluation_control import (
+        BenchmarkEvaluationControl,
+        BenchmarkEvaluationJournal,
+    )
+
+    return await _journal_usage(
+        store,
+        BenchmarkEvaluationControl,
+        BenchmarkEvaluationJournal,
+        evaluation_id,
+        (
+            BenchmarkEvaluationControl.workspace_id == workspace_id,
+            BenchmarkEvaluationControl.source_trial_id == trial_id,
+        ),
+        "control_id",
+        "EVALUATION_NOT_FOUND",
+    )
+
+
+async def _journal_usage(store, control, journal, identifier, scope, journal_key, missing_code):
     """Read a scoped journal in bounded pages; raw payloads stay private."""
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.orm import undefer
 
     from app.benchmarks.trials import failure
-    from app.models.benchmark_trial import BenchmarkJournalEntry, BenchmarkTrial
 
     ledger, after = UsageLedger(), -1
     async with AsyncSession(store.engine) as db:
-        if (
-            await db.scalar(
-                select(BenchmarkTrial.id).where(
-                    BenchmarkTrial.id == trial_id, BenchmarkTrial.workspace_id == workspace_id
-                )
-            )
-            is None
-        ):
-            raise failure("TRIAL_NOT_FOUND", "Benchmark trial is unavailable")
+        high = await db.scalar(select(control.next_seq).where(control.id == identifier, *scope))
+        if high is None:
+            raise failure(missing_code, "Usage journal is unavailable in this workspace")
         # A stable high-water mark keeps a live stream from extending this read.
-        high = await db.scalar(select(BenchmarkTrial.next_seq).where(BenchmarkTrial.id == trial_id))
         while True:
             rows = (
                 await db.scalars(
-                    select(BenchmarkJournalEntry)
+                    select(journal)
                     .where(
-                        BenchmarkJournalEntry.trial_id == trial_id,
-                        BenchmarkJournalEntry.event == "usage",
-                        BenchmarkJournalEntry.seq > after,
-                        BenchmarkJournalEntry.seq < high,
+                        getattr(journal, journal_key) == identifier,
+                        journal.event == "usage",
+                        journal.seq > after,
+                        journal.seq < high,
                     )
-                    .options(undefer(BenchmarkJournalEntry.private_data))
-                    .order_by(BenchmarkJournalEntry.seq)
+                    .options(undefer(journal.private_data))
+                    .order_by(journal.seq)
                     .limit(128)
                 )
             ).all()

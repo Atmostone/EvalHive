@@ -3,11 +3,13 @@
 import uuid
 from datetime import timedelta
 
+from evalhive_benchmark import validate
 from evalhive_benchmark.peer import identity
 from sqlalchemy import func, select, update
 
 from app.benchmarks.control_repository import SqlControlRepository
-from app.benchmarks.evaluation import terminal
+from app.benchmarks.evaluation import interrupt_attempt, terminal, verify_receipt
+from app.benchmarks.lifecycle import ControlLifecycle
 from app.benchmarks.regrade import retained_source
 from app.benchmarks.streams import StreamLedger
 from app.benchmarks.trials import Controller, database_fence, failure
@@ -27,7 +29,7 @@ EVALUATION_CONTROLS = SqlControlRepository(
 )
 
 
-class EvaluationControls(StreamLedger):
+class EvaluationControls(ControlLifecycle, StreamLedger):
     """Lease/journal boundary, not a launch API or permission to resume a world.
 
     Resource sessions and worker streams bind explicitly to this context.
@@ -36,6 +38,17 @@ class EvaluationControls(StreamLedger):
     """
 
     journal_model = BenchmarkEvaluationJournal
+    extra_note_events = frozenset({"controller.observed"})
+    phases = {
+        "created": {"planning", "cleaning"},
+        "planning": {"preparing", "cleaning"},
+        "preparing": {"ready", "cleaning"},
+        "ready": {"capturing", "evaluating", "cleaning"},
+        "capturing": {"evaluating", "cleaning"},
+        "evaluating": {"cleaning"},
+        "cleaning": {"finished"},
+        "finished": set(),
+    }
 
     def __init__(self, trials, evidence):
         self.trials, self.evidence = trials, evidence
@@ -56,18 +69,90 @@ class EvaluationControls(StreamLedger):
         return await EVALUATION_CONTROLS.append(db, row, event, public_data, **kwargs)
 
     async def start_planning(self, owner):
+        return await self.transition(owner, "created", "planning")
+
+    async def outcome_status(self, db, row):
+        attempt = await self.attempt(db, row)
+        return "not_applicable", attempt.status
+
+    async def attempt(self, db, row):
+        attempt = await db.get(BenchmarkEvaluationAttempt, row.id)
+        if attempt is None or attempt.kind != "regrade":
+            raise failure("EVALUATION_NOT_FOUND", "Regrade intent is unavailable", "grading")
+        return attempt
+
+    async def phase_effects(self, db, row, target, now):
+        attempt = await self.attempt(db, row)
+        if target == "evaluating" and attempt.status != "running":
+            raise failure("INVALID_PHASE", "Evaluation already has a terminal outcome", "grading")
+        if target == "cleaning":
+            if await interrupt_attempt(
+                db, self, attempt, cancelled=row.cancel_requested_at is not None
+            ):
+                await self.append(db, row, "evaluation.finished", {"status": attempt.status})
+        if target == "finished" and attempt.status == "running":
+            raise failure(
+                "EVALUATION_OPEN", "Evaluation must be sealed before cleanup completes", "grading"
+            )
+
+    async def fail_evaluation(self, owner, *, kind, code, cancelled=False):
         async with database_fence(self.engine, owner.trial_id) as db:
-            row, now = await self.current(db, owner, row_lock=True)
-            if (
-                row.phase != "created"
-                or row.cancel_requested_at is not None
-                or row.deadline_at <= now
+            row, _ = await self.current(db, owner, row_lock=True)
+            attempt = await self.attempt(db, row)
+            if await interrupt_attempt(
+                db, self, attempt, kind=kind, code=code, cancelled=cancelled
+            ):
+                await self.append(db, row, "evaluation.finished", {"status": attempt.status})
+                await db.commit()
+
+    async def finish_evaluation(self, owner, result=None, *, attempt_id=None):
+        if result is not None:
+            validate("evaluation_result", result)
+        async with database_fence(self.engine, owner.trial_id) as db:
+            row, _ = await self.current(db, owner, row_lock=True)
+            attempt = await self.attempt(db, row)
+            if result is None:
+                if row.phase != "cleaning":
+                    raise failure(
+                        "INVALID_PHASE", "Missing evaluation outcome requires cleanup", "grading"
+                    )
+                if await interrupt_attempt(db, self, attempt):
+                    await self.append(db, row, "evaluation.finished", {"status": attempt.status})
+                    await db.commit()
+                return
+            if attempt_id != row.id:
+                raise failure(
+                    "EVALUATION_NOT_FOUND", "Result does not name its evaluation intent", "grading"
+                )
+            if attempt.status != "running":
+                if attempt.result_digest == identity(result):
+                    return
+                raise failure(
+                    "EVALUATION_CONFLICT", "Evaluation outcome already differs", "grading"
+                )
+            if (attempt.origin_generation, attempt.controller_id) != (
+                owner.generation,
+                owner.controller_id,
             ):
                 raise failure(
-                    "INVALID_PHASE", "Evaluation planning requires a fresh active context"
+                    "STALE_GENERATION", "Evaluation belongs to another controller", "grading"
                 )
-            row.phase = "planning"
-            await self.append(db, row, "phase.changed", {"from": "created", "to": "planning"})
+            if row.phase != "evaluating":
+                raise failure(
+                    "INVALID_PHASE", "Evaluator result requires the evaluation phase", "grading"
+                )
+            await verify_receipt(db, self, attempt, result, control_id=row.id)
+            # Re-read cancellation/deadline after receipt IO, retaining the row lock.
+            await db.refresh(row)
+            now = await db.scalar(select(func.clock_timestamp()))
+            if row.cancel_requested_at is not None or row.deadline_at <= now:
+                raise failure(
+                    "TRIAL_STOPPING",
+                    "Cancellation or deadline precedes evaluator completion",
+                    "execution",
+                )
+            await terminal(db, self, attempt, result)
+            await self.append(db, row, "evaluation.finished", {"status": attempt.status})
             await db.commit()
 
     async def reserve(self, owner, **kwargs):
@@ -271,48 +356,14 @@ class EvaluationControls(StreamLedger):
             control.controller_id, control.heartbeat_at = controller_id, now
             control.controller_expires_at = now + timedelta(seconds=self.lease_seconds)
             control.recording_status = "incomplete"
+            if control.cleanup_status != "error":
+                control.cleanup_status = "pending"
             control.phase = "cleaning"  # No native conversation/state resume.
             attempt = await db.get(BenchmarkEvaluationAttempt, evaluation_id)
-            if attempt.status == "running":
-                await terminal(
-                    db,
-                    self,
-                    attempt,
-                    {
-                        "status": "error",
-                        "success": None,
-                        "metrics": [],
-                        "native": {},
-                        "artifacts": [],
-                        "completeness": {"native_result": False},
-                        "error": {
-                            "code": "CONTROLLER_LOST",
-                            "kind": "uncertain",
-                            "message": "Evaluation controller was lost",
-                        },
-                    },
-                )
+            if await interrupt_attempt(db, self, attempt, code="CONTROLLER_LOST"):
+                await self.append(db, control, "evaluation.finished", {"status": attempt.status})
             await EVALUATION_CONTROLS.append(db, control, "controller.claimed", {"recovery": True})
             await db.commit()
             return Controller(
                 workspace_id, trial_id, control.generation, controller_id, evaluation_id
             )
-
-    async def note(self, owner, event, *, private=None):
-        if event not in {"controller.observed", "controller.failed"}:
-            raise ValueError("Unknown evaluator control event")
-        async with database_fence(self.engine, owner.trial_id) as db:
-            row, _ = await self.current(db, owner, row_lock=True)
-            if row.phase == "finished":
-                raise failure("TRIAL_FINISHED", "Evaluation journal is sealed")
-            identifier = uuid.uuid4()
-            await EVALUATION_CONTROLS.append(
-                db,
-                row,
-                event,
-                id=identifier,
-                private_data=None
-                if private is None
-                else self.private.seal("journal:" + str(identifier), private),
-            )
-            await db.commit()

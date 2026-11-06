@@ -181,15 +181,18 @@ cumulative snapshots replace earlier snapshots of that request. Adapters must
 use distinct IDs for distinct requests and avoid overlapping summary series.
 Conflicting modes/dimensions or decreasing known token counters invalidate that
 call's projection and remain visible as errors, without rewriting native events.
+`evaluation_usage` uses the same reader and projection for one independently
+authorized regrade journal. Its watermark belongs to that evaluator. Matching
+actor/call IDs in another evaluation cannot add to its usage or charge the source
+execution; unknown measurements retain the same null/subtotal semantics.
 
 Unknown tokens and cost remain null. Each projection reports the known subtotal
 and unknown call count, without presenting that subtotal as a complete total.
 Costs use exact decimal arithmetic and retain provider/estimate provenance.
 Out-of-policy cost strings remain unknown with an explicit projection error.
 An empty ledger does not claim complete measurement. Initial evaluator attempts
-are described below. Standalone regrade authorization/checkpoints and native
-aggregation history remain B05/B15 work; retained files alone do not authorize
-regrade.
+are described below. Standalone regrade execution and native aggregation history
+remain B05/B15 work; retained files alone do not authorize regrade.
 
 ## Initial evaluator attempts
 
@@ -291,8 +294,35 @@ records the session purpose and excludes driving from evaluator actor policies.
 Rootless asset compilation retains the same native grants and resource minima
 without requiring a synthetic agent. The execution driver rejects evaluation-only
 specs before starting a worker. Legacy specs without purpose remain executions.
-Standalone restoration, artifact materialization and evaluator lifecycle
-coordination remain required; these boundaries alone do not launch regrade.
+Standalone restoration, artifact materialization and a supervised worker pipeline
+remain required; these boundaries alone do not launch regrade.
+
+Execution and evaluator stores now share `ControlLifecycle`: owner-checked
+control snapshots, journal notes, monotonic controller cancellation, phase gates,
+admission checks and final cleanup accounting. The evaluation graph has no
+driving phase. Its execution status is `not_applicable` in the control snapshot;
+its grading status comes from the immutable evaluation attempt. No artificial
+execution result or second execution trial is created.
+
+An evaluator result requires its own attempt ID and the exact completed durable
+command from its worker actor, context and generation. The shared receipt verifier
+also serves initial evaluation. Mismatched outputs, another actor's response,
+committed cancellation and an expired deadline cannot produce a new verdict.
+Repeated identical completion reads the original terminal result. Cleanup failures
+are independent and do not overwrite native correctness.
+
+Migration `bg10` adds evaluator cleanup status and terminal time. A finished
+evaluator lifecycle is database immutable. Final cleanup checks only that
+context's leases, streams, operations and commands, and removes a host reservation
+only when the complete owner/generation matches. Another context's unsealed
+stream or live resource is not its cleanup authority. Lost-owner takeover seals
+an unfinished grading result as uncertain and enters cleanup. A stale controller
+cannot cancel its replacement through the controller stop method; user-requested
+workspace cancellation remains a separate API.
+
+These lifecycle primitives are implemented. A supervised restore/evaluate worker
+pipeline, sufficient artifact materialization and frozen image resolution remain
+necessary for standalone regrade launch.
 
 ## Durable worker commands
 

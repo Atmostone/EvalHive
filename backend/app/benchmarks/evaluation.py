@@ -44,6 +44,7 @@ async def begin_initial(store, owner, inputs):
                 select(BenchmarkEnvironmentSession)
                 .where(
                     BenchmarkEnvironmentSession.trial_id == trial.id,
+                    BenchmarkEnvironmentSession.control_id.is_(None),
                     BenchmarkEnvironmentSession.workspace_id == trial.workspace_id,
                 )
                 .order_by(BenchmarkEnvironmentSession.id)
@@ -87,6 +88,7 @@ async def begin_initial(store, owner, inputs):
             await db.scalar(
                 select(BenchmarkEventStream.id).where(
                     BenchmarkEventStream.trial_id == trial.id,
+                    BenchmarkEventStream.control_id.is_(None),
                     BenchmarkEventStream.actor_id == worker_actor,
                     BenchmarkEventStream.generation == owner.generation,
                 )
@@ -143,30 +145,7 @@ async def finish(db, store, trial, result, *, attempt_id=None):
         raise failure("STALE_GENERATION", "Evaluation belongs to another controller", "grading")
     if trial.phase != "evaluating" or trial.evaluation_status != "running":
         raise failure("INVALID_PHASE", "Evaluation summary cannot be changed", "grading")
-    command = await db.scalar(
-        select(BenchmarkCommand)
-        .join(
-            BenchmarkEventStream,
-            BenchmarkEventStream.id == BenchmarkCommand.stream_id,
-        )
-        .where(
-            BenchmarkCommand.trial_id == trial.id,
-            BenchmarkCommand.request_id == "evaluation." + str(attempt.id),
-            BenchmarkCommand.method == "evaluate",
-            BenchmarkEventStream.actor_id == attempt.worker_actor_id,
-            BenchmarkEventStream.generation == attempt.origin_generation,
-        )
-        .options(undefer(BenchmarkCommand.private_response))
-    )
-    if command is None or command.state != "completed":
-        raise failure(
-            "COMMAND_OPEN", "Evaluation requires its exact durable worker receipt", "recording"
-        )
-    response = store.private.open("command-response:" + str(command.id), command.private_response)
-    if not response.get("ok") or identity(response["result"]) != digest:
-        raise failure(
-            "EVALUATION_CONFLICT", "Evaluator result differs from its durable receipt", "grading"
-        )
+    await verify_receipt(db, store, attempt, result, control_id=None)
     now = await db.scalar(select(func.clock_timestamp()))
     if trial.cancel_requested_at is not None or trial.deadline_at <= now:
         raise failure(
@@ -174,6 +153,35 @@ async def finish(db, store, trial, result, *, attempt_id=None):
         )
     await terminal(db, store, attempt, result)
     return attempt, False
+
+
+async def verify_receipt(db, store, attempt, result, *, control_id):
+    """Require the exact actor/context/generation durable receipt, not RPC success."""
+    command = await db.scalar(
+        select(BenchmarkCommand)
+        .join(
+            BenchmarkEventStream,
+            BenchmarkEventStream.id == BenchmarkCommand.stream_id,
+        )
+        .where(
+            BenchmarkCommand.trial_id == attempt.trial_id,
+            BenchmarkCommand.request_id == "evaluation." + str(attempt.id),
+            BenchmarkCommand.method == "evaluate",
+            BenchmarkEventStream.control_id == control_id,
+            BenchmarkEventStream.actor_id == attempt.worker_actor_id,
+            BenchmarkEventStream.generation == attempt.origin_generation,
+        )
+        .options(undefer(BenchmarkCommand.private_response))
+    )
+    if command is None or command.state != "completed" or command.error_code is not None:
+        raise failure(
+            "COMMAND_OPEN", "Evaluation requires its exact durable worker receipt", "recording"
+        )
+    response = store.private.open("command-response:" + str(command.id), command.private_response)
+    if not response.get("ok") or identity(response["result"]) != identity(result):
+        raise failure(
+            "EVALUATION_CONFLICT", "Evaluator result differs from its durable receipt", "grading"
+        )
 
 
 async def terminal(db, store, attempt, result):
@@ -200,6 +208,15 @@ async def interrupt_initial(
     attempt = await initial(db, trial.id)
     if attempt is None or attempt.status != "running":
         return
+    await interrupt_attempt(db, store, attempt, kind=kind, code=code, cancelled=cancelled)
+    trial.evaluation_status = attempt.status
+
+
+async def interrupt_attempt(
+    db, store, attempt, *, kind="uncertain", code="EVALUATION_INTERRUPTED", cancelled=False
+):
+    if attempt.status != "running":
+        return False
     result = {
         "status": "cancelled" if cancelled else "error",
         "success": None,
@@ -215,7 +232,7 @@ async def interrupt_initial(
     }
     validate("evaluation_result", result)
     await terminal(db, store, attempt, result)
-    trial.evaluation_status = result["status"]
+    return True
 
 
 def public_attempt(attempt):
