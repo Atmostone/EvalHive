@@ -24,6 +24,7 @@ def test_native_toolathlon_assets_preserve_budget_gold_boundary_and_evaluation_o
         worker.spec = {"purpose": purpose, "checkpoint": {"artifacts": [{"id": "checkpoint"}]}}
         worker.case = SimpleNamespace(agent_input=lambda: {"prompt": "Public task"})
         worker.resources = []
+        worker.instructions = []
         plan = worker._plan()
         image = "sha256:" + "a" * 64
         origin = OwnerScope(*(str(uuid.uuid4()) for _ in range(3)), 1)
@@ -93,6 +94,10 @@ def test_native_toolathlon_assets_preserve_budget_gold_boundary_and_evaluation_o
             "disk_mb": 1536 if purpose == "execution" else 1408,
         }
         assert compiled.leases["world"][1].intent.role == "service"
+        assert any(
+            mount.target == "/evalhive-runtime" and mount.read_only
+            for mount in compiled.leases["world"][1].intent.mounts
+        )
         if purpose == "execution":
             task = compiled.leases["task"][1]
             assert [mount.target for mount in task.intent.mounts] == ["/evalhive-runtime"]

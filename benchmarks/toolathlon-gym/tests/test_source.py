@@ -21,6 +21,7 @@ def source(tmp_path, *, member_override=None):
             {"needed_mcp_servers": ["terminal"]}
         ),
         "tasks/finalpool/native-case/docs/task.md": "Complete the public fixture task.",
+        "tasks/finalpool/native-case/docs/agent_system_prompt.md": "Workspace: !!<<<<||||workspace_dir||||>>>>!!; time: !!<<<<||||time||||>>>>!!",
         "tasks/finalpool/native-case/preprocess/main.py": "# native preparation fixture",
         "tasks/finalpool/native-case/evaluation/main.py": "# native checker fixture",
         "tasks/finalpool/native-case/groundtruth_workspace": None,
@@ -59,6 +60,9 @@ def test_native_case_gold_paths_and_source_digest_remain_private(tmp_path):
     resources[0]["config"]["command"] = "changed"
     assert archive.mcp_resources(["terminal"])[0]["config"]["command"] == "native-terminal"
     assert not (tmp_path / "tasks").exists()
+    assert archive.agent_instructions("native-case", "frozen-time") == [
+        "Workspace: /workspace; time: frozen-time"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -121,6 +125,9 @@ def test_full_pinned_native_dataset_and_mcp_requirements_are_readable_without_ho
     archive = SourceArchive(path, os.environ["TOOLATHLON_ARCHIVE_DIGEST"])
     assert len(archive.case_ids()) == 503
     for identity in archive.case_ids():
+        instructions = archive.agent_instructions(identity, "frozen-native-time")
+        assert instructions and "/workspace" in instructions[0]
+        assert "!!<<<<" not in instructions[0]
         document = archive.case(identity)
         case = parse_case(json.dumps(document).encode(), suffix=".json")
         assert case.id == identity and case.agent_input()["prompt"]

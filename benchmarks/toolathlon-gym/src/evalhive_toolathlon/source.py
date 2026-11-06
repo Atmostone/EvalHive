@@ -174,3 +174,24 @@ class SourceArchive:
             raise NativeConfigurationError("Native source MCP requirements are unavailable")
         self.catalog = catalog
         return [deepcopy(catalog[name]) for name in needed]
+
+    def agent_instructions(self, identity, launch_time):
+        """Preserve public native system instructions with Task-local bindings."""
+        name = task_path(identity).relative_to("/gym").as_posix() + "/docs/agent_system_prompt.md"
+        if name not in self.members:
+            return []
+        try:
+            text = self.read(name).decode("utf-8")
+        except UnicodeError:
+            raise NativeConfigurationError("Native agent instructions are invalid") from None
+        bindings = {
+            "workspace_dir": "/workspace",
+            "current_working_dir": "/workspace",
+            "workspace_dir_rela": ".",
+            "time": launch_time,
+        }
+        for key, value in bindings.items():
+            text = text.replace("!!<<<<||||" + key + "||||>>>>!!", value)
+        if "!!<<<<" in text or "\0" in text:
+            raise NativeConfigurationError("Native agent instructions have unsupported bindings")
+        return [text] if text.strip() else []

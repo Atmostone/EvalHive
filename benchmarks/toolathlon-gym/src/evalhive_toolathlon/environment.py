@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
@@ -135,9 +136,101 @@ def reset(identity):
     return {"reset": True}
 
 
+def portal_service(argv, identity):
+    """Only the native read-only Python file server has a supported restart recipe."""
+    if len(argv) != 6 or argv[1:3] != ["-m", "http.server"] or argv[4] != "--directory":
+        return None
+    if Path(argv[0]).name not in {"python", "python3", "python3.12"}:
+        return None
+    if not argv[3].isdigit() or not 1 <= int(argv[3]) <= 65535:
+        return None
+    directory = Path(argv[5])
+    for name, root in (("task", task_root(identity)), ("workspace", Path("/workspace"))):
+        if directory.is_absolute() and directory.is_relative_to(root):
+            relative = directory.relative_to(root).as_posix()
+            if ".." not in directory.parts and directory.resolve(strict=True) == directory:
+                return {"kind": "python_http", "port": int(argv[3]), "root": name, "path": relative}
+    return None
+
+
+def native_services(identity, *, proc=Path("/proc")):
+    services = []
+    for directory in proc.iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            argv = (directory / "cmdline").read_bytes().decode().rstrip("\0").split("\0")
+            if not argv or not argv[0] or int(directory.name) == os.getpid():
+                continue
+            if argv[0] in {
+                "/sbin/docker-init",
+                "/usr/bin/docker-init",
+                "/evalhive-runtime/supervisor",
+            }:
+                continue
+            if argv[1:] == ["-c", "import time;time.sleep(86400)"] and Path(
+                argv[0]
+            ).name.startswith("python"):
+                continue
+            service = portal_service(argv, identity)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if service is None or len(services) >= 32:
+            return None
+        services.append(service)
+    return services if len({value["port"] for value in services}) == len(services) else None
+
+
+def restore_services(identity, saved, *, reports=Path("/reports")):
+    if not isinstance(saved, list) or len(saved) > 32:
+        raise ValueError("Native service checkpoint is invalid")
+    ports = set()
+    for service in saved:
+        if (
+            not isinstance(service, dict)
+            or set(service) != {"kind", "port", "root", "path"}
+            or service["kind"] != "python_http"
+            or type(service["port"]) is not int
+            or not 1 <= service["port"] <= 65535
+            or service["port"] in ports
+            or service["root"] not in {"task", "workspace"}
+            or not isinstance(service["path"], str)
+        ):
+            raise ValueError("Native service checkpoint is unsupported")
+        root = task_root(identity) if service["root"] == "task" else Path("/workspace")
+        path = PurePosixPath(service["path"])
+        if path.is_absolute() or ".." in path.parts or path.as_posix() != service["path"]:
+            raise ValueError("Native service path escapes its captured state")
+        directory = root / service["path"]
+        if not directory.is_dir() or directory.resolve(strict=True) != directory:
+            raise ValueError("Native service state is unavailable")
+        ports.add(service["port"])
+        with (reports / f"portal-{service['port']}.restore.log").open("ab") as output:
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "http.server",
+                    str(service["port"]),
+                    "--bind",
+                    "127.0.0.1",
+                    "--directory",
+                    str(directory),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=output,
+                start_new_session=True,
+            )
+
+
 def snapshot(identity):
+    services = native_services(identity)
+    if services is None:
+        return {"checkpoint_complete": False, "reason": "UNSUPPORTED_NATIVE_SERVICES"}
     destination = Path("/checkpoint")
     destination.mkdir(exist_ok=False)
+    (destination / "services.json").write_text(json.dumps(services) + "\n")
     with (destination / "dump.stderr").open("wb") as errors:
         subprocess.run(
             [
@@ -194,6 +287,10 @@ def restore(identity, checkpoint):
         )
     extract_native(saved / "workspace.tar", "/workspace")
     extract_native(saved / "task.tar", task_root(identity))
+    service_file = saved / "services.json"
+    if not service_file.is_file() or service_file.stat().st_size > 65536:
+        raise ValueError("Native service checkpoint is unavailable")
+    restore_services(identity, json.loads(service_file.read_text()))
     return {"restored": True}
 
 

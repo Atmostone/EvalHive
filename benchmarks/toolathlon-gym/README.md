@@ -48,7 +48,10 @@ groundtruth mounts. Agent descendants must stop before state capture.
 Capture preserves public files independently of the native verdict. A complete
 private checkpoint includes the database, workspace and mutable native task
 state. Evaluation-only workers restore it in fresh resources without resetting,
-preprocessing or running an agent. Incomplete checkpoints explicitly disable
+preprocessing or running an agent. Supported read-only native Python HTTP portals
+have contained restart recipes and undergo the same HTTP readiness checks after
+restore. Unknown live services disable checkpoint completeness. Incomplete
+checkpoints explicitly disable
 regrading. Native checker exit codes 0 and 1 represent correct and incorrect;
 other exits are evaluator failures. Deferred quality evaluation remains unknown.
 
@@ -61,3 +64,35 @@ environment. The packaged manifest is not an enabled server installation.
 Lifecycle and real JSONL subprocess contract tests are implemented. Complete
 native image acceptance and migration of new legacy launches to the coordinator
 remain tracked in SPA-145. These tests do not establish benchmark scores.
+
+Public native system instructions are retained with Task-local workspace/time
+bindings. Native local agent-loop helpers belong to the replaced baseline agent;
+Pi/OpenCode own that loop. Unsupported native step/turn/stop policies fail instead
+of silently changing their meaning. The installed rootless Task records
+`PLAYWRIGHT_MCP_SANDBOX=false` because Chromium runs as container UID 0 inside the
+existing rootless Docker boundary. This does not change Docker capabilities or
+host security settings.
+
+## Native environment image
+
+Build `Dockerfile.environment` with the named `native-source` context pointing at
+an unmodified checkout of the revision/tree in `source.py`. Check the source
+checkout's HEAD and clean status before building. The image copies only native
+MCP projects, configuration declarations and locked dependencies; tasks and
+private groundtruth enter the World through its separate immutable archive.
+
+Normal builds use the committed overrides in `locks/`, `uv sync --locked` and
+`npm ci`. Dependency resolution is an explicit maintenance operation through the
+`native-locks` target and `NATIVE_LOCK_MODE=resolve`. Export and review its
+`/opt/build-info/generated-locks` before updating the committed overrides; never
+use that mode as an automatic fallback in an installed run. Reviewed native
+package repairs verify original package bytes and are recorded alongside the
+lock digests. Node project compilation is separately cached and fails on errors.
+The final image records Debian package inventory and Python/Node versions.
+
+Playwright browsers are installed in `/opt/playwright-browsers`, independently of
+the harness's HOME/cache directories. MCP declarations explicitly bind this path
+and the recorded rootless Chromium setting. After building, resolve worker,
+environment and PostgreSQL images to immutable IDs/digests before registration.
+The first real acceptance checks image boundaries and browser execution offline;
+full Trial acceptance additionally exercises native preparation and evaluation.

@@ -18,7 +18,7 @@ MANIFEST = json.loads(Path(__file__).with_name("manifest.json").read_text())
 PROVIDER = "evalhive.rootless"
 HELPER = "/opt/evalhive-toolathlon/environment.py"
 PYTHON = "/opt/venv/bin/python"
-STATE_SCHEMA = "toolathlon-gym.world.v1"
+STATE_SCHEMA = "toolathlon-gym.world.v2"
 
 
 class ToolathlonConnector(Connector):
@@ -72,6 +72,9 @@ class ToolathlonConnector(Connector):
             source_config = raw["meta"].get("native_config", {})
             if (
                 source_config.get("max_steps") is not None
+                or source_config.get("max_turns") is not None
+                or source_config.get("max_steps_under_single_turn_mode") is not None
+                or source_config.get("stop") is not None
                 or (source_config.get("meta") or {}).get("max_steps") is not None
             ):
                 raise NativeConfigurationError(
@@ -79,6 +82,7 @@ class ToolathlonConnector(Connector):
                 )
             self.spec, self.case, self.config, self.launch = effective, case, config, launch
             self.active_time = launch.full
+            self.instructions = self.installed().archive.agent_instructions(case.id, launch.full)
             self.probes = list(
                 dict.fromkeys(portal_urls(case.agent_input()["prompt"]) + config["portal_checks"])
             )
@@ -145,7 +149,7 @@ class ToolathlonConnector(Connector):
             "environment_handle": "task",
             "cwd": "/workspace",
             "prompt": self.case.agent_input()["prompt"],
-            "instructions": [],
+            "instructions": list(self.instructions),
             "resources": [
                 {"id": "tools", "kind": "tools", "config": {"names": []}},
                 *deepcopy(self.resources),
@@ -408,17 +412,18 @@ class ToolathlonConnector(Connector):
                     )
                 self.active_time = fallback
 
-            async def portals(index):
-                return (
-                    await self._helper(
-                        context,
-                        "portals",
-                        request_id=f"prepare.portals.{index}",
-                        urls=json.dumps(self.probes),
-                    )
-                ).get("ready") is True
+        async def portals(index):
+            return (
+                await self._helper(
+                    context,
+                    "portals",
+                    request_id=f"prepare.portals.{index}",
+                    urls=json.dumps(self.probes),
+                )
+            ).get("ready") is True
 
-            await self._until(context, portals, deadline=deadline)
+        await self._until(context, portals, deadline=deadline)
+        if self.spec.get("purpose") != "evaluation":
             await self._allocate(context, "task")
             state = await self._broker(
                 context, "inspect", handle=self.handles["task"], request_id="prepare.task-ready"

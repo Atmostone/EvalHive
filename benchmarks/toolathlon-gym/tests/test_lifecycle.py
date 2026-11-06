@@ -130,6 +130,7 @@ def test_fallback_reset_readiness_and_private_checkpoint_are_native(dataset):
         worker, run_spec, plan, result = await prepared(dataset, context)
         assert result["native_state"]["active_launch_time"] == "2026-11-06 10:15:30"
         assert result["agent"]["environment_handle"] == "owned-task"
+        assert result["agent"]["instructions"] == ["Workspace: /workspace; time: " + TIME]
         assert "private-native-gold" not in json.dumps(result["agent"])
         assert any(resource["kind"] == "volume" for resource in plan["resources"])
         assert (await worker.handle("drive", {"scope": SCOPE}, context)) == {

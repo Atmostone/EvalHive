@@ -44,6 +44,14 @@ def test_native_long_timeout_is_preserved_instead_of_silently_clamped():
     assert value["config"]["timeout_seconds"] == 1000
 
 
+def test_native_browser_bindings_survive_an_isolated_harness_home():
+    value = resource({"name": "playwright_with_chunk", "params": {"command": "node"}})
+    assert value["config"]["env"] == {
+        "PLAYWRIGHT_BROWSERS_PATH": "/opt/playwright-browsers",
+        "PLAYWRIGHT_MCP_SANDBOX": "false",
+    }
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

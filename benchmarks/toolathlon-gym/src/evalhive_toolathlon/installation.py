@@ -81,14 +81,15 @@ def assets(worker_image, environment_image, postgres_image, *, egress=True):
             512,
             pids=256,
             command=["/opt/venv/bin/python", "-c", "import time;time.sleep(86400)"],
-            environment=deepcopy(PG_ENV),
+            environment={**PG_ENV, "PYTHONPATH": "/gym"},
             storage_slots=deepcopy(workspace),
             mounts=[
                 {
                     "file_id": "native-source",
                     "target": "/native/native-source.tar",
                     "read_only": True,
-                }
+                },
+                {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True},
             ],
             outputs={
                 "workspace": {
@@ -122,6 +123,9 @@ def assets(worker_image, environment_image, postgres_image, *, egress=True):
             command=["/opt/venv/bin/python", "-c", "import time;time.sleep(86400)"],
             environment={
                 **PG_ENV,
+                # Chromium runs inside an already isolated rootless Task as UID 0.
+                "PLAYWRIGHT_MCP_SANDBOX": "false",
+                "PLAYWRIGHT_BROWSERS_PATH": "/opt/playwright-browsers",
                 "PG_HOST": "toolathlon_pg",
                 "PG_PORT": "5432",
                 "PG_USER": "eigent",

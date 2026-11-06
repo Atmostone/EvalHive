@@ -79,6 +79,11 @@ def resource(document):
         environment.update({"PG" + key: value for key, value in values.items()})
     if command == "uv":
         environment.update(UV_OFFLINE="1", UV_NO_SYNC="1")
+    if name == "playwright_with_chunk":
+        # Explicit values also survive a harness's isolated HOME/environment.
+        environment.update(
+            PLAYWRIGHT_BROWSERS_PATH="/opt/playwright-browsers", PLAYWRIGHT_MCP_SANDBOX="false"
+        )
     timeout = document.get("client_session_timeout_seconds", 100)
     if type(timeout) is not int or not 1 <= timeout <= 3600:
         raise NativeConfigurationError("Native MCP timeout is outside the Harness contract")
