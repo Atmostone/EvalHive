@@ -410,7 +410,13 @@ class TrialDriver:
                                 "worker_actor_id": str(channel.actor_id),
                                 "evaluator": {
                                     key: self.host.manifest[key]
-                                    for key in ("id", "version", "protocol_version", "image")
+                                    for key in (
+                                        "id",
+                                        "version",
+                                        "protocol_version",
+                                        "image",
+                                        "capabilities",
+                                    )
                                 },
                             },
                         )

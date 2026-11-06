@@ -228,6 +228,16 @@ it must create another attempt with independent ownership/resources and sufficie
 verified native checkpoint, while preserving the finished execution. No current
 API treats a capture's arbitrary native metadata as permission to regrade.
 
+`regrade.retained_source` now reads a finished source evaluation without changing
+its execution, journal or resources. It requires the source connector's explicit
+native regrade capability and a complete typed checkpoint matching the captured
+case revision/source digest and connector version. It verifies each checkpoint
+artifact against the original capture and retained storage. Its private output
+contains only declared evaluator model/credential references, excluding agent and
+orchestrator roles and mutable native session handles. Older captures without
+this proof remain unavailable for replay. This source check is implemented;
+independent regrade ownership, resource admission and restoration remain B05 work.
+
 ## Durable worker commands
 
 `BenchmarkCommand` stores one immutable command intent per worker stream and

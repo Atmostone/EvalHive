@@ -24,7 +24,8 @@ MANIFEST = {
     "config_schema": {"type": "object"},
     "requirements": {},
     "capabilities": {
-        method: "native" for method in ["prepare", "drive", "capture", "evaluate", "cleanup"]
+        method: "native"
+        for method in ["prepare", "drive", "capture", "evaluate", "cleanup", "regrade"]
     },
 }
 
@@ -37,6 +38,7 @@ class Worker(Connector):
 
     async def handle(self, method, params, context):
         if "spec" in params:
+            self.spec = params["spec"]
             self.config = params["spec"]["config"]
         scope = params.get("scope") or params.get("spec", {}).get("scope")
         if scope:
@@ -84,7 +86,20 @@ class Worker(Connector):
         if method == "capture":
             if self.config.get("malformed_capture"):
                 return {"invalid": True}
-            return {"artifacts": [], "regrade": "available"}
+            result = {"artifacts": [], "regrade": "available"}
+            if self.config.get("checkpoint"):
+                result["checkpoint"] = {
+                    "format_version": "1.0",
+                    "connector": {"id": MANIFEST["id"], "version": MANIFEST["version"]},
+                    "case": self.spec["case"]["ref"],
+                    "source_digest": self.spec["case"]["source_digest"],
+                    "state_schema": "fixture.inline.v1",
+                    "complete": True,
+                    "artifacts": [],
+                    "evaluator_roles": [],
+                    "state": {"captured": True},
+                }
+            return result
         if method == "evaluate":
             correct = self.config.get("correct", True)
             return {

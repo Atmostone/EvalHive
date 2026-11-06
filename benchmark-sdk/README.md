@@ -118,6 +118,18 @@ native result, artifact hashes and completeness accompany the metrics. Regrade
 must create a new evaluation and can run only when sufficient state was retained.
 No SDK success receipt implies the agent solved a task.
 
+Native replay requires `capabilities.regrade: native` and a typed
+`regrade_checkpoint` in `capture.checkpoint`. The checkpoint identifies its
+connector/version, exact case/revision/source digest, native state schema,
+completeness, retained artifacts and evaluator model roles. `state` remains
+connector-owned private data. Artifact references must belong to the same
+capture. Agent and orchestrator roles are forbidden in the evaluator role list.
+The connector attests that this state is semantically sufficient; the host
+checks provenance and retained bytes. A string such as `regrade: available` is
+not a checkpoint. This prerequisite does not itself start replay or authorize
+reopening an execution; a new evaluator controller still needs resource admission
+and restoration of the retained state.
+
 ## Transport and resource broker
 
 Standard input/output carry UTF-8 JSONL only. Diagnostics use standard error.

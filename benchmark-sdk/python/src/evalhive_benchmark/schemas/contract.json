@@ -2030,6 +2030,90 @@
         "cases"
       ],
       "additionalProperties": false
+    },
+    "regrade_checkpoint": {
+      "type": "object",
+      "properties": {
+        "format_version": {
+          "const": "1.0"
+        },
+        "connector": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+            }
+          },
+          "required": [
+            "id",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        "case": {
+          "$ref": "#/$defs/case_ref"
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "state_schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/artifact"
+          },
+          "maxItems": 256
+        },
+        "evaluator_roles": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+              },
+              {
+                "not": {
+                  "enum": [
+                    "agent",
+                    "orchestrator"
+                  ]
+                }
+              }
+            ]
+          },
+          "uniqueItems": true,
+          "maxItems": 32
+        },
+        "state": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "format_version",
+        "connector",
+        "case",
+        "source_digest",
+        "state_schema",
+        "complete",
+        "artifacts",
+        "evaluator_roles",
+        "state"
+      ],
+      "additionalProperties": false
     }
   }
 }

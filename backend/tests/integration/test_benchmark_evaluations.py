@@ -22,6 +22,33 @@ from tests.integration.test_benchmark_trials import WORKSPACE
 driver = _driver_fixture
 
 
+@pytest.mark.parametrize("checkpoint", [True, False])
+async def test_regrade_source_is_verified_without_reopening_execution(driver, checkpoint):
+    from app.benchmarks.regrade import retained_source
+
+    controller, spec = driver
+    spec["config"] = {"checkpoint": checkpoint}
+    await controller.run(spec)
+    row = await attempt_row(controller)
+    async with AsyncSession(controller.store.engine) as db:
+        before = (await db.get(BenchmarkTrial, controller.owner.trial_id)).next_seq
+    if checkpoint:
+        source = await retained_source(controller.store, None, WORKSPACE, row.trial_id, row.id)
+        assert source["checkpoint"]["state"] == {"captured": True}
+        assert source["models"] == {} and source["credential_refs"] == {}
+        assert "prepared" not in source and "execution" not in source
+    else:
+        with pytest.raises(ProtocolError) as unavailable:
+            await retained_source(controller.store, None, WORKSPACE, row.trial_id, row.id)
+        assert unavailable.value.code == "REGRADE_UNAVAILABLE"
+    with pytest.raises(ProtocolError) as foreign:
+        await retained_source(controller.store, None, uuid.uuid4(), row.trial_id, row.id)
+    assert foreign.value.code == "EVALUATION_NOT_FOUND"
+    async with AsyncSession(controller.store.engine) as db:
+        trial = await db.get(BenchmarkTrial, row.trial_id)
+        assert trial.phase == "finished" and trial.next_seq == before
+
+
 async def attempt_row(controller):
     async with AsyncSession(controller.store.engine, expire_on_commit=False) as db:
         return await db.scalar(
