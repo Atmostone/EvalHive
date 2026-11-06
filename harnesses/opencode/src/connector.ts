@@ -218,7 +218,11 @@ export class OpenCodeConnector implements Connector {
         ],
         instructions: instructions ? [instructionFile] : [],
         skills: { paths: plan.skills },
-        mcp: resourceSet?.mcp ?? plan.mcp,
+        // Initialize native MCP processes one at a time within their own limits.
+        // OpenCode otherwise starts every enabled server concurrently.
+        mcp: Object.fromEntries(Object.entries(resourceSet?.mcp ?? plan.mcp).map(
+          ([name, resource]) => [name, { ...resource, enabled: false }],
+        )),
         permission,
         agent: {
           build: {
@@ -281,12 +285,22 @@ export class OpenCodeConnector implements Connector {
         for (const message of seed.messages) translator.imported.add(message.info.id);
       }
       if (gate) output.native('external_tools.mapping', {tools: resourceSet!.mapping, interface: 'adapted_mcp', history_messages: seed.messages.length});
+      for (const [name, resource] of Object.entries(resourceSet?.mcp ?? plan.mcp)) {
+        if (resource.enabled === false) continue;
+        await client.mcp.connect(
+          { name },
+          { throwOnError: true, signal: AbortSignal.timeout(Number('timeout' in resource ? resource.timeout ?? 30000 : 30000) + 5000) },
+        );
+      }
       const statuses = await client.mcp.status(
         {},
         { throwOnError: true, signal: AbortSignal.timeout(30000) },
       );
       output.native('connector.stage', { stage: 'resources_ready' });
-      for (const [name, resource] of Object.entries(plan.mcp)) {
+      output.native('mcp.status', { servers: Object.fromEntries(
+        Object.entries(statuses.data ?? {}).map(([name, value]) => [name, object(value).status ?? 'unavailable']),
+      ) });
+      for (const [name, resource] of Object.entries(resourceSet?.mcp ?? plan.mcp)) {
         if (resource.enabled !== false && object(statuses.data?.[name]).status !== 'connected')
           throw new ProtocolError('MCP_UNAVAILABLE', 'A configured MCP server could not be initialized');
       }
