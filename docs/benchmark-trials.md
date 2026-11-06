@@ -41,6 +41,23 @@ Installing a container lease must match an admitted resource and quota. A second
 session cannot simultaneously consume the same admitted resource. Network
 leases have no independent CPU/memory grant.
 
+Planning can start with a `planning` admission for one isolated registered worker.
+Only its `worker` container lease can be installed under that budget; native
+execs, exports and task/environment leases are unavailable. It can read its
+installed dataset and exchange validation/plan commands without preparing native
+task services. The worker's image, mounts and quota are still server-owned.
+
+After resolving the plan against installed assets, the host finalizes admission
+exactly once, under the same host/trial locks. The full group must retain the
+planner's exact original resource demand, including native minima. The existing
+worker and its immutable session remain alive; no resize or replacement is
+implied. Preparation and execution commands require the full-group budget.
+Further changes to a finalized group fail with `ADMISSION_CONFLICT`. A failed or
+cancelled finalization preserves the planning reservation for scoped cleanup.
+Capacity is measured again, conservatively counting the live planner's complete
+quota against currently available capacity; there is no unmeasured memory credit.
+Hosts near capacity can reject a group rather than overcommit it.
+
 The host reservation has no automatic expiry. Expiring a controller does not
 prove that its native processes stopped. Only completed resource cleanup releases
 the reservation for the next trial.

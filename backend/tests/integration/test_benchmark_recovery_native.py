@@ -101,6 +101,7 @@ async def native_trial(_engine, db_session, request):
     async def measure():
         return await asyncio.to_thread(host_capacity, runtime, local)
 
+    planning = getattr(request, "param", None) == "planner"
     await store.reserve(
         owner,
         demands=(ResourceDemand("environment", quota, 256, 1, 16),),
@@ -108,6 +109,7 @@ async def native_trial(_engine, db_session, request):
         measure=measure,
         runtime_policy=runtime.policy,
         group_policy=GroupPolicy(),
+        stage="planning" if planning else "full",
     )
     scope = OwnerScope(str(WORKSPACE), str(trial.id), str(uuid.uuid4()), 1)
     handle = str(uuid.uuid4())
@@ -115,7 +117,9 @@ async def native_trial(_engine, db_session, request):
         scope,
         handle,
         image["image_id"],
-        role="worker" if getattr(request, "param", None) == "worker" else "environment",
+        role="worker"
+        if getattr(request, "param", None) in {"worker", "planner"}
+        else "environment",
         quota=quota,
         mounts=(BindMount(host + "/bundle", "/evalhive-runtime"),),
         command=(
@@ -268,7 +272,7 @@ async def test_late_native_create_keeps_reservation_until_actual_resource_is_rec
             await asyncio.wait_for(asyncio.shield(pending), 20)
 
 
-@pytest.mark.parametrize("native_trial", ["worker"], indirect=True)
+@pytest.mark.parametrize("native_trial", ["worker", "planner"], indirect=True)
 async def test_old_worker_transport_detaches_after_takeover_without_stopping_new_owner(
     native_trial, _engine
 ):
@@ -307,6 +311,77 @@ async def test_old_worker_transport_detaches_after_takeover_without_stopping_new
         assert await asyncio.to_thread(runtime.find, scope, lease.handle) is None
     finally:
         await transport.aclose()
+
+
+@pytest.mark.parametrize("native_trial", ["planner"], indirect=True)
+async def test_isolated_planner_is_retained_during_native_group_finalization(native_trial):
+    store, owner, scope, actor, lease, authority, runtime = native_trial
+    provider = RootlessDockerProvider(runtime, authority, manifest())
+    allocate = request(scope, lease.handle, "allocate", reconcile=False)
+    allocate.pop("handle")
+    await provider.handle(allocate)
+    worker = await asyncio.to_thread(runtime.find, scope, lease.handle)
+    await wait_for_file(runtime, worker)
+    with pytest.raises(ProtocolError) as no_preparation:
+        await store.transition(owner, "planning", "preparing")
+    assert no_preparation.value.code == "GROUP_ADMISSION_REQUIRED"
+
+    async def measure():
+        return await asyncio.to_thread(host_capacity, runtime, Path(runtime.policy.data.local))
+
+    quota = lease.intent.quota
+    budget = await store.reserve(
+        owner,
+        demands=(
+            ResourceDemand("environment", quota, 256, 1, 16),
+            ResourceDemand("task", quota, 256, 1, 16),
+        ),
+        native_resources={},
+        measure=measure,
+        runtime_policy=runtime.policy,
+        group_policy=GroupPolicy(),
+    )
+    assert budget["stage"] == "full"
+    assert await asyncio.to_thread(runtime.find, scope, lease.handle) == worker
+    await store.transition(owner, "planning", "preparing")
+    task_scope = replace(scope, session_id=str(uuid.uuid4()))
+    task_id = str(uuid.uuid4())
+    task_spec = replace(lease.intent, scope=task_scope, resource_id=task_id, role="environment")
+    task = ResourceLease(task_id, task_scope, "container", task_spec)
+    await install_session(
+        store,
+        owner,
+        task_scope,
+        leases={"task": (PROVIDER, task)},
+        actors={
+            actor: ActorPolicy(
+                (PROVIDER,),
+                ("task",),
+                ("preparing", "cleaning"),
+                ("allocate", "inspect", "release"),
+            )
+        },
+    )
+    task_authority = SqlResourceAuthority(store, owner, task_scope.session_id, actor, PROVIDER)
+    task_allocate = request(task_scope, task_id, "allocate", reconcile=False)
+    task_allocate.pop("handle")
+    task_allocate["payload"] = {"resource_id": "task"}
+    try:
+        await RootlessDockerProvider(runtime, task_authority, manifest()).handle(task_allocate)
+        task_native = await asyncio.to_thread(runtime.find, task_scope, task_id)
+        await wait_for_file(runtime, task_native)
+        assert task_native != worker
+        await store.transition(owner, "preparing", "cleaning")
+        recovery = RecoveryService(
+            store, actor, {PROVIDER: lambda value: RootlessReconciler(runtime, value, PROVIDER)}
+        )
+        released = await recovery.sweep(owner, "release")
+        assert len(released) == 2 and all(value["state"] == "released" for value in released)
+        await store.transition(owner, "cleaning", "finished")
+    finally:
+        remaining = await asyncio.to_thread(runtime.find, task_scope, task_id)
+        if remaining is not None:
+            await asyncio.to_thread(runtime.stop, remaining, grace_seconds=0, remove=True)
 
 
 @pytest.mark.parametrize("completed", [True, False])

@@ -297,9 +297,27 @@ class TrialStore:
             return result.rowcount == 1
 
     async def reserve(
-        self, owner, *, demands, native_resources, measure, runtime_policy, group_policy
+        self,
+        owner,
+        *,
+        demands,
+        native_resources,
+        measure,
+        runtime_policy,
+        group_policy,
+        stage="full",
     ):
-        """Measure and persist the entire group atomically before preparation."""
+        """Admit an isolated planner, then freeze the complete group exactly once.
+
+        A planning reservation only authorizes one registered worker. Finalizing
+        retains its exact demand; no later resize or lowering native minima is
+        allowed. Measurements remain conservative while that worker is alive.
+        """
+        if stage not in {"planning", "full"}:
+            raise failure("INVALID_ADMISSION", "Unknown host admission stage")
+        if stage == "planning" and (len(demands) != 1 or native_resources):
+            raise failure("INVALID_ADMISSION", "Planning admission requires one worker demand")
+        resources = [asdict(item) for item in demands]
         async with database_fence(self.engine, owner.trial_id, host_id=self.host_id) as db:
             trial, now = await current_trial(db, owner)
             if (
@@ -310,13 +328,16 @@ class TrialStore:
                 raise failure("INVALID_PHASE", "Host admission requires an active planning phase")
             reservation = await db.get(BenchmarkHostReservation, self.host_id)
             if reservation is not None:
-                if (reservation.trial_id, reservation.generation, reservation.controller_id) == (
+                if (reservation.trial_id, reservation.generation, reservation.controller_id) != (
                     owner.trial_id,
                     owner.generation,
                     owner.controller_id,
                 ):
+                    raise failure("HOST_BUSY", "Execution host remains reserved", "preparation")
+                previous_stage = reservation.budget.get("stage", "full")
+                if previous_stage == stage:
                     if (
-                        reservation.budget["resources"] != [asdict(item) for item in demands]
+                        reservation.budget["resources"] != resources
                         or reservation.budget["native_resources"] != native_resources
                     ):
                         raise failure(
@@ -324,7 +345,18 @@ class TrialStore:
                             "Host reservation has different resource requirements",
                         )
                     return reservation.budget
-                raise failure("HOST_BUSY", "Execution host remains reserved", "preparation")
+                selected = {item["resource_id"]: item for item in resources}
+                if (
+                    previous_stage != "planning"
+                    or stage != "full"
+                    or any(
+                        selected.get(item["resource_id"]) != item
+                        for item in reservation.budget["resources"]
+                    )
+                ):
+                    raise failure(
+                        "ADMISSION_CONFLICT", "Final admission must preserve the planning worker"
+                    )
             measured = await measure()
             # Measurement may yield while a cancellation request arrives.
             await db.refresh(trial)
@@ -342,22 +374,30 @@ class TrialStore:
                 )
             budget = {
                 **decision,
+                "stage": stage,
                 "runtime_admission": "reserved",
                 "can_run": False,
-                "resources": [asdict(item) for item in demands],
+                "resources": resources,
                 "native_resources": native_resources,
             }
-            db.add(
-                BenchmarkHostReservation(
-                    host_id=self.host_id,
-                    trial_id=trial.id,
-                    generation=owner.generation,
-                    controller_id=owner.controller_id,
-                    budget=budget,
+            finalizing = reservation is not None
+            if finalizing:
+                reservation.budget = budget
+            else:
+                db.add(
+                    BenchmarkHostReservation(
+                        host_id=self.host_id,
+                        trial_id=trial.id,
+                        generation=owner.generation,
+                        controller_id=owner.controller_id,
+                        budget=budget,
+                    )
                 )
-            )
             await append_entry(
-                db, trial, "host.reserved", {"group_resources": decision["group_resources"]}
+                db,
+                trial,
+                "host.reservation_finalized" if finalizing else "host.reserved",
+                {"stage": stage, "group_resources": decision["group_resources"]},
             )
             await db.commit()
             return budget
@@ -388,6 +428,12 @@ class TrialStore:
                     raise failure(
                         "NO_RESERVATION",
                         "Preparation requires an owned host reservation",
+                        "preparation",
+                    )
+                if reservation.budget.get("stage", "full") != "full":
+                    raise failure(
+                        "GROUP_ADMISSION_REQUIRED",
+                        "Preparation requires the complete environment group reservation",
                         "preparation",
                     )
             if target == "driving":

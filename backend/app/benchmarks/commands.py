@@ -155,6 +155,12 @@ class CommandStore:
                         "Worker execution requires its host reservation",
                         "preparation",
                     )
+                if reservation.budget.get("stage", "full") != "full":
+                    raise failure(
+                        "GROUP_ADMISSION_REQUIRED",
+                        "Worker execution requires complete group admission",
+                        "preparation",
+                    )
             row = BenchmarkCommand(
                 id=uuid.uuid4(),
                 trial_id=trial.id,

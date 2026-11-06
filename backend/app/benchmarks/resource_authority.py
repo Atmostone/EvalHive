@@ -113,6 +113,19 @@ async def install_session(
             raise failure(
                 "NO_RESERVATION", "Session requires an owned host reservation", "preparation"
             )
+        if reservation.budget.get("stage", "full") == "planning" and (
+            purpose != "execution"
+            or len(leases) != 1
+            or any(
+                lease.kind != "container"
+                or not isinstance(lease.intent, ContainerSpec)
+                or lease.intent.role != "worker"
+                for _, lease in leases.values()
+            )
+        ):
+            raise failure(
+                "PLANNING_WORKER_ONLY", "Planning admission only permits its isolated worker"
+            )
         previous = await db.get(BenchmarkEnvironmentSession, uuid.UUID(scope.session_id))
         if previous is not None:
             if previous.plan_digest != digest or previous.trial_id != owner.trial_id:
@@ -236,6 +249,14 @@ class SqlResourceAuthority:
                 raise failure(
                     "NO_RESERVATION",
                     "Resource operation has no current host reservation",
+                    "preparation",
+                )
+            if reservation.budget.get("stage", "full") == "planning" and request[
+                "operation"
+            ] not in {"allocate", "inspect", "stop", "release"}:
+                raise failure(
+                    "PLANNING_WORKER_ONLY",
+                    "Native execution and exports require complete group admission",
                     "preparation",
                 )
             plan = self.store.private.open("session:" + str(session.id), session.private_plan)
