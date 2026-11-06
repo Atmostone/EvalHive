@@ -43,6 +43,14 @@ class ResourceDemand:
     disk_mb: int
 
 
+@dataclass(frozen=True)
+class StorageDemand:
+    """Persistent workspace storage reserves disk without fictitious CPU/RAM."""
+
+    resource_id: str
+    disk_mb: int
+
+
 def host_capacity(runtime, capacity_path: Path) -> HostCapacity:
     """Host provider only: the storage path is server-owned, never worker input.
 
@@ -85,7 +93,7 @@ def _number(value, minimum=0):
 
 
 def check_group(
-    demands: tuple[ResourceDemand, ...],
+    demands: tuple[ResourceDemand | StorageDemand, ...],
     native_resources: dict,
     measured: HostCapacity,
     runtime_policy: RuntimePolicy,
@@ -123,6 +131,13 @@ def check_group(
         ):
             raise ManagedRuntimeError("Execution group resources require distinct identities")
         identities.add(demand.resource_id)
+        if isinstance(demand, StorageDemand):
+            if type(demand.disk_mb) is not int or not 1 <= demand.disk_mb <= 2**53 - 1:
+                raise ManagedRuntimeError("Registered storage requirements are invalid")
+            disk += demand.disk_mb
+            continue
+        if not isinstance(demand, ResourceDemand):
+            raise ManagedRuntimeError("Execution group demand type is invalid")
         demand.limits.validate(runtime_policy)
         if (
             type(demand.minimum_memory_mb) is not int

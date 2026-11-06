@@ -16,6 +16,7 @@ from evalhive_benchmark import ProtocolError, validate
 from app.runtime.docker_provider import RootlessDockerProvider
 from app.runtime.managed_exec import OwnedExecRuntime
 from app.runtime.managed_spec import ManagedRuntimeError, UncertainRuntimeError
+from app.runtime.managed_storage import RootlessVolumeRuntime
 
 STOPPED = frozenset({"created", "exited", "dead"})
 
@@ -24,6 +25,7 @@ class RootlessReconciler:
     def __init__(self, runtime, authority, provider_id):
         self.runtime, self.authority, self.provider_id = runtime, authority, provider_id
         self.owned = OwnedExecRuntime(runtime)
+        self.storage = RootlessVolumeRuntime(runtime)
 
     async def handle(self, request):
         validate("broker_request", request)
@@ -105,6 +107,10 @@ class RootlessReconciler:
                 native = await asyncio.to_thread(
                     self.runtime.find, lease.scope, lease.intent.resource_id
                 )
+            elif lease.kind == "volume":
+                native = await asyncio.to_thread(
+                    self.storage.find, lease.scope, lease.intent.resource_id
+                )
             else:
                 native = await asyncio.to_thread(
                     self.runtime.find_network, lease.scope, lease.intent.resource_id
@@ -114,6 +120,15 @@ class RootlessReconciler:
                 # Absence on one scan cannot release an unconfirmed creation.
                 raise UncertainRuntimeError("Unconfirmed creation has no native receipt")
             lease = await self._save(call, lease, native=native, state="allocated")
+        if lease.kind == "volume":
+            if await asyncio.to_thread(self.storage.get, lease.native) is None:
+                lease = await self._save(call, lease, state="released")
+                return self._result(lease, missing=True)
+            if operation == "release":
+                lease = await self._save(call, lease, state="releasing")
+                await asyncio.to_thread(self.storage.remove, lease.native)
+                lease = await self._save(call, lease, state="released")
+            return self._result(lease)
         if lease.kind == "network":
             network = await asyncio.to_thread(self.runtime.network, lease.native)
             if network is None:

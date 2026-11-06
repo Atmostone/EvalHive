@@ -20,6 +20,7 @@ from app.runtime.managed_spec import (
     UncertainRuntimeError,
     absolute_path,
 )
+from app.runtime.managed_storage import RootlessVolumeRuntime
 
 
 def _resource_id(value):
@@ -262,6 +263,16 @@ class RootlessDockerRuntime:
                 raise ManagedRuntimeError("Network namespace is not a task environment")
             network = {"network_mode": "container:" + parent.id}
         mounts = self._mounts(spec)
+        storage = [
+            docker.types.Mount(
+                target=binding["bind"],
+                source=name,
+                type="volume",
+                read_only=binding["mode"] == "ro",
+                no_copy=True,
+            )
+            for name, binding in RootlessVolumeRuntime(self).bindings(spec).items()
+        ]
         if self.resolve_image(spec.image_id)["image_id"] != spec.image_id:
             raise ManagedRuntimeError("Resource image changed since admission")
         try:
@@ -274,6 +285,7 @@ class RootlessDockerRuntime:
                 user=spec.user,
                 environment=dict(spec.environment),
                 volumes=mounts,
+                mounts=storage,
                 mem_limit=f"{spec.quota.memory_mb}m",
                 cpu_period=100000,
                 cpu_quota=int(spec.quota.cpu_cores * 100000),

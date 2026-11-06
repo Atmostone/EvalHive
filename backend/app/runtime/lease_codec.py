@@ -11,9 +11,12 @@ from app.runtime.managed_spec import (
     ManagedContainer,
     ManagedExec,
     ManagedNetwork,
+    ManagedVolume,
     NetworkRequest,
     OwnerScope,
     Quota,
+    VolumeMount,
+    VolumeRequest,
 )
 from app.runtime.spec import BindMount
 
@@ -59,11 +62,19 @@ def decode_lease(data: dict) -> ResourceLease:
             return None
         return ManagedNetwork(**{**value, "scope": OwnerScope(**value["scope"])})
 
+    def volume(value):
+        if value is None:
+            return None
+        return ManagedVolume(**{**value, "scope": OwnerScope(**value["scope"])})
+
     kind, raw, native = data["kind"], data["intent"], data["native"]
     scope = OwnerScope(**data["scope"])
     if kind == "network":
         intent = NetworkRequest(**{**raw, "scope": OwnerScope(**raw["scope"])})
         native = network(native)
+    elif kind == "volume":
+        intent = VolumeRequest(**{**raw, "scope": OwnerScope(**raw["scope"])})
+        native = volume(native)
     elif kind == "container":
         intent = ContainerSpec(
             **{
@@ -76,6 +87,10 @@ def decode_lease(data: dict) -> ResourceLease:
                 "network_aliases": tuple(raw["network_aliases"]),
                 "network": network(raw["network"]),
                 "namespace": container(raw["namespace"]),
+                "storage": tuple(
+                    VolumeMount(volume(item["volume"]), item["target"], item["read_only"])
+                    for item in raw.get("storage", [])
+                ),
             }
         )
         native = container(native)

@@ -118,6 +118,40 @@ class ManagedContainer:
 
 
 @dataclass(frozen=True)
+class VolumeRequest:
+    scope: OwnerScope
+    resource_id: str
+    disk_mb: int
+
+    def __post_init__(self):
+        if type(self.disk_mb) is not int or not 1 <= self.disk_mb <= 2**53 - 1:
+            raise ManagedRuntimeError("Owned storage requires a positive disk reservation")
+
+
+@dataclass(frozen=True)
+class ManagedVolume:
+    scope: OwnerScope
+    resource_id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class VolumeMount:
+    volume: ManagedVolume
+    target: str
+    read_only: bool = False
+
+    def __post_init__(self):
+        path = absolute_path(self.target)
+        if (
+            path == PurePosixPath("/")
+            or type(self.read_only) is not bool
+            or any(path.is_relative_to(root) for root in ("/proc", "/sys", "/dev"))
+        ):
+            raise ManagedRuntimeError("Owned storage requires a contained mount target")
+
+
+@dataclass(frozen=True)
 class ContainerSpec:
     scope: OwnerScope
     resource_id: str
@@ -135,6 +169,7 @@ class ContainerSpec:
     network_aliases: tuple[str, ...] = ()
     namespace: ManagedContainer | None = None
     readonly_root: bool = False
+    storage: tuple[VolumeMount, ...] = ()
 
 
 @dataclass(frozen=True)

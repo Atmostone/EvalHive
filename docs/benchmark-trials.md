@@ -79,6 +79,35 @@ controller. Atomic sequence allocation lets resource receipts and multiple event
 streams share one contiguous journal without waiting for a long native command.
 Phase barriers and finalization use the same row lock to serialize with events.
 
+## Owned shared workspace storage
+
+The rootless provider supports installed `volume` assets with a positive
+`disk_mb` reservation. They use the existing resource RPC and durable lease
+contract. Storage demand contributes disk only; native container minima, worker
+overhead and group CPU/memory accounting remain unchanged. This is capacity
+admission, not a filesystem byte quota.
+
+Container assets declare named `storage_slots`, each containing an absolute
+`target` and `read_only` flag. A worker binds those slots through its resource
+`config.storage` map to logical volume resources declared in `depends_on`.
+Workers cannot choose Docker volume names, drivers/options, host paths or mount
+targets. The host resolves bindings to allocated same-session leases before
+container creation. Kernel paths and overlapping mounts are rejected.
+
+Task and grader may mount the same owned workspace, while native gold/dataset
+assets remain separate read-only grader mounts. All volume mounts disable Docker
+image-directory population (`NoCopy`): a new workspace never inherits files from
+an obscured image directory. Native preparation must seed intended public inputs
+explicitly. Volume ownership labels bind workspace, trial, session, generation
+and resource identity; only the local driver without host-mount options is
+accepted. Public inspection exposes presence, never native names/mountpoints.
+
+Storage creation intent precedes the daemon call. A lost create reply is resolved
+by exact ownership labels after controller takeover. Cleanup follows dependent
+containers before storage; a volume still referenced by a container cannot be
+released. Failed or uncertain deletion keeps its lease and host reservation.
+Historical container lease records without storage fields remain decodable.
+
 ## Journal and delivery barriers
 
 Each registered worker UUID and generation has one event stream. Its sequence is

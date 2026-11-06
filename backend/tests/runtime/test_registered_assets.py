@@ -107,6 +107,46 @@ def catalog(data=None, files=None):
     return assets, reads
 
 
+def test_shared_storage_has_registered_slots_dependencies_and_a_disk_only_reservation():
+    async def scenario():
+        from app.runtime.admission import StorageDemand
+
+        data = document()
+        data["assets"]["fixture.storage"] = {"kind": "volume", "disk_mb": 64}
+        data["assets"]["fixture.task"]["storage_slots"] = {
+            "workspace": {"target": "/workspace", "read_only": False}
+        }
+        native = plan()
+        native["resources"].insert(
+            0,
+            {
+                "id": "files",
+                "kind": "volume",
+                "provider": "fixture.rootless",
+                "config": {"asset_id": "fixture.storage"},
+            },
+        )
+        native["resources"][1].update(depends_on=["files"])
+        native["resources"][1]["config"]["storage"] = {"workspace": "files"}
+        assets, _ = catalog(data)
+        compiled = await assets.compile(scope(), native)
+        assert compiled.demands[0] == StorageDemand("files", 64)
+        assert compiled.images == {"task": IMAGE}
+        assert compiled.links["task"]["storage"] == [
+            {"resource": "files", "target": "/workspace", "read_only": False}
+        ]
+        assert compiled.leases["task"][1].dependencies == (compiled.leases["files"][1].handle,)
+        native["resources"][1]["config"]["storage"] = {"unknown": "files"}
+        with pytest.raises(ManagedRuntimeError):
+            await assets.compile(scope(), native)
+        native["resources"][1]["config"]["storage"] = {"workspace": "files"}
+        native["resources"][1]["depends_on"] = []
+        with pytest.raises(ManagedRuntimeError):
+            await assets.compile(scope(), native)
+
+    asyncio.run(scenario())
+
+
 def test_compile_freezes_native_process_defaults_images_requirements_and_outputs():
     async def scenario():
         assets, _ = catalog()

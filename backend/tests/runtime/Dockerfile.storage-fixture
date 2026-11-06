@@ -1,0 +1,4 @@
+ARG BASE_IMAGE=evalhive-environment-workspace:0.1.0
+FROM ${BASE_IMAGE}
+# A mount must never populate an owned workspace from hidden image contents.
+RUN printf 'image-private-fixture' > /workspace/baked-in-gold.txt

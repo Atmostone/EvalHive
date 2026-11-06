@@ -18,8 +18,10 @@ from app.runtime.managed_spec import (
     ManagedContainer,
     ManagedExec,
     ManagedNetwork,
+    ManagedVolume,
     NetworkRequest,
     OwnerScope,
+    VolumeRequest,
 )
 
 
@@ -28,8 +30,10 @@ class ResourceLease:
     handle: str
     scope: OwnerScope
     kind: str
-    intent: ContainerSpec | NetworkRequest | ExecSpec = field(repr=False)
-    native: ManagedContainer | ManagedNetwork | ManagedExec | None = field(default=None, repr=False)
+    intent: ContainerSpec | NetworkRequest | VolumeRequest | ExecSpec = field(repr=False)
+    native: ManagedContainer | ManagedNetwork | ManagedVolume | ManagedExec | None = field(
+        default=None, repr=False
+    )
     state: str = "planned"
     deadline_at: str | None = None
     dependencies: tuple[str, ...] = ()
@@ -38,7 +42,11 @@ class ResourceLease:
         native = (
             (self.intent.container,)
             if isinstance(self.intent, ExecSpec)
-            else (self.intent.network, self.intent.namespace)
+            else (
+                self.intent.network,
+                self.intent.namespace,
+                *(mount.volume for mount in self.intent.storage),
+            )
             if isinstance(self.intent, ContainerSpec)
             else ()
         )

@@ -31,7 +31,15 @@ from app.models.benchmark_trial import (
 )
 from app.runtime.broker import ExecutionGrant, ExportGrant, ResourceLease
 from app.runtime.lease_codec import decode_lease, encode_lease
-from app.runtime.managed_spec import ContainerSpec, ExecSpec, NetworkRequest, OwnerScope
+from app.runtime.managed_spec import (
+    ContainerSpec,
+    ExecSpec,
+    ManagedVolume,
+    NetworkRequest,
+    OwnerScope,
+    VolumeMount,
+    VolumeRequest,
+)
 
 
 @dataclass(frozen=True)
@@ -154,9 +162,14 @@ async def install_session(
                 lease.scope != scope
                 or lease.state != "planned"
                 or lease.native is not None
-                or lease.kind not in {"container", "network"}
+                or lease.kind not in {"container", "network", "volume"}
                 or not isinstance(
-                    lease.intent, ContainerSpec if lease.kind == "container" else NetworkRequest
+                    lease.intent,
+                    {
+                        "container": ContainerSpec,
+                        "network": NetworkRequest,
+                        "volume": VolumeRequest,
+                    }[lease.kind],
                 )
                 or lease.handle != lease.intent.resource_id
                 or lease.intent.scope != scope
@@ -172,6 +185,14 @@ async def install_session(
                 if admitted is None or admitted["limits"] != asdict(lease.intent.quota):
                     raise failure(
                         "UNADMITTED_RESOURCE", "Resource limits differ from the host reservation"
+                    )
+            elif lease.kind == "volume":
+                admitted = {
+                    item["resource_id"]: item for item in reservation.budget["resources"]
+                }.get(logical_id)
+                if admitted != {"resource_id": logical_id, "disk_mb": lease.intent.disk_mb}:
+                    raise failure(
+                        "UNADMITTED_RESOURCE", "Storage differs from the disk reservation"
                     )
             existing = await db.scalar(
                 select(BenchmarkResourceLease.id)
@@ -550,6 +571,30 @@ class SqlResourceCall:
         if lease.state == "planned" and isinstance(lease.intent, ContainerSpec):
             spec = lease.intent
             for field, target in self.plan["links"].get(resource_id, {}).items():
+                if field == "storage":
+                    mounts = []
+                    for binding in target:
+                        source = binding["resource"]
+                        if source not in self.plan["resources"]:
+                            raise failure("INVALID_PLAN", "Storage dependency is invalid")
+                        linked = self._decode(
+                            await self._row(self.plan["resources"][source]["lease"]["handle"])
+                        )
+                        if (
+                            linked.handle not in lease.dependencies
+                            or linked.state != "allocated"
+                            or not isinstance(linked.native, ManagedVolume)
+                        ):
+                            raise failure(
+                                "RESOURCE_NOT_READY",
+                                "Owned storage is not allocated",
+                                "preparation",
+                            )
+                        mounts.append(
+                            VolumeMount(linked.native, binding["target"], binding["read_only"])
+                        )
+                    spec = replace(spec, storage=tuple(mounts))
+                    continue
                 if field not in {"network", "namespace"} or target not in self.plan["resources"]:
                     raise failure("INVALID_PLAN", "Resource dependency is invalid")
                 linked = self._decode(

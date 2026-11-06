@@ -19,13 +19,14 @@ from evalhive_benchmark.peer import identity
 from evalhive_benchmark.protocol import _json_value
 from jsonschema import Draft202012Validator
 
-from app.runtime.admission import ResourceDemand
+from app.runtime.admission import ResourceDemand, StorageDemand
 from app.runtime.broker import ExportGrant, ResourceLease
 from app.runtime.managed_spec import (
     ContainerSpec,
     ManagedRuntimeError,
     NetworkRequest,
     Quota,
+    VolumeRequest,
     absolute_path,
 )
 from app.runtime.spec import BindMount
@@ -98,6 +99,14 @@ CONTAINER = obj(
             ),
         },
         "readonly_root": {"type": "boolean"},
+        "storage_slots": {
+            "type": "object",
+            "maxProperties": 16,
+            "propertyNames": ID,
+            "additionalProperties": obj(
+                {"target": TEXT, "read_only": {"type": "boolean"}}, ("target", "read_only")
+            ),
+        },
         "outputs": {
             "type": "object",
             "maxProperties": 256,
@@ -122,6 +131,13 @@ SCHEMA = obj(
             "additionalProperties": {
                 "oneOf": [
                     CONTAINER,
+                    obj(
+                        {
+                            "kind": {"const": "volume"},
+                            "disk_mb": {"type": "integer", "minimum": 1, "maximum": 2**53 - 1},
+                        },
+                        ("kind", "disk_mb"),
+                    ),
                     obj(
                         {"kind": {"const": "network"}, "egress": {"type": "boolean"}},
                         ("kind", "egress"),
@@ -161,7 +177,7 @@ class RegisteredFile:
 class CompiledEnvironment:
     scope: object
     leases: dict
-    demands: tuple[ResourceDemand, ...]
+    demands: tuple[ResourceDemand | StorageDemand, ...]
     outputs: dict
     links: dict
     fingerprint: str
@@ -229,6 +245,14 @@ class RootlessAssets:
                 None,
                 None,
             )
+        if asset["kind"] == "volume":
+            return (
+                ResourceLease(
+                    handle, scope, "volume", VolumeRequest(scope, handle, asset["disk_mb"])
+                ),
+                StorageDemand(logical_id, asset["disk_mb"]),
+                None,
+            )
         quota = Quota(**asset["limits"])
         quota.validate(self.runtime.policy)
         minimum = asset["minimum"]
@@ -280,6 +304,7 @@ class RootlessAssets:
                 "namespace",
                 "network_aliases",
                 "retained_inputs",
+                "storage",
             }:
                 raise ManagedRuntimeError(
                     "Plan requires an unregistered provider or resource setting"
@@ -307,6 +332,32 @@ class RootlessAssets:
                     raise ManagedRuntimeError("Native network dependency has the wrong kind")
             if selected and lease.kind != "container":
                 raise ManagedRuntimeError("Only containers can join registered native networks")
+            storage = config.get("storage", {})
+            slots = asset.get("storage_slots", {})
+            if (
+                not isinstance(storage, dict)
+                or set(storage) != set(slots)
+                or storage
+                and lease.kind != "container"
+            ):
+                raise ManagedRuntimeError("Storage bindings must match registered container slots")
+            bindings = []
+            for slot, target in storage.items():
+                if (
+                    not isinstance(target, str)
+                    or target not in resources
+                    or target not in resource.get("depends_on", [])
+                    or resources[target]["kind"] != "volume"
+                ):
+                    raise ManagedRuntimeError("Storage requires a declared owned volume dependency")
+                path = absolute_path(slots[slot]["target"])
+                if str(path) == "/":
+                    raise ManagedRuntimeError("Storage cannot obscure the root filesystem")
+                bindings.append(
+                    {"resource": target, "target": str(path), "read_only": slots[slot]["read_only"]}
+                )
+            if bindings:
+                selected["storage"] = bindings
             aliases = config.get("network_aliases", [])
             if (
                 not isinstance(aliases, list)
@@ -362,6 +413,7 @@ class RootlessAssets:
             links[name] = selected
             if demand:
                 demands.append(demand)
+            if image is not None:
                 images[name] = image
             declared_outputs = {
                 item["id"]: item for item in plan["outputs"] if item["resource_id"] == name

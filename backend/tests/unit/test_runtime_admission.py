@@ -9,6 +9,7 @@ from app.runtime.admission import (
     GroupPolicy,
     HostCapacity,
     ResourceDemand,
+    StorageDemand,
     check_group,
     host_capacity,
 )
@@ -35,6 +36,13 @@ def test_group_budget_includes_worker_and_never_returns_a_launch_permission(avai
     assert result["eligible"] and result["reasons"] == []
     assert result["group_resources"] == {"memory_mb": 2560, "cpu_cores": 1.25, "disk_mb": 4608}
     assert result["runtime_admission"] == "reservation_pending" and result["can_run"] is False
+
+
+def test_owned_workspace_storage_reserves_disk_without_changing_native_cpu_or_memory(available):
+    available["demands"] += (StorageDemand("workspace-files", 512),)
+    result = check_group(**available)
+    assert result["eligible"]
+    assert result["group_resources"] == {"memory_mb": 2560, "cpu_cores": 1.25, "disk_mb": 5120}
 
 
 @pytest.mark.parametrize(

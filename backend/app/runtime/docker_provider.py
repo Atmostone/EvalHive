@@ -22,10 +22,13 @@ from app.runtime.managed_spec import (
     ManagedExec,
     ManagedNetwork,
     ManagedRuntimeError,
+    ManagedVolume,
     NetworkRequest,
     UncertainRuntimeError,
+    VolumeRequest,
     absolute_path,
 )
+from app.runtime.managed_storage import RootlessVolumeRuntime
 
 MAX_OUTPUT = 65536
 
@@ -59,6 +62,7 @@ class RootlessDockerProvider(EnvironmentProvider):
             raise ManagedRuntimeError("Rootless provider requires a manifest and host authority")
         self.runtime, self.authority, self.manifest = runtime, authority, manifest
         self.owned = OwnedExecRuntime(runtime)
+        self.storage = RootlessVolumeRuntime(runtime)
         self.artifacts = artifacts
         self._processes, self._attached = {}, set()
         self._safety_tasks = set()
@@ -100,6 +104,7 @@ class RootlessDockerProvider(EnvironmentProvider):
         expected = {
             "container": (ContainerSpec, ManagedContainer),
             "network": (NetworkRequest, ManagedNetwork),
+            "volume": (VolumeRequest, ManagedVolume),
             "exec": (ExecSpec, ManagedExec),
         }
         if lease.kind not in expected or not isinstance(lease.intent, expected[lease.kind][0]):
@@ -189,6 +194,8 @@ class RootlessDockerProvider(EnvironmentProvider):
                     and state["status"] == "running"
                     or lease.kind == "network"
                     and state["present"]
+                    or lease.kind == "volume"
+                    and state["present"]
                 ):
                     return {"handle": lease.handle, "kind": lease.kind, "state": "allocated"}
                 raise ProtocolError(
@@ -198,7 +205,7 @@ class RootlessDockerProvider(EnvironmentProvider):
                 raise ProtocolError(
                     "RESOURCE_UNCERTAIN", "Existing allocation must be reconciled", "uncertain"
                 )
-            if lease.kind not in {"container", "network"}:
+            if lease.kind not in {"container", "network", "volume"}:
                 raise ProtocolError(
                     "INVALID_RESOURCE_REQUEST", "Execs require the exec operation", "configuration"
                 )
@@ -206,6 +213,8 @@ class RootlessDockerProvider(EnvironmentProvider):
             try:
                 if lease.kind == "container":
                     native = await asyncio.to_thread(self.runtime.create, lease.intent)
+                elif lease.kind == "volume":
+                    native = await asyncio.to_thread(self.storage.create, lease.intent)
                 else:
                     spec = lease.intent
                     native = await asyncio.to_thread(
@@ -274,6 +283,10 @@ class RootlessDockerProvider(EnvironmentProvider):
         elif lease.kind == "network":
             resource = await asyncio.to_thread(self.runtime.network, lease.native)
             native = {"present": resource is not None}
+        elif lease.kind == "volume":
+            native = {
+                "present": await asyncio.to_thread(self.storage.get, lease.native) is not None
+            }
         else:
             parent = await asyncio.to_thread(self.runtime.inspect, lease.native.container)
             if parent is None or parent["status"] in {"exited", "dead", "created"}:
@@ -476,9 +489,9 @@ class RootlessDockerProvider(EnvironmentProvider):
     async def _stop(self, call, lease, *, release):
         if lease.state == "released":
             return {"handle": lease.handle, "released": True}
-        if lease.kind == "network" and not release:
+        if lease.kind in {"network", "volume"} and not release:
             raise ProtocolError(
-                "UNSUPPORTED_CAPABILITY", "A network supports release, not stop", "unsupported"
+                "UNSUPPORTED_CAPABILITY", "This resource supports release, not stop", "unsupported"
             )
         if lease.native is None:
             if lease.state not in {"planned", "rejected", "unallocated"}:
@@ -487,6 +500,8 @@ class RootlessDockerProvider(EnvironmentProvider):
             await asyncio.to_thread(self.runtime.stop, lease.native, remove=release)
         elif lease.kind == "network":
             await asyncio.to_thread(self.runtime.remove_network, lease.native)
+        elif lease.kind == "volume":
+            await asyncio.to_thread(self.storage.remove, lease.native)
         else:
             parent = await asyncio.to_thread(self.runtime.inspect, lease.native.container)
             if parent is not None and parent["status"] not in {"exited", "dead", "created"}:
