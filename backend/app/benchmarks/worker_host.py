@@ -48,7 +48,7 @@ class RootlessWorkerHost:
         )
         self.host_broker = SqlBroker(store, owner, self.host_actor, providers)
         self.worker_broker = SqlBroker(store, owner, self.worker_actor, providers)
-        self.channel, self.worker_demand, self.environment = None, None, None
+        self.channel, self.worker_demand, self.environment, self.client = None, None, None, None
         self.started = False
 
     async def _measure(self):
@@ -148,7 +148,7 @@ class RootlessWorkerHost:
                 self.scope, "inspect", handle=allocated["handle"], request_id="worker.attach"
             )
         )
-        client = ConnectorClient(
+        client = self.client = ConnectorClient(
             process, broker=self.worker_broker.handle, broker_replay=self.worker_broker.replay
         )
         self.channel = await WorkerChannel.attach(self.store, self.owner, self.worker_actor, client)
@@ -234,7 +234,22 @@ class RootlessWorkerHost:
                 "images": compiled.images,
                 "files": compiled.files,
                 "catalog": self.assets.document,
+                "applied_spec": spec,
             },
         )
         self.environment = compiled
         return compiled
+
+    async def detach(self, *, grace=3):
+        from contextlib import suppress
+
+        from app.benchmarks.async_control import bounded, cancel_tasks
+
+        if self.channel is not None:
+            await self.channel.detach(grace=grace)
+        elif self.client is not None:
+            await cancel_tasks([self.client.reading], grace)
+            with suppress(TimeoutError):
+                await bounded(self.client.process.aclose(), grace)
+        await self.host_broker.detach()
+        await self.worker_broker.detach()

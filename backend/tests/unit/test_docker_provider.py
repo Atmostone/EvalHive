@@ -274,11 +274,19 @@ async def test_invalid_exec_settings_fail_before_native_create(prepared, payload
 
 
 @pytest.mark.asyncio
-async def test_exec_deadline_stops_tree_and_preserves_lease_for_cleanup(prepared, monkeypatch):
+@pytest.mark.parametrize("completed", [False, True])
+async def test_exec_deadline_stops_tree_and_preserves_lease_for_cleanup(
+    prepared, monkeypatch, completed
+):
     provider, authority, _, _, _, _ = prepared
     container = await allocate(prepared)
     provider.owned = MagicMock()
     provider.owned.create.side_effect = native_exec
+    provider.owned.control.return_value = {
+        "stopped": not completed,
+        "main_done": completed,
+        "exit_code": 0 if completed else None,
+    }
     process = fake_process()
 
     async def blocked_read():
@@ -299,9 +307,9 @@ async def test_exec_deadline_stops_tree_and_preserves_lease_for_cleanup(prepared
         )
     assert caught.value.code == "RESOURCE_TIMEOUT"
     provider.owned.control.assert_called_once()
-    assert (
-        next(value for value in authority.resources.values() if value.kind == "exec").state
-        == "stopped"
+    assert provider.owned.control.call_args.args[1] == "expire"
+    assert next(value for value in authority.resources.values() if value.kind == "exec").state == (
+        "retained" if completed else "stopped"
     )
 
 

@@ -1,7 +1,8 @@
 """Benchmark lifecycle and contiguous private/public journal on PostgreSQL.
 
 Every ownership/phase mutation shares a session advisory fence. The physical
-connection remains checked out across commits, including runtime side effects.
+connection remains checked out across commits and runtime side effects. Native
+read-only waits explicitly release the fence and connection, then revalidate.
 Heartbeat and a monotonic cancellation request use conditional SQL separately so
 long native commands cannot prevent either from reaching the controller.
 """
@@ -67,6 +68,17 @@ class Controller:
     controller_id: uuid.UUID
 
 
+@dataclass(frozen=True)
+class ControlState:
+    phase: str
+    cancelled: bool
+    seconds_remaining: float
+    execution_status: str
+    evaluation_status: str
+    recording_status: str
+    cleanup_status: str
+
+
 @asynccontextmanager
 async def database_fence(engine, trial_id, *, host_id=None):
     """Never return a connection with session locks to the pool, even on cancel."""
@@ -74,16 +86,50 @@ async def database_fence(engine, trial_id, *, host_id=None):
     keys = ([] if host_id is None else [_key("benchmark-host:" + host_id)]) + [
         _key("benchmark-trial:" + str(trial_id))
     ]
+    held = set()
     try:
         for key in keys:
             # No transaction lock: resource intents must commit before effects.
             await connection.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+            held.add(key)
             await connection.commit()
         async with AsyncSession(bind=connection, expire_on_commit=False) as db:
+
+            async def suspend():
+                nonlocal connection
+                await db.commit()
+                for key in reversed(keys):
+                    await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+                    held.discard(key)
+                await connection.commit()
+                # Observations hold no transaction, session lock or pool slot.
+                # Parallel native waits must leave connections for cancellation
+                # and heartbeats, even with a small production pool.
+                await db.close()
+                await connection.close()
+                connection = None
+
+            async def resume():
+                nonlocal connection
+                if connection is None:
+                    connection = await engine.connect()
+                    db.bind = connection
+                    db.sync_session.bind = connection.sync_connection
+                for key in keys:
+                    if key not in held:
+                        await connection.execute(
+                            text("SELECT pg_advisory_lock(:key)"), {"key": key}
+                        )
+                        held.add(key)
+                        await connection.commit()
+
+            db.info["benchmark_observation_fence"] = (suspend, resume)
             yield db
     finally:
 
         async def release():
+            if connection is None:
+                return
             try:
                 await connection.rollback()
                 for key in reversed(keys):
@@ -241,7 +287,9 @@ class TrialStore:
                 if trial.evaluation_status == "running":
                     trial.evaluation_status = "error"
                 trial.recording_status = "incomplete"
-                trial.phase, trial.cleanup_status = "cleaning", "pending"
+                trial.phase = "cleaning"
+                if trial.cleanup_status != "error":
+                    trial.cleanup_status = "pending"
             trial.controller_id = controller_id
             trial.controller_expires_at = now + timedelta(seconds=self.lease_seconds)
             trial.heartbeat_at = now
@@ -278,6 +326,98 @@ class TrialStore:
             )
             if result.rowcount != 1:
                 raise failure("STALE_GENERATION", "Controller heartbeat was fenced")
+
+    async def control(self, owner):
+        """Short owner-checked DB-clock snapshot; no native session fence."""
+        async with AsyncSession(self.engine) as db:
+            trial, now = await current_trial(db, owner)
+            return ControlState(
+                trial.phase,
+                trial.cancel_requested_at is not None,
+                (trial.deadline_at - now).total_seconds(),
+                trial.execution_status,
+                trial.evaluation_status,
+                trial.recording_status,
+                trial.cleanup_status,
+            )
+
+    async def note(
+        self, owner, event, *, code=None, private=None, incomplete=False, cleanup_error=False
+    ):
+        if event not in {
+            "controller.stopping",
+            "controller.failed",
+            "capture.completed",
+            "capture.failed",
+            "cleanup.failed",
+            "deadline.result",
+            "configuration.applied",
+        }:
+            raise ValueError("Unknown controller journal event")
+        async with AsyncSession(self.engine, expire_on_commit=False) as db:
+            trial, _ = await current_trial(db, owner, row_lock=True)
+            if trial.phase == "finished":
+                raise failure("TRIAL_FINISHED", "Finished controller journals are sealed")
+            entry_id = uuid.uuid4()
+            await append_entry(
+                db,
+                trial,
+                event,
+                {"code": code} if code else {},
+                id=entry_id,
+                private_data=None
+                if private is None
+                else self.private.seal("journal:" + str(entry_id), private),
+            )
+            if incomplete:
+                trial.recording_status = "incomplete"
+            if cleanup_error:
+                trial.cleanup_status = "error"
+            elif event == "cleanup.failed" and trial.cleanup_status != "error":
+                trial.cleanup_status = "pending"
+            await db.commit()
+
+    async def finish_evaluation(self, owner, result=None):
+        if result is not None:
+            validate("evaluation_result", result)
+        async with database_fence(self.engine, owner.trial_id) as db:
+            trial, _ = await current_trial(db, owner, row_lock=True)
+            if result is None:
+                if (
+                    trial.phase not in {"capturing", "cleaning"}
+                    or trial.evaluation_status != "pending"
+                ):
+                    return
+                trial.evaluation_status = "unavailable"
+            else:
+                if trial.phase != "evaluating" or trial.evaluation_status != "running":
+                    raise failure("INVALID_PHASE", "Evaluation summary cannot be changed")
+                pending = await db.scalar(
+                    select(BenchmarkCommand.id)
+                    .where(
+                        BenchmarkCommand.trial_id == trial.id,
+                        BenchmarkCommand.method == "evaluate",
+                        BenchmarkCommand.state != "completed",
+                    )
+                    .limit(1)
+                )
+                if pending is not None:
+                    raise failure(
+                        "COMMAND_OPEN", "Evaluation needs durable worker completion", "recording"
+                    )
+                trial.evaluation_status = result["status"]
+            entry_id = uuid.uuid4()
+            await append_entry(
+                db,
+                trial,
+                "evaluation.finished",
+                {"status": trial.evaluation_status},
+                id=entry_id,
+                private_data=None
+                if result is None
+                else self.private.seal("journal:" + str(entry_id), result),
+            )
+            await db.commit()
 
     async def request_cancel(self, workspace_id, trial_id):
         async with self.engine.begin() as conn:
@@ -466,7 +606,9 @@ class TrialStore:
                 reservation = await db.get(BenchmarkHostReservation, self.host_id)
                 if reservation is not None and reservation.trial_id == trial.id:
                     await db.delete(reservation)
-                trial.cleanup_status, trial.finished_at = "complete", now
+                if trial.cleanup_status != "error":
+                    trial.cleanup_status = "complete"
+                trial.finished_at = now
                 if trial.recording_status == "open":
                     unsealed = await db.scalar(
                         select(BenchmarkEventStream.id)
@@ -641,9 +783,17 @@ class TrialStore:
         if status not in {"success", "failed", "cancelled", "lost"}:
             raise failure("INVALID_OUTCOME", "Execution outcome is invalid")
         async with database_fence(self.engine, owner.trial_id) as db:
-            trial, _ = await current_trial(db, owner, row_lock=True)
+            trial, now = await current_trial(db, owner, row_lock=True)
             if trial.execution_status == status:
                 return
+            if status == "success" and (
+                trial.cancel_requested_at is not None or trial.deadline_at <= now
+            ):
+                raise failure(
+                    "TRIAL_STOPPING",
+                    "Cancellation or deadline precedes execution completion",
+                    "execution",
+                )
             if trial.phase not in {"driving", "capturing"} or trial.execution_status != "running":
                 raise failure("INVALID_PHASE", "Execution outcome cannot be changed")
             pending_command = await db.scalar(

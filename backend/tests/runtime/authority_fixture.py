@@ -77,6 +77,19 @@ class FixtureCall:
         self.owner, self.request, self.replay = owner, request, replay
         self.scope = owner.scope
 
+    @asynccontextmanager
+    async def observation(self):
+        self.owner.lock.release()
+        try:
+            yield
+        finally:
+            task = asyncio.create_task(self.owner.lock.acquire())
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+
     async def allocation(self, resource_id):
         if resource_id not in self.owner.plans:
             raise ProtocolError(

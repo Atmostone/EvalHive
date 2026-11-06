@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib.util
+import json
 import os
 import sys
 
@@ -66,11 +67,15 @@ class Worker(Connector):
         "entrypoint": ["python", "/fixture/worker.py"],
         "image": "evalhive-broker-worker-fixture:development",
         "config_schema": {"type": "object"},
-        "capabilities": {key: "native" for key in ["prepare", "drive", "capture", "cleanup"]},
+        "capabilities": {
+            key: "native" for key in ["prepare", "drive", "capture", "evaluate", "cleanup"]
+        },
         "requirements": {},
     }
 
     async def handle(self, method, params, context):
+        if "spec" in params:
+            self.config = params["spec"]["config"]
         if method == "resolve_case":
             return CASE
         if method == "list_cases":
@@ -140,6 +145,17 @@ print('x'*(2*1024*1024),end='',flush=True)
             await context.emit(
                 scope, "agent.output", {"text": "Local execution fixture"}, source="agent"
             )
+            program = "from pathlib import Path;p=Path('/workspace/result.txt');p.write_text(p.read_text()+'Driven through the Benchmark SDK\\n')"
+            if getattr(self, "config", {}).get("wait_drive"):
+                program = """import os,signal,time
+from pathlib import Path
+signal.signal(signal.SIGTERM,signal.SIG_IGN)
+if os.fork()==0:
+ os.setsid()
+ while True: time.sleep(1)
+Path('/tmp/agent.started').write_text('ready')
+while True: time.sleep(1)
+"""
             executed = await broker(
                 context,
                 scope,
@@ -149,9 +165,9 @@ print('x'*(2*1024*1024),end='',flush=True)
                     "argv": [
                         "python",
                         "-c",
-                        "from pathlib import Path;p=Path('/workspace/result.txt');p.write_text(p.read_text()+'Driven through the Benchmark SDK\\n')",
+                        program,
                     ],
-                    "timeout_seconds": 10,
+                    "timeout_seconds": 30 if getattr(self, "config", {}).get("wait_drive") else 10,
                 },
                 handle=task_handle,
                 request_id="drive.exec",
@@ -162,6 +178,34 @@ print('x'*(2*1024*1024),end='',flush=True)
                 scope, "phase.completed", {"phase": "driving", "status": "success"}, source="agent"
             )
             return {"finished": True, "exec_handle": executed["handle"]}
+        if method == "evaluate":
+            task_handle = params["payload"]["session_handle"]
+            command = await broker(
+                context,
+                params["scope"],
+                PROVIDER,
+                "exec",
+                {
+                    "argv": [
+                        "python",
+                        "-c",
+                        "import json;from pathlib import Path;print(json.dumps({'correct':Path('/workspace/result.txt').read_text()=='Prepared through the Benchmark SDK\\nDriven through the Benchmark SDK\\n'}))",
+                    ],
+                    "timeout_seconds": 10,
+                },
+                handle=task_handle,
+                request_id="evaluate.exec",
+            )
+            correct = json.loads(command["stdout"])["correct"]
+            return {
+                "status": "completed",
+                "success": correct,
+                "metrics": [{"name": "fixture_reward", "value": int(correct)}],
+                "primary_metric": "fixture_reward",
+                "native": {"fixture": True},
+                "artifacts": [],
+                "completeness": {"state": "captured"},
+            }
         if method == "capture":
             result = await broker(
                 context,

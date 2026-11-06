@@ -104,3 +104,8 @@ class SqlBroker:
     async def close(self):
         for provider in self.instances.values():
             await provider.close()
+
+    async def detach(self):
+        for provider in self.instances.values():
+            if detach := getattr(provider, "detach", None):
+                await detach()

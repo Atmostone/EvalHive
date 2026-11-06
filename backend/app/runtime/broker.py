@@ -74,6 +74,13 @@ class ResourceCall(Protocol):
     scope: OwnerScope
     replay: dict | None
 
+    def observation(self) -> AbstractAsyncContextManager[None]:
+        """Suspend the native-effect fence for reads; revalidate before returning.
+
+        The body MUST NOT create/start/stop or mutate any native resource.
+        """
+        ...
+
     async def allocation(self, resource_id: str) -> ResourceLease:
         """Resolve the admitted immutable plan and registered assets, not worker paths."""
         ...

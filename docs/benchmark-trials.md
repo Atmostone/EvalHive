@@ -1,9 +1,9 @@
 # Durable benchmark trials
 
 Implementation: SPA-141 / B04. The storage and resource authority described here
-are implemented, together with durable worker commands, resource recovery and
-deadline services. The phase driver and production composition remain required
-before production launch is enabled.
+are implemented, together with durable worker commands, automatic phase driving,
+resource recovery and deadline services. Product launch APIs and queue composition
+remain B14 work; these components do not enable production launches by themselves.
 
 ## Ownership and lifecycle
 
@@ -33,6 +33,16 @@ Ownership, phase changes and resource operations use a PostgreSQL session
 advisory lock on a dedicated checked-out connection. The lock survives commits
 of intents and receipts. It is explicitly released before returning the physical
 connection to the pool; a failed unlock invalidates that connection.
+
+An owned exec starts and records its running intent under that fence. Waiting for
+stdout and process completion is a non-mutating observation: it releases both
+the session lock and the physical connection. Cancellation and heartbeat must
+remain available even with a single-connection pool. Before any subsequent write
+or native control, the observation reacquires the fence on a checked-out
+connection, verifies the current generation, expiry and unfinished phase, and
+reloads mutable lease state. A concurrent stop cannot be overwritten by a late
+completion. Losing ownership retires only the original operation as uncertain;
+it does not append late events to the new owner's or a finished trial's journal.
 
 Host admission additionally takes a global host lock, always before the trial
 lock. It measures capacity while holding the reservation lock and stores the
@@ -215,10 +225,41 @@ has no permission to control its own planner container. Harness resources can be
 admitted independently as additional group demands. This provisioner does not
 choose a harness or infer a correctness verdict.
 
-The automatic phase driver, its concurrent supervision and the capture/evaluation
-policy remain separate composition work. These APIs do not enable production
-launch by themselves. The native acceptance test currently sequences their calls
-explicitly to exercise the complete process/SQL/resource boundary.
+## Automatic controller
+
+`TrialDriver` runs validation, planning, preparation, execution, capture, native
+evaluation and cleanup through that host and its durable SDK channel. Effective
+configuration is validated and recorded before planning. Typed capture references
+and evaluator results are checked before recording a verdict. RPC completion is
+an execution outcome, not evidence that the answer is correct.
+
+Independent supervised tasks renew the controller lease, poll cancellation and
+the database deadline, and enforce owned-exec deadlines. Phase waits do not hold
+the resource fence. Cancellation first requests worker and optional harness
+cooperation, bounds pending-command draining, and then quiesces active execs.
+All service waits, phase deadlines and teardown waits are bounded. A failed
+supervision service causes detachment; it does not authorize further native work.
+
+Warm cleanup conditionally stops active execs while retaining completed preparation
+processes, their background services and the environment's PID 1 for capture and
+grading. Missing native capture falls back to declared file outputs. Failure to
+capture required evidence leaves cleanup pending, resources unreleased and the
+host reservation held. A native cleanup failure is recorded independently and
+remains visible even if subsequent resource release succeeds.
+
+An expired controller is claimed with a new generation in `cleaning`. Cold recovery
+does not start another worker or resume a native conversation. It stops old
+resources in dependency order, exports declared files using immutable origin
+ownership, and downgrades all recovered output to private visibility. File
+recovery explicitly reports native state unavailable; it cannot manufacture a
+grading checkpoint. Release follows successful capture. A stale driver detaches
+only its local transport and cannot stop or release the new owner's resources.
+
+A driver instance is single-use. Another driver observing a partially running
+epoch detaches instead of taking over its cleanup. A retry is a new trial; only
+an explicit expired-owner claim permits recovery. Separate evaluation attempts,
+production evidence storage and controlled regrade are B05 work. Product API and
+queue wiring are B14 work.
 
 ## Recovery and deadlines
 
@@ -281,7 +322,13 @@ actual rootless daemon. It covers lost creation receipts, late native creation,
 stale-controller rejection, stopped-rootfs capture, transport loss and durable
 deadlines for active/completed processes. Runtime unit checks cover uncertain
 cleanup, identity mismatches, dependency ordering and completion/expiry races.
-The automatic worker phase driver is still a remaining B04 acceptance gate.
+The automatic controller tests additionally exercise cancellation and worker loss
+in each phase, deadline races, rejected capture, unavailable evidence storage,
+checker failure versus an incorrect answer, and takeover without native resume.
+
+`test_benchmark_observation.py` checks that native read waits release their locks
+and pool slots, cancellation returns a single pooled connection safely, and old
+generations or finished trials cannot accept late native observations.
 
 `test_benchmark_broker.py` checks dispatch across sessions, global command identity,
 pure receipt readback, actor/workspace scoping, immutable routes/outcomes and
@@ -294,6 +341,10 @@ a separate native task, transfer private input references, run bounded native
 commands, preserve a background service and export the result. The worker's
 commands/events pass through the durable channel. Its task remains alive through
 capture and worker shutdown, then all leases and the host reservation are released.
+Automatic variants run the complete phase driver, cancel an active native command,
+and recover both a prepared environment and an exec whose controller is lost.
+The native checker observes the completed preparation service still alive during
+warm capture. Cold recovery retains files privately without starting another worker.
 The engineering fixture uses a local execution stub and an in-memory artifact
 sink; it proves neither real benchmark acceptance nor production artifact storage.
 

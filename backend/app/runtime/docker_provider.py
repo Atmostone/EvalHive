@@ -418,14 +418,17 @@ class RootlessDockerProvider(EnvironmentProvider):
                         "state": "running",
                         "deadline_at": lease.deadline_at,
                     }
-                while chunk := await process.stdout.read():
-                    remaining = max(0, MAX_OUTPUT - len(output))
-                    output.extend(chunk[:remaining])
-                    truncated |= len(chunk) > remaining
-                code = await process.wait()
+                async with call.observation():
+                    while chunk := await process.stdout.read():
+                        remaining = max(0, MAX_OUTPUT - len(output))
+                        output.extend(chunk[:remaining])
+                        truncated |= len(chunk) > remaining
+                    code = await process.wait()
         except ManagedRuntimeError:
             if process is not None and process.environment_broken:
-                await call.save(replace(container, state="unsafe"))
+                parent = await call.resource(container.handle)
+                if parent.state not in {"stopped", "released"}:
+                    await call.save(replace(parent, state="unsafe"))
                 raise ProtocolError(
                     "ENVIRONMENT_UNSAFE",
                     "Native execution lost safe environment ownership",
@@ -438,10 +441,14 @@ class RootlessDockerProvider(EnvironmentProvider):
                     "Native command startup requires reconciliation"
                 ) from None
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(asyncio.to_thread(self.owned.control, native, "stop")), 9
-                )
-                await call.save(replace(lease, state="stopped"))
+                current = await call.resource(lease.handle)
+                if current.state not in {"retained", "stopped", "released"}:
+                    state = await asyncio.wait_for(
+                        asyncio.shield(asyncio.to_thread(self.owned.control, native, "expire")), 9
+                    )
+                    await call.save(
+                        replace(current, state="stopped" if state["stopped"] else "retained")
+                    )
             except Exception:
                 raise UncertainRuntimeError(
                     "Native command cancellation requires reconciliation"
@@ -451,11 +458,14 @@ class RootlessDockerProvider(EnvironmentProvider):
             raise ProtocolError(
                 "RESOURCE_TIMEOUT", "Native command exceeded its deadline", "execution"
             ) from None
-        await call.save(replace(lease, state="retained"))
+        lease = await call.resource(lease.handle)
+        if lease.state not in {"stopped", "released", "unsafe"}:
+            lease = replace(lease, state="retained")
+            await call.save(lease)
         return {
             "handle": lease.handle,
             "kind": "exec",
-            "state": "retained",
+            "state": lease.state,
             "exit_code": code,
             "stdout": output.decode("utf-8", errors="replace"),
             "stderr": bytes(process.stderr).decode("utf-8", errors="replace"),
@@ -624,3 +634,16 @@ class RootlessDockerProvider(EnvironmentProvider):
                 self._attached.discard(handle)
         if self._safety_tasks:
             await asyncio.gather(*self._safety_tasks, return_exceptions=True)
+
+    async def detach(self):
+        """Abandon local transports; durable recovery alone owns native cleanup."""
+        from contextlib import suppress
+
+        from app.benchmarks.async_control import bounded, cancel_tasks
+
+        await cancel_tasks(list(self._safety_tasks), 1)
+        for process in list(self._processes.values()):
+            with suppress(TimeoutError):
+                await bounded(process.aclose(), 1)
+        self._processes.clear()
+        self._attached.clear()

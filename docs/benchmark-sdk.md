@@ -36,7 +36,7 @@ boundary; their absence is an incompatibility, not an invitation to emulate them
 
 The current PostgreSQL storage and resource authority are detailed in
 [Durable benchmark trials](benchmark-trials.md), including implemented behavior,
-delivery barriers and the remaining coordinator acceptance work.
+delivery barriers, automatic controller, cancellation and cold recovery.
 
 `BenchmarkTrial` is one actual case/configuration/repeat attempt. It owns an
 `EnvironmentSession`, harness `ExecutionAttempt` and one or more
@@ -159,7 +159,7 @@ case and harness profile from the same workspace. It preserves native capability
 platform and resource requirements, checks configured references and reports
 incompatibility reasons. The initial `static` stage always reports
 `runtime_admission: pending` and `can_run: false`. B03 adds authoritative provider
-and resource checks; B04 must reserve and revalidate before launching a trial.
+and resource checks; B04 reserves and revalidates before launching a trial.
 Static policy capacity alone must never authorize execution.
 
 The neutral rootless runtime now preserves image startup/workspace semantics and
@@ -171,8 +171,8 @@ Harness manifests now register a separate runtime bundle image. The canonical
 receipt, bounded installer and no-model compatibility checks preserve native task
 dependencies. Pi/OpenCode bundles execute shell tools in distinct task images;
 unsupported libc fails before model access. These primitives are not yet a public
-launch API: provider admission and the durable broker/coordinator must be connected
-before trials can run through them.
+launch API: B14 must expose the installed provider, durable broker and controller
+through product launch authorization and queue composition.
 
 The built-in rootless provider now consumes scoped resource requests over the same
 SDK reverse channel. Workers supply admitted plan IDs/opaque handles; registered
@@ -182,9 +182,9 @@ and transport-triggered stops recheck generation authority. A real standalone SD
 worker image exercises this boundary without backend modules or Docker access.
 Private service DNS and unsafe-supervisor quiescence are also checked natively.
 The provider requires a coordinator authority; its explicit in-memory test fixture
-is not a production reservation or recovery implementation. B04 connects the
-PostgreSQL journal, leases, fencing and lifecycle before any product launch is
-enabled.
+is not a production reservation or recovery implementation. B04 supplies the
+PostgreSQL journal, leases, fencing, automatic lifecycle and recovery; B14 product
+launch wiring remains required.
 
 Native connector profiles for conversation support use version 0.2.0, with Pi
 1.5.0 and OpenCode 1.19.5 unchanged. B17 must migrate installed 0.1 profile

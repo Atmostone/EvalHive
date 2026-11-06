@@ -28,10 +28,11 @@ class RootlessReconciler:
     async def handle(self, request):
         validate("broker_request", request)
         expire = request["operation"] == "stop" and request["payload"] == {"expire": True}
+        quiesce = request["operation"] == "stop" and request["payload"] == {"quiesce": True}
         if (
             request["provider"] != self.provider_id
             or "handle" not in request
-            or (not expire and request["payload"] != {"reconcile": True})
+            or (not expire and not quiesce and request["payload"] != {"reconcile": True})
             or request["operation"] not in {"inspect", "stop", "release"}
         ):
             raise ProtocolError(
@@ -49,20 +50,20 @@ class RootlessReconciler:
                     "FOREIGN_HANDLE", "Resolved resource differs from its request", "configuration"
                 )
             try:
-                if expire:
+                if expire or quiesce:
                     if lease.kind != "exec":
                         raise ProtocolError(
                             "INVALID_RECOVERY",
                             "Deadlines apply to an owned execution",
                             "configuration",
                         )
-                    expired = await call.deadline_expired(lease)
+                    expired = quiesce or await call.deadline_expired(lease)
                     result = (
                         await self._reconcile(call, lease, "expire")
                         if expired
                         else self._result(lease)
                     )
-                    result["deadline_expired"] = expired
+                    result["quiesced" if quiesce else "deadline_expired"] = expired
                 else:
                     result = await self._reconcile(call, lease, request["operation"])
             except UncertainRuntimeError:

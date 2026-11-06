@@ -15,6 +15,8 @@ from pathlib import Path
 
 import docker
 import pytest
+from app.benchmarks.deadlines import DeadlineService
+from app.benchmarks.driver import DriverLimits, TrialDriver
 from app.benchmarks.private_store import PrivateStore
 from app.benchmarks.recovery import RecoveryService
 from app.benchmarks.trials import TrialStore
@@ -27,12 +29,14 @@ from app.models.benchmark_trial import (
     BenchmarkTrial,
 )
 from app.runtime.docker_provider import RootlessDockerProvider
+from app.runtime.lease_codec import decode_lease
 from app.runtime.managed_docker import RootlessDockerRuntime
+from app.runtime.managed_exec import OwnedExecRuntime
 from app.runtime.managed_spec import PathMapping, Quota, RuntimePolicy
 from app.runtime.reconcile import RootlessReconciler
 from app.runtime.registered_assets import RegisteredFile, RootlessAssets
 from evalhive_benchmark import ProtocolError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
@@ -46,8 +50,9 @@ pytestmark = pytest.mark.skipif(
 WORKSPACE = uuid.UUID("00000000-0000-0000-0000-000000000002")
 
 
+@pytest.mark.parametrize("automatic", [False, True, "cancel", "recover", "recover_active"])
 async def test_real_worker_plans_prepares_executes_and_captures_via_durable_broker(
-    _engine, db_session
+    _engine, db_session, automatic
 ):
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"])
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"]
@@ -75,7 +80,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         ),
     )
     worker_image = await asyncio.to_thread(
-        runtime.resolve_image, "evalhive-broker-worker-fixture:b04"
+        runtime.resolve_image, "evalhive-broker-worker-fixture:b04-driver"
     )
     task_image = await asyncio.to_thread(
         runtime.resolve_image, "evalhive-environment-workspace:0.1.0"
@@ -134,11 +139,39 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
     trial = await store.create(
         WORKSPACE,
         snapshot={"fixture": "native worker host"},
-        deadline_at=datetime.now(UTC) + timedelta(minutes=5),
+        deadline_at=datetime.now(UTC) + timedelta(seconds=55),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
-    await store.transition(owner, "created", "planning")
-    artifacts = FixtureArtifacts()
+    if automatic in (False, "recover"):
+        await store.transition(owner, "created", "planning")
+
+    class Capture(FixtureArtifacts):
+        async def save(self, scope, grant, chunks):
+            if grant.artifact_id == "result":
+                async with AsyncSession(_engine) as db:
+                    rows = (
+                        await db.scalars(
+                            select(BenchmarkResourceLease)
+                            .where(BenchmarkResourceLease.kind == "exec")
+                            .options(undefer(BenchmarkResourceLease.private_value))
+                        )
+                    ).all()
+                    retained = [row for row in rows if row.state == "retained"]
+                    assert retained
+                    leases = [
+                        decode_lease(store.private.open("lease:" + str(row.id), row.private_value))
+                        for row in retained
+                    ]
+                statuses = [
+                    await asyncio.to_thread(
+                        OwnedExecRuntime(runtime).control, lease.native, "status"
+                    )
+                    for lease in leases
+                ]
+                assert any(status["main_done"] and status["children"] == 1 for status in statuses)
+            return await super().save(scope, grant, chunks)
+
+    artifacts = Capture()
     factories = {
         "fixture.rootless": lambda authority: RootlessDockerProvider(
             runtime, authority, manifest(), artifacts=artifacts
@@ -159,6 +192,125 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         "limits": {"wall_time_seconds": 60, "memory_mb": 768, "cpu_cores": 1.25, "disk_mb": 32},
     }
     try:
+        if automatic in (True, "cancel", "recover_active"):
+            recovery = RecoveryService(
+                store,
+                worker_host.host_actor,
+                {
+                    "fixture.rootless": lambda authority: RootlessReconciler(
+                        runtime, authority, "fixture.rootless"
+                    )
+                },
+            )
+            watchdog = DeadlineService(
+                store,
+                "fixture.rootless",
+                worker_host.host_actor,
+                lambda authority: RootlessReconciler(runtime, authority, "fixture.rootless"),
+            )
+            controller = TrialDriver(
+                worker_host,
+                recovery,
+                capture_providers=factories,
+                deadlines=(watchdog,),
+                limits=DriverLimits(
+                    phase_seconds=35,
+                    stop_seconds=1,
+                    capture_seconds=10,
+                    cleanup_seconds=25,
+                    service_seconds=10,
+                    heartbeat_seconds=5,
+                ),
+            )
+            if automatic in ("cancel", "recover_active"):
+                spec["config"] = {"wait_drive": True}
+            pending = asyncio.create_task(
+                controller.run(
+                    spec,
+                    private_inputs={
+                        "fixture.alpha": b"alpha-private-fixture",
+                        "fixture.zeta": b"zeta-private-fixture",
+                    },
+                )
+            )
+            try:
+                if automatic in ("cancel", "recover_active"):
+                    from docker.errors import NotFound
+
+                    async with asyncio.timeout(25):
+                        while True:
+                            if worker_host.environment:
+                                selected = worker_host.environment
+                                native = await asyncio.to_thread(
+                                    runtime.find, selected.scope, selected.leases["task"][1].handle
+                                )
+                                if native:
+                                    container = await asyncio.to_thread(runtime.container, native)
+                                    try:
+                                        await asyncio.to_thread(
+                                            container.get_archive, "/tmp/agent.started"
+                                        )
+                                        break
+                                    except NotFound:
+                                        pass
+                            if pending.done():
+                                pytest.fail(
+                                    "Automatic native run ended before agent startup: "
+                                    + str(await pending)
+                                )
+                            await asyncio.sleep(0.1)
+                    if automatic == "recover_active":
+                        async with _engine.begin() as connection:
+                            await connection.execute(
+                                update(BenchmarkTrial)
+                                .where(BenchmarkTrial.id == owner.trial_id)
+                                .values(
+                                    controller_expires_at=datetime.now(UTC) - timedelta(seconds=1)
+                                )
+                            )
+                        claimed = await store.claim(WORKSPACE, owner.trial_id, uuid.uuid4())
+                        new_host = RootlessWorkerHost(
+                            store, claimed, declaration, assets, factories
+                        )
+                        next_recovery = RecoveryService(
+                            store,
+                            new_host.host_actor,
+                            {
+                                "fixture.rootless": lambda authority: RootlessReconciler(
+                                    runtime, authority, "fixture.rootless"
+                                )
+                            },
+                        )
+                        recovered = await TrialDriver(
+                            new_host, next_recovery, capture_providers=factories
+                        ).run(spec)
+                        old = await asyncio.wait_for(pending, 12)
+                        assert old["controller"] == "detached"
+                        assert recovered["phase"] == "finished" and recovered["execution"] == "lost"
+                        assert recovered["recording"] == "incomplete" and not new_host.started
+                        assert any(key.startswith("recovery.") for key in artifacts.values)
+                        return
+                    assert await store.request_cancel(WORKSPACE, owner.trial_id)
+                result = await asyncio.wait_for(pending, 20 if automatic == "cancel" else 45)
+                assert result["phase"] == "finished" and result["cleanup"] == "complete"
+                assert result["execution"] == ("cancelled" if automatic == "cancel" else "success")
+                assert result["evaluation"] == (
+                    "unavailable" if automatic == "cancel" else "completed"
+                )
+                with tarfile.open(fileobj=io.BytesIO(artifacts.values["result"])) as archive:
+                    content = archive.extractfile("result.txt").read()
+                    assert content.startswith(b"Prepared through the Benchmark SDK\n")
+                    assert (b"Driven through the Benchmark SDK\n" in content) == (automatic is True)
+                async with AsyncSession(_engine) as db:
+                    assert all(
+                        row.state == "released"
+                        for row in (await db.scalars(select(BenchmarkResourceLease))).all()
+                    )
+                return
+            finally:
+                if not pending.done():
+                    pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
         channel = await worker_host.start()
         assert await worker_host.start() is channel
         assert (await channel.invoke("validate", {"spec": spec}))["accepted"]
@@ -179,6 +331,33 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         await store.transition(owner, "planning", "preparing")
         prepared = await channel.invoke("prepare", {"spec": spec, "plan": plan}, timeout=30)
         assert prepared["ready"] and prepared["native_state"]["isolated"]
+        if automatic == "recover":
+            async with _engine.begin() as connection:
+                await connection.execute(
+                    update(BenchmarkTrial)
+                    .where(BenchmarkTrial.id == owner.trial_id)
+                    .values(controller_expires_at=datetime.now(UTC) - timedelta(seconds=1))
+                )
+            claimed = await store.claim(WORKSPACE, owner.trial_id, uuid.uuid4())
+            new_host = RootlessWorkerHost(store, claimed, declaration, assets, factories)
+            recovery = RecoveryService(
+                store,
+                new_host.host_actor,
+                {
+                    "fixture.rootless": lambda authority: RootlessReconciler(
+                        runtime, authority, "fixture.rootless"
+                    )
+                },
+            )
+            controller = TrialDriver(new_host, recovery, capture_providers=factories)
+            result = await controller.run(spec)
+            assert result["phase"] == "finished" and result["execution"] == "lost"
+            assert result["recording"] == "incomplete" and result["cleanup"] == "complete"
+            assert not new_host.started and new_host.channel is None
+            assert artifacts.values
+            async with AsyncSession(_engine) as db:
+                assert (await db.get(BenchmarkTrial, owner.trial_id)).generation == 2
+            return
         await store.transition(owner, "preparing", "ready")
         await store.transition(owner, "ready", "driving")
         scoped = {"scope": spec["scope"], "payload": {"session_handle": prepared["session_handle"]}}

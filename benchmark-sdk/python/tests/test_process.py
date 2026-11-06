@@ -209,3 +209,26 @@ def test_close_detaches_if_process_exits_but_inherited_stdout_stays_open():
         assert client.reading.done()
 
     asyncio.run(scenario())
+
+
+def test_closing_an_already_cancelled_reader_does_not_cancel_the_caller():
+    async def scenario():
+        async def exited():
+            return 0
+
+        process = SimpleNamespace(
+            stdin=SimpleNamespace(close=lambda: None),
+            stdout=asyncio.StreamReader(),
+            wait=exited,
+            terminate=lambda: None,
+            kill=lambda: None,
+        )
+        client = ConnectorClient(process)
+        client.reading.cancel()
+        await asyncio.gather(client.reading, return_exceptions=True)
+        with pytest.raises(ProtocolError) as incomplete:
+            await client.close(0.02, shutdown=False)
+        assert incomplete.value.code == "TRANSPORT_CLOSE_INCOMPLETE"
+        assert asyncio.current_task().cancelling() == 0
+
+    asyncio.run(scenario())

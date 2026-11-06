@@ -168,8 +168,15 @@ class ConnectorClient:
             else:
                 incomplete = True
             try:
+                cancellations = asyncio.current_task().cancelling()
                 await _bounded(self.reading, grace)
             except TimeoutError:
+                incomplete = True
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling() > cancellations:
+                    raise
+                # A locally detached reader is not cancellation of close's
+                # caller. Report incomplete delivery using the protocol error.
                 incomplete = True
         finally:
             if not self.reading.done():

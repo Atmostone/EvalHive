@@ -19,6 +19,7 @@ from evalhive_benchmark.peer import identity
 from sqlalchemy import func, select
 from sqlalchemy.orm import undefer
 
+from app.benchmarks.async_control import critical
 from app.benchmarks.private_store import binary, unbinary
 from app.benchmarks.recovery_order import dependency_order
 from app.benchmarks.trials import append_entry, current_trial, database_fence, failure
@@ -384,26 +385,35 @@ class SqlResourceAuthority:
                         if stored.state != "started":
                             return
                         uncertain = (
-                            not isinstance(cause, ProtocolError) or cause.kind == "uncertain"
+                            not isinstance(cause, ProtocolError)
+                            or cause.kind == "uncertain"
+                            or cause.code in {"STALE_GENERATION", "OWNER_EXPIRED", "TRIAL_FINISHED"}
                         )
                         finished_at = await db.scalar(select(func.clock_timestamp()))
                         stored.state = "uncertain" if uncertain else "failed"
                         stored.error_code = (
                             cause.code if isinstance(cause, ProtocolError) else "RESOURCE_UNCERTAIN"
                         )
-                        stored.error_kind = (
-                            cause.kind if isinstance(cause, ProtocolError) else "uncertain"
-                        )
+                        stored.error_kind = "uncertain" if uncertain else cause.kind
                         stored.finished_at = finished_at
                         current = await db.get(
                             type(trial), self.owner.trial_id, populate_existing=True
                         )
-                        await append_entry(
-                            db,
-                            current,
-                            "resource." + stored.state,
-                            {"operation_id": str(stored.id), "error_code": stored.error_code},
-                        )
+                        if (
+                            (current.generation, current.controller_id)
+                            == (
+                                self.owner.generation,
+                                self.owner.controller_id,
+                            )
+                            and current.controller_expires_at > finished_at
+                            and current.phase != "finished"
+                        ):
+                            await append_entry(
+                                db,
+                                current,
+                                "resource." + stored.state,
+                                {"operation_id": str(stored.id), "error_code": stored.error_code},
+                            )
                         await db.commit()
 
                     task = asyncio.create_task(record_failure(error))
@@ -429,6 +439,37 @@ class SqlResourceCall:
         self.expected = {}
         self.expected_dependencies = {}
 
+    @asynccontextmanager
+    async def observation(self):
+        """Non-mutating native reads only; re-fence and verify before any write."""
+        if self.request["operation"] != "exec":
+            raise failure(
+                "INVALID_OBSERVATION", "Only native execution waits may suspend the fence"
+            )
+        suspend, resume = self.db.info["benchmark_observation_fence"]
+        try:
+            _, cancelled = await critical(suspend())
+            if cancelled:
+                raise asyncio.CancelledError
+            yield
+        finally:
+
+            async def check():
+                await resume()
+                trial, now = await current_trial(self.db, self.authority.owner)
+                if trial.phase == "finished":
+                    raise failure(
+                        "TRIAL_FINISHED", "Finished trials cannot accept late native observations"
+                    )
+                return trial, now
+
+            (self.trial, self.now), cancelled = await critical(check())
+            self.operation = await self.db.get(
+                BenchmarkOperation, self.operation.id, populate_existing=True
+            )
+            if cancelled:
+                raise asyncio.CancelledError
+
     async def _row(self, handle):
         try:
             handle = uuid.UUID(handle)
@@ -445,6 +486,7 @@ class SqlResourceCall:
                 BenchmarkResourceLease.provider_id == self.authority.provider_id,
             )
             .options(undefer(BenchmarkResourceLease.private_value))
+            .execution_options(populate_existing=True)
         )
         if row is None:
             raise failure("FOREIGN_HANDLE", "Resource handle is unavailable")
@@ -556,8 +598,12 @@ class SqlResourceCall:
         ):
             raise failure("OUTPUT_UNAVAILABLE", "Output is outside this actor's saved grant")
         value = ExportGrant(**grant["grant"])
-        if self.authority.recovery and value.visibility != "private":
-            raise failure("OUTPUT_UNAVAILABLE", "Recovery exports require private visibility")
+        if self.authority.recovery:
+            value = replace(
+                value,
+                visibility="private",
+                artifact_id="recovery." + str(uuid.uuid5(self.session.id, output_id)),
+            )
         return value
 
     async def deadline_expired(self, lease):

@@ -10,6 +10,7 @@ from contextlib import suppress
 from evalhive_benchmark import ProtocolError, command
 from evalhive_benchmark.peer import identity
 
+from app.benchmarks.async_control import cancel_tasks
 from app.benchmarks.commands import CommandStore
 
 
@@ -165,15 +166,28 @@ class WorkerChannel:
             )
         return ticket.replay["result"]
 
-    async def cancel_pending(self):
+    async def cancel_pending(self, *, grace=3):
         pending = [value[1] for value in self.active.values()]
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        return await cancel_tasks(pending, grace)
+
+    async def detach(self, *, grace=3):
+        """Close local connections only; ownership loss must not issue native stop."""
+        self.closing = True
+        await self.cancel_pending(grace=grace)
+        self.client.process.stdin.close()
+        await cancel_tasks([self.client.reading, self.pumping], grace)
+        if close := getattr(self.client.process, "aclose", None):
+            from app.benchmarks.async_control import bounded
+
+            with suppress(TimeoutError):
+                await bounded(close(), grace)
 
     async def close(self, *, grace=3):
         self.closing = True
-        await self.cancel_pending()
+        if not await self.cancel_pending(grace=grace):
+            self.event_error = ProtocolError(
+                "COMMAND_DRAIN_INCOMPLETE", "Command persistence did not drain", "recording"
+            )
         try:
             if not self.client.peer.closed and self.event_error is None:
                 with suppress(ProtocolError, TimeoutError):
