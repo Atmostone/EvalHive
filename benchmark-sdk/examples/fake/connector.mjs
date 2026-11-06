@@ -32,11 +32,21 @@ await serveStdio({
           {agent:fixture.plan.agent,native_state:{fixture:true}})};
     }
     if (method === 'drive') {
+      if (params.payload.agent_operation) {
+        const options = {requestId:params.payload.agent_request_id ?? 'fixture-agent-call', ...(params.payload.agent_session ? {sessionId:params.payload.agent_session} : {})};
+        let result = await context.agent(params.scope, params.payload.agent_operation, params.payload.agent_payload ?? {}, options);
+        if (params.payload.repeat_agent)
+          result = await context.agent(params.scope, params.payload.agent_operation, params.payload.agent_payload ?? {}, options);
+        return {finished:true, agent:result};
+      }
       await context.emit(params.scope, 'agent.request', {input_id: 'turn-1', text: 'Fixture input'});
       return {finished: true};
     }
     if (method === 'capture') return {artifacts: [], regrade: 'available', checkpoint:fixture.checkpoint};
-    if (method === 'evaluate') return fixture.evaluation;
+    if (method === 'evaluate') {
+      if (params.payload.agent_operation) await context.agent(params.scope, 'run', {});
+      return fixture.evaluation;
+    }
     if (method === 'aggregate') return {metrics: [{name: 'success_rate', value: 1}], expected: 1, observed: 1, native: {}};
     if (method === 'cleanup') return {cleaned: true};
     if (method === 'cancel') return {cancelled: true};

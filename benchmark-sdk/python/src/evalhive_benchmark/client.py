@@ -29,7 +29,17 @@ async def _bounded(awaitable, timeout):
 
 
 class ConnectorClient:
-    def __init__(self, process, *, broker=None, broker_replay=None, event_buffer=128, **limits):
+    def __init__(
+        self,
+        process,
+        *,
+        broker=None,
+        broker_replay=None,
+        agent=None,
+        agent_replay=None,
+        event_buffer=128,
+        **limits,
+    ):
         if type(event_buffer) is not int or event_buffer < 1:
             raise ValueError("Event buffer must be a positive integer")
         self.process = process
@@ -47,11 +57,30 @@ class ConnectorClient:
             self.queue.put_nowait(event)
             self.events_received += 1
 
+        async def reverse(request, *, replay=False):
+            if request["type"] == "broker_request":
+                selected = broker_replay if replay else broker
+            elif request["method"] == "agent.call":
+                selected = agent_replay if replay else agent
+            else:
+                raise ProtocolError(
+                    "WRONG_DIRECTION", "Only agent calls may target the host", "configuration"
+                )
+            if selected is None:
+                raise ProtocolError(
+                    "RECEIPT_UNAVAILABLE" if replay else "HOST_CAPABILITY_UNAVAILABLE",
+                    "Requested host operation is unavailable",
+                    "uncertain" if replay else "unsupported",
+                )
+            return await selected(request)
+
         self.peer = Peer(
             write,
-            handler=broker,
-            replay_handler=broker_replay,
-            request_type="broker_request",
+            handler=reverse if agent is not None else broker,
+            replay_handler=(lambda request: reverse(request, replay=True))
+            if agent is not None
+            else broker_replay,
+            request_type=("command", "broker_request") if agent is not None else "broker_request",
             event_handler=on_event,
             **limits,
         )

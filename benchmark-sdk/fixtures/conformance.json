@@ -1217,6 +1217,223 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent run control envelope",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {}
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent scoped control envelope",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "control",
+          "payload": {
+            "name": "turn.submit",
+            "payload": {
+              "text": "Fixture"
+            }
+          },
+          "session_id": "session-1"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent controls require a session",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "control",
+          "payload": {}
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent run cannot choose a session",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {},
+          "session_id": "session-1"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent operations are explicit",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "invented",
+          "payload": {}
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent context cannot choose the harness",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {},
+          "harness_id": "other"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent completion refers to committed outcome",
+      "kind": "agent_completion",
+      "value": {
+        "session_id": "s1",
+        "status": "failed",
+        "outcome": {
+          "attempt_id": "a1",
+          "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent completion requires evidence",
+      "kind": "agent_completion",
+      "value": {
+        "session_id": "s1",
+        "status": "success"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent completion has a terminal status",
+      "kind": "agent_completion",
+      "value": {
+        "session_id": "s1",
+        "status": "running",
+        "outcome": {
+          "attempt_id": "a1",
+          "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent session returns its attempt",
+      "kind": "agent_session",
+      "value": {
+        "session_id": "s1",
+        "attempt_id": "a1"
+      },
+      "error": null
+    },
+    {
+      "name": "agent command returns native confirmation",
+      "kind": "agent_control_result",
+      "value": {
+        "session_id": "s1",
+        "command_id": "c1",
+        "result": {
+          "accepted": true
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent event page carries a cursor",
+      "kind": "agent_events",
+      "value": {
+        "session_id": "s1",
+        "events": [],
+        "cursor": 0,
+        "closed": false
+      },
+      "error": null
+    },
+    {
+      "name": "agent run settings belong to the host",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-params",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {
+            "harness_id": "other"
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
     }
   ],
   "evaluation_spec": {

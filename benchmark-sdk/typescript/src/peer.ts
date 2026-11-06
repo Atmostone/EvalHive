@@ -1,5 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
-import {command, decodeLine, encodeLine, lines, ProtocolError,
+import {command, decodeLine, encodeLine, lines, ProtocolError, validate,
   type ErrorKind, type JsonObject, type JsonValue, type Scope, type WireMessage} from './protocol.js';
 
 type Handler = (request: WireMessage) => Promise<JsonValue>;
@@ -38,7 +38,8 @@ export class Peer {
       throw new ProtocolError('TRANSPORT_CLOSED', 'Peer transport is closed');
     }
   }
-  async request(value: WireMessage, timeout = 30_000, receipt = false): Promise<JsonValue> {
+  async request(value: WireMessage, timeout = 30_000, receipt = false, signal?: AbortSignal): Promise<JsonValue> {
+    if (signal?.aborted) throw new ProtocolError('CANCELLED', 'Trial was cancelled', 'execution');
     if (this.closed) throw new ProtocolError('TRANSPORT_CLOSED', 'Peer is closed');
     if (this.pending.size >= (this.options.maxPending ?? 64)) throw new ProtocolError('PENDING_LIMIT', 'Pending request limit reached');
     encodeLine(value);
@@ -49,10 +50,12 @@ export class Peer {
       timer = setTimeout(() => reject(new ProtocolError('COMMAND_UNCERTAIN', 'Request timed out; its outcome is unknown')), timeout);
       this.pending.set(identity, {resolve, reject, receipt});
     });
+    const abort = () => this.pending.get(identity)?.reject(new ProtocolError('CANCELLED', 'Trial was cancelled', 'execution'));
+    signal?.addEventListener('abort', abort, {once: true});
     // Observe a response failure even when writing the frame fails first.
     void result.catch(() => {});
-    try {await this.send(value); return await result;}
-    finally {clearTimeout(timer!); this.pending.delete(identity);}
+    try {return await Promise.race([this.send(value).then(() => result), result]);}
+    finally {clearTimeout(timer!); this.pending.delete(identity); signal?.removeEventListener('abort', abort);}
   }
   async acknowledge(requestType: string, requestId: string): Promise<void> {
     await this.send({protocol_version: '1.0', type: 'receipt_ack', id: requestId, request_type: requestType});
@@ -139,6 +142,8 @@ export class Peer {
 }
 
 export class Context {
+  purpose: 'execution' | 'evaluation' | undefined;
+  agentEnabled = false;
   private sequences = new Map<string, number>();
   private emitting: Promise<void> = Promise.resolve();
   readonly controller = new AbortController();
@@ -165,6 +170,32 @@ export class Context {
     if (!options.durableHost) return this.peer.request(request, options.timeout);
     const receipt = await this.peer.request(request, options.timeout, true) as WireMessage;
     if (receipt.ok) {await this.peer.acknowledge('broker_request', request.id); return receipt.result;}
+    const error = receipt.error as JsonObject;
+    throw new ProtocolError(String(error.code), String(error.message), error.kind as ErrorKind);
+  }
+  async agent(scope: Scope, operation: string, payload: JsonObject,
+    options: {sessionId?: string; requestId?: string; timeout?: number} = {}): Promise<JsonValue> {
+    if (this.purpose !== 'execution')
+      throw new ProtocolError('AGENT_UNAVAILABLE', 'Agent calls require an execution-purpose worker', 'unsupported');
+    if (!this.agentEnabled) throw new ProtocolError('HOST_CAPABILITY_REQUIRED', 'Agent API requires host.agent_api_v1', 'configuration');
+    if (this.signal.aborted) throw new ProtocolError('CANCELLED', 'Trial was cancelled', 'execution');
+    this.bind(scope);
+    const request = command(options.requestId ?? randomUUID(), 'agent.call', {
+      scope, operation, payload, ...(options.sessionId !== undefined ? {session_id: options.sessionId} : {}),
+    });
+    const receipt = await this.peer.request(request, options.timeout, true, this.signal) as WireMessage;
+    if (receipt.ok) {
+      const kind: Record<string, string> = {run:'agent_completion',open:'agent_session',control:'agent_control_result',events:'agent_events',close:'agent_completion'};
+      try {
+        validate(kind[operation], receipt.result);
+        if (options.sessionId !== undefined && (receipt.result as JsonObject).session_id !== options.sessionId)
+          throw new ProtocolError('AGENT_SESSION_CONFLICT', 'Agent response belongs to another session', 'recording');
+        if (operation === 'events' && ((receipt.result as JsonObject).cursor! < payload.cursor! ||
+            ((receipt.result as JsonObject).events as JsonValue[]).length > Number(payload.limit ?? 256)))
+          throw new ProtocolError('AGENT_EVENT_CONFLICT', 'Agent event page violates its cursor or limit', 'recording');
+      } catch {throw new ProtocolError('AGENT_REPLY_INVALID', 'Host agent response is invalid', 'recording');}
+      await this.peer.acknowledge('command', String(request.id)); return receipt.result;
+    }
     const error = receipt.error as JsonObject;
     throw new ProtocolError(String(error.code), String(error.message), error.kind as ErrorKind);
   }

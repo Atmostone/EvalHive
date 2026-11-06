@@ -1065,7 +1065,8 @@
             "aggregate",
             "cleanup",
             "cancel",
-            "shutdown"
+            "shutdown",
+            "agent.call"
           ]
         },
         "params": {
@@ -1373,6 +1374,210 @@
               },
               "required": [],
               "additionalProperties": false
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "agent.call"
+            },
+            "params": {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "$ref": "#/$defs/scope"
+                },
+                "operation": {
+                  "enum": [
+                    "run",
+                    "open",
+                    "control",
+                    "events",
+                    "close"
+                  ]
+                },
+                "session_id": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+                },
+                "payload": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "required": [
+                "scope",
+                "operation",
+                "payload"
+              ],
+              "additionalProperties": false,
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "enum": [
+                          "control",
+                          "events",
+                          "close"
+                        ]
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "session_id"
+                    ]
+                  },
+                  "else": {
+                    "not": {
+                      "required": [
+                        "session_id"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "run"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "open"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "initial_history": {
+                            "type": "array",
+                            "maxItems": 1024,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": true
+                            }
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "control"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+                          },
+                          "payload": {
+                            "type": "object",
+                            "additionalProperties": true
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "payload"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "events"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "cursor": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 256
+                          },
+                          "wait_seconds": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 30
+                          }
+                        },
+                        "required": [
+                          "cursor"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "operation": {
+                        "const": "close"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "payload": {
+                        "type": "object",
+                        "properties": {
+                          "reason": {
+                            "type": "string",
+                            "maxLength": 4096
+                          }
+                        },
+                        "required": [],
+                        "additionalProperties": false
+                      }
+                    }
+                  }
+                }
+              ]
             }
           }
         }
@@ -2221,6 +2426,123 @@
         "artifacts",
         "evaluator_roles",
         "state"
+      ],
+      "additionalProperties": false
+    },
+    "agent_outcome_ref": {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "evidence_digest"
+      ],
+      "additionalProperties": false
+    },
+    "agent_session": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        }
+      },
+      "required": [
+        "session_id",
+        "attempt_id"
+      ],
+      "additionalProperties": false
+    },
+    "agent_completion": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "outcome": {
+          "$ref": "#/$defs/agent_outcome_ref"
+        },
+        "status": {
+          "enum": [
+            "success",
+            "failed",
+            "cancelled",
+            "lost"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "outcome",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "agent_control_result": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "command_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "session_id",
+        "command_id",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "agent_events": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+        },
+        "events": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "cursor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "closed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "events",
+        "cursor",
+        "closed"
       ],
       "additionalProperties": false
     }

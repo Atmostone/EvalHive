@@ -226,6 +226,44 @@ Python implementations subclass `Connector`, provide `manifest` and async
 `serveStdio`. Context supplies event emission, cancellation and the reverse
 resource-broker channel. Optional operations require declared capabilities.
 
+## Host agent sessions
+
+An execution-purpose connector can call `context.agent(scope, operation, payload,
+...)` (Python) or `context.agent(scope, operation, payload, options)` (TypeScript).
+These reverse `agent.call` commands share the JSONL transport with resource
+requests. Evaluation-purpose workers cannot call agents. Packages using this API
+must declare `host.agent_api_v1` in manifest or case `requirements.capabilities`; host preflight
+must reject that requirement unless its agent gateway is available.
+
+| Operation | Session required | Payload | Result schema |
+| --- | --- | --- | --- |
+| `run` | No | Empty object | `agent_completion` |
+| `open` | No | Optional `initial_history` | `agent_session` |
+| `control` | Yes | `name` and `payload` | `agent_control_result` |
+| `events` | Yes | `cursor`, optional `limit` and `wait_seconds` | `agent_events` |
+| `close` | Yes | Optional `reason` | `agent_completion` |
+
+Session IDs are opaque host grants. Harness/model selection and launch settings
+come from the server's frozen profile, not from an agent request. A completion
+contains `session_id`, terminal `status` and an `outcome` reference with
+`attempt_id` and `evidence_digest`. Returning from a benchmark's `drive` command
+does not prove successful agent execution: the host must resolve the reference
+against its committed Harness SDK attempt and execution binding.
+
+`ConnectorClient` accepts optional `agent` and `agent_replay` callbacks (Python),
+or `agent` and `agentReplay` callbacks (TypeScript). The gateway must authorize
+workspace/trial/generation, worker identity, phase, session and operation. It must
+commit successful call receipts before replying; the replay callback only reads
+those receipts. The SDK validates replies before acknowledging them. Missing
+retired receipts produce an uncertainty error without repeating an agent effect.
+Event pages must preserve their session, cursor and requested limit. Cancellation
+interrupts a worker waiting for an agent response.
+`run` and `close` can wait for terminal execution; use the remaining trial budget
+as the request timeout (Python seconds, TypeScript milliseconds).
+
+The SDK supplies routing, framing and validation. Process launch, credentials,
+durable agent lifecycle and controls belong to the host runner integration.
+
 The operator installs the worker image/package and manifest. The backend loads
 the declaration, not the worker module. UI executable-code installation is outside
 this contract. A worker must cooperate with cancellation; the supervising runtime

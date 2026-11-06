@@ -19,6 +19,7 @@ export async function serve(connector: Connector, input: AsyncIterable<Uint8Arra
   let purpose: 'execution' | 'evaluation' | undefined;
   const handler = async (request: WireMessage): Promise<JsonValue> => {
     const method = String(request.method), params = request.params as JsonObject;
+    if (method === 'agent.call') throw new ProtocolError('WRONG_DIRECTION', 'Agent calls target the host', 'configuration');
     if (method === 'describe') return connector.manifest;
     if (method === 'shutdown') {context.controller.abort(); return {stopped: true};}
     if ('spec' in params) {
@@ -27,6 +28,9 @@ export async function serve(connector: Connector, input: AsyncIterable<Uint8Arra
       if (purpose !== undefined && purpose !== selected)
         throw new ProtocolError('PURPOSE_CONFLICT', 'A worker cannot change its execution purpose', 'configuration');
       purpose = selected;
+      context.purpose = selected;
+      context.agentEnabled = [...((connector.manifest.requirements.capabilities ?? []) as string[]),
+        ...(((spec.case.requirements as JsonObject).capabilities ?? []) as string[])].includes('host.agent_api_v1');
     }
     if ('plan' in params) validateEnvironment(params.spec as TrialSpec, params.plan as JsonObject);
     if (method === 'drive' && purpose === 'evaluation')

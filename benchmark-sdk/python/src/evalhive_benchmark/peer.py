@@ -8,7 +8,7 @@ import json
 import uuid
 from collections.abc import AsyncIterable, Awaitable, Callable
 
-from .protocol import ProtocolError, decode_line, encode_line
+from .protocol import ProtocolError, command, decode_line, encode_line, validate
 
 
 def identity(value):
@@ -94,9 +94,9 @@ class Peer:
         if receipt:
             self.pending_receipts.add(key)
         try:
-            await self.send(value)
             try:
                 async with asyncio.timeout(timeout):
+                    await self.send(value)
                     return await future
             except TimeoutError:
                 raise ProtocolError(
@@ -315,6 +315,8 @@ class Context:
         self.sequences = {}
         self.lock = asyncio.Lock()
         self.scope = None
+        self.purpose = None
+        self.agent_enabled = False
 
     def bind(self, scope):
         if self.scope is not None and self.scope != scope:
@@ -372,3 +374,72 @@ class Context:
             return receipt["result"]
         error = receipt["error"]
         raise ProtocolError(error["code"], error["message"], error["kind"])
+
+    async def agent(
+        self, scope, operation, payload, *, session_id=None, request_id=None, timeout=30
+    ):
+        """Call a durable host agent session without selecting a harness or model."""
+        if self.purpose != "execution":
+            raise ProtocolError(
+                "AGENT_UNAVAILABLE",
+                "Agent calls require an execution-purpose worker",
+                "unsupported",
+            )
+        if not self.agent_enabled:
+            raise ProtocolError(
+                "HOST_CAPABILITY_REQUIRED", "Agent API requires host.agent_api_v1", "configuration"
+            )
+        if self.cancelled.is_set():
+            raise ProtocolError("CANCELLED", "Trial was cancelled", "execution")
+        self.bind(scope)
+        params = {"scope": scope, "operation": operation, "payload": payload}
+        if session_id is not None:
+            params["session_id"] = session_id
+        request = command(
+            uuid.uuid4().hex if request_id is None else request_id, "agent.call", params
+        )
+        pending = asyncio.create_task(self.peer.request(request, timeout=timeout, receipt=True))
+        stopped = asyncio.create_task(self.cancelled.wait())
+        try:
+            done, _ = await asyncio.wait({pending, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            if stopped in done:
+                raise ProtocolError("CANCELLED", "Trial was cancelled", "execution")
+            receipt = await pending
+            if receipt["ok"]:
+                kind = {
+                    "run": "agent_completion",
+                    "open": "agent_session",
+                    "control": "agent_control_result",
+                    "events": "agent_events",
+                    "close": "agent_completion",
+                }[operation]
+                try:
+                    validate(kind, receipt["result"])
+                    if session_id is not None and receipt["result"]["session_id"] != session_id:
+                        raise ProtocolError(
+                            "AGENT_SESSION_CONFLICT",
+                            "Agent response belongs to another session",
+                            "recording",
+                        )
+                    if operation == "events" and (
+                        receipt["result"]["cursor"] < payload["cursor"]
+                        or len(receipt["result"]["events"]) > payload.get("limit", 256)
+                    ):
+                        raise ProtocolError(
+                            "AGENT_EVENT_CONFLICT",
+                            "Agent event page violates its cursor or limit",
+                            "recording",
+                        )
+                except ProtocolError as error:
+                    raise ProtocolError(
+                        "AGENT_REPLY_INVALID", "Host agent response is invalid", "recording"
+                    ) from error
+                await self.peer.acknowledge("command", request["id"])
+                return receipt["result"]
+            error = receipt["error"]
+            raise ProtocolError(error["code"], error["message"], error["kind"])
+        finally:
+            for task in (pending, stopped):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(pending, stopped, return_exceptions=True)

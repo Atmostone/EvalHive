@@ -38,6 +38,8 @@ async def serve(connector: Connector, lines, write, **limits):
     async def handle(request):
         nonlocal purpose
         method, params = request["method"], request["params"]
+        if method == "agent.call":
+            raise ProtocolError("WRONG_DIRECTION", "Agent calls target the host", "configuration")
         if method == "describe":
             return connector.manifest
         if method == "shutdown":
@@ -53,6 +55,11 @@ async def serve(connector: Connector, lines, write, **limits):
                     "configuration",
                 )
             purpose = selected
+            context.purpose = selected
+            context.agent_enabled = "host.agent_api_v1" in {
+                *connector.manifest["requirements"].get("capabilities", []),
+                *params["spec"]["case"]["requirements"].get("capabilities", []),
+            }
         if "plan" in params:
             validate_environment(params["spec"], params["plan"])
         if method == "drive" and purpose == "evaluation":

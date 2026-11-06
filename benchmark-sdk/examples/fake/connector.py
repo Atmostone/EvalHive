@@ -60,6 +60,22 @@ class FakeConnector(Connector):
                 prepared["agent"] = FIXTURE["plan"]["agent"]
             return prepared
         if method == "drive":
+            if operation := params["payload"].get("agent_operation"):
+                request_id = params["payload"].get("agent_request_id", "fixture-agent-call")
+                data = params["payload"].get("agent_payload", {})
+                session_id = params["payload"].get("agent_session")
+                first = await context.agent(
+                    params["scope"], operation, data, session_id=session_id, request_id=request_id
+                )
+                if params["payload"].get("repeat_agent"):
+                    first = await context.agent(
+                        params["scope"],
+                        operation,
+                        data,
+                        session_id=session_id,
+                        request_id=request_id,
+                    )
+                return {"finished": True, "agent": first}
             await context.emit(
                 params["scope"], "agent.request", {"input_id": "turn-1", "text": "Fixture input"}
             )
@@ -67,6 +83,8 @@ class FakeConnector(Connector):
         if method == "capture":
             return {"artifacts": [], "regrade": "available", "checkpoint": FIXTURE["checkpoint"]}
         if method == "evaluate":
+            if params["payload"].get("agent_operation"):
+                await context.agent(params["scope"], "run", {})
             return FIXTURE["evaluation"]
         if method == "aggregate":
             return {
