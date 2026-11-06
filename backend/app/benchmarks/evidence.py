@@ -100,12 +100,17 @@ class EvidenceStore:
             ):
                 pass
 
-    async def resolve(self, workspace_id, trial_id, artifact, *, visibilities):
+    async def resolve(self, workspace_id, trial_id, artifact, *, visibilities, db=None):
         """Authorize the complete reference before opening a private locator.
 
         Callers grant visibility explicitly. Public downloads should grant only
         user/agent visibility; evaluators may grant evaluator/private as needed.
         """
+        if db is None:
+            async with AsyncSession(self.store.engine, expire_on_commit=False) as session:
+                return await self.resolve(
+                    workspace_id, trial_id, artifact, visibilities=visibilities, db=session
+                )
         validate("artifact", artifact)
         try:
             if not artifact["uri"].startswith("artifact:"):
@@ -115,37 +120,38 @@ class EvidenceStore:
             raise failure(
                 "ARTIFACT_UNAVAILABLE", "Evidence reference is unavailable", "recording"
             ) from None
-        async with AsyncSession(self.store.engine, expire_on_commit=False) as db:
-            row = await db.scalar(
-                select(BenchmarkArtifact)
-                .where(
-                    BenchmarkArtifact.id == artifact_id,
-                    BenchmarkArtifact.workspace_id == workspace_id,
-                    BenchmarkArtifact.trial_id == trial_id,
-                )
-                .options(undefer(BenchmarkArtifact.private_locator))
+        row = await db.scalar(
+            select(BenchmarkArtifact)
+            .where(
+                BenchmarkArtifact.id == artifact_id,
+                BenchmarkArtifact.workspace_id == workspace_id,
+                BenchmarkArtifact.trial_id == trial_id,
             )
-            if row is None or row.visibility not in visibilities or reference(row) != artifact:
-                raise failure(
-                    "ARTIFACT_UNAVAILABLE", "Evidence reference is unavailable", "recording"
-                )
-            locator = self.store.private.open("artifact:" + str(row.id), row.private_locator)
-            if locator["bucket"] != self.bucket:
-                raise failure(
-                    "ARTIFACT_STORAGE_UNAVAILABLE",
-                    "Installed evidence storage differs",
-                    "recording",
-                )
-            return locator
+            .options(undefer(BenchmarkArtifact.private_locator))
+        )
+        if row is None or row.visibility not in visibilities or reference(row) != artifact:
+            raise failure("ARTIFACT_UNAVAILABLE", "Evidence reference is unavailable", "recording")
+        locator = self.store.private.open("artifact:" + str(row.id), row.private_locator)
+        if locator["bucket"] != self.bucket:
+            raise failure(
+                "ARTIFACT_STORAGE_UNAVAILABLE", "Installed evidence storage differs", "recording"
+            )
+        return locator
 
     @asynccontextmanager
-    async def open_verified(self, workspace_id, trial_id, artifact, *, visibilities):
+    async def open_verified(
+        self, workspace_id, trial_id, artifact, *, visibilities, spool_dir=None, db=None
+    ):
         """Spool and verify before handing any retained bytes to a consumer."""
         artifact = deepcopy(artifact)
-        locator = await self.resolve(workspace_id, trial_id, artifact, visibilities=visibilities)
+        locator = await self.resolve(
+            workspace_id, trial_id, artifact, visibilities=visibilities, db=db
+        )
         if artifact["size_bytes"] > MAX_EVIDENCE_BYTES:
             raise failure("ARTIFACT_TOO_LARGE", "Evidence exceeds storage policy", "recording")
-        with tempfile.TemporaryFile(dir=self.spool_dir) as spool:
+        with tempfile.TemporaryFile(
+            dir=self.spool_dir if spool_dir is None else spool_dir
+        ) as spool:
 
             def download():
                 response = None

@@ -128,7 +128,7 @@ async def install_session(
                 "NO_RESERVATION", "Session requires an owned host reservation", "preparation"
             )
         if reservation.budget.get("stage", "full") == "planning" and (
-            purpose != "execution"
+            purpose != ("evaluation" if owner.control_id is not None else "execution")
             or len(leases) != 1
             or any(
                 lease.kind != "container"

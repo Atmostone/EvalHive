@@ -8,6 +8,8 @@ FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb06
 COPY --from=dependencies /fixture-deps/ /usr/local/lib/python3.12/site-packages/
 COPY benchmark-sdk/python/src /opt/benchmark-sdk
 COPY backend/tests/runtime/broker_worker_fixture.py /fixture/worker.py
+COPY backend/tests/runtime/broker_worker_fixture.py /fixture/broker_worker_fixture.py
+COPY backend/tests/runtime/regrade_worker_fixture.py /fixture/regrade_worker.py
 ENV PYTHONPATH=/opt/benchmark-sdk PYTHONUNBUFFERED=1
 WORKDIR /tmp
 ENTRYPOINT []

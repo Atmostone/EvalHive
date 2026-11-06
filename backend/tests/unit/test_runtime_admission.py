@@ -91,6 +91,29 @@ def test_case_floor_cannot_be_lost_in_a_smaller_environment_plan(available):
     assert result["group_resources"]["memory_mb"] == 2560
 
 
+def test_retained_storage_counts_against_capacity_without_satisfying_native_minima(available):
+    available["native_resources"] = {"disk_mb": 5000}
+    result = check_group(**available, auxiliary_disk_mb=4096)
+    assert not result["eligible"]
+    assert result["group_resources"]["disk_mb"] == 8704
+    assert {
+        "code": "underdeclared_group_requirements",
+        "resource": "disk_mb",
+        "required": 5000,
+        "declared": 4608,
+    } in result["reasons"]
+    assert any(
+        reason["code"] == "insufficient_group_resources" and reason["resource"] == "disk_mb"
+        for reason in check_group(**available, auxiliary_disk_mb=6000)["reasons"]
+    )
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, None])
+def test_retained_storage_budget_must_be_an_exact_nonnegative_integer(available, value):
+    with pytest.raises(ManagedRuntimeError):
+        check_group(**available, auxiliary_disk_mb=value)
+
+
 def test_per_container_runtime_maximum_is_enforced_before_any_effect(available):
     available["demands"] = (replace(available["demands"][0], limits=Quota(8192, 4)),)
     with pytest.raises(ManagedRuntimeError, match="exceed"):

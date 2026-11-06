@@ -113,3 +113,34 @@ def test_admitted_session_keeps_purpose_and_evaluator_cannot_drive(evaluation, m
             assert ("driving" in policy.phases) is (not evaluation)
 
     asyncio.run(scenario())
+
+
+def test_retained_archive_and_spool_must_fit_the_trial_before_admission_or_download():
+    async def scenario():
+        host, spec, plan = invocation(True)
+        spec["checkpoint"]["artifacts"] = [
+            {
+                "id": "checkpoint",
+                "uri": "artifact:" + str(uuid.uuid4()),
+                "digest": "sha256:" + "a" * 64,
+                "size_bytes": 34 * 1024**2,
+                "visibility": "private",
+                "media_type": "application/octet-stream",
+            }
+        ]
+        plan["resources"] = [
+            {
+                "id": "grader",
+                "provider": "fixture.rootless",
+                "kind": "container",
+                "config": {"asset_id": "fixture.grader", "retained_inputs": ["checkpoint"]},
+            }
+        ]
+        host.retained_inputs.materialize = AsyncMock()
+        with pytest.raises(ProtocolError) as caught:
+            await host.install_plan(spec, plan)
+        assert caught.value.code == "LIMIT_EXCEEDED"
+        host.store.reserve.assert_not_awaited()
+        host.retained_inputs.materialize.assert_not_awaited()
+
+    asyncio.run(scenario())

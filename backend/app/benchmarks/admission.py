@@ -19,6 +19,7 @@ class HostAdmission:
         runtime_policy,
         group_policy,
         stage="full",
+        auxiliary_disk_mb=0,
     ):
         """Admit an isolated planner, then freeze the complete group exactly once.
 
@@ -30,7 +31,9 @@ class HostAdmission:
 
         if stage not in {"planning", "full"}:
             raise failure("INVALID_ADMISSION", "Unknown host admission stage")
-        if stage == "planning" and (len(demands) != 1 or native_resources):
+        if type(auxiliary_disk_mb) is not int or auxiliary_disk_mb < 0:
+            raise failure("INVALID_ADMISSION", "Auxiliary storage requires a nonnegative budget")
+        if stage == "planning" and (len(demands) != 1 or native_resources or auxiliary_disk_mb):
             raise failure("INVALID_ADMISSION", "Planning admission requires one worker demand")
         resources = [asdict(item) for item in demands]
         async with database_fence(self.engine, owner.trial_id, host_id=self.host_id) as db:
@@ -54,6 +57,7 @@ class HostAdmission:
                     if (
                         reservation.budget["resources"] != resources
                         or reservation.budget["native_resources"] != native_resources
+                        or reservation.budget.get("auxiliary_disk_mb", 0) != auxiliary_disk_mb
                     ):
                         raise failure(
                             "ADMISSION_CONFLICT",
@@ -79,7 +83,13 @@ class HostAdmission:
             if trial.cancel_requested_at is not None or trial.deadline_at <= now:
                 raise failure("TRIAL_STOPPING", "Trial stopped during host admission", "execution")
             decision = check_group(
-                demands, native_resources, measured, runtime_policy, group_policy, active_trials=0
+                demands,
+                native_resources,
+                measured,
+                runtime_policy,
+                group_policy,
+                active_trials=0,
+                auxiliary_disk_mb=auxiliary_disk_mb,
             )
             if not decision["eligible"]:
                 raise failure(
@@ -94,6 +104,7 @@ class HostAdmission:
                 "can_run": False,
                 "resources": resources,
                 "native_resources": native_resources,
+                "auxiliary_disk_mb": auxiliary_disk_mb,
             }
             finalizing = reservation is not None
             if finalizing:

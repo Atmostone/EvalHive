@@ -92,6 +92,7 @@ def check_group(
     policy: GroupPolicy,
     *,
     active_trials: int,
+    auxiliary_disk_mb: int = 0,
 ):
     """Recheck under the host reservation lock immediately before preparation.
 
@@ -101,6 +102,8 @@ def check_group(
     if (
         type(active_trials) is not int
         or active_trials < 0
+        or type(auxiliary_disk_mb) is not int
+        or auxiliary_disk_mb < 0
         or type(policy.max_concurrency) is not int
         or policy.max_concurrency != 1
         or not _number(policy.max_memory_mb, 1)
@@ -157,6 +160,9 @@ def check_group(
                     "declared": required[name],
                 }
             )
+    # Retained files and their download spool consume capacity, but cannot
+    # satisfy a native environment's declared disk requirement.
+    required["disk_mb"] += auxiliary_disk_mb
     if active_trials >= policy.max_concurrency:
         reasons.append({"code": "host_busy"})
     capacities = {

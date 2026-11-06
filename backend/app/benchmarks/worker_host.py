@@ -20,6 +20,7 @@ from evalhive_benchmark.peer import identity
 from app.benchmarks.broker import SqlBroker
 from app.benchmarks.catalog import merged_requirements
 from app.benchmarks.resource_authority import ActorPolicy, install_session
+from app.benchmarks.retained_inputs import RetainedInputs
 from app.benchmarks.worker_channel import WorkerChannel
 from app.runtime.admission import GroupPolicy, host_capacity
 from app.runtime.managed_spec import ManagedRuntimeError, OwnerScope
@@ -35,7 +36,17 @@ class RootlessWorkerHost:
 
     WORKER_ID = "sdk.worker"
 
-    def __init__(self, store, owner, manifest, assets, providers, *, group_policy=None):
+    def __init__(
+        self,
+        store,
+        owner,
+        manifest,
+        assets,
+        providers,
+        *,
+        group_policy=None,
+        retained_evidence=None,
+    ):
         validate("manifest", manifest)
         if manifest["kind"] != "benchmark" or (manifest["id"], manifest["version"]) != (
             assets.document["connector_id"],
@@ -57,6 +68,9 @@ class RootlessWorkerHost:
         self.worker_broker = SqlBroker(store, owner, self.worker_actor, providers)
         self.channel, self.worker_demand, self.environment, self.client = None, None, None, None
         self.started = False
+        self.retained_inputs = RetainedInputs(
+            store, owner, assets.runtime.policy, retained_evidence
+        )
 
     async def _measure(self):
         return await asyncio.to_thread(
@@ -206,7 +220,10 @@ class RootlessWorkerHost:
             self.scope,
             session_id=str(uuid.uuid5(self.owner.controller_id, "benchmark.environment")),
         )
-        compiled = await self.assets.compile(scope, plan, reserved_ids=(self.WORKER_ID,))
+        retained = self.retained_inputs.plan(spec, plan, scope)
+        compiled = await self.assets.compile(
+            scope, plan, reserved_ids=(self.WORKER_ID,), retained_inputs=retained.grants
+        )
         requirements = merged_requirements(
             self.manifest["requirements"], spec["case"]["requirements"], plan["requirements"]
         )
@@ -214,7 +231,7 @@ class RootlessWorkerHost:
         totals = {
             "memory_mb": sum(item.limits.memory_mb for item in demands),
             "cpu_cores": sum(Decimal(str(item.limits.cpu_cores)) for item in demands),
-            "disk_mb": sum(item.disk_mb for item in demands),
+            "disk_mb": sum(item.disk_mb for item in demands) + retained.disk_mb,
         }
         if any(value > Decimal(str(spec["limits"][name])) for name, value in totals.items()):
             raise ProtocolError(
@@ -227,7 +244,9 @@ class RootlessWorkerHost:
             measure=self._measure,
             runtime_policy=self.assets.runtime.policy,
             group_policy=self.group_policy,
+            auxiliary_disk_mb=retained.disk_mb,
         )
+        await self.retained_inputs.materialize(retained)
         resources = tuple(compiled.leases)
         policy = ActorPolicy(
             (self.assets.provider_id,),
@@ -269,6 +288,9 @@ class RootlessWorkerHost:
         )
         self.environment = compiled
         return compiled
+
+    async def release_inputs(self):
+        await self.retained_inputs.release()
 
     async def detach(self, *, grace=3):
         from contextlib import suppress

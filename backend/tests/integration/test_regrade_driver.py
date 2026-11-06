@@ -58,7 +58,8 @@ async def source_snapshot(store, trial_id):
 async def replay(driver, request):
     original, spec = driver
     spec["config"] = {"checkpoint": True, **getattr(request, "param", {})}
-    await original.run(spec)
+    finished = await original.run(spec)
+    assert finished["phase"] == "finished" and finished["evaluation"] == "completed", finished
     source = await attempt_row(original)
     store = EvaluationControls(original.store, None)
     owner = await store.create(

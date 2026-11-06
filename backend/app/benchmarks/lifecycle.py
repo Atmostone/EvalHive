@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.benchmark_command import BenchmarkCommand
+from app.models.benchmark_evaluation_input import BenchmarkEvaluationInput
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
     BenchmarkEventStream,
@@ -146,6 +147,19 @@ class ControlLifecycle:
         )
         if live is not None:
             raise failure("CLEANUP_PENDING", "Resource leases remain unreconciled", "cleanup")
+        if owner.control_id is not None:
+            retained = await db.scalar(
+                select(BenchmarkEvaluationInput.id)
+                .where(
+                    BenchmarkEvaluationInput.control_id == owner.control_id,
+                    BenchmarkEvaluationInput.state != "released",
+                )
+                .limit(1)
+            )
+            if retained is not None:
+                raise failure(
+                    "CLEANUP_PENDING", "Retained input files remain unreconciled", "cleanup"
+                )
         reservation = await db.get(BenchmarkHostReservation, self.host_id)
         if reservation is not None and (
             reservation.trial_id,

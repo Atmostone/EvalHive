@@ -265,8 +265,9 @@ class RootlessAssets:
         )
         return ResourceLease(handle, scope, "container", spec), demand, image["image_id"]
 
-    async def compile(self, scope, plan, *, reserved_ids=()):
+    async def compile(self, scope, plan, *, reserved_ids=(), retained_inputs=None):
         validate("environment_plan", plan)
+        retained_inputs = dict(retained_inputs or {})
         resources = {item["id"]: item for item in plan["resources"]}
         if set(resources) & set(reserved_ids):
             raise ManagedRuntimeError("Plan overlaps an already reserved worker resource")
@@ -278,6 +279,7 @@ class RootlessAssets:
                 "network",
                 "namespace",
                 "network_aliases",
+                "retained_inputs",
             }:
                 raise ManagedRuntimeError(
                     "Plan requires an unregistered provider or resource setting"
@@ -321,6 +323,37 @@ class RootlessAssets:
                 raise ManagedRuntimeError("Network aliases require an owned bridge")
             if lease.kind == "container":
                 lease = replace(lease, intent=replace(lease.intent, network_aliases=tuple(aliases)))
+            selected_inputs = config.get("retained_inputs", [])
+            if (
+                not isinstance(selected_inputs, list)
+                or len(selected_inputs) > 256
+                or any(
+                    not isinstance(value, str) or value not in retained_inputs
+                    for value in selected_inputs
+                )
+                or len(set(selected_inputs)) != len(selected_inputs)
+                or selected_inputs
+                and lease.kind != "container"
+            ):
+                raise ManagedRuntimeError("Retained inputs require distinct authorized file grants")
+            if selected_inputs:
+                mounts = list(lease.intent.mounts)
+                for input_id in selected_inputs:
+                    source = retained_inputs[input_id]
+                    if not re.fullmatch(ID["pattern"], input_id) or source.writable:
+                        raise ManagedRuntimeError("Retained input grants must be read-only")
+                    target = "/evalhive/retained/" + input_id + "/payload"
+                    for mount in mounts:
+                        left, right = absolute_path(mount.source), absolute_path(source.host_path)
+                        if left.is_relative_to(right) or right.is_relative_to(left):
+                            raise ManagedRuntimeError("Retained inputs overlap another host mount")
+                        left, right = absolute_path(mount.target), absolute_path(target)
+                        if left.is_relative_to(right) or right.is_relative_to(left):
+                            raise ManagedRuntimeError(
+                                "Retained inputs overlap another container mount"
+                            )
+                    mounts.append(BindMount(source.host_path, target, True))
+                lease = replace(lease, intent=replace(lease.intent, mounts=tuple(mounts)))
             dependencies = tuple(
                 str(uuid.uuid5(uuid.UUID(scope.session_id), "resource:" + dependency))
                 for dependency in resource.get("depends_on", [])
@@ -368,6 +401,13 @@ class RootlessAssets:
             for resource in resources.values()
             for mount in self.document["assets"][resource["config"]["asset_id"]].get("mounts", [])
         }
+        files.update(
+            {
+                "retained/" + input_id: retained_inputs[input_id].source_digest
+                for resource in resources.values()
+                for input_id in resource["config"].get("retained_inputs", [])
+            }
+        )
         fingerprint = identity(
             {"registration": self.document, "images": images, "files": files, "plan": plan}
         )

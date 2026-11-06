@@ -312,6 +312,11 @@ class PhaseDriver:
         if any("error" in result for result in released):
             await self._note("cleanup.failed", code="RESOURCE_RELEASE_PENDING", private=released)
             return
+        release_inputs = getattr(self.host, "release_inputs", None)
+        if release_inputs is not None:
+            await self._wait(
+                release_inputs(), seconds=self.limits.cleanup_seconds, interruptible=False
+            )
         self.stopping.set()
         await bounded(
             self.store.transition(self.owner, "cleaning", "finished"), self.limits.service_seconds

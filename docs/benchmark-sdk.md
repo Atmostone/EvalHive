@@ -135,7 +135,8 @@ full scientific runs and a new chat product are outside this delivery.
 
 Each task records implemented behavior and actual tests in Linear. Repository
 documentation/code/commits use English; project discussion uses Russian. Local
-commits have an SPA prefix and no coauthor. Push remains deferred by the owner.
+commits have an SPA prefix and no coauthor. Verified commits are published to
+`codex/benchmark-sdk`; the completed Harness SDK is already merged into `master`.
 
 ## Catalog and configuration API
 
@@ -189,3 +190,38 @@ launch wiring remains required.
 Native connector profiles for conversation support use version 0.2.0, with Pi
 1.5.0 and OpenCode 1.19.5 unchanged. B17 must migrate installed 0.1 profile
 references during cutover while preserving historical snapshots and image digests.
+
+## Retained checkpoint inputs
+
+An evaluation-purpose rootless plan can select checkpoint artifacts through
+`resource.config.retained_inputs`, an array of artifact IDs. The host grants only
+IDs present in the frozen checkpoint. Each selected artifact is mounted read-only
+at `/evalhive/retained/<artifact-id>/payload`; configuration cannot choose a host
+path or replace another mount. The connector restores its native world inside
+its new task container. EvalHive does not extract benchmark archives on the host.
+
+Complete group admission includes retained file storage, one sequential download
+spool, and per-file filesystem headroom. This auxiliary storage is also charged
+against trial disk limits, and cannot satisfy native environment disk minima.
+Downloads use the admitted data volume and verify the full immutable reference,
+size and SHA-256 before publication. Cancellation waits for bounded blocking I/O
+to return before releasing the ownership fence. Evidence lookup reuses the same
+SQL connection when that fence already owns a pool slot.
+
+Migration `bg11` records each private materialization intent before local writes.
+Its immutable identity binds workspace, source trial, evaluation controller,
+origin generation, session and artifact. Files progress from `reserved` to `ready`
+to `released`; a replacement owner cleans the predecessor's files rather than
+restarting native work. Cleanup removes these files only after every resource
+lease in the evaluation context has been released. Pending files retain the host
+reservation and prevent terminal cleanup. Storage mapping changes fail closed.
+Downgrading below `bg11` is rejected while unreleased file intents remain, so a
+schema rollback cannot erase the information required to reclaim their storage.
+
+The engineering fixture transfers a world archive larger than 32 MiB through
+MinIO, restores it in a fresh rootless container, checks the read-only mount, and
+grades it through a new worker and evaluation attempt without calling `drive`.
+The source execution and verdict remain unchanged. This verifies the generic
+restoration path, not native compatibility of the planned benchmark adapters.
+Resolving a fresh worker strictly from retained installation/image/file pins
+remains a separate required integration step before B05 closes.

@@ -144,6 +144,80 @@ def test_evaluation_plan_compiles_without_an_agent_grant():
     asyncio.run(scenario())
 
 
+def test_retained_grants_have_fixed_readonly_targets_and_enter_the_fingerprint():
+    async def scenario():
+        assets, _ = catalog()
+        native = plan()
+        native["resources"][0]["config"]["retained_inputs"] = ["checkpoint"]
+        grant = RegisteredFile("/owned/checkpoint", "sha256:" + "c" * 64)
+        compiled = await assets.compile(scope(), native, retained_inputs={"checkpoint": grant})
+        (mount,) = compiled.leases["task"][1].intent.mounts
+        assert mount.source == "/owned/checkpoint" and mount.read_only
+        assert mount.target == "/evalhive/retained/checkpoint/payload"
+        assert compiled.files["retained/checkpoint"] == grant.source_digest
+        changed = RegisteredFile(grant.host_path, "sha256:" + "d" * 64)
+        second = await assets.compile(
+            compiled.scope, native, retained_inputs={"checkpoint": changed}
+        )
+        assert second.fingerprint != compiled.fingerprint
+        with pytest.raises(ManagedRuntimeError, match="authorized"):
+            await assets.compile(scope(), native)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "selection", [["checkpoint", "checkpoint"], ["foreign"], [1], "checkpoint"]
+)
+def test_retained_selection_cannot_create_or_repeat_grants(selection):
+    async def scenario():
+        assets, _ = catalog()
+        native = plan()
+        native["resources"][0]["config"]["retained_inputs"] = selection
+        with pytest.raises(ManagedRuntimeError):
+            await assets.compile(
+                scope(),
+                native,
+                retained_inputs={
+                    "checkpoint": RegisteredFile("/owned/checkpoint", "sha256:" + "c" * 64)
+                },
+            )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "source,target,writable",
+    [
+        ("/owned/checkpoint", "/seed", False),
+        ("/owned", "/seed", False),
+        ("/owned/seed", "/evalhive", False),
+        ("/owned/seed", "/seed", True),
+    ],
+)
+def test_retained_inputs_cannot_overlap_mounts_or_be_writable(source, target, writable):
+    async def scenario():
+        data = document()
+        data["assets"]["fixture.task"]["mounts"] = [
+            {"file_id": "seed", "target": target, "read_only": True}
+        ]
+        assets, _ = catalog(data, {"seed": RegisteredFile(source, "sha256:" + "a" * 64)})
+        native = plan()
+        native["resources"][0]["config"]["retained_inputs"] = ["checkpoint"]
+        with pytest.raises(ManagedRuntimeError):
+            await assets.compile(
+                scope(),
+                native,
+                retained_inputs={
+                    "checkpoint": RegisteredFile(
+                        "/owned/checkpoint", "sha256:" + "c" * 64, writable
+                    )
+                },
+            )
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "config",
     [

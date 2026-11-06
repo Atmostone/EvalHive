@@ -43,6 +43,7 @@ from sqlalchemy.orm import undefer
 
 from tests.runtime.authority_fixture import FixtureArtifacts, manifest
 from tests.runtime.broker_worker_fixture import CASE, Worker
+from tests.runtime.regrade_worker_fixture import RegradeWorker
 
 pytestmark = pytest.mark.skipif(
     os.getenv("EVALHIVE_NATIVE_WORKER_HOST") != "1",
@@ -72,6 +73,13 @@ async def native_engine(_engine, db_session):
         "recover_active",
         pytest.param(
             "evidence",
+            marks=pytest.mark.skipif(
+                not os.getenv("EVALHIVE_EVIDENCE_MINIO"),
+                reason="Isolated MinIO fixture not configured",
+            ),
+        ),
+        pytest.param(
+            "regrade",
             marks=pytest.mark.skipif(
                 not os.getenv("EVALHIVE_EVIDENCE_MINIO"),
                 reason="Isolated MinIO fixture not configured",
@@ -108,13 +116,17 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             PathMapping(host_root, str(local)), (PathMapping(host_root + "/bundle", str(bundle)),)
         ),
     )
+    worker_class = RegradeWorker if automatic == "regrade" else Worker
     worker_image = await asyncio.to_thread(
-        runtime.resolve_image, "evalhive-broker-worker-fixture:b05-stages"
+        runtime.resolve_image,
+        "evalhive-benchmark-regrade-fixture:b05-inputs"
+        if automatic == "regrade"
+        else "evalhive-broker-worker-fixture:b05-stages",
     )
     task_image = await asyncio.to_thread(
         runtime.resolve_image, "evalhive-environment-workspace:0.1.0"
     )
-    declaration = deepcopy(Worker.manifest)
+    declaration = deepcopy(worker_class.manifest)
     declaration["image"] = worker_image["image_id"]
     registration = {
         "format_version": "1.0",
@@ -152,13 +164,21 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             },
         },
     }
-    if automatic == "evidence":
+    if automatic in ("evidence", "regrade"):
         registration["assets"]["fixture.task"]["outputs"]["grade_log"] = {
             "path": "/workspace/grader.txt",
             "visibility": "evaluator",
             "required": True,
             "stage": "evaluation",
             "max_archive_bytes": 2 * 1024**2,
+        }
+    if automatic == "regrade":
+        registration["assets"]["fixture.task"]["minimum"]["disk_mb"] = 48
+        registration["assets"]["fixture.task"]["outputs"]["world"] = {
+            "path": "/workspace",
+            "visibility": "private",
+            "required": True,
+            "max_archive_bytes": 64 * 1024**2,
         }
     assets = RootlessAssets(
         registration,
@@ -176,14 +196,14 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
     trial = await store.create(
         WORKSPACE,
         snapshot={"fixture": "native worker host"},
-        deadline_at=datetime.now(UTC) + timedelta(seconds=55),
+        deadline_at=datetime.now(UTC) + timedelta(seconds=180 if automatic == "regrade" else 55),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
     if automatic in (False, "recover"):
         await store.transition(owner, "created", "planning")
 
     evidence = None
-    if automatic == "evidence":
+    if automatic in ("evidence", "regrade"):
         import urllib3
         from app.benchmarks.evidence import EvidenceStore
         from minio import Minio
@@ -202,12 +222,13 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         evidence = EvidenceStore(store, client, bucket=bucket)
 
     class Capture(FixtureArtifacts):
-        def __init__(self):
+        def __init__(self, selected_evidence=evidence, selected_owner=owner):
             super().__init__()
             self.receipts = {}
+            self.evidence, self.owner = selected_evidence, selected_owner
 
         async def save(self, scope, grant, chunks, *, publication=None):
-            if grant.artifact_id == "result":
+            if grant.artifact_id == "result" and self.owner.control_id is None:
                 async with AsyncSession(_engine) as db:
                     rows = (
                         await db.scalars(
@@ -229,7 +250,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     for lease in leases
                 ]
                 assert any(status["main_done"] and status["children"] == 1 for status in statuses)
-            if evidence is None:
+            if self.evidence is None:
                 return await super().save(scope, grant, chunks, publication=publication)
             data = bytearray()
 
@@ -238,7 +259,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     data.extend(chunk)
                     yield chunk
 
-            saved = await evidence.sink(owner).save(
+            saved = await self.evidence.sink(self.owner).save(
                 scope, grant, observed(), publication=publication
             )
             self.values[grant.artifact_id] = bytes(data)
@@ -255,6 +276,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         )
     }
     worker_host = RootlessWorkerHost(store, owner, declaration, assets, factories)
+    hosts = [worker_host]
     spec = {
         "protocol_version": "1.0",
         "scope": {
@@ -263,13 +285,16 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             "generation": owner.generation,
         },
         "case": CASE,
-        "config": {"grader_artifact": True} if automatic == "evidence" else {},
+        "config": {"grader_artifact": True} if automatic in ("evidence", "regrade") else {},
         "credential_refs": {},
         "models": {},
         "limits": {"wall_time_seconds": 60, "memory_mb": 768, "cpu_cores": 1.25, "disk_mb": 32},
     }
+    if automatic == "regrade":
+        spec["limits"]["disk_mb"] = 192
+        spec["limits"]["wall_time_seconds"] = 180
     try:
-        if automatic in (True, "cancel", "recover_active", "evidence"):
+        if automatic in (True, "cancel", "recover_active", "evidence", "regrade"):
             recovery = RecoveryService(
                 store,
                 worker_host.host_actor,
@@ -292,7 +317,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                 capture_validator=capture_validator,
                 deadlines=(watchdog,),
                 limits=DriverLimits(
-                    phase_seconds=35,
+                    phase_seconds=90 if automatic == "regrade" else 35,
                     stop_seconds=1,
                     capture_seconds=10,
                     cleanup_seconds=25,
@@ -372,7 +397,10 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                         assert any(key.startswith("recovery.") for key in artifacts.values)
                         return
                     assert await store.request_cancel(WORKSPACE, owner.trial_id)
-                result = await asyncio.wait_for(pending, 20 if automatic == "cancel" else 45)
+                result = await asyncio.wait_for(
+                    pending,
+                    120 if automatic == "regrade" else (20 if automatic == "cancel" else 45),
+                )
                 assert result["phase"] == "finished" and result["cleanup"] == "complete"
                 assert result["execution"] == ("cancelled" if automatic == "cancel" else "success")
                 assert result["evaluation"] == (
@@ -382,7 +410,7 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     content = archive.extractfile("result.txt").read()
                     assert content.startswith(b"Prepared through the Benchmark SDK\n")
                     assert (b"Driven through the Benchmark SDK\n" in content) == (
-                        automatic in (True, "evidence")
+                        automatic in (True, "evidence", "regrade")
                     )
                 if evidence is not None:
                     async with evidence.open_verified(
@@ -403,6 +431,83 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                                 archive.extractfile("grader.txt").read()
                                 == b"native checker completed\n"
                             )
+                if automatic == "regrade":
+                    from app.benchmarks.evaluation_controls import EvaluationControls
+                    from app.benchmarks.evidence import EvidenceStore
+                    from app.benchmarks.regrade_driver import RegradeDriver
+                    from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
+                    from app.models.benchmark_evaluation_input import BenchmarkEvaluationInput
+
+                    async with AsyncSession(_engine) as db:
+                        source = await db.scalar(select(BenchmarkEvaluationAttempt))
+                        before = (await db.get(BenchmarkTrial, owner.trial_id)).next_seq
+                        source_digest = source.result_digest
+                    grading = EvaluationControls(store, evidence)
+                    grading_owner = await grading.create(
+                        WORKSPACE,
+                        owner.trial_id,
+                        source.id,
+                        uuid.uuid4(),
+                        deadline_at=datetime.now(UTC) + timedelta(seconds=120),
+                    )
+                    grading_evidence = EvidenceStore(
+                        grading, evidence.client, bucket=evidence.bucket
+                    )
+                    artifacts = Capture(grading_evidence, grading_owner)
+                    fresh_host = RootlessWorkerHost(
+                        grading,
+                        grading_owner,
+                        declaration,
+                        assets,
+                        factories,
+                        retained_evidence=grading_evidence,
+                    )
+                    hosts.append(fresh_host)
+                    fresh_recovery = RecoveryService(
+                        grading,
+                        fresh_host.host_actor,
+                        {
+                            "fixture.rootless": lambda authority: RootlessReconciler(
+                                runtime, authority, "fixture.rootless"
+                            )
+                        },
+                    )
+                    evaluated = await RegradeDriver(
+                        fresh_host,
+                        fresh_recovery,
+                        capture_providers=factories,
+                        capture_validator=grading_evidence.validate_capture,
+                        limits=controller.limits,
+                    ).run()
+                    assert (
+                        evaluated["phase"] == "finished"
+                        and evaluated["evaluation"] == "completed"
+                        and evaluated["cleanup"] == "complete"
+                    )
+                    assert (
+                        fresh_host.environment.scope.session_id
+                        != worker_host.environment.scope.session_id
+                    )
+                    async with AsyncSession(_engine) as db:
+                        attempt = await db.get(BenchmarkEvaluationAttempt, grading_owner.control_id)
+                        assert attempt.success is True and attempt.source_evaluation_id == source.id
+                        assert (
+                            await db.get(BenchmarkEvaluationAttempt, source.id)
+                        ).result_digest == source_digest
+                        assert (await db.get(BenchmarkTrial, owner.trial_id)).next_seq == before
+                        cache = (await db.scalars(select(BenchmarkEvaluationInput))).all()
+                        assert (
+                            len(cache) == 1
+                            and cache[0].state == "released"
+                            and cache[0].size_bytes > 32 * 1024**2
+                        )
+                        from app.models.benchmark_evaluation_control import (
+                            BenchmarkEvaluationJournal,
+                        )
+
+                        events = (await db.scalars(select(BenchmarkEvaluationJournal.event))).all()
+                        assert "agent.output" not in events
+                        assert len((await db.scalars(select(BenchmarkTrial))).all()) == 1
                 async with AsyncSession(_engine) as db:
                     assert all(
                         row.state == "released"
@@ -537,30 +642,34 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             assert "alpha-private-fixture" not in json.dumps(public)
     finally:
         # Assertion failures must still remove only this fixture's exact scopes.
-        candidates = [
-            (
-                worker_host.scope,
-                str(
-                    uuid.uuid5(
-                        uuid.UUID(worker_host.scope.session_id), "resource:" + worker_host.WORKER_ID
-                    )
-                ),
-            )
-        ]
-        if worker_host.environment is not None:
+        candidates = []
+        for selected_host in hosts:
             candidates += [
-                (worker_host.environment.scope, lease.handle)
-                for _, lease in worker_host.environment.leases.values()
-                if lease.kind == "container"
+                (
+                    selected_host.scope,
+                    str(
+                        uuid.uuid5(
+                            uuid.UUID(selected_host.scope.session_id),
+                            "resource:" + selected_host.WORKER_ID,
+                        )
+                    ),
+                )
             ]
+            if selected_host.environment is not None:
+                candidates += [
+                    (selected_host.environment.scope, lease.handle)
+                    for _, lease in selected_host.environment.leases.values()
+                    if lease.kind == "container"
+                ]
         for selected_scope, handle in candidates:
             with suppress(Exception):
                 native = await asyncio.to_thread(runtime.find, selected_scope, handle)
                 if native is not None:
                     await asyncio.to_thread(runtime.stop, native, grace_seconds=0, remove=True)
-        if worker_host.channel is not None:
-            with suppress(Exception):
-                await worker_host.channel.close(grace=0.2)
-        await worker_host.host_broker.close()
-        await worker_host.worker_broker.close()
+        for selected_host in hosts:
+            if selected_host.channel is not None:
+                with suppress(Exception):
+                    await selected_host.channel.close(grace=0.2)
+            await selected_host.host_broker.close()
+            await selected_host.worker_broker.close()
         docker_client.close()
