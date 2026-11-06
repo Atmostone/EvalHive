@@ -32,6 +32,26 @@ class ResourceLease:
     native: ManagedContainer | ManagedNetwork | ManagedExec | None = field(default=None, repr=False)
     state: str = "planned"
     deadline_at: str | None = None
+    dependencies: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        native = (
+            (self.intent.container,)
+            if isinstance(self.intent, ExecSpec)
+            else (self.intent.network, self.intent.namespace)
+            if isinstance(self.intent, ContainerSpec)
+            else ()
+        )
+        object.__setattr__(
+            self,
+            "dependencies",
+            tuple(
+                sorted(
+                    set(self.dependencies)
+                    | {item.resource_id for item in native if item is not None}
+                )
+            ),
+        )
 
 
 @dataclass(frozen=True)

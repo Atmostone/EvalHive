@@ -40,19 +40,7 @@ def encode_lease(lease: ResourceLease) -> dict:
         "native": value(lease.native),
         "state": lease.state,
         "deadline_at": lease.deadline_at,
-        "dependencies": sorted(
-            {
-                value.resource_id
-                for value in (
-                    (lease.intent.container,)
-                    if isinstance(lease.intent, ExecSpec)
-                    else (lease.intent.network, lease.intent.namespace)
-                    if isinstance(lease.intent, ContainerSpec)
-                    else ()
-                )
-                if value is not None
-            }
-        ),
+        "dependencies": list(lease.dependencies),
     }
     return json.loads(json.dumps(result, allow_nan=False))
 
@@ -115,5 +103,12 @@ def decode_lease(data: dict) -> ResourceLease:
     else:
         raise ValueError("Unsupported runtime lease kind")
     return ResourceLease(
-        data["handle"], scope, kind, intent, native, data["state"], data["deadline_at"]
+        data["handle"],
+        scope,
+        kind,
+        intent,
+        native,
+        data["state"],
+        data["deadline_at"],
+        tuple(data["dependencies"]),
     )

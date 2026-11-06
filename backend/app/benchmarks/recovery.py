@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
+from app.benchmarks.recovery_order import dependency_order
 from app.benchmarks.resource_authority import SqlResourceAuthority
 from app.benchmarks.trials import current_trial, failure
 from app.models.benchmark_trial import BenchmarkResourceLease
@@ -20,23 +21,7 @@ def recovery_order(dependencies):
     Dependencies already released need no further action. Images and identities
     are still revalidated by the provider under its authority on every operation.
     """
-    parents = {handle: set(values) & dependencies.keys() for handle, values in dependencies.items()}
-    ordered, active, seen = [], set(), set()
-
-    def visit(handle):
-        if handle in active:
-            raise failure("RECOVERY_CYCLE", "Resource dependencies cannot be reconciled", "cleanup")
-        if handle in seen:
-            return
-        active.add(handle)
-        for parent in sorted(parents[handle]):
-            visit(parent)
-        active.remove(handle)
-        seen.add(handle)
-        ordered.append(handle)
-
-    for handle in sorted(dependencies):
-        visit(handle)
+    ordered, parents = dependency_order(dependencies)
     return list(reversed(ordered)), parents
 
 

@@ -127,9 +127,12 @@ class BenchmarkResourceLease(Base):
 class BenchmarkOperation(Base):
     __tablename__ = "benchmark_operations"
     __table_args__ = (
+        CheckConstraint(
+            "state IN ('started','complete','failed','uncertain')",
+            name="ck_benchmark_operation_state",
+        ),
         UniqueConstraint(
             "trial_id",
-            "session_id",
             "generation",
             "actor_id",
             "request_id",

@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import undefer
 
 from app.benchmarks.private_store import binary, unbinary
+from app.benchmarks.recovery_order import dependency_order
 from app.benchmarks.trials import append_entry, current_trial, database_fence, failure
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
@@ -52,6 +53,7 @@ async def install_session(
     private_inputs=None,
     outputs=None,
     links=None,
+    registration=None,
     purpose="execution",
 ):
     """Freeze server-resolved plans and scoped permissions before any allocation.
@@ -68,6 +70,14 @@ async def install_session(
         raise failure("INVALID_SCOPE", "Session origin must match its controller")
     if purpose not in {"execution", "evaluation"}:
         raise failure("INVALID_PLAN", "Environment purpose is invalid")
+    handles = {lease.handle for _, lease in leases.values()}
+    if len(handles) != len(leases) or any(
+        set(lease.dependencies) - handles for _, lease in leases.values()
+    ):
+        raise failure(
+            "INVALID_PLAN", "Dependencies must name resources in the same installed session"
+        )
+    dependency_order({lease.handle: set(lease.dependencies) for _, lease in leases.values()})
     for actor_id, policy in actors.items():
         uuid.UUID(str(actor_id))
         if (
@@ -84,6 +94,7 @@ async def install_session(
         "private_inputs": {key: binary(value) for key, value in (private_inputs or {}).items()},
         "outputs": outputs or {},
         "links": links or {},
+        "registration": registration or {},
         "resources": {
             key: {"provider": provider, "lease": encode_lease(lease)}
             for key, (provider, lease) in leases.items()
@@ -155,17 +166,17 @@ async def install_session(
                     raise failure(
                         "UNADMITTED_RESOURCE", "Resource limits differ from the host reservation"
                     )
-                existing = await db.scalar(
-                    select(BenchmarkResourceLease.id)
-                    .where(
-                        BenchmarkResourceLease.trial_id == trial.id,
-                        BenchmarkResourceLease.logical_id == logical_id,
-                        BenchmarkResourceLease.state != "released",
-                    )
-                    .limit(1)
+            existing = await db.scalar(
+                select(BenchmarkResourceLease.id)
+                .where(
+                    BenchmarkResourceLease.trial_id == trial.id,
+                    BenchmarkResourceLease.logical_id == logical_id,
+                    BenchmarkResourceLease.state != "released",
                 )
-                if existing is not None:
-                    raise failure("RESOURCE_IN_USE", "Admitted resource already has a live lease")
+                .limit(1)
+            )
+            if existing is not None:
+                raise failure("RESOURCE_IN_USE", "Plan resource already has a live lease")
         db.add(
             BenchmarkEnvironmentSession(
                 id=uuid.UUID(scope.session_id),
@@ -300,7 +311,6 @@ class SqlResourceAuthority:
                 select(BenchmarkOperation)
                 .where(
                     BenchmarkOperation.trial_id == trial.id,
-                    BenchmarkOperation.session_id == session.id,
                     BenchmarkOperation.generation == self.owner.generation,
                     BenchmarkOperation.actor_id == self.actor_id,
                     BenchmarkOperation.request_id == request["id"],
@@ -309,7 +319,7 @@ class SqlResourceAuthority:
             )
             replay = None
             if operation is not None:
-                if operation.content_hash != digest:
+                if operation.content_hash != digest or operation.session_id != session.id:
                     raise failure(
                         "COMMAND_CONFLICT", "Resource request identity has different content"
                     )
@@ -376,6 +386,7 @@ class SqlResourceAuthority:
                         uncertain = (
                             not isinstance(cause, ProtocolError) or cause.kind == "uncertain"
                         )
+                        finished_at = await db.scalar(select(func.clock_timestamp()))
                         stored.state = "uncertain" if uncertain else "failed"
                         stored.error_code = (
                             cause.code if isinstance(cause, ProtocolError) else "RESOURCE_UNCERTAIN"
@@ -383,7 +394,7 @@ class SqlResourceAuthority:
                         stored.error_kind = (
                             cause.kind if isinstance(cause, ProtocolError) else "uncertain"
                         )
-                        stored.finished_at = await db.scalar(select(func.clock_timestamp()))
+                        stored.finished_at = finished_at
                         current = await db.get(
                             type(trial), self.owner.trial_id, populate_existing=True
                         )
@@ -416,6 +427,7 @@ class SqlResourceCall:
         self.scope, self.now, self.replay = scope, now, replay
         self.completed = replay is not None
         self.expected = {}
+        self.expected_dependencies = {}
 
     async def _row(self, handle):
         try:
@@ -470,6 +482,13 @@ class SqlResourceCall:
         selected = self.plan["resources"][resource_id]
         row = await self._row(selected["lease"]["handle"])
         lease = self._decode(row)
+        if lease.state == "planned":
+            for dependency in lease.dependencies:
+                linked = self._decode(await self._row(dependency))
+                if linked.state != "allocated" or linked.native is None:
+                    raise failure(
+                        "RESOURCE_NOT_READY", "Resource dependency is not allocated", "preparation"
+                    )
         if lease.state == "planned" and isinstance(lease.intent, ContainerSpec):
             spec = lease.intent
             for field, target in self.plan["links"].get(resource_id, {}).items():
@@ -485,6 +504,7 @@ class SqlResourceCall:
                 spec = replace(spec, **{field: linked.native})
             lease = replace(lease, intent=spec)
         self.expected[lease.handle] = lease.intent
+        self.expected_dependencies[lease.handle] = lease.dependencies
         return lease
 
     async def resource(self, handle):
@@ -492,6 +512,7 @@ class SqlResourceCall:
         lease = self._decode(row)
         await self._allowed(row, lease)
         self.expected[lease.handle] = lease.intent
+        self.expected_dependencies[lease.handle] = lease.dependencies
         return lease
 
     async def execution(self, container, payload):
@@ -522,6 +543,7 @@ class SqlResourceCall:
         )
         lease = ResourceLease(handle, self.scope, "exec", spec)
         self.expected[handle] = spec
+        self.expected_dependencies[handle] = lease.dependencies
         return ExecutionGrant(lease, payload.get("mode", "wait"), seconds)
 
     async def output(self, container, output_id):
@@ -551,6 +573,7 @@ class SqlResourceCall:
             lease.scope != self.scope
             or lease.handle not in self.expected
             or lease.intent != self.expected[lease.handle]
+            or lease.dependencies != self.expected_dependencies[lease.handle]
         ):
             raise failure("INVALID_INTENT", "Runtime intent differs from its host grant")
         row = await self.db.get(BenchmarkResourceLease, uuid.UUID(lease.handle))
@@ -586,11 +609,14 @@ class SqlResourceCall:
         await self.db.commit()
 
     async def complete(self, result):
+        # Query before making the row dirty: SQLAlchemy otherwise autoflushes a
+        # terminal state without its timestamp, violating immutable completion.
+        finished_at = await self.db.scalar(select(func.clock_timestamp()))
         self.operation.private_result = self.authority.store.private.seal(
             "operation-result:" + str(self.operation.id), {"result": result}
         )
         self.operation.state = "complete"
-        self.operation.finished_at = await self.db.scalar(select(func.clock_timestamp()))
+        self.operation.finished_at = finished_at
         await append_entry(
             self.db, self.trial, "resource.completed", {"operation_id": str(self.operation.id)}
         )
