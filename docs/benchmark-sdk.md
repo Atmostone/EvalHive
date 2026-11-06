@@ -158,6 +158,15 @@ incompatibility reasons. The initial `static` stage always reports
 and resource checks; B04 must reserve and revalidate before launching a trial.
 Static policy capacity alone must never authorize execution.
 
+The neutral rootless runtime now preserves image startup/workspace semantics and
+checks workspace/trial/session/generation ownership for containers, networks and
+native execs. Its static supervisor and SDK process transport retain task state
+after native completion, stop owned descendants independently of task services,
+and detect loss of safe grading state. See [the runtime contract](../environments/runtime/README.md).
+These primitives are not yet a public launch API: bundle installation, resource
+admission and the durable broker/coordinator must be connected before trials can
+run through them.
+
 Native connector profiles for conversation support use version 0.2.0, with Pi
 1.5.0 and OpenCode 1.19.5 unchanged. B17 must migrate installed 0.1 profile
 references during cutover while preserving historical snapshots and image digests.
