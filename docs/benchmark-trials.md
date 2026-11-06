@@ -162,6 +162,11 @@ Event replies return a contiguous prefix within the JSONL byte budget. A single
 event that cannot fit reports an explicit recording failure without advancing
 the cursor. Model credentials are redacted by the shared runner before events
 are stored. Failed control/configuration checks retain stable rejection receipts.
+The runner's pending spool is bounded to 2–64 MiB (8 MiB by default). Its host
+disk allowance includes twice that capacity plus 8 MiB for SQLite/WAL overhead.
+The worker host adds this allowance to full-group auxiliary admission, checks it
+against the trial disk budget and leaves native task minima intact. Planning
+admission does not allocate this execution-only allowance.
 
 After all execution-context resource leases are released, `AgentCallStore.reconcile`
 can retire active intended attempts as lost and pending calls as uncertain. It
@@ -184,8 +189,8 @@ from native worker inputs. Only the host actor receives those references; a
 worker/host ID collision fails before compilation or admission. The Harness
 transport passes a credential-file reference to the exec supervisor, never a raw
 credential in argv or public environment. Evaluation controllers reject these
-agent grants. Runtime unit checks cover the boundary; full native composition
-is still required before enabling the product path.
+agent grants. Runtime unit checks cover the boundary; the native fixture below
+verifies the composition before enabling product launches.
 
 `RootlessWorkerHost` can construct one host agent gateway before starting its SDK
 worker. The gateway must belong to the same store, controller and worker actor;
@@ -208,8 +213,19 @@ is not a production fallback. A separate composition test crosses the Benchmark
 SDK subprocess, reverse agent call, real Harness SDK wire server/client, shared
 runner, PostgreSQL journal, native evaluation boundary and controller cleanup.
 Its Harness transport is in memory. Rootless lifecycle regression also covers
-cancellation, controller takeover and regrading; native Pi/OpenCode acceptance
-through this complete benchmark path is a subsequent check.
+cancellation, controller takeover and regrading.
+
+The native agent fixture runs one unchanged SDK-only benchmark worker through
+both Pi 1.5.0 and OpenCode 1.19.5, using their installed runtime bundles and the
+same task image. A local OpenAI-compatible endpoint lives in the task namespace;
+no external model or owner credential is used. Each real harness executes a shell
+tool using the task's Python dependencies, changes the native workspace file,
+finishes through the shared runner, then passes through benchmark capture,
+evaluation and complete resource cleanup. The fixture also attempts a worker
+request for the host-only credential grant and requires its rejection. Source
+task image, bundle image and bundle fingerprint are recorded in the Harness spec.
+These engineering checks validate the integration path, not acceptance of any
+upstream benchmark dataset or scientific result.
 
 ## Resource authority and private state
 

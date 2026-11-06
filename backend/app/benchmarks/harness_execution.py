@@ -43,6 +43,11 @@ class HarnessExecution:
         max_pending_bytes=8 * 1024**2,
     ):
         validate_run(manifest, spec)
+        if (
+            type(max_pending_bytes) is not int
+            or not 2 * 1024**2 <= max_pending_bytes <= 64 * 1024**2
+        ):
+            raise ValueError("Harness spool capacity must be between 2 and 64 MiB")
         self.calls, self.manifest, self.spec = calls, deepcopy(manifest), deepcopy(spec)
         self.transport, self.spool_path, self.profile_id = transport, spool_path, profile_id
         interaction = spec.get("interaction", {}).get("mode", "single_turn")
@@ -52,6 +57,10 @@ class HarnessExecution:
         self.prepared, self.starting = False, False
         self.access_configured = False
         self.job, self.connector, self.spool = None, None, None
+
+    @property
+    def spool_disk_mb(self):
+        return 2 * math.ceil(self.max_pending_bytes / 1024**2) + 8
 
     def configure_access(self, prepared):
         """Apply native task access while preserving frozen model/profile settings."""

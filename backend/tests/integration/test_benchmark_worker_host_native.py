@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import undefer
 
 from tests.fixtures.benchmark_execution_outcome import fixture_execution_outcome
+from tests.runtime.agent_worker_fixture import AgentWorker
 from tests.runtime.authority_fixture import FixtureArtifacts, manifest
 from tests.runtime.broker_worker_fixture import CASE, Worker
 from tests.runtime.regrade_worker_fixture import RegradeWorker
@@ -70,6 +71,8 @@ async def native_engine(_engine, db_session):
     [
         False,
         True,
+        "harness-pi",
+        "harness-opencode",
         "cancel",
         "recover",
         "recover_active",
@@ -93,6 +96,11 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
     native_engine, automatic
 ):
     _engine = native_engine
+    harness_connector = (
+        automatic.removeprefix("harness-")
+        if isinstance(automatic, str) and automatic.startswith("harness-")
+        else None
+    )
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"])
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"]
     bundle = local / "bundle"
@@ -118,16 +126,33 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             PathMapping(host_root, str(local)), (PathMapping(host_root + "/bundle", str(bundle)),)
         ),
     )
-    worker_class = RegradeWorker if automatic == "regrade" else Worker
+    worker_class = (
+        AgentWorker if harness_connector else (RegradeWorker if automatic == "regrade" else Worker)
+    )
     worker_image = await asyncio.to_thread(
         runtime.resolve_image,
-        "evalhive-benchmark-regrade-fixture:b05-inputs"
+        "evalhive-broker-worker-fixture:b08-agent"
+        if harness_connector
+        else "evalhive-benchmark-regrade-fixture:b05-inputs"
         if automatic == "regrade"
         else "evalhive-broker-worker-fixture:b05-stages",
     )
     task_image = await asyncio.to_thread(
         runtime.resolve_image, "evalhive-environment-workspace:0.1.0"
     )
+    installed_bundle, harness_manifest = None, None
+    if harness_connector:
+        from app.harnesses.catalog import get_manifest
+        from app.runtime.bundles import install_bundle
+
+        harness_manifest = get_manifest(harness_connector)
+        installation = deepcopy(harness_manifest)
+        installation["requirements"]["runtime_bundle"]["image"] = (
+            "evalhive-" + harness_connector + "-bundle:development"
+        )
+        installed_bundle = await asyncio.to_thread(
+            install_bundle, runtime, installation, PathMapping(host_root + "/bundle", str(bundle))
+        )
     declaration = deepcopy(worker_class.manifest)
     declaration["image"] = worker_image["image_id"]
     registration = {
@@ -166,6 +191,8 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             },
         },
     }
+    if harness_connector:
+        registration["assets"]["fixture.task"]["limits"] = asdict(Quota(1024, 1, 256))
     if automatic in ("evidence", "regrade"):
         registration["assets"]["fixture.task"]["outputs"]["grade_log"] = {
             "path": "/workspace/grader.txt",
@@ -187,18 +214,39 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         runtime,
         files={
             "supervisor": RegisteredFile(
-                host_root + "/bundle",
-                "sha256:" + hashlib.sha256((bundle / "supervisor").read_bytes()).hexdigest(),
+                installed_bundle.host_path if installed_bundle else host_root + "/bundle",
+                "sha256:"
+                + (
+                    installed_bundle.fingerprint
+                    if installed_bundle
+                    else hashlib.sha256((bundle / "supervisor").read_bytes()).hexdigest()
+                ),
             )
         },
         connector_id=declaration["id"],
         connector_version=declaration["version"],
     )
     store = TrialStore(_engine, PrivateStore("native-worker-host-fixture-key"))
+    task_id = None
+    if harness_connector:
+        from app.models.task import Task
+
+        async with AsyncSession(_engine) as db:
+            task = Task(
+                title="Native benchmark Harness fixture",
+                workspace_id=WORKSPACE,
+                status="in_progress",
+            )
+            db.add(task)
+            await db.flush()
+            task_id = task.id
+            await db.commit()
     trial = await store.create(
         WORKSPACE,
+        task_id=task_id,
         snapshot={"fixture": "native worker host"},
-        deadline_at=datetime.now(UTC) + timedelta(seconds=180 if automatic == "regrade" else 55),
+        deadline_at=datetime.now(UTC)
+        + timedelta(seconds=180 if automatic == "regrade" or harness_connector else 55),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
     if automatic in (False, "recover"):
@@ -277,7 +325,74 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
             runtime, authority, manifest(), artifacts=artifacts
         )
     }
-    worker_host = RootlessWorkerHost(store, owner, declaration, assets, factories)
+    agent_key = uuid.uuid4().hex
+    agent_factory = None
+    if harness_connector:
+        from app.benchmarks.agent_calls import AgentCallStore
+        from app.benchmarks.agent_gateway import AgentGateway
+        from app.benchmarks.harness_execution import HarnessExecution
+        from app.benchmarks.harness_transport import RootlessHarnessTransport
+        from evalhive_runner.runner import RunnerPolicy
+
+        def agent_factory(host):
+            calls = AgentCallStore(store, owner, host.worker_actor)
+            harness_spec = {
+                "protocol_version": "1.0",
+                "workspace_id": str(WORKSPACE),
+                "task_id": str(task_id),
+                "attempt_id": str(calls.session_id),
+                "task": {"prompt": "Native fixture"},
+                "cwd": "/workspace",
+                "config": {},
+                "limits": {"max_turns": 4},
+                "model": {
+                    "name": "fake-model",
+                    "endpoint": "http://127.0.0.1:8765/v1",
+                    "credential_ref": "model_api_key",
+                },
+                "metadata": {
+                    "image_id": task_image["image_id"],
+                    "runtime_bundle_image_id": installed_bundle.image_id,
+                    "runtime_bundle_fingerprint": installed_bundle.fingerprint,
+                },
+            }
+
+            async def transport():
+                return await RootlessHarnessTransport(
+                    host,
+                    host.plan,
+                    host.prepared,
+                    installed_bundle,
+                    harness_manifest,
+                    credential_ref="agent.credentials",
+                )()
+
+            return AgentGateway(
+                calls,
+                HarnessExecution(
+                    calls,
+                    harness_manifest,
+                    harness_spec,
+                    transport,
+                    local / "harness-spool" / str(calls.session_id) / "events.sqlite",
+                    private_values=[agent_key],
+                    policy=RunnerPolicy(
+                        heartbeat_seconds=0.2, startup_seconds=20, command_seconds=20
+                    ),
+                ),
+            )
+
+    worker_host = RootlessWorkerHost(
+        store,
+        owner,
+        declaration,
+        assets,
+        factories,
+        agent_factory=agent_factory,
+        host_private_inputs={"agent.credentials": json.dumps({"model_api_key": agent_key}).encode()}
+        if harness_connector
+        else None,
+    )
     hosts = [worker_host]
     source_alias = None
     if automatic == "regrade":
@@ -299,11 +414,16 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
         "models": {},
         "limits": {"wall_time_seconds": 60, "memory_mb": 768, "cpu_cores": 1.25, "disk_mb": 32},
     }
+    if harness_connector:
+        spec["limits"].update(memory_mb=1536, disk_mb=64, wall_time_seconds=180)
     if automatic == "regrade":
         spec["limits"]["disk_mb"] = 192
         spec["limits"]["wall_time_seconds"] = 180
     try:
-        if automatic in (True, "cancel", "recover_active", "evidence", "regrade"):
+        if (
+            automatic in (True, "cancel", "recover_active", "evidence", "regrade")
+            or harness_connector
+        ):
             recovery = RecoveryService(
                 store,
                 worker_host.host_actor,
@@ -324,10 +444,10 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                 recovery,
                 capture_providers=factories,
                 capture_validator=capture_validator,
-                execution_outcome=fixture_execution_outcome(owner),
+                execution_outcome=None if harness_connector else fixture_execution_outcome(owner),
                 deadlines=(watchdog,),
                 limits=DriverLimits(
-                    phase_seconds=90 if automatic == "regrade" else 35,
+                    phase_seconds=90 if automatic == "regrade" or harness_connector else 35,
                     stop_seconds=1,
                     capture_seconds=10,
                     cleanup_seconds=25,
@@ -410,7 +530,9 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     assert await store.request_cancel(WORKSPACE, owner.trial_id)
                 result = await asyncio.wait_for(
                     pending,
-                    120 if automatic == "regrade" else (20 if automatic == "cancel" else 45),
+                    150
+                    if automatic == "regrade" or harness_connector
+                    else (20 if automatic == "cancel" else 45),
                 )
                 assert result["phase"] == "finished" and result["cleanup"] == "complete"
                 assert result["execution"] == ("cancelled" if automatic == "cancel" else "success")
@@ -421,8 +543,29 @@ async def test_real_worker_plans_prepares_executes_and_captures_via_durable_brok
                     content = archive.extractfile("result.txt").read()
                     assert content.startswith(b"Prepared through the Benchmark SDK\n")
                     assert (b"Driven through the Benchmark SDK\n" in content) == (
-                        automatic in (True, "evidence", "regrade")
+                        automatic in (True, "evidence", "regrade") or harness_connector is not None
                     )
+                if harness_connector:
+                    from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
+
+                    async with AsyncSession(_engine) as db:
+                        attempt = await db.get(
+                            ExecutionAttempt, worker_host.agent_gateway.calls.session_id
+                        )
+                        assert attempt.status == "success", attempt.result
+                        assert attempt.connector_id == harness_connector
+                        assert attempt.run_spec["cwd"] == "/workspace"
+                        assert attempt.run_spec["metadata"]["image_id"] == task_image["image_id"]
+                        events = list(
+                            await db.scalars(
+                                select(ExecutionEvent).where(
+                                    ExecutionEvent.attempt_id == attempt.id
+                                )
+                            )
+                        )
+                        assert any(event.event == "tool.end" for event in events)
+                        assert agent_key not in json.dumps([event.payload for event in events])
+                        assert worker_host.host_auxiliary_disk_mb == 24
                 if evidence is not None:
                     async with evidence.open_verified(
                         WORKSPACE,

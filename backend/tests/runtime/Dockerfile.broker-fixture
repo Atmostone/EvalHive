@@ -10,6 +10,7 @@ COPY benchmark-sdk/python/src /opt/benchmark-sdk
 COPY backend/tests/runtime/broker_worker_fixture.py /fixture/worker.py
 COPY backend/tests/runtime/broker_worker_fixture.py /fixture/broker_worker_fixture.py
 COPY backend/tests/runtime/regrade_worker_fixture.py /fixture/regrade_worker.py
+COPY backend/tests/runtime/agent_worker_fixture.py /fixture/agent_worker.py
 ENV PYTHONPATH=/opt/benchmark-sdk PYTHONUNBUFFERED=1
 WORKDIR /tmp
 ENTRYPOINT []

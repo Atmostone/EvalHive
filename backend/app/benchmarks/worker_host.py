@@ -52,6 +52,7 @@ class RootlessWorkerHost:
         worker_image_pin=None,
         host_private_inputs=None,
         agent_factory=None,
+        host_auxiliary_disk_mb=0,
     ):
         validate("manifest", manifest)
         if manifest["kind"] != "benchmark" or (manifest["id"], manifest["version"]) != (
@@ -64,6 +65,9 @@ class RootlessWorkerHost:
         if host_private_inputs and self.purpose != "execution":
             raise ManagedRuntimeError("Host agent inputs require an execution controller")
         self.host_private_inputs = dict(host_private_inputs or {})
+        if type(host_auxiliary_disk_mb) is not int or not 0 <= host_auxiliary_disk_mb <= 1024:
+            raise ManagedRuntimeError("Host auxiliary disk must be a bounded MiB amount")
+        self.host_auxiliary_disk_mb = host_auxiliary_disk_mb
         if worker_image_pin is not None and self.purpose != "evaluation":
             raise ManagedRuntimeError("A retained worker image requires an evaluation controller")
         self.worker_image_pin = worker_image_pin
@@ -95,6 +99,9 @@ class RootlessWorkerHost:
                 or calls.actor_id != self.worker_actor
             ):
                 raise ManagedRuntimeError("Agent gateway differs from its worker ownership")
+            self.host_auxiliary_disk_mb += self.agent_gateway.executor.spool_disk_mb
+            if self.host_auxiliary_disk_mb > 1024:
+                raise ManagedRuntimeError("Host auxiliary disk exceeds its bounded allowance")
 
     async def _measure(self):
         return await asyncio.to_thread(
@@ -268,7 +275,9 @@ class RootlessWorkerHost:
         totals = {
             "memory_mb": sum(item.limits.memory_mb for item in demands),
             "cpu_cores": sum(Decimal(str(item.limits.cpu_cores)) for item in demands),
-            "disk_mb": sum(item.disk_mb for item in demands) + retained.disk_mb,
+            "disk_mb": sum(item.disk_mb for item in demands)
+            + retained.disk_mb
+            + self.host_auxiliary_disk_mb,
         }
         if any(value > Decimal(str(spec["limits"][name])) for name, value in totals.items()):
             raise ProtocolError(
@@ -281,7 +290,7 @@ class RootlessWorkerHost:
             measure=self._measure,
             runtime_policy=self.assets.runtime.policy,
             group_policy=self.group_policy,
-            auxiliary_disk_mb=retained.disk_mb,
+            auxiliary_disk_mb=retained.disk_mb + self.host_auxiliary_disk_mb,
         )
         await self.retained_inputs.materialize(retained)
         resources = tuple(compiled.leases)

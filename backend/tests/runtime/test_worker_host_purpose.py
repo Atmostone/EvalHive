@@ -233,3 +233,26 @@ def test_evaluation_controller_never_invokes_an_agent_factory():
             host.store, host.owner, host.manifest, host.assets, {}, agent_factory=factory
         )
     assert not called
+
+
+def test_host_journal_disk_is_reserved_with_the_full_group(monkeypatch):
+    async def scenario():
+        monkeypatch.setattr("app.benchmarks.worker_host.install_session", AsyncMock())
+        host, spec, plan = invocation(False)
+        host.host_auxiliary_disk_mb = 24
+        await host.install_plan(spec, plan)
+        assert host.store.reserve.await_args.kwargs["auxiliary_disk_mb"] == 24
+
+    asyncio.run(scenario())
+
+
+def test_host_journal_disk_cannot_bypass_the_trial_budget():
+    async def scenario():
+        host, spec, plan = invocation(False)
+        host.host_auxiliary_disk_mb = 64
+        with pytest.raises(ProtocolError) as budget:
+            await host.install_plan(spec, plan)
+        assert budget.value.code == "LIMIT_EXCEEDED"
+        host.store.reserve.assert_not_awaited()
+
+    asyncio.run(scenario())
