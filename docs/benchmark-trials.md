@@ -1,8 +1,8 @@
 # Durable benchmark trials
 
 Implementation: SPA-141 / B04. The storage and resource authority described here
-are implemented, together with resource recovery and deadline services. Durable
-worker commands, the phase driver and production composition remain required
+are implemented, together with durable worker commands, resource recovery and
+deadline services. The phase driver and production composition remain required
 before production launch is enabled.
 
 ## Ownership and lifecycle
@@ -129,6 +129,14 @@ receipt stays uncertain. Workers explicitly opting into that durable-host contra
 ACK successful broker replies, preserving bounded payload buffers through long
 interaction loops. Generic peers without a receipt reader keep their strict
 non-reexecution tombstone behavior.
+
+Transport shutdown bounds every process wait and the final stream drain. A
+worker that ignores stop, a fenced stop callback, or a pipe retained after its
+parent exits yields `TRANSPORT_CLOSE_INCOMPLETE`; it cannot hang the runner or
+claim complete recording. Detaching closes only that transport's socket. It does
+not release resource leases or bypass the current owner's resource authority.
+Resource cleanup remains the responsibility of the durable controller/recovery
+service. A blocked journal writer likewise prevents final stream sealing.
 
 ## Recovery and deadlines
 

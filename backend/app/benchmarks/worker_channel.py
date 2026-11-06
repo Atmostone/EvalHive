@@ -179,8 +179,18 @@ class WorkerChannel:
                 with suppress(ProtocolError, TimeoutError):
                     await self.invoke("shutdown", timeout=grace)
         finally:
-            await self.client.close(grace, shutdown=False)
-            await self.pumping
+            try:
+                await self.client.close(grace, shutdown=False)
+            finally:
+                done, _ = await asyncio.wait({self.pumping}, timeout=grace)
+                if not done:
+                    self.pumping.cancel()
+                    self.pumping.add_done_callback(
+                        lambda task: None if task.cancelled() else task.exception()
+                    )
+                    self.event_error = ProtocolError(
+                        "EVENT_DELIVERY_FAILED", "Event writer did not drain", "recording"
+                    )
         if self.event_error is not None:
             raise ProtocolError(
                 "EVENT_DELIVERY_FAILED", "Worker stream did not close cleanly", "recording"

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 import {ConnectorClient, ProtocolError} from '../dist/index.js';
 const fixture = JSON.parse(readFileSync(new URL('../../fixtures/conformance.json', import.meta.url), 'utf8'));
 const python = process.env.EH_TEST_PYTHON ?? 'python3';
@@ -45,6 +47,24 @@ for (const language of ['python','typescript']) {
       assert.equal((await client.request('cancel',{scope:spec.scope,payload:{}})).cancelled,true);
       await cancelled;
     } finally {await client.close();}
+  });
+}
+
+for (const exited of [true, false]) {
+  test(`close detaches an open stream with process exited=${exited}`, {timeout: 2000}, async () => {
+    const child = new EventEmitter();
+    Object.assign(child, {pid: 1, exitCode: exited ? 0 : null, signalCode: null,
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough()});
+    const signals = [];
+    child.kill = signal => {signals.push(signal); return false;};
+    const client = new ConnectorClient(child);
+    await assert.rejects(client.close(20, false), error => error.code === 'TRANSPORT_CLOSE_INCOMPLETE');
+    assert.deepEqual(signals, exited ? [] : ['SIGTERM', 'SIGKILL']);
+    assert.equal(child.stdout.destroyed, true);
+    assert.equal(child.listenerCount('exit'), 0);
+    assert.equal(child.listenerCount('error'), 1); // Only the permanent launch-error listener remains.
+    await assert.rejects(async () => {for await (const event of client.events()) assert.fail(JSON.stringify(event));},
+      error => error.code === 'TRANSPORT_CLOSE_INCOMPLETE');
   });
 }
 

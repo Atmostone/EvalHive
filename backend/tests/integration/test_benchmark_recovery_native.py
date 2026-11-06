@@ -26,11 +26,12 @@ from app.models.benchmark_trial import (
 from app.runtime.admission import GroupPolicy, ResourceDemand, host_capacity
 from app.runtime.broker import ResourceLease
 from app.runtime.docker_provider import RootlessDockerProvider
+from app.runtime.managed_attach import ManagedDockerProcess
 from app.runtime.managed_docker import RootlessDockerRuntime
 from app.runtime.managed_spec import ContainerSpec, OwnerScope, PathMapping, Quota, RuntimePolicy
 from app.runtime.reconcile import RootlessReconciler
 from app.runtime.spec import BindMount
-from evalhive_benchmark import ProtocolError
+from evalhive_benchmark import ConnectorClient, ProtocolError
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -62,7 +63,7 @@ def request(scope, handle, operation="inspect", *, reconcile=True):
 
 
 @pytest_asyncio.fixture
-async def native_trial(_engine, db_session):
+async def native_trial(_engine, db_session, request):
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"])
     host = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"]
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=15)
@@ -114,6 +115,7 @@ async def native_trial(_engine, db_session):
         scope,
         handle,
         image["image_id"],
+        role="worker" if getattr(request, "param", None) == "worker" else "environment",
         quota=quota,
         mounts=(BindMount(host + "/bundle", "/evalhive-runtime"),),
         command=(
@@ -264,6 +266,47 @@ async def test_late_native_create_keeps_reservation_until_actual_resource_is_rec
         start.set()
         if pending is not None:
             await asyncio.wait_for(asyncio.shield(pending), 20)
+
+
+@pytest.mark.parametrize("native_trial", ["worker"], indirect=True)
+async def test_old_worker_transport_detaches_after_takeover_without_stopping_new_owner(
+    native_trial, _engine
+):
+    store, owner, scope, actor, lease, authority, runtime = native_trial
+    provider = RootlessDockerProvider(runtime, authority, manifest())
+    allocate = request(scope, lease.handle, "allocate", reconcile=False)
+    allocate.pop("handle")
+    await provider.handle(allocate)
+    native = await asyncio.to_thread(runtime.find, scope, lease.handle)
+    attempts = []
+
+    async def old_control(operation):
+        attempts.append(operation)
+        return await RootlessReconciler(runtime, authority, PROVIDER).handle(
+            request(scope, lease.handle, operation)
+        )
+
+    transport = await ManagedDockerProcess.attach(runtime, native, control=old_control)
+    client = ConnectorClient(transport)
+    try:
+        recovered, _ = await takeover(store, owner, actor, scope, _engine)
+        with pytest.raises(ProtocolError) as detached:
+            await asyncio.wait_for(client.close(0.1, shutdown=False), 4)
+        assert detached.value.code == "TRANSPORT_CLOSE_INCOMPLETE"
+        assert attempts == ["stop", "stop"]
+        assert (await asyncio.to_thread(runtime.inspect, native))["status"] == "running"
+        async with AsyncSession(_engine) as db:
+            row = await db.get(BenchmarkResourceLease, uuid.UUID(lease.handle))
+            assert row.state == "allocated" and row.origin_generation == 1
+            assert (await db.get(BenchmarkTrial, owner.trial_id)).generation == 2
+        recovery = RecoveryService(
+            store, actor, {PROVIDER: lambda value: RootlessReconciler(runtime, value, PROVIDER)}
+        )
+        assert (await recovery.sweep(recovered, "release"))[0]["state"] == "released"
+        await store.transition(recovered, "cleaning", "finished")
+        assert await asyncio.to_thread(runtime.find, scope, lease.handle) is None
+    finally:
+        await transport.aclose()
 
 
 @pytest.mark.parametrize("completed", [True, False])

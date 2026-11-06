@@ -1,6 +1,5 @@
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
-import {once} from 'node:events';
 import {RESULT_TYPES} from './connector.js';
 import {Context, Peer} from './peer.js';
 import {command, ProtocolError, validate, type JsonObject, type JsonValue, type Scope, type WireMessage} from './protocol.js';
@@ -28,7 +27,7 @@ export class ConnectorClient {
     process.once('error', () => process.stdout.destroy(new Error('Connector failed to start')));
     process.stdin.on('error', () => {});
     this.reading = this.peer.read(process.stdout).catch(error => {
-      this.error = error instanceof ProtocolError ? error : new ProtocolError('TRANSPORT_CLOSED', 'Connector stream failed');
+      this.error ??= error instanceof ProtocolError ? error : new ProtocolError('TRANSPORT_CLOSED', 'Connector stream failed');
     }).finally(() => this.wake?.());
   }
   static launch(argv: string[], options: {cwd?: string; env?: NodeJS.ProcessEnv;
@@ -62,17 +61,36 @@ export class ConnectorClient {
     return new Context(this.peer).broker(scope, provider, operation, payload, options);
   }
   async close(grace = 3000, shutdown = true): Promise<void> {
-    if (shutdown && !this.peer.closed) {try {await this.request('shutdown', {}, {timeout: grace});} catch {}}
+    if (!Number.isFinite(grace) || grace <= 0 || grace > 86400000) throw new Error('Close grace must be between 0 and 86400000 milliseconds');
+    const bounded = async (pending: Promise<unknown>): Promise<boolean> => {
+      let timer: NodeJS.Timeout;
+      try {return await Promise.race([pending.then(() => true), new Promise<boolean>(resolve => {timer = setTimeout(() => resolve(false), grace);})]);}
+      finally {clearTimeout(timer!);}
+    };
+    if (shutdown && !this.peer.closed) {try {await bounded(this.request('shutdown', {}, {timeout: grace}));} catch {}}
     this.process.stdin.end();
     const exited = () => this.process.pid === undefined || this.process.exitCode !== null || this.process.signalCode !== null;
     const wait = async () => {
       if (exited()) return true;
-      let timer: NodeJS.Timeout;
-      const result = await Promise.race([once(this.process, 'exit').then(() => true),
-        new Promise<boolean>(resolve => {timer = setTimeout(() => resolve(false), grace);})]);
-      clearTimeout(timer!); return result;
+      return await new Promise<boolean>(resolve => {
+        const cleanup = (done: boolean) => {clearTimeout(timer); this.process.off('exit', onExit); this.process.off('error', onError); resolve(done);};
+        const onExit = () => cleanup(true), onError = () => cleanup(exited());
+        const timer = setTimeout(() => cleanup(false), grace);
+        this.process.once('exit', onExit); this.process.once('error', onError);
+      });
     };
-    if (!await wait()) {this.process.kill('SIGTERM'); if (!await wait()) {this.process.kill('SIGKILL'); await wait();}}
-    await this.reading;
+    let incomplete = false;
+    try {
+      if (!await wait()) {this.process.kill('SIGTERM'); if (!await wait()) {this.process.kill('SIGKILL'); incomplete = !await wait();}}
+      incomplete = !await bounded(this.reading) || incomplete;
+    } finally {
+      // An inherited pipe can outlive its parent. Detaching never implies that
+      // the authoritative host has released the underlying native resource.
+      this.process.stdin.destroy(); this.process.stdout.destroy(); this.process.stderr.destroy();
+    }
+    if (incomplete) {
+      this.error = new ProtocolError('TRANSPORT_CLOSE_INCOMPLETE', 'Worker transport detached before confirmed process and stream termination', 'recording');
+      this.wake?.(); throw this.error;
+    }
   }
 }

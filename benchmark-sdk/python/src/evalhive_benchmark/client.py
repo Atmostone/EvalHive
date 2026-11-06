@@ -3,12 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import uuid
 from contextlib import suppress
 
 from .connector import RESULT_TYPES
 from .peer import Peer
 from .protocol import MAX_LINE_BYTES, ProtocolError, command, validate
+
+
+async def _bounded(awaitable, timeout):
+    """Detach from an unresponsive transport without waiting for its cancellation."""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if done:
+            return task.result()
+        raise TimeoutError
+    finally:
+        if not task.done():
+            task.cancel()
+        # Resource cleanup may be fenced or finish after this transport detaches.
+        # Its authoritative owner retains responsibility for the native resource.
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
 class ConnectorClient:
@@ -126,17 +143,49 @@ class ConnectorClient:
             raise self.error
 
     async def close(self, grace=3, *, shutdown=True):
-        if shutdown and not self.peer.closed:
-            with suppress(ProtocolError, ConnectionError):
-                await self.request("shutdown", timeout=grace)
-        self.process.stdin.close()
+        if (
+            isinstance(grace, bool)
+            or not isinstance(grace, (int, float))
+            or not math.isfinite(grace)
+            or not 0 < grace <= 86400
+        ):
+            raise ValueError("Close grace must be between 0 and 86400 seconds")
+        incomplete = False
         try:
-            await asyncio.wait_for(self.process.wait(), grace)
-        except TimeoutError:
-            self.process.terminate()
+            if shutdown and not self.peer.closed:
+                with suppress(ProtocolError, ConnectionError, TimeoutError):
+                    await _bounded(self.request("shutdown", timeout=grace), grace)
+            self.process.stdin.close()
+            for signal in (None, self.process.terminate, self.process.kill):
+                if signal is not None:
+                    with suppress(ProcessLookupError):
+                        signal()
+                try:
+                    await _bounded(self.process.wait(), grace)
+                    break
+                except TimeoutError:
+                    continue
+            else:
+                incomplete = True
             try:
-                await asyncio.wait_for(self.process.wait(), grace)
+                await _bounded(self.reading, grace)
             except TimeoutError:
-                self.process.kill()
-                await self.process.wait()
-        await self.reading
+                incomplete = True
+        finally:
+            if not self.reading.done():
+                self.reading.cancel()
+                self.reading.add_done_callback(
+                    lambda done: None if done.cancelled() else done.exception()
+                )
+            if detach := getattr(self.process, "aclose", None):
+                try:
+                    await _bounded(detach(), grace)
+                except TimeoutError:
+                    incomplete = True
+        if incomplete:
+            self.error = ProtocolError(
+                "TRANSPORT_CLOSE_INCOMPLETE",
+                "Worker transport detached before confirmed process and stream termination",
+                "recording",
+            )
+            raise self.error

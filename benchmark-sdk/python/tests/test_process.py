@@ -3,6 +3,7 @@ import copy
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from evalhive_benchmark import ProtocolError
@@ -148,5 +149,63 @@ def test_full_wire_receipts_preserve_remote_errors_for_durable_storage(language)
             assert caught.value.code == "REMOTE_UNCERTAIN"
         finally:
             await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_close_detaches_when_native_wait_and_stream_do_not_finish():
+    async def scenario():
+        released, signals = asyncio.Event(), []
+
+        async def native_wait():
+            # A fenced native operation may finish after the caller cancels it.
+            try:
+                await released.wait()
+            except asyncio.CancelledError:
+                await released.wait()
+
+        process = SimpleNamespace(
+            stdin=SimpleNamespace(close=lambda: None),
+            stdout=asyncio.StreamReader(),
+            wait=native_wait,
+            terminate=lambda: signals.append("terminate"),
+            kill=lambda: signals.append("kill"),
+        )
+        client = ConnectorClient(process)
+        try:
+            with pytest.raises(ProtocolError) as caught:
+                await asyncio.wait_for(client.close(0.02, shutdown=False), 1)
+            assert caught.value.code == "TRANSPORT_CLOSE_INCOMPLETE"
+            assert signals == ["terminate", "kill"]
+            await asyncio.sleep(0)
+            assert client.reading.done()
+            with pytest.raises(ProtocolError, match="detached"):
+                async for _ in client.events():
+                    pytest.fail("No fixture events were sent")
+        finally:
+            released.set()
+            await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+
+def test_close_detaches_if_process_exits_but_inherited_stdout_stays_open():
+    async def scenario():
+        async def exited():
+            return 0
+
+        process = SimpleNamespace(
+            stdin=SimpleNamespace(close=lambda: None),
+            stdout=asyncio.StreamReader(),
+            wait=exited,
+            terminate=lambda: pytest.fail("An exited process must not be signalled"),
+            kill=lambda: pytest.fail("An exited process must not be signalled"),
+        )
+        client = ConnectorClient(process)
+        with pytest.raises(ProtocolError) as caught:
+            await asyncio.wait_for(client.close(0.02, shutdown=False), 1)
+        assert caught.value.code == "TRANSPORT_CLOSE_INCOMPLETE"
+        await asyncio.sleep(0)
+        assert client.reading.done()
 
     asyncio.run(scenario())
