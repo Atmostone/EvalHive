@@ -1,0 +1,14 @@
+ARG SOURCE_DEPS_IMAGE=evalhive-tests:harness-dev
+FROM ${SOURCE_DEPS_IMAGE} AS dependencies
+# Reuse the exact SDK dependency wheels from the existing engineering image.
+# The final worker has no backend, Docker client or daemon socket.
+RUN python -c "import importlib.metadata as m,pathlib,shutil; assert m.version('jsonschema')=='4.25.1'; assert m.version('referencing')=='0.37.0'; source=pathlib.Path('/usr/local/lib/python3.12/site-packages'); target=pathlib.Path('/fixture-deps'); target.mkdir(); names=('attrs','attr','jsonschema','referencing','rpds','typing_extensions'); [(shutil.copytree(p,target/p.name) if p.is_dir() else shutil.copy2(p,target/p.name)) for p in source.iterdir() if any(p.name==name or p.name.startswith(name+'-') or p.name.startswith(name+'_') or p.name==name+'.py' for name in names)]"
+
+FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337 AS worker
+COPY --from=dependencies /fixture-deps/ /usr/local/lib/python3.12/site-packages/
+COPY benchmark-sdk/python/src /opt/benchmark-sdk
+COPY backend/tests/runtime/broker_worker_fixture.py /fixture/worker.py
+ENV PYTHONPATH=/opt/benchmark-sdk PYTHONUNBUFFERED=1
+WORKDIR /tmp
+ENTRYPOINT []
+CMD ["python", "/fixture/worker.py"]

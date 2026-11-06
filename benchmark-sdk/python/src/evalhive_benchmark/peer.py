@@ -280,7 +280,7 @@ class Peer:
         except ProtocolError as error:
             failure = error
             raise
-        except (ValueError, BrokenPipeError, ConnectionError):
+        except (ValueError, OSError):
             failure = ProtocolError("INVALID_FRAME", "Peer stream failed")
             raise failure from None
         finally:

@@ -170,6 +170,18 @@ unsupported libc fails before model access. These primitives are not yet a publi
 launch API: provider admission and the durable broker/coordinator must be connected
 before trials can run through them.
 
+The built-in rootless provider now consumes scoped resource requests over the same
+SDK reverse channel. Workers supply admitted plan IDs/opaque handles; registered
+assets and private input refs become host grants. Provider output streams are
+bounded, native task state survives completion, worker transports are isolated,
+and transport-triggered stops recheck generation authority. A real standalone SDK
+worker image exercises this boundary without backend modules or Docker access.
+Private service DNS and unsafe-supervisor quiescence are also checked natively.
+The provider requires a coordinator authority; its explicit in-memory test fixture
+is not a production reservation or recovery implementation. B04 connects the
+PostgreSQL journal, leases, fencing and lifecycle before any product launch is
+enabled.
+
 Native connector profiles for conversation support use version 0.2.0, with Pi
 1.5.0 and OpenCode 1.19.5 unchanged. B17 must migrate installed 0.1 profile
 references during cutover while preserving historical snapshots and image digests.

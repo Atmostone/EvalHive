@@ -103,6 +103,13 @@ class ManagedNetwork:
 
 
 @dataclass(frozen=True)
+class NetworkRequest:
+    scope: OwnerScope
+    resource_id: str
+    egress: bool = False
+
+
+@dataclass(frozen=True)
 class ManagedContainer:
     scope: OwnerScope
     resource_id: str
@@ -125,6 +132,7 @@ class ContainerSpec:
     mounts: tuple[BindMount, ...] = ()
     quota: Quota = field(default_factory=Quota)
     network: ManagedNetwork | None = None
+    network_aliases: tuple[str, ...] = ()
     namespace: ManagedContainer | None = None
     readonly_root: bool = False
 

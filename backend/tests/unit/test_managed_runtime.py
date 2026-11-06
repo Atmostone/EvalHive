@@ -13,6 +13,7 @@ from app.runtime.managed_docker import RootlessDockerRuntime
 from app.runtime.managed_spec import (
     ContainerSpec,
     ManagedContainer,
+    ManagedNetwork,
     ManagedRuntimeError,
     OwnerScope,
     PathMapping,
@@ -239,3 +240,22 @@ def test_invalid_owner_generation_and_unpinned_image_fail_closed(configured):
     with pytest.raises(ManagedRuntimeError, match="immutable"):
         runtime.create(replace(spec, image_id="example:latest"))
     client.containers.create.assert_not_called()
+
+
+def test_service_aliases_are_bound_to_the_owned_private_network(configured):
+    runtime, client, spec, _ = configured
+    network = ManagedNetwork(spec.scope, identity(), "private-network")
+    runtime.network = MagicMock(return_value=object())
+    client.api.create_endpoint_config.return_value = {"Aliases": ["database", "database.local"]}
+    runtime.create(replace(spec, network=network, network_aliases=("database", "database.local")))
+    kwargs = client.containers.create.call_args.kwargs
+    assert kwargs["network"] == "private-network"
+    assert kwargs["networking_config"] == {
+        "private-network": {"Aliases": ["database", "database.local"]}
+    }
+    with pytest.raises(ManagedRuntimeError, match="aliases"):
+        runtime.create(replace(spec, network_aliases=("database",)))
+    with pytest.raises(ManagedRuntimeError, match="aliases"):
+        runtime.create(replace(spec, network=network, network_aliases=("duplicate", "duplicate")))
+    with pytest.raises(ManagedRuntimeError, match="aliases"):
+        runtime.create(replace(spec, network=network, network_aliases=("/host/path",)))

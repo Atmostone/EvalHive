@@ -164,6 +164,26 @@ def test_reconciliation_never_blindly_restarts_a_native_process(owned):
     runtime.client.api.exec_start.assert_not_called()
 
 
+def test_private_input_declaration_survives_json_object_reordering(owned):
+    execution, _, spec, _ = owned
+    first = replace(spec, private_inputs={"Z_CONFIG": b"zeta", "A_CONFIG": b"alpha"})
+    second = replace(spec, private_inputs={"A_CONFIG": b"alpha", "Z_CONFIG": b"zeta"})
+    assert execution._argv(first) == execution._argv(second)
+    assert execution._argv(first)[3:7] == ("--private-env", "A_CONFIG", "--private-env", "Z_CONFIG")
+
+
+@pytest.mark.asyncio
+async def test_raw_native_output_can_exceed_a_jsonl_record_without_unbounded_capture():
+    stream = _Output()
+    await stream.queue.put(b"x" * (1024 * 1024 + 10))
+    await stream.queue.put(None)
+    total = 0
+    while value := await stream.read(65536):
+        assert len(value) <= 65536
+        total += len(value)
+    assert total == 1024 * 1024 + 10
+
+
 @pytest.mark.asyncio
 async def test_sdk_stream_eof_is_native_completion_while_wrapper_is_retained():
     server, client = socket.socketpair()

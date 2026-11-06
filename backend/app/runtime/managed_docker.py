@@ -221,11 +221,30 @@ class RootlessDockerRuntime:
             raise ManagedRuntimeError("Invalid process environment")
         if spec.network is not None and spec.namespace is not None:
             raise ManagedRuntimeError("Select one managed network mode")
+        if type(spec.network_aliases) is not tuple:
+            raise ManagedRuntimeError("Network aliases require a normalized declaration")
+        if spec.network_aliases and (
+            spec.network is None
+            or len(spec.network_aliases) > 16
+            or any(
+                not isinstance(name, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}", name)
+                for name in spec.network_aliases
+            )
+            or len(set(spec.network_aliases)) != len(spec.network_aliases)
+        ):
+            raise ManagedRuntimeError("Network aliases require a valid owned bridge endpoint")
         network = {"network_disabled": True}
         if spec.network is not None:
             if spec.network.scope != spec.scope or self.network(spec.network) is None:
                 raise ManagedRuntimeError("Network does not belong to this environment session")
             network = {"network": spec.network.network_id}
+            if spec.network_aliases:
+                network["networking_config"] = {
+                    spec.network.network_id: self.client.api.create_endpoint_config(
+                        aliases=list(spec.network_aliases)
+                    )
+                }
         if spec.namespace is not None:
             if spec.namespace.scope != spec.scope:
                 raise ManagedRuntimeError(

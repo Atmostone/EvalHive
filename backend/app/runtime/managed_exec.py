@@ -97,7 +97,7 @@ class OwnedExecRuntime:
         ):
             raise ManagedRuntimeError("Invalid owned exec private inputs")
         argv = [SUPERVISOR, "--socket", _socket_path(spec.resource_id)]
-        for name in spec.private_inputs:
+        for name in sorted(spec.private_inputs):
             argv += ["--private-env", name]
         return tuple(argv + ["--", *spec.argv])
 
@@ -191,7 +191,8 @@ class OwnedExecRuntime:
             stream = _raw(connection)
             stream.settimeout(15)
             stream.sendall(handle.control_key)
-            for value in spec.private_inputs.values():
+            for name in sorted(spec.private_inputs):
+                value = spec.private_inputs[name]
                 stream.sendall(struct.pack(">I", len(value)))
                 stream.sendall(value)
             return connection
@@ -311,7 +312,9 @@ class SupervisorOutput:
 class OwnedDockerProcess:
     """SDK process interface. Native completion and resource release are separate."""
 
-    def __init__(self, runtime: OwnedExecRuntime, handle, connection):
+    def __init__(
+        self, runtime: OwnedExecRuntime, handle, connection, *, control=None, on_broken=None
+    ):
         self.runtime, self.handle, self.connection = runtime, handle, connection
         self.socket = _raw(connection)
         self.socket.setblocking(False)
@@ -320,14 +323,16 @@ class OwnedDockerProcess:
         self.returncode = None
         self.stderr, self.stderr_truncated = bytearray(), False
         self.environment_broken = False
+        self._control_callback, self._broken_callback = control, on_broken
+        self.safety_task = None
         self._ready, self._done = asyncio.Event(), asyncio.Event()
         self._stop_tasks = []
         self._pump = asyncio.create_task(self._read())
 
     @classmethod
-    async def start(cls, runtime, handle, spec):
+    async def start(cls, runtime, handle, spec, *, control=None, on_broken=None):
         connection = await asyncio.to_thread(runtime.start, handle, spec)
-        process = cls(runtime, handle, connection)
+        process = cls(runtime, handle, connection, control=control, on_broken=on_broken)
         try:
             await asyncio.wait_for(process._ready.wait(), 15)
             if not process.records.ready:
@@ -376,10 +381,18 @@ class OwnedDockerProcess:
             )
             # A lost supervisor cannot prove descendant ownership any longer.
             # Stop this owned environment and retain its stopped filesystem.
-            with suppress(Exception):
-                await asyncio.to_thread(
-                    self.runtime.runtime.stop, self.handle.container, grace_seconds=0
+            if self._broken_callback is not None:
+                # A broker callback acquires its own current-generation fence.
+                # Do not wait while the failed startup operation still holds it.
+                self.safety_task = asyncio.ensure_future(self._broken_callback())
+                self.safety_task.add_done_callback(
+                    lambda task: task.exception() if not task.cancelled() else None
                 )
+            else:
+                with suppress(Exception):
+                    await asyncio.to_thread(
+                        self.runtime.runtime.stop, self.handle.container, grace_seconds=0
+                    )
         finally:
             self._ready.set()
             self._done.set()
@@ -392,15 +405,18 @@ class OwnedDockerProcess:
         return self.returncode
 
     def terminate(self):
-        self._stop_tasks.append(
-            asyncio.create_task(asyncio.to_thread(self.runtime.control, self.handle, "stop"))
-        )
+        self._stop_tasks.append(asyncio.create_task(self._control("stop")))
 
     def kill(self):
         self.terminate()  # The supervisor already bounds TERM -> KILL for its tree.
 
     async def release(self):
-        return await asyncio.to_thread(self.runtime.control, self.handle, "release")
+        return await self._control("release")
+
+    async def _control(self, operation):
+        if self._control_callback is not None:
+            return await self._control_callback(operation)
+        return await asyncio.to_thread(self.runtime.control, self.handle, operation)
 
     async def aclose(self):
         """Detach transport; the durable environment lease still owns cleanup."""
@@ -459,3 +475,21 @@ class _Output:
                 self.eof = True
             else:
                 self.buffer.extend(data)
+
+    async def read(self, size=65536):
+        """Bounded raw reads for native commands that are not JSONL workers."""
+        if type(size) is not int or not 1 <= size <= MAX_RECORD:
+            raise ManagedRuntimeError("Owned exec read size is invalid")
+        while not self.buffer and not self.eof:
+            data = await self.queue.get()
+            if data is None:
+                self.eof = True
+            else:
+                self.buffer.extend(data)
+        if self.buffer:
+            result = bytes(self.buffer[:size])
+            del self.buffer[:size]
+            return result
+        if self.error:
+            raise self.error
+        return b""

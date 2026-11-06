@@ -158,3 +158,28 @@ def test_acknowledgement_reclaims_receipt_without_repeating_the_operation():
         assert peer.receipts[("command", "first")][1] is None
 
     asyncio.run(scenario())
+
+
+def test_os_transport_failure_is_normalized_and_fails_pending_requests():
+    async def scenario():
+        writing = asyncio.Event()
+
+        async def write(frame):
+            writing.set()
+
+        async def frames():
+            await writing.wait()
+            raise OSError("private transport diagnostic")
+            yield b""  # pragma: no cover -- make this an async iterator
+
+        peer = Peer(write)
+        pending = asyncio.create_task(peer.request(command("request", "describe")))
+        with pytest.raises(ProtocolError) as caught:
+            await peer.read(frames())
+        assert caught.value.code == "INVALID_FRAME"
+        with pytest.raises(ProtocolError) as caught:
+            await pending
+        assert caught.value.code == "INVALID_FRAME" and "private" not in str(caught.value)
+        assert peer.closed and not peer.pending
+
+    asyncio.run(scenario())

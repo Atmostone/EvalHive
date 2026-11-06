@@ -10,7 +10,7 @@ import asyncio
 import socket
 from contextlib import suppress
 
-from evalhive_harness.protocol import MAX_LINE_BYTES
+from app.runtime.managed_exec import MAX_RECORD as MAX_LINE_BYTES
 
 
 class DockerAttachedProcess:

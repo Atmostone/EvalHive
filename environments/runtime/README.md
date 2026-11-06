@@ -123,3 +123,63 @@ It always leaves `can_run: false` and `runtime_admission: reservation_pending`.
 The coordinator must remeasure and check the budget under a durable global host
 reservation lock, persist that reservation and fence the resource generation
 before preparation. A capacity snapshot itself cannot authorize a launch.
+
+## Resource broker boundary
+
+`RootlessDockerProvider` implements the Benchmark SDK's six resource operations
+against this runtime. Its authority is mandatory; production code has no fallback
+to an in-memory resource map. The coordinator resolves immutable installed plans,
+registered image/file assets, scope/phase rights, private input references and
+deadlines into trusted grants. It persists a request before yielding an operation,
+commits intents before native effects, and saves complete receipts before RPC
+acknowledgement. A timeout/transport failure during a mutation is uncertain until
+reconciled, never an invitation to repeat it blindly.
+
+Worker requests have a small provider-owned vocabulary:
+
+| Operation | Request payload | Result |
+| --- | --- | --- |
+| `allocate` | `{resource_id}` from the admitted plan | Opaque handle and kind |
+| `exec` | Owned container handle, argv, optional cwd/user/environment/private refs/mode/deadline | Opaque exec handle; bounded stdout/stderr for `wait` |
+| `inspect` | Owned handle and empty payload | Public lifecycle state |
+| `stop` | Owned handle and empty payload | Owned process tree/container stopped |
+| `export` | Owned container handle and saved `output_id` | Atomically stored SDK artifact |
+| `release` | Owned handle and empty payload | Resource released idempotently |
+
+Workers cannot supply host mounts, Docker socket paths, arbitrary image names or
+export paths. Allocation reuses an already live resource from the same immutable
+plan; it does not restart an exited container or retry an unresolved intent.
+Exec preserves requested native settings and private inputs are ordered
+canonically so JSON-object reordering cannot change the recovered argv or frames.
+Normal completion retains owned background services. Native output is drained
+without assuming JSONL, while returned diagnostics stay bounded. Full rootfs
+exports are private. Missing/oversized/partially consumed evidence fails explicitly.
+
+SDK transports are a separate internal host operation. Only registered worker or
+grader containers and owned execs can be attached. Public RPC returns handles,
+not sockets or Python objects. A lost/already attached transport is not silently
+reattached. Transport-triggered cancellation and unsafe-environment shutdown
+reenter the authority fence, so an old runner cannot stop a new owner's resources.
+An unsafe native exec marks recording failure and requests scoped quiescence.
+Persisted exec deadlines are enforced by the coordinator, including attached
+workers; completed processes keep their grading state.
+
+Services can receive validated DNS aliases on an owned private network. Aliases
+cannot select a foreign bridge or be silently ignored in a shared namespace.
+There are no published host ports or host networking in this resource interface.
+
+`test_docker_provider_native.py` runs a standalone Benchmark SDK package in a
+separate container with neither backend modules nor a Docker client/socket. It
+prepares another container, transfers private refs, handles a multi-megabyte
+native output stream, retains a daemon and exports a file through RPC. Additional
+native checks cover supervisor loss and isolated service DNS. Its explicit test
+authority/sink verify this boundary; PostgreSQL durability and production launch
+authorization are separate coordinator requirements, not properties of the test
+fixture.
+
+The `connector_container` checks also run the real pinned Pi/OpenCode workers in
+their own root filesystems. A separate MCP environment performs the file change;
+its filesystem and service survive harness shutdown. The local fake model lives
+in that environment's isolated network namespace. This complements the bundle
+checks for native shell execution with `in_environment` and avoids a combined
+image for every harness/environment pair.
