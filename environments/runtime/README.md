@@ -107,3 +107,19 @@ workspace and PostgreSQL task images using a local fake LLM. Native Pi/OpenCode
 shell calls must see each image's own dependencies and initial files, preserve
 results for independent capture, and keep the environment alive after completion.
 A musl task must fail the supported-platform preflight before any model request.
+
+## Group resource eligibility
+
+`app.runtime.admission` measures the execution host's available memory, execution
+storage free space and CPU count. Unknown measurements cannot fall back to static
+policy maxima. The host provider normalizes each registered resource's native
+minimum and requested limits; limits below the native minimum are rejected.
+The group includes workers and services, checks the case's unchanged aggregate
+requirements, host headroom, per-container maxima and group policy maxima.
+Admission is serial across workspaces on the current host.
+
+The pure check returns `eligible` with explicit reasons and the complete budget.
+It always leaves `can_run: false` and `runtime_admission: reservation_pending`.
+The coordinator must remeasure and check the budget under a durable global host
+reservation lock, persist that reservation and fence the resource generation
+before preparation. A capacity snapshot itself cannot authorize a launch.
