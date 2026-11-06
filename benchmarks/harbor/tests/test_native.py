@@ -58,6 +58,13 @@ def test_native_separate_verifier_and_unknown_hardware_remain_explicit(tmp_path)
     assert {"hardware.gpu", "network.allowlist"} <= set(parsed.requirements()["capabilities"])
 
 
+def test_no_network_requires_separate_model_access_without_widening_task_egress(tmp_path):
+    parsed = parse_task(task(tmp_path, "[environment]\nallow_internet = false\n"))
+    assert "host.model_gateway_v1" in parsed.requirements()["capabilities"]
+    assert parsed.task.config.environment.network_mode.value == "no-network"
+    assert parsed.raw_config["environment"]["allow_internet"] is False
+
+
 def test_native_source_proof_rejects_links_special_files_and_oversize_bytes(tmp_path):
     root = task(tmp_path)
     (root / "external").symlink_to(tmp_path / "not-a-task-file")

@@ -5,6 +5,9 @@ This package targets Harbor 0.25.0 and Terminal-Bench 2.0, pinned by
 uses Harbor's `Task`, including its instruction, canary and verifier-mode rules.
 Additional validation rejects unknown settings instead of allowing Pydantic to
 silently drop them. Native requirements and raw configuration remain available.
+Tasks that prohibit network access require `host.model_gateway_v1`: model
+transport must not widen the task's native network policy. Allowlisted networking
+and other unavailable capabilities also remain explicit compatibility requirements.
 
 The current package contains parsing and installation foundations only. It is not
 an enabled server installation or a completed runtime connector. Native image

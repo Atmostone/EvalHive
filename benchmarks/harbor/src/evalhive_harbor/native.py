@@ -138,6 +138,8 @@ class NativeTask:
             capabilities.append("harbor.multi_step_v1")
         if environment.network_mode.value == "allowlist":
             capabilities.append("network.allowlist")
+        if environment.network_mode.value == "no-network":
+            capabilities.append("host.model_gateway_v1")
         return {
             "resources": resources,
             "capabilities": sorted(capabilities),
