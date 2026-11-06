@@ -779,3 +779,16 @@ The fence follows PostgreSQL's
 [session advisory lock semantics](https://www.postgresql.org/docs/16/explicit-locking.html#ADVISORY-LOCKS).
 Private storage follows the cryptography project's
 [AEAD API](https://cryptography.io/en/latest/hazmat/primitives/aead/).
+
+### Installed file maps
+
+An administrator-installed runtime package may provide `files.json` next to
+`resources.json`. `format_version: "1.0"` contains a `files` mapping. A relative
+entry has `kind: "relative"`, a canonical contained `path` and a native
+`source_digest`. A runtime entry has `kind: "runtime_binding"` and a symbolic
+`name`, such as `harness.runtime`. The host supplies that binding after installing
+the selected harness bundle; workers cannot choose host paths or writable grants.
+The generic loader checks paths against the runtime's read-only installation
+roots and rejects links, escapes, missing bindings and extra properties. It never
+imports connector code. Native source identities and the byte inventories frozen
+by the worker host are separate proofs; retained regrading checks both.
