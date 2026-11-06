@@ -117,6 +117,12 @@ uncertain: a daemon request can finish after its caller disappears. Absence of a
 previously confirmed identity can complete cleanup. Interrupted stop/remove
 operations retain their intents for another observation.
 
+Read-only create validation failures have a separate `rejected` state with no
+native identity. Such resources can be stopped/released without native lookup or
+quiescing an exec's parent. Stopping a never-created resource records
+`unallocated`, preserving that proof for cleanup. Cancellation and lost mutation
+replies never receive this classification.
+
 A missing owned-exec supervisor makes its parent unsafe. Quiescence stops only
 that owned container and preserves its filesystem. A verified stopped/missing
 parent proves that an old exec cannot run there, even if its individual identity

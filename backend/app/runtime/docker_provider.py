@@ -203,17 +203,24 @@ class RootlessDockerProvider(EnvironmentProvider):
                     "INVALID_RESOURCE_REQUEST", "Execs require the exec operation", "configuration"
                 )
             await call.save(replace(lease, state="creating"))
-            if lease.kind == "container":
-                native = await asyncio.to_thread(self.runtime.create, lease.intent)
-            elif lease.kind == "network":
-                spec = lease.intent
-                native = await asyncio.to_thread(
-                    self.runtime.create_network, spec.scope, spec.resource_id, egress=spec.egress
-                )
-            else:
-                raise ProtocolError(
-                    "INVALID_RESOURCE_REQUEST", "Execs require the exec operation", "configuration"
-                )
+            try:
+                if lease.kind == "container":
+                    native = await asyncio.to_thread(self.runtime.create, lease.intent)
+                else:
+                    spec = lease.intent
+                    native = await asyncio.to_thread(
+                        self.runtime.create_network,
+                        spec.scope,
+                        spec.resource_id,
+                        egress=spec.egress,
+                    )
+            except UncertainRuntimeError:
+                raise
+            except ManagedRuntimeError:
+                # Rootless create methods raise this only from read-only checks.
+                # Daemon mutations and lost replies use UncertainRuntimeError.
+                await call.save(replace(lease, state="rejected"))
+                raise
             await call.save(
                 self._lease(replace(lease, native=native, state="allocated"), call.scope)
             )
@@ -366,7 +373,13 @@ class RootlessDockerProvider(EnvironmentProvider):
         try:
             async with asyncio.timeout(grant.timeout_seconds):
                 await call.save(replace(lease, state="creating"))
-                native = await asyncio.to_thread(self.owned.create, lease.intent)
+                try:
+                    native = await asyncio.to_thread(self.owned.create, lease.intent)
+                except UncertainRuntimeError:
+                    raise
+                except ManagedRuntimeError:
+                    await call.save(replace(lease, state="rejected"))
+                    raise
                 lease = self._lease(replace(lease, native=native, state="created"), call.scope)
                 await call.save(lease)  # Persist control identity before starting it.
                 process = await OwnedDockerProcess.start(
@@ -439,7 +452,7 @@ class RootlessDockerProvider(EnvironmentProvider):
                 "UNSUPPORTED_CAPABILITY", "A network supports release, not stop", "unsupported"
             )
         if lease.native is None:
-            if lease.state != "planned":
+            if lease.state not in {"planned", "rejected", "unallocated"}:
                 raise UncertainRuntimeError("Unresolved resource intent cannot be released blindly")
         elif lease.kind == "container":
             await asyncio.to_thread(self.runtime.stop, lease.native, remove=release)
@@ -454,7 +467,8 @@ class RootlessDockerProvider(EnvironmentProvider):
         if release and (process := self._processes.pop(lease.handle, None)) is not None:
             await process.aclose()
             self._attached.discard(lease.handle)
-        await call.save(replace(lease, state="released" if release else "stopped"))
+        state = "released" if release else "unallocated" if lease.native is None else "stopped"
+        await call.save(replace(lease, state=state))
         return {"handle": lease.handle, "released" if release else "stopped": True}
 
     async def _export(self, call, lease, payload):

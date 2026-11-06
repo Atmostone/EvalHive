@@ -102,6 +102,8 @@ class OwnedExecRuntime:
         return tuple(argv + ["--", *spec.argv])
 
     def create(self, spec: ExecSpec) -> ManagedExec:
+        # Keep validation outside the mutation boundary: a known rejection owns
+        # no new exec, while a lost exec_create reply requires reconciliation.
         argv = self._argv(spec)
         self._container(spec.container)
         try:

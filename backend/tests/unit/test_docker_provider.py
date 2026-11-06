@@ -16,10 +16,12 @@ from app.runtime.managed_spec import (
     ManagedContainer,
     ManagedExec,
     ManagedNetwork,
+    ManagedRuntimeError,
     NetworkRequest,
     OwnerScope,
     UncertainRuntimeError,
 )
+from app.runtime.reconcile import RootlessReconciler
 from docker.errors import NotFound
 from evalhive_benchmark import ProtocolError
 
@@ -451,3 +453,84 @@ async def test_container_transport_is_host_only_and_never_reattached(prepared, m
     with pytest.raises(ValueError, match="already attached"):
         await provider.open_transport(request(authority.scope, "inspect", handle=lease.handle))
     attach.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["container", "network"])
+async def test_known_preflight_rejection_releases_without_native_retry(prepared, kind):
+    provider, authority, runtime, lease, _, _ = prepared
+    if kind == "network":
+        spec = NetworkRequest(lease.scope, identity())
+        lease = ResourceLease(identity(), lease.scope, "network", spec)
+        authority.plans["task"] = lease
+        authority.resources[lease.handle] = lease
+    mutation = runtime.create if kind == "container" else runtime.create_network
+    mutation.side_effect = ManagedRuntimeError("private validation diagnostic")
+    command = request(authority.scope, "allocate", {"resource_id": "task"})
+    with pytest.raises(ProtocolError) as rejected:
+        await provider.handle(command)
+    assert rejected.value.code == "RESOURCE_REJECTED"
+    assert "private" not in str(rejected.value)
+    assert authority.resources[lease.handle].state == "rejected"
+    assert authority.resources[lease.handle].native is None
+    await provider.handle(request(authority.scope, "release", handle=lease.handle))
+    assert authority.resources[lease.handle].state == "released"
+    mutation.assert_called_once()
+    runtime.stop.assert_not_called()
+    runtime.remove_network.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rejected_exec_cleanup_does_not_quiesce_its_parent(prepared):
+    provider, authority, runtime, _, _, _ = prepared
+    parent = await allocate(prepared)
+    provider.owned = MagicMock()
+    provider.owned.create.side_effect = ManagedRuntimeError("owned bundle validation failed")
+    with pytest.raises(ProtocolError) as rejected:
+        await provider.handle(
+            request(authority.scope, "exec", {"argv": ["fixture"]}, handle=parent.handle)
+        )
+    assert rejected.value.code == "RESOURCE_REJECTED"
+    lease = next(value for value in authority.resources.values() if value.kind == "exec")
+    assert lease.state == "rejected" and lease.native is None
+    recovery = RootlessReconciler(runtime, authority, provider.manifest["id"])
+    await recovery.handle(
+        request(authority.scope, "stop", {"reconcile": True}, handle=lease.handle)
+    )
+    assert authority.resources[lease.handle].state == "unallocated"
+    await recovery.handle(
+        request(authority.scope, "release", {"reconcile": True}, handle=lease.handle)
+    )
+    assert authority.resources[lease.handle].state == "released"
+    assert authority.resources[parent.handle].state == "allocated"
+    runtime.stop.assert_not_called()
+    recovery.owned.api.exec_inspect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stop_of_never_allocated_resource_does_not_lose_no_effect_proof(prepared):
+    provider, authority, runtime, lease, _, _ = prepared
+    await provider.handle(request(authority.scope, "stop", handle=lease.handle))
+    assert authority.resources[lease.handle].state == "unallocated"
+    await provider.handle(request(authority.scope, "release", handle=lease.handle))
+    assert authority.resources[lease.handle].state == "released"
+    runtime.create.assert_not_called()
+    runtime.stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_exec_create_is_not_marked_as_no_effect(prepared):
+    provider, authority, _, _, _, _ = prepared
+    parent = await allocate(prepared)
+    provider.owned = MagicMock()
+    provider.owned.create.side_effect = UncertainRuntimeError("lost reply")
+    with pytest.raises(ProtocolError) as uncertain:
+        await provider.handle(
+            request(authority.scope, "exec", {"argv": ["fixture"]}, handle=parent.handle)
+        )
+    assert uncertain.value.kind == "uncertain"
+    lease = next(value for value in authority.resources.values() if value.kind == "exec")
+    assert lease.state == "creating" and lease.native is None
+    with pytest.raises(ProtocolError) as pending:
+        await provider.handle(request(authority.scope, "release", handle=lease.handle))
+    assert pending.value.kind == "uncertain"

@@ -196,6 +196,8 @@ class RootlessDockerRuntime:
         return mounted
 
     def create(self, spec: ContainerSpec) -> ManagedContainer:
+        # Validation/lookup errors precede mutation; every daemon mutation below
+        # is inside the UncertainRuntimeError boundary used by durable recovery.
         resource_id = _resource_id(spec.resource_id)
         spec.quota.validate(self.policy)
         if spec.role not in {"environment", "service", "worker", "grader"}:

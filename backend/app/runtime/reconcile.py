@@ -91,13 +91,15 @@ class RootlessReconciler:
     async def _reconcile(self, call, lease, operation):
         if lease.state == "released":
             return self._result(lease)
+        if lease.native is None and lease.state in {"planned", "rejected", "unallocated"}:
+            if operation in {"stop", "release"}:
+                lease = await self._save(
+                    call, lease, state="released" if operation == "release" else "unallocated"
+                )
+            return self._result(lease)
         if lease.kind == "exec":
             return await self._exec(call, lease, operation)
         if lease.native is None:
-            if lease.state == "planned":
-                if operation == "release":
-                    lease = await self._save(call, lease, state="released")
-                return self._result(lease)
             if lease.kind == "container":
                 native = await asyncio.to_thread(
                     self.runtime.find, lease.scope, lease.intent.resource_id

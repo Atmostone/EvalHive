@@ -2,6 +2,7 @@
 
 import uuid
 from dataclasses import replace
+from unittest.mock import MagicMock
 
 import pytest
 from app.benchmarks.recovery import RecoveryService
@@ -9,7 +10,7 @@ from app.benchmarks.resource_authority import install_session
 from app.models.benchmark_trial import BenchmarkResourceLease
 from app.runtime.broker import ResourceLease
 from app.runtime.docker_provider import RootlessDockerProvider
-from app.runtime.managed_spec import ManagedNetwork, NetworkRequest
+from app.runtime.managed_spec import ManagedNetwork, ManagedRuntimeError, NetworkRequest
 from app.runtime.reconcile import RootlessReconciler
 from evalhive_benchmark import ProtocolError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,3 +80,21 @@ async def test_unconfirmed_child_release_blocks_its_network_dependency(fixture, 
     ]
     async with AsyncSession(_engine) as db:
         assert (await db.get(BenchmarkResourceLease, uuid.UUID(network_id))).state == "planned"
+
+
+async def test_known_native_rejection_can_finish_cleanup_and_release_host(fixture, _engine):  # noqa: F811
+    store, owner, scope, actor, lease, authority, _ = fixture
+    runtime = FakeRuntime()
+    runtime.create = MagicMock(side_effect=ManagedRuntimeError("Native validation rejected"))
+    with pytest.raises(ProtocolError) as rejected:
+        await RootlessDockerProvider(runtime, authority, MANIFEST).handle(request(scope))
+    assert rejected.value.code == "RESOURCE_REJECTED"
+    async with AsyncSession(_engine) as db:
+        assert (await db.get(BenchmarkResourceLease, uuid.UUID(lease.handle))).state == "rejected"
+    await store.transition(owner, "planning", "cleaning")
+    recovery = RecoveryService(
+        store, actor, {PROVIDER: lambda value: RootlessReconciler(runtime, value, PROVIDER)}
+    )
+    assert (await recovery.sweep(owner, "release"))[0]["state"] == "released"
+    await store.transition(owner, "cleaning", "finished")
+    runtime.create.assert_called_once()
