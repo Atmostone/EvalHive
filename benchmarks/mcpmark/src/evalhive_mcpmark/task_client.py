@@ -220,7 +220,7 @@ def launch_config(connection):
             browser,
             "--viewport-size",
             "1280,720",
-        ], {}
+        ], {"PLAYWRIGHT_BROWSERS_PATH": "/ms-playwright"}
     raise ValueError("Native MCP client runtime is not installed for this service")
 
 

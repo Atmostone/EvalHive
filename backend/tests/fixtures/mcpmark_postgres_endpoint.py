@@ -6,6 +6,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class MCPMarkPostgresEndpoint:
+    model = "fixture-mcpmark-pg"
+
+    def message(self, body, step):
+        tools = [tool["function"]["name"] for tool in body["tools"]]
+        assert not {"bash", "read", "write", "edit"} & set(tools)
+        if step >= 2:
+            return {"role": "assistant", "content": "Completed"}
+        name = next(name for name in tools if name.endswith("execute_sql"))
+        sql = (
+            "SELECT current_database() AS database, COUNT(*) AS payments FROM public.payment"
+            if step == 0
+            else "CREATE INDEX evalhive_engineering_customer_id ON public.payment(customer_id)"
+        )
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "native-sql-" + str(step),
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps({"sql": sql})},
+                }
+            ],
+        }
+
     def __init__(self, key):
         self.requests, self.errors = [], []
         endpoint = self
@@ -21,33 +46,10 @@ class MCPMarkPostgresEndpoint:
                     length = int(self.headers["Content-Length"])
                     assert 0 < length <= 2 * 1024**2
                     body = json.loads(self.rfile.read(length))
-                    assert body["model"] == "fixture-mcpmark-pg"
+                    assert body["model"] == endpoint.model
                     step = len(endpoint.requests)
                     endpoint.requests.append(body)
-                    tools = [tool["function"]["name"] for tool in body["tools"]]
-                    assert not {"bash", "read", "write", "edit"} & set(tools)
-                    message = {"role": "assistant", "content": "Completed"}
-                    if step < 2:
-                        name = next(name for name in tools if name.endswith("execute_sql"))
-                        sql = (
-                            "SELECT current_database() AS database, COUNT(*) AS payments FROM public.payment"
-                            if step == 0
-                            else "CREATE INDEX evalhive_engineering_customer_id ON public.payment(customer_id)"
-                        )
-                        message = {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": "native-sql-" + str(step),
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": json.dumps({"sql": sql}),
-                                    },
-                                }
-                            ],
-                        }
+                    message = endpoint.message(body, step)
                     common = {"id": "mcpmark-pg-" + str(step), "created": 1, "model": body["model"]}
                     finish = "tool_calls" if step < 2 else "stop"
                     usage = {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}

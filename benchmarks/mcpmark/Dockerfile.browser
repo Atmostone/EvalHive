@@ -1,0 +1,45 @@
+# Both contexts must refer to separately verified immutable native image builds.
+FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337 AS browsers
+RUN rm -f /etc/apt/sources.list.d/* && printf '%s\n' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261107T000000Z bookworm main' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20261107T000000Z bookworm-updates main' \
+    'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/20261107T000000Z bookworm-security main' \
+    > /etc/apt/sources.list && apt-get update && apt-get install -y --no-install-recommends \
+    git libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
+    libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 \
+    libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+    xvfb fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6 xfonts-scalable \
+    fonts-liberation fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf \
+    fonts-freefont-ttf libcairo-gobject2 libdbus-glib-1-2 libgdk-pixbuf-2.0-0 libgtk-3-0 \
+    libharfbuzz0b libpangocairo-1.0-0 libx11-xcb1 libxcb-shm0 libxcursor1 libxi6 \
+    libxrender1 libxtst6 \
+    && dpkg-query -W > /opt/browser-debian-packages.txt && rm -rf /var/lib/apt/lists/*
+COPY benchmarks/mcpmark/browser-artifacts.lock.json /opt/browser-artifacts.lock.json
+COPY benchmarks/mcpmark/install_browsers.py /opt/install_browsers.py
+RUN --network=none --mount=from=browser_archives,target=/archives,readonly \
+    python /opt/install_browsers.py /archives /ms-playwright /opt/browser-artifacts.lock.json
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+
+FROM browsers AS world
+COPY --from=native_worker /opt/venv /opt/venv
+COPY --from=native_worker /opt/native /opt/native
+COPY --from=native_worker /opt/benchmark-sdk /opt/benchmark-sdk
+COPY --from=native_worker /opt/native-package /opt/native-package
+ENV PATH=/opt/venv/bin:$PATH PYTHONPATH=/opt/benchmark-sdk:/opt/native-package \
+    PYTHON_DOTENV_DISABLED=1 EVALHIVE_MCPMARK_NATIVE_ROOT=/opt/native
+WORKDIR /tmp
+USER 65532:65532
+ENTRYPOINT []
+CMD ["python", "-m", "evalhive_mcpmark.worker"]
+
+FROM browsers AS task
+COPY --from=native_task /usr/local/bin/node /usr/local/bin/node
+COPY --from=native_task /opt/mcp-clients /opt/mcp-clients
+COPY --from=native_task /opt/postgres-client /opt/postgres-client
+COPY --from=native_task /opt/github-mcp-server /opt/github-mcp-server
+COPY --from=native_task /opt/environment /opt/environment
+RUN mkdir /workspace && chmod 0777 /workspace
+WORKDIR /workspace
+USER 1000:1000
+ENTRYPOINT []
+CMD ["python", "-c", "import time; time.sleep(86400)"]

@@ -1,0 +1,54 @@
+{
+  "platform": "linux-amd64-debian12",
+  "artifacts": [
+    {
+      "name": "chromium-1181",
+      "file": "chromium-1181.zip",
+      "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1181/chromium-linux.zip",
+      "size_bytes": 180888452,
+      "sha256": "34fc36ac22b07893ac952ef0ce22171224fe104a703a903a4b73812f0300ec27"
+    },
+    {
+      "name": "chromium_headless_shell-1181",
+      "file": "chromium_headless_shell-1181.zip",
+      "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/1181/chromium-headless-shell-linux.zip",
+      "size_bytes": 109859582,
+      "sha256": "fed75318a48d90bbf295b511317b7bc149619a5c13712ba6ee50f0bca5a38ace"
+    },
+    {
+      "name": "firefox-1489",
+      "file": "firefox-1489.zip",
+      "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/firefox/1489/firefox-debian-12.zip",
+      "size_bytes": 96992848,
+      "sha256": "2f31d9a2fb4065de3202ca01a9abebec8c9bb0b469f4c198ff149f8682c1c6b6"
+    },
+    {
+      "name": "chromium-1212",
+      "file": "chromium-1212.zip",
+      "url": "https://cdn.playwright.dev/builds/cft/146.0.7680.0/linux64/chrome-linux64.zip",
+      "size_bytes": 182868460,
+      "sha256": "6b3550372c9d912dd016d3333a8821e903f97277fb1fab503c9fa6ad426dd2a7"
+    },
+    {
+      "name": "chromium_headless_shell-1212",
+      "file": "chromium_headless_shell-1212.zip",
+      "url": "https://cdn.playwright.dev/builds/cft/146.0.7680.0/linux64/chrome-headless-shell-linux64.zip",
+      "size_bytes": 117787844,
+      "sha256": "bf21454a4a8dfc1852bb3c78c1b0e27d87b9dc6ac0fb3b1ef61e3b341e410a2b"
+    },
+    {
+      "name": "firefox-1509",
+      "file": "firefox-1509.zip",
+      "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/firefox/1509/firefox-debian-12.zip",
+      "size_bytes": 104293640,
+      "sha256": "4c783518e95b0b3feecf2c139352fc279c2d319458b166701cfeb084241a6200"
+    },
+    {
+      "name": "ffmpeg-1011",
+      "file": "ffmpeg-1011.zip",
+      "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1011/ffmpeg-linux.zip",
+      "size_bytes": 2376500,
+      "sha256": "ebc74fc5b94830176a3c2914ae96bd8bc7f6a91f4f33890230f84a172ee61ccc"
+    }
+  ]
+}

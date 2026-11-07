@@ -1,0 +1,4 @@
+# Update the fixed launcher while retaining the independently locked client layer.
+ARG MCPMARK_TASK_IMAGE
+FROM ${MCPMARK_TASK_IMAGE}
+COPY benchmarks/mcpmark/src/evalhive_mcpmark/task_client.py /opt/environment/task_client.py

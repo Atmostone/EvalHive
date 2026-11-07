@@ -65,3 +65,39 @@ def test_private_control_rejects_duplicate_fields_and_public_directory(tmp_path)
     public.mkdir(mode=0o755)
     with pytest.raises(WorldError, match="private"):
         serve(lambda effect: None, public / "world.sock")
+
+
+def test_private_control_waits_for_delayed_application_startup(tmp_path):
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    path, stop = root / "world.sock", threading.Event()
+
+    def delayed():
+        time.sleep(0.1)
+        serve(lambda effect: lambda method, payload: {"ready": True}, path, stop=stop)
+
+    thread = threading.Thread(target=delayed)
+    thread.start()
+    try:
+        result = exchange(
+            {
+                "id": "prepare",
+                "scope": SCOPE,
+                "operation": "begin",
+                "payload": {"method": "prepare", "params": {}},
+            },
+            path,
+            timeout=2,
+        )
+        assert result == {"operation_id": "prepare"}
+    finally:
+        stop.set()
+        thread.join(timeout=3)
+    assert not thread.is_alive()
+
+
+def test_private_control_startup_wait_has_one_bounded_deadline(tmp_path):
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="become ready"):
+        exchange({}, tmp_path / "missing.sock", timeout=0.1)
+    assert 0.09 <= time.monotonic() - started < 1

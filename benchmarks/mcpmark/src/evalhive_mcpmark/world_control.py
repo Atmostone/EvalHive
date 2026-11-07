@@ -10,6 +10,7 @@ import socketserver
 import stat
 import sys
 import threading
+import time
 from pathlib import Path
 
 from .world_rpc import MAX_BYTES, World, WorldError, encoded
@@ -36,9 +37,21 @@ def decode(data):
 
 def exchange(request, path=SOCKET, *, timeout=10):
     frame = encoded(request) + b"\n"
+    deadline = time.monotonic() + timeout
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(timeout)
-        connection.connect(str(path))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Native control did not become ready")
+            connection.settimeout(remaining)
+            try:
+                connection.connect(str(path))
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                # A running container has not necessarily bound its application socket.
+                # No request bytes have been sent, so waiting cannot repeat an effect.
+                time.sleep(min(0.05, remaining))
+        connection.settimeout(max(0.001, deadline - time.monotonic()))
         connection.sendall(frame)
         with connection.makefile("rb") as stream:
             response = decode(stream.readline(MAX_BYTES + 2))
@@ -98,8 +111,8 @@ def main():
         )
         result = exchange(request)
         sys.stdout.buffer.write(encoded(result) + b"\n")
-    except Exception:
-        sys.stderr.write("Native control request failed\n")
+    except Exception as error:
+        sys.stderr.write("Native control request failed (" + type(error).__name__ + ")\n")
         raise SystemExit(1) from None
 
 

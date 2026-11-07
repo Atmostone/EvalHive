@@ -39,6 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import undefer
 
+from tests.fixtures.mcpmark_browser_endpoint import MCPMarkBrowserEndpoint
 from tests.fixtures.mcpmark_model_endpoint import MCPMarkModelEndpoint
 from tests.fixtures.mcpmark_postgres_endpoint import MCPMarkPostgresEndpoint
 from tests.integration.test_benchmark_worker_host_native import WORKSPACE
@@ -66,20 +67,32 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
     await run_native_mcpmark_case(native_engine, connector_id, service="filesystem")
 
 
+@pytest.mark.skipif(
+    os.getenv("EVALHIVE_NATIVE_MCPMARK_BROWSER") != "1",
+    reason="Requires the pinned browser images and available native public website",
+)
+@pytest.mark.parametrize("connector_id", ["pi", "opencode"])
+async def test_original_browser_native_verdict_through_real_harness(native_engine, connector_id):
+    await run_native_mcpmark_case(native_engine, connector_id, service="playwright")
+
+
 async def run_native_mcpmark_case(native_engine, connector_id, *, service):
     from evalhive_mcpmark.installation import install
     from evalhive_mcpmark.worker import MANIFEST
 
     postgres = service == "postgres"
-    expected_calls, expected_tools = (3, 2) if postgres else (5, 9)
+    browser = service == "playwright"
+    expected_calls, expected_tools = (3, 2) if postgres or browser else (5, 9)
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"]) / (
-        ("mcpmark-postgres-" if postgres else "mcpmark-") + connector_id
+        ("mcpmark-" + service + "-") + connector_id
     )
     local.mkdir(parents=True)
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"] + "/" + local.name
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=60)
     worker_image = client.images.get("evalhive-benchmark-mcpmark:0.1.0")
-    task_image = client.images.get("evalhive-task-mcpmark:0.1.0")
+    task_image = client.images.get(
+        "evalhive-task-mcpmark-browser:0.1.0" if browser else "evalhive-task-mcpmark:0.1.0"
+    )
     for image, repository in (
         (worker_image, "evalhive-benchmark-mcpmark"),
         (task_image, "evalhive-task-mcpmark"),
@@ -91,9 +104,17 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
             "EVALHIVE_MCPMARK_POSTGRES_DATA" if postgres else "EVALHIVE_MCPMARK_FILESYSTEM_DATA"
         ]
     )
+    if browser:
+        initial = local / "empty-initial"
+        initial.mkdir()
     service_settings = (
         {"postgres_image": client.images.get("pgvector/pgvector:0.8.0-pg17-bookworm").id}
         if postgres
+        else {
+            "world_image": client.images.get("evalhive-world-mcpmark-browser:0.1.0").id,
+            "service_settings": {"browser": "chromium", "headless": True},
+        }
+        if browser
         else {"categories": ["file_context"]}
     )
     receipt = install(
@@ -102,7 +123,7 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
         initial_root=initial,
         service=service,
         **service_settings,
-        suite="easy",
+        suite="standard" if browser else "easy",
         revision="native-verified-cd45b7f5",
         worker_image=worker_image.id,
         task_image=task_image.id,
@@ -110,7 +131,8 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
     selected = next(
         case
         for case in receipt["cases"]
-        if case["native_ref"]["task_id"] == ("create_payment_index" if postgres else "uppercase")
+        if case["native_ref"]["task_id"]
+        == ("create_payment_index" if postgres else "extraction_table" if browser else "uppercase")
     )
     installed_host = host_root + "/installed"
     bundle_root = Path(os.environ["EVALHIVE_NATIVE_BUNDLE_DIR"]) / connector_id
@@ -159,7 +181,7 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
         WORKSPACE,
         task_id=task_id,
         snapshot={"fixture": "native MCPMark"},
-        deadline_at=datetime.now(UTC) + timedelta(seconds=600 if postgres else 420),
+        deadline_at=datetime.now(UTC) + timedelta(seconds=600 if postgres or browser else 420),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
     objects = Minio(
@@ -200,7 +222,7 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
         {**manifest(), "id": "evalhive.rootless"},
         facade,
         limits=DriverLimits(
-            phase_seconds=600 if postgres else 240,
+            phase_seconds=600 if postgres or browser else 240,
             capture_seconds=90,
             cleanup_seconds=60,
             stop_seconds=10,
@@ -213,7 +235,7 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
     db_password = uuid.uuid4().hex
     initial_files = (
         {}
-        if postgres
+        if postgres or browser
         else {
             f"file_{index:02d}.txt": (
                 initial / "file_context" / f"file_{index:02d}.txt"
@@ -223,7 +245,11 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
     )
     try:
         with (
-            MCPMarkPostgresEndpoint(key) if postgres else MCPMarkModelEndpoint(key, initial_files)
+            MCPMarkPostgresEndpoint(key)
+            if postgres
+            else MCPMarkBrowserEndpoint(key)
+            if browser
+            else MCPMarkModelEndpoint(key, initial_files)
         ) as endpoint:
             harness_spec = {
                 "protocol_version": "1.0",
@@ -236,7 +262,11 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
                 "limits": {"max_turns": 8},
                 "interaction": {"version": "1.0", "mode": "single_turn"},
                 "model": {
-                    "name": "fixture-mcpmark-pg" if postgres else "fixture-mcpmark",
+                    "name": "fixture-mcpmark-pg"
+                    if postgres
+                    else "fixture-mcpmark-browser"
+                    if browser
+                    else "fixture-mcpmark",
                     "endpoint": endpoint.url,
                     "credential_ref": "model_api_key",
                 },
@@ -303,9 +333,9 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
                 else {},
                 "models": {},
                 "limits": {
-                    "wall_time_seconds": 600 if postgres else 420,
-                    "memory_mb": 3072 if postgres else 2048,
-                    "cpu_cores": 2.5 if postgres else 2,
+                    "wall_time_seconds": 600 if postgres or browser else 420,
+                    "memory_mb": 3072 if postgres or browser else 2048,
+                    "cpu_cores": 2.5 if postgres or browser else 2,
                     "disk_mb": 4096 if postgres else 2048,
                     "model_requests": 8,
                 },
@@ -320,7 +350,8 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
                 else {}
             )
             result = await asyncio.wait_for(
-                controller.run(spec, private_inputs=private_inputs), 840 if postgres else 660
+                controller.run(spec, private_inputs=private_inputs),
+                840 if postgres or browser else 660,
             )
             (local / "engineering-result.json").write_text(json.dumps(result, indent=2))
             (local / "engineering-model-requests.json").write_text(
@@ -455,7 +486,7 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
                 )
                 assert db_password not in json.dumps(verdict)
                 assert all("Error:" not in json.dumps(event["data"]["result"]) for event in tools)
-            else:
+            elif not browser:
                 with tarfile.open(fileobj=io.BytesIO(artifacts.values["working"])) as archive:
                     files = [member.name for member in archive.getmembers()]
                     assert (

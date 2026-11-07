@@ -151,3 +151,24 @@ Capture then transfers the confirmed projection in bounded, idempotent chunks
 and seals its digest before verification. Live Filesystem verification runs in
 the same native world. Independent regrading remains explicitly unavailable
 until a restorable native state checkpoint is implemented.
+
+`Dockerfile.browser` builds separate `world` and `task` targets. The shared layer
+contains the browser revisions required by native Python Playwright and the
+independently pinned MCP client. `browser-artifacts.lock.json` records official
+URLs, sizes and hashes; supply the downloaded files as the read-only
+`browser_archives` build context. The installer verifies every archive before
+extraction and preserves executable modes. Debian dependencies use a fixed
+snapshot, including its security and update suites. No browser is downloaded
+during a trial. Supply verified `native_worker` and `native_task` image contexts;
+for a local retained tag, check its image ID before and after the build.
+`Dockerfile.world-refresh` and `Dockerfile.task-refresh` update connector code
+over a verified browser image without rebuilding the locked browser layer.
+
+Offline native probes confirm Chromium and Firefox launch, read a local page
+and close. The real Playwright MCP server confirms navigation, DOM evaluation
+and closure without network access. Its fixed launcher explicitly sets the
+installed browser directory: a harness may intentionally clear inherited
+environment variables. Private control waits for its application socket under
+one deadline; container startup alone does not establish application readiness.
+The original extraction task has passed through Pi; OpenCode engineering
+acceptance is pending its native shutdown regression.

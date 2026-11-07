@@ -266,8 +266,13 @@ class MCPMarkConnector(Connector):
             resource="world",
         )
         if result["exit_code"] != 0:
+            failure = re.fullmatch(
+                r"Native control request failed \(([A-Za-z_][A-Za-z_0-9]{0,79})\)\n",
+                result.get("stderr", ""),
+            )
+            detail = " (" + failure[1] + ")" if failure else ""
             raise ProtocolError(
-                "NATIVE_CONTROL_FAILED", "Private native operation failed", "execution"
+                "NATIVE_CONTROL_FAILED", "Private native operation failed" + detail, "execution"
             )
         try:
             return json.loads(result["stdout"])
