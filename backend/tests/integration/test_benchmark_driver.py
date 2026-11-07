@@ -243,6 +243,31 @@ async def test_explicit_native_failure_does_not_rewrite_execution_or_cleanup(dri
     assert result["cleanup"] == ("error" if phase == "cleanup" else "complete")
 
 
+@pytest.mark.parametrize("code", ["CAPACITY_UNAVAILABLE", "HOST_BUSY", "UNSUPPORTED_CAPABILITY"])
+async def test_public_admission_failure_preserves_its_reason_before_agent_start(
+    driver, monkeypatch, code
+):
+    controller, spec = driver
+
+    async def denied(*args, **kwargs):
+        raise ProtocolError(code, "The selected native environment cannot start", "preparation")
+
+    monkeypatch.setattr(controller.host, "install_plan", denied)
+    result = await controller.run(spec)
+    assert result["phase"] == "finished" and result["execution"] == "failed"
+    assert result["evaluation"] == "unavailable" and result["cleanup"] == "complete"
+    async with AsyncSession(controller.store.engine) as db:
+        rows = list(
+            await db.scalars(
+                select(BenchmarkJournalEntry).where(
+                    BenchmarkJournalEntry.trial_id == controller.owner.trial_id,
+                    BenchmarkJournalEntry.event == "controller.failed",
+                )
+            )
+        )
+    assert [row.public_data["code"] for row in rows] == [code]
+
+
 async def test_worker_death_uses_file_policy_and_keeps_recording_incomplete(driver):
     controller, spec = driver
     spec["config"] = {"die_phase": "drive"}

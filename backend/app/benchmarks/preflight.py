@@ -9,6 +9,7 @@ import uuid
 from sqlalchemy import select
 
 from app.benchmarks.catalog import CatalogError, compatibility, merged_requirements
+from app.benchmarks.host_contract import capabilities, group_policy
 from app.config import get_settings
 from app.harnesses.catalog import get_manifest as harness_manifest
 from app.models.provider import LLMModel, Provider
@@ -16,19 +17,22 @@ from app.models.provider import LLMModel, Provider
 
 def policy_capacity() -> dict:
     settings = get_settings()
+    policy = group_policy(settings)
     architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(
         platform.machine(), platform.machine()
     )
     resources = {
-        "memory_mb": settings.runtime_max_memory_mb,
-        "cpu_cores": settings.runtime_max_cpu_quota / 100000,
+        "memory_mb": policy.max_memory_mb,
+        "cpu_cores": policy.max_cpu_cores,
     }
     try:
-        resources["disk_mb"] = shutil.disk_usage(settings.data_dir).free // (1024 * 1024)
+        resources["disk_mb"] = max(
+            0, shutil.disk_usage(settings.data_dir).free // (1024 * 1024) - policy.disk_reserve_mb
+        )
     except OSError:
         pass
     return {
-        "capabilities": [],
+        "capabilities": capabilities(settings),
         "resources": resources,
         "platform": {
             "os": platform.system().lower(),
@@ -58,6 +62,7 @@ async def static_preflight(db, workspace, profile, checked, dataset, case, harne
             "reasons": [{"code": "harness_unavailable"}],
         }
     available = policy_capacity()
+    available["capabilities"] += ["credential." + role for role in checked["secret_refs"]]
     available["capabilities"] += [
         "harness." + name
         for name, support in native["capabilities"].items()
@@ -94,6 +99,9 @@ async def static_preflight(db, workspace, profile, checked, dataset, case, harne
     if dataset.manifest != declaration:
         result["compatible"] = False
         result["reasons"].append({"code": "installed_manifest_changed"})
+    if not get_settings().benchmark_runtime_enabled:
+        result["compatible"] = False
+        result["reasons"].append({"code": "runtime_unavailable"})
     return {
         **result,
         "installed": True,

@@ -494,6 +494,13 @@ class PhaseDriver:
                         "PHASE_TIMEOUT",
                         "INVALID_DEADLINE",
                         "NATIVE_RESUME_UNSUPPORTED",
+                        "CAPACITY_UNAVAILABLE",
+                        "HOST_BUSY",
+                        "UNSUPPORTED_CAPABILITY",
+                        "LIMIT_EXCEEDED",
+                        "WORKER_MISMATCH",
+                        "INSTALLATION_UNAVAILABLE",
+                        "INSTALLATION_CONFLICT",
                     }
                     else "CONTROLLER_FAILED"
                 )

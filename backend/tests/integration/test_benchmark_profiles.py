@@ -5,6 +5,7 @@ import json
 import uuid
 
 import pytest
+from app.config import get_settings
 from app.models.workspace import WorkspaceMember
 from sqlalchemy import select
 
@@ -225,8 +226,9 @@ async def test_foreign_workspace_profile_secret_and_dataset_are_inaccessible(
 
 
 async def test_preflight_preserves_native_requirements_and_does_not_claim_runtime_admission(
-    auth_client, installed_api_benchmark
+    auth_client, installed_api_benchmark, monkeypatch
 ):
+    monkeypatch.setattr(get_settings(), "benchmark_group_memory_mb", 2048)
     profile = await create_profile(auth_client)
     dataset = (
         await auth_client.post(

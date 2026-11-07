@@ -21,6 +21,7 @@ export function preflightReason(reason: { code: string; [key: string]: unknown }
   const resource = ({ memory_mb: 'memory (MiB)', disk_mb: 'disk space (MiB)', cpu_cores: 'CPU cores' } as Record<string, string>)[text('resource')] ?? text('resource')
   switch (reason.code) {
     case 'harness_unavailable': return 'The selected harness version is not installed.'
+    case 'runtime_unavailable': return 'Benchmark execution is not enabled on this server.'
     case 'missing_capability': return `This selection does not provide a required capability: ${text('capability')}.`
     case 'platform_mismatch': return `This host does not meet the required ${text('field')}: ${text('required')}.`
     case 'insufficient_resources': return `Insufficient ${resource}: requires ${text('required')}; available ${text('available')}.`

@@ -226,6 +226,18 @@ catalog. A metadata digest binds the selected resource/file declarations for
 launch composition; resource compilation and native file verification still run
 before model access. Only administrator-installed files can populate this index.
 
+Product benchmark dispatch is explicitly controlled by
+`BENCHMARK_RUNTIME_ENABLED` (disabled by default). Static host capabilities reflect
+that choice, resource-finalizer support and the configured container capability
+allowlist. The built-in `evalhive.rootless` provider descriptor represents trusted
+server code; its `builtin:` entrypoint/image markers are not worker images.
+`BENCHMARK_GROUP_MEMORY_MB` and `BENCHMARK_GROUP_CPU_CORES` bound the whole native
+group independently of existing per-container runtime limits. Static disk
+capacity retains the existing 2 GiB host reserve. Actual admission still measures
+and reserves the complete group before model access, with the existing 512 MiB
+memory reserve and serial execution policy. A static compatibility result is
+never a resource reservation.
+
 The neutral rootless runtime now preserves image startup/workspace semantics and
 checks workspace/trial/session/generation ownership for containers, networks and
 native execs. Its static supervisor and SDK process transport retain task state
