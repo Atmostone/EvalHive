@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import undefer
 
 from tests.fixtures.mcpmark_model_endpoint import MCPMarkModelEndpoint
+from tests.fixtures.mcpmark_postgres_endpoint import MCPMarkPostgresEndpoint
 from tests.integration.test_benchmark_worker_host_native import WORKSPACE
 from tests.runtime.authority_fixture import FixtureArtifacts, manifest
 
@@ -62,10 +63,18 @@ async def native_engine(_engine, db_session):
 async def test_original_filesystem_native_verdict_and_files_through_real_harness(
     native_engine, connector_id
 ):
+    await run_native_mcpmark_case(native_engine, connector_id, service="filesystem")
+
+
+async def run_native_mcpmark_case(native_engine, connector_id, *, service):
     from evalhive_mcpmark.installation import install
     from evalhive_mcpmark.worker import MANIFEST
 
-    local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"]) / ("mcpmark-" + connector_id)
+    postgres = service == "postgres"
+    expected_calls, expected_tools = (3, 2) if postgres else (5, 9)
+    local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"]) / (
+        ("mcpmark-postgres-" if postgres else "mcpmark-") + connector_id
+    )
     local.mkdir(parents=True)
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"] + "/" + local.name
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=60)
@@ -77,19 +86,31 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
     ):
         assert image.tag(repository, "retained-" + image.id.removeprefix("sha256:")[:12])
     installed = local / "installed"
-    initial = Path(os.environ["EVALHIVE_MCPMARK_FILESYSTEM_DATA"])
+    initial = Path(
+        os.environ[
+            "EVALHIVE_MCPMARK_POSTGRES_DATA" if postgres else "EVALHIVE_MCPMARK_FILESYSTEM_DATA"
+        ]
+    )
+    service_settings = (
+        {"postgres_image": client.images.get("pgvector/pgvector:0.8.0-pg17-bookworm").id}
+        if postgres
+        else {"categories": ["file_context"]}
+    )
     receipt = install(
         os.environ["EVALHIVE_MCPMARK_NATIVE_ROOT"],
         installed,
         initial_root=initial,
-        categories=["file_context"],
+        service=service,
+        **service_settings,
         suite="easy",
         revision="native-verified-cd45b7f5",
         worker_image=worker_image.id,
         task_image=task_image.id,
     )
     selected = next(
-        case for case in receipt["cases"] if case["native_ref"]["task_id"] == "uppercase"
+        case
+        for case in receipt["cases"]
+        if case["native_ref"]["task_id"] == ("create_payment_index" if postgres else "uppercase")
     )
     installed_host = host_root + "/installed"
     bundle_root = Path(os.environ["EVALHIVE_NATIVE_BUNDLE_DIR"]) / connector_id
@@ -138,7 +159,7 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
         WORKSPACE,
         task_id=task_id,
         snapshot={"fixture": "native MCPMark"},
-        deadline_at=datetime.now(UTC) + timedelta(seconds=420),
+        deadline_at=datetime.now(UTC) + timedelta(seconds=600 if postgres else 420),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
     objects = Minio(
@@ -179,7 +200,7 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
         {**manifest(), "id": "evalhive.rootless"},
         facade,
         limits=DriverLimits(
-            phase_seconds=240,
+            phase_seconds=600 if postgres else 240,
             capture_seconds=90,
             cleanup_seconds=60,
             stop_seconds=10,
@@ -189,12 +210,21 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
     )
     host = None
     key = uuid.uuid4().hex
-    initial_files = {
-        f"file_{index:02d}.txt": (initial / "file_context" / f"file_{index:02d}.txt").read_text()
-        for index in range(1, 11)
-    }
+    db_password = uuid.uuid4().hex
+    initial_files = (
+        {}
+        if postgres
+        else {
+            f"file_{index:02d}.txt": (
+                initial / "file_context" / f"file_{index:02d}.txt"
+            ).read_text()
+            for index in range(1, 11)
+        }
+    )
     try:
-        with MCPMarkModelEndpoint(key, initial_files) as endpoint:
+        with (
+            MCPMarkPostgresEndpoint(key) if postgres else MCPMarkModelEndpoint(key, initial_files)
+        ) as endpoint:
             harness_spec = {
                 "protocol_version": "1.0",
                 "workspace_id": str(WORKSPACE),
@@ -206,7 +236,7 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
                 "limits": {"max_turns": 8},
                 "interaction": {"version": "1.0", "mode": "single_turn"},
                 "model": {
-                    "name": "fixture-mcpmark",
+                    "name": "fixture-mcpmark-pg" if postgres else "fixture-mcpmark",
                     "endpoint": endpoint.url,
                     "credential_ref": "model_api_key",
                 },
@@ -267,21 +297,36 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
                     "generation": owner.generation,
                 },
                 "case": selected,
-                "config": {},
-                "credential_refs": {},
+                "config": {"prepare_timeout_seconds": 600} if postgres else {},
+                "credential_refs": {"service_credentials": "fixture-private-reference"}
+                if postgres
+                else {},
                 "models": {},
                 "limits": {
-                    "wall_time_seconds": 420,
-                    "memory_mb": 2048,
-                    "cpu_cores": 1.5,
-                    "disk_mb": 2048,
+                    "wall_time_seconds": 600 if postgres else 420,
+                    "memory_mb": 3072 if postgres else 2048,
+                    "cpu_cores": 2.5 if postgres else 2,
+                    "disk_mb": 4096 if postgres else 2048,
                     "model_requests": 8,
                 },
             }
-            result = await asyncio.wait_for(controller.run(spec), 660)
+            private_inputs = (
+                {
+                    "service_credentials": json.dumps(
+                        {"service": "postgres", "password": db_password}
+                    ).encode()
+                }
+                if postgres
+                else {}
+            )
+            result = await asyncio.wait_for(
+                controller.run(spec, private_inputs=private_inputs), 840 if postgres else 660
+            )
             (local / "engineering-result.json").write_text(json.dumps(result, indent=2))
             (local / "engineering-model-requests.json").write_text(
-                json.dumps(endpoint.requests, indent=2).replace(key, "[redacted]")
+                json.dumps(endpoint.requests, indent=2)
+                .replace(key, "[redacted]")
+                .replace(db_password, "[redacted]")
             )
             async with AsyncSession(engine) as db:
                 attempt = await db.get(ExecutionAttempt, host.agent_gateway.calls.session_id)
@@ -294,7 +339,9 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
                                 "completeness": attempt.completeness,
                             },
                             indent=2,
-                        ).replace(key, "[redacted]")
+                        )
+                        .replace(key, "[redacted]")
+                        .replace(db_password, "[redacted]")
                     )
                     observed_events = list(
                         await db.scalars(
@@ -304,7 +351,9 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
                         )
                     )
                     (local / "engineering-events.json").write_text(
-                        json.dumps(observed_events, indent=2).replace(key, "[redacted]")
+                        json.dumps(observed_events, indent=2)
+                        .replace(key, "[redacted]")
+                        .replace(db_password, "[redacted]")
                     )
             evidence_dir = local / "engineering-evidence"
             evidence_dir.mkdir()
@@ -345,13 +394,15 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
                         "model_errors": endpoint.errors,
                     }
                     (local / "engineering-diagnostics.json").write_text(
-                        json.dumps(diagnostics, indent=2).replace(key, "[redacted]")
+                        json.dumps(diagnostics, indent=2)
+                        .replace(key, "[redacted]")
+                        .replace(db_password, "[redacted]")
                     )
             assert (
                 result.get("execution") == "success" and result.get("evaluation") == "completed"
             ), result
             assert result["recording"] == "complete" and result["cleanup"] == "complete", result
-            assert len(endpoint.requests) == 5 and not endpoint.errors, endpoint.errors
+            assert len(endpoint.requests) == expected_calls and not endpoint.errors, endpoint.errors
             async with AsyncSession(engine) as db:
                 attempt = await db.get(ExecutionAttempt, host.agent_gateway.calls.session_id)
                 assert attempt.status == "success" and attempt.connector_id == connector_id
@@ -363,13 +414,16 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
                     )
                 )
                 (local / "engineering-events.json").write_text(
-                    json.dumps(events, indent=2).replace(key, "[redacted]")
+                    json.dumps(events, indent=2)
+                    .replace(key, "[redacted]")
+                    .replace(db_password, "[redacted]")
                 )
                 tools = [event for event in events if event["event"] == "tool.end"]
-                assert len(tools) == 9 and all(
+                assert len(tools) == expected_tools and all(
                     event["data"]["status"] == "completed" for event in tools
                 )
                 assert key not in json.dumps(events)
+                assert db_password not in json.dumps(events)
                 evaluation = await db.scalar(
                     select(BenchmarkEvaluationAttempt)
                     .where(BenchmarkEvaluationAttempt.trial_id == trial.id)
@@ -394,12 +448,26 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
             assert (
                 verdict["native_result"]["success"] is True and verdict["verifier_exit_code"] == 0
             )
-            with tarfile.open(fileobj=io.BytesIO(artifacts.values["working"])) as archive:
-                files = [member.name for member in archive.getmembers()]
+            if postgres:
                 assert (
-                    len([name for name in files if "/uppercase/" in name and name.endswith(".txt")])
-                    == 6
+                    "evalhive_engineering_customer_id"
+                    in verdict["native_result"]["verification_output"]
                 )
+                assert db_password not in json.dumps(verdict)
+                assert all("Error:" not in json.dumps(event["data"]["result"]) for event in tools)
+            else:
+                with tarfile.open(fileobj=io.BytesIO(artifacts.values["working"])) as archive:
+                    files = [member.name for member in archive.getmembers()]
+                    assert (
+                        len(
+                            [
+                                name
+                                for name in files
+                                if "/uppercase/" in name and name.endswith(".txt")
+                            ]
+                        )
+                        == 6
+                    )
             usage = await trial_usage(store, WORKSPACE, trial.id)
             (local / "engineering-usage.json").write_text(json.dumps(usage, indent=2))
             assert usage["valid"] and all(group["role"] == "agent" for group in usage["groups"])
@@ -416,13 +484,14 @@ async def test_original_filesystem_native_verdict_and_files_through_real_harness
                 and event["data"]["payload"].get("status", 0) >= 400
             }
             calls = sum(group["calls"] for group in usage["groups"])
-            assert calls == len(observed_requests) == 5 + len(failed_requests)
+            assert calls == len(observed_requests) == expected_calls + len(failed_requests)
             assert (
-                sum(group["tokens"]["input_tokens"]["known_sum"] for group in usage["groups"]) == 50
+                sum(group["tokens"]["input_tokens"]["known_sum"] for group in usage["groups"])
+                == 10 * expected_calls
             )
             assert (
                 sum(group["tokens"]["output_tokens"]["known_sum"] for group in usage["groups"])
-                == 10
+                == 2 * expected_calls
             )
             assert sum(
                 group["tokens"]["input_tokens"]["unknown_calls"] for group in usage["groups"]
