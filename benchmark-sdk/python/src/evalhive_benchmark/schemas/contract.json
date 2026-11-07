@@ -654,6 +654,11 @@
             "stop_after_agent",
             "retain_until_cleanup"
           ]
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
         }
       },
       "required": [

@@ -331,3 +331,9 @@ Native verification can then use a server that the task asked the agent to start
 Cancellation and environment cleanup stop the complete owned process tree.
 A filesystem checkpoint must separately declare whether live service state is
 restorable; retaining a process is not evidence of process-memory replay.
+
+An in-environment agent can declare a native `user` as a Docker user string
+(e.g. `"1000:1000"`). It must match the installed Task asset's `agent_user`;
+prepared access cannot change it. Omitting the field preserves the container's
+configured/image user. This per-execution choice is independent of the native
+verifier user, so evaluation does not inherit an agent-only override.

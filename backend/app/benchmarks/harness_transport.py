@@ -74,6 +74,8 @@ class RootlessHarnessTransport:
         self.process_policy = planned.get("process_policy", "stop_after_agent")
         if agent.get("process_policy", "stop_after_agent") != self.process_policy:
             raise ManagedRuntimeError("Prepared agent process policy differs from its plan")
+        if agent.get("user") != planned.get("user"):
+            raise ManagedRuntimeError("Prepared agent user differs from its plan")
         if self.process_policy == "retain_until_cleanup":
             resource = next((item for item in plan["resources"] if item["id"] == planned["environment_handle"]), None)
             if resource is None:
@@ -83,6 +85,7 @@ class RootlessHarnessTransport:
                 raise ManagedRuntimeError("Retained agent services require a registered task policy")
         self.host, self.bundle, self.manifest = host, bundle, deepcopy(manifest)
         self.handle, self.cwd, self.credential_ref = lease.handle, agent["cwd"], credential_ref
+        self.user = agent.get("user")
         self.used = False
 
     async def __call__(self):
@@ -100,6 +103,8 @@ class RootlessHarnessTransport:
         if tuple(receipt["entrypoint"]) != self.bundle.entrypoint:
             raise ManagedRuntimeError("Harness runtime entrypoint changed after registration")
         payload = {"argv": list(self.bundle.entrypoint), "cwd": self.cwd, "mode": "attach"}
+        if self.user is not None:
+            payload["user"] = self.user
         if self.credential_ref is not None:
             payload["private_input_refs"] = {"EVALHIVE_CREDENTIALS_FILE": self.credential_ref}
         attached = await self.host.host_broker.handle(

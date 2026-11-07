@@ -858,3 +858,11 @@ This is an environment lifecycle capability. Connectors must not equate a retain
 service with a complete cold checkpoint. Process memory and external state need
 an explicit native checkpoint policy. Runtime preflight should advertise the
 capability only where this owned process lifecycle is enabled.
+
+Agent access can also declare a native `user`, authorized by the installed
+`agent_user` Task setting. The host passes it to the owned exec and records the
+explicit user, or the known container user, as `environment_agent_user`.
+Omission keeps the Task's native default. Registered runtime bundles are
+traversable by unprivileged task users and mounted read-only. An older private
+installation root is retained for historical references; new installations use
+a separate `.readable-v1` directory rather than changing that source in place.

@@ -61,6 +61,7 @@ class _RegisteredHarness(HarnessExecution):
             or target is None
             or target[0] != self.host.assets.provider_id
             or agent.get("process_policy", "stop_after_agent") != planned.get("process_policy", "stop_after_agent")
+            or agent.get("user") != planned.get("user")
         ):
             raise ManagedRuntimeError("Agent requires its registered task environment")
         lease = target[1]
@@ -76,6 +77,7 @@ class _RegisteredHarness(HarnessExecution):
             **self.spec.get("metadata", {}),
             "image_id": lease.intent.image_id,
             "environment_process_policy": planned.get("process_policy", "stop_after_agent"),
+            "environment_agent_user": planned.get("user", lease.intent.user),
         }
         self.spec["limits"] = {
             **self.spec.get("limits", {}),

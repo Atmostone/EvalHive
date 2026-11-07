@@ -102,6 +102,30 @@ async def line(process):
     return await asyncio.wait_for(process.stdout.readline(), 10)
 
 
+def test_explicit_unprivileged_exec_user_can_use_private_inputs_and_owned_controls(environment):
+    async def scenario():
+        _, owned, _, _ = environment
+        process, _ = await start(environment, """
+import os,json
+assert os.getuid()==1000
+assert open(os.environ['CONFIG']).read()=='private-fixture'
+try: open('/proc/%d/fd/0'%os.getppid()).read()
+except PermissionError: pass
+else: raise AssertionError('Control input escaped')
+print(json.dumps({'uid':os.getuid(),'completed':True}),flush=True)
+""", user="1000:1000", private_inputs={"CONFIG": b"private-fixture"})
+        try:
+            assert json.loads(await line(process)) == {"uid": 1000, "completed": True}
+            assert await asyncio.wait_for(process.wait(), 10) == 0
+            assert process.handle.user == "1000:1000"
+            assert owned.control(process.handle, "status")["main_done"]
+            assert (await process.release())["stopped"]
+        finally:
+            await process.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_completed_exec_retains_rootfs_and_daemon_for_grader(environment):
     async def scenario():
         runtime, owned, container, native = environment

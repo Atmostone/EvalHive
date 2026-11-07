@@ -201,6 +201,10 @@ def install_bundle(runtime, connector: dict, root_mapping) -> RuntimeBundle:
     if root.resolve() != root:
         raise ManagedRuntimeError("Runtime bundle installation root cannot traverse links")
     destination = root / image_id.removeprefix("sha256:")
+    if destination.exists() and destination.stat().st_mode & 0o055 != 0o055:
+        # Historical private roots remain byte-for-byte pinned for old results.
+        # New task users receive a separately installed, traversable copy.
+        destination = root / (destination.name + ".readable-v1")
     if not destination.exists():
         temporary = Path(tempfile.mkdtemp(prefix=".install-", dir=root))
         source = None
@@ -214,6 +218,7 @@ def install_bundle(runtime, connector: dict, root_mapping) -> RuntimeBundle:
             chunks, _ = source.get_archive("/bundle")
             unpack_bundle(chunks, temporary)
             validate_bundle(temporary, connector)
+            temporary.chmod(0o755)
             try:
                 os.rename(temporary, destination)
             except FileExistsError:

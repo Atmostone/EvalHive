@@ -124,6 +124,22 @@ async def test_retained_agent_process_policy_is_authorized_by_the_installed_task
         assert await assets.compile(scope(), native)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered,requested", [(None, "1000"), ("1000", None), ("1000", "1000")])
+async def test_native_agent_user_must_match_its_installed_task(registered, requested):
+    data, native = document(), plan()
+    if registered is not None:
+        data["assets"]["fixture.task"]["agent_user"] = registered
+    if requested is not None:
+        native["agent"]["user"] = requested
+    assets, _ = catalog(data)
+    if registered != requested:
+        with pytest.raises(ManagedRuntimeError, match="Agent user"):
+            await assets.compile(scope(), native)
+    else:
+        assert await assets.compile(scope(), native)
+
+
 def test_shared_storage_has_registered_slots_dependencies_and_a_disk_only_reservation():
     async def scenario():
         from app.runtime.admission import StorageDemand

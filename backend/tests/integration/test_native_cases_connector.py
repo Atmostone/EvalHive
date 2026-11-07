@@ -102,7 +102,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
     )
     worker_image = await asyncio.to_thread(runtime.resolve_image, "evalhive-benchmark-cases:0.1.0")
     task_image = await asyncio.to_thread(
-        runtime.resolve_image, "evalhive-environment-workspace:0.1.0"
+        runtime.resolve_image, os.getenv("EVALHIVE_NATIVE_TASK_IMAGE", "evalhive-environment-workspace:0.1.0")
     )
     receipt = build_receipt(source, "fixture", "engineering-1", worker_image["image_id"])
     (source / "installation.json").write_text(json.dumps(receipt))
@@ -139,6 +139,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
             "evalhive-cases.task": {
                 "kind": "container",
                 "role": "environment",
+                **({"user": os.environ["EVALHIVE_NATIVE_TASK_USER"]} if os.getenv("EVALHIVE_NATIVE_TASK_USER") else {}),
                 "image": task_image["image_id"],
                 "limits": asdict(Quota(1024, 1, 256)),
                 "minimum": {"memory_mb": 256, "cpu_cores": 1, "disk_mb": 16},
@@ -284,6 +285,9 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
             assert not listener.directory.exists()
         with tarfile.open(fileobj=io.BytesIO(artifacts.values["workspace"])) as archive:
             assert archive.extractfile("workspace/agent-child.started").read() == b"started"
+            requested_user = os.getenv("EVALHIVE_NATIVE_TASK_USER", "").split(":")[0]
+            if requested_user.isdigit():
+                assert archive.getmember("workspace/agent-child.started").uid == int(requested_user)
             assert (
                 b"Driven through the Benchmark SDK"
                 in archive.extractfile("workspace/result.txt").read()

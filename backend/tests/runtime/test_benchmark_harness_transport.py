@@ -75,9 +75,12 @@ def setup(tmp_path):
     return host, native, prepared, bundle, manifest, process
 
 
-def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned_broker(tmp_path):
+@pytest.mark.parametrize("agent_user", [None, "1000:1000"])
+def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned_broker(tmp_path, agent_user):
     async def scenario():
         host, native, prepared, bundle, manifest, process = setup(tmp_path)
+        if agent_user is not None:
+            native["agent"]["user"] = prepared["agent"]["user"] = agent_user
         transport = RootlessHarnessTransport(
             host, native, prepared, bundle, manifest, credential_ref="agent.credentials"
         )
@@ -89,6 +92,7 @@ def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned
             "cwd": "/native-task",
             "mode": "attach",
             "private_input_refs": {"EVALHIVE_CREDENTIALS_FILE": "agent.credentials"},
+            **({"user": agent_user} if agent_user is not None else {}),
         }
         assert "private-fixture-value" not in str(call)
         assert host.host_broker.open_transport.await_args.args[0]["id"] == "harness.attach"

@@ -86,6 +86,7 @@ CONTAINER = obj(
         "workdir": TEXT,
         "user": TEXT,
         "agent_process_policy": {"enum": ["stop_after_agent", "retain_until_cleanup"]},
+        "agent_user": TEXT,
         "environment": {
             "type": "object",
             "maxProperties": 128,
@@ -456,6 +457,8 @@ class RootlessAssets:
                 task_asset = self.document["assets"][task_resource["config"]["asset_id"]]
                 if agent.get("process_policy", "stop_after_agent") != task_asset.get("agent_process_policy", "stop_after_agent"):
                     raise ManagedRuntimeError("Agent process policy differs from its registered task")
+                if agent.get("user") != task_asset.get("agent_user"):
+                    raise ManagedRuntimeError("Agent user differs from its registered task")
             absolute_path(agent["cwd"])
         files = {
             mount["file_id"]: self.files[mount["file_id"]].source_digest

@@ -4,11 +4,12 @@ import hashlib
 import io
 import json
 import tarfile
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from app.runtime.bundles import check_mount_target, unpack_bundle, validate_bundle
-from app.runtime.managed_spec import ManagedRuntimeError
+from app.runtime.bundles import check_mount_target, install_bundle, unpack_bundle, validate_bundle
+from app.runtime.managed_spec import ManagedRuntimeError, PathMapping
 from docker.errors import NotFound
 
 
@@ -59,6 +60,32 @@ def test_registered_files_and_exact_receipt_are_verified(tmp_path):
     validate_bundle(tmp_path, {"id": "example", "version": "1.0"}, expected_hash=fingerprint)
     with pytest.raises(ManagedRuntimeError, match="changed"):
         validate_bundle(tmp_path, {"id": "example", "version": "1.0"}, expected_hash="f" * 64)
+
+
+def test_new_bundle_is_traversable_without_mutating_historical_private_roots(tmp_path):
+    root, source = tmp_path / "installed", tmp_path / "source"
+    root.mkdir()
+    source.mkdir()
+    receipt(source)
+    image = "sha256:" + "a" * 64
+    historical = root / image.removeprefix("sha256:")
+    historical.mkdir(mode=0o700)
+    receipt(historical)
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as output:
+        output.add(source, arcname="bundle")
+    runtime = MagicMock()
+    runtime.resolve_image.return_value = {"image_id": image}
+    native = runtime.client.containers.create.return_value
+    native.get_archive.return_value = ([buffer.getvalue()], {})
+    connector = {"id": "example", "version": "1.0", "requirements": {"runtime_bundle": {"image": image, "path": "/bundle"}}}
+    installed = install_bundle(runtime, connector, PathMapping("/registered", str(root)))
+    assert historical.stat().st_mode & 0o777 == 0o700
+    assert installed.local_path.endswith(".readable-v1")
+    assert Path(installed.local_path).stat().st_mode & 0o777 == 0o755
+    again = install_bundle(runtime, connector, PathMapping("/registered", str(root)))
+    assert again == installed
+    runtime.client.containers.create.assert_called_once()
 
 
 @pytest.mark.parametrize(
