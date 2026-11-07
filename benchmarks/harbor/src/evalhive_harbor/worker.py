@@ -24,6 +24,7 @@ from .dataset import CONNECTOR_ID, CONNECTOR_VERSION, InstalledHarbor
 from .environment import BrokerEnvironment
 from .native import HarborConfigurationError
 from .policies import network_plan
+from .resources import agent_resources
 from .transfers import BrokerTransfers, absolute_path
 from .verification import NativeVerificationError, run_verifier
 
@@ -114,20 +115,13 @@ class HarborConnector(Connector):
                 raise HarborConfigurationError(
                     "Native agent budget requires an installed deadline adapter"
                 )
-            if (
-                native.task.config.environment.mcp_servers
-                or native.task.config.environment.skills_dir
-            ):
-                raise HarborConfigurationError(
-                    "Native MCP and skills require their installed resource bindings"
-                )
             if {"network.allowlist", "network.dynamic_policy"} & set(
-                native.requirements()["capabilities"]
+                (selected_requirements or {}).get("capabilities", [])
             ):
                 raise HarborConfigurationError(
                     "Native phase networking requires an installed policy adapter"
                 )
-            if "environment.host_bindings_v1" in native.requirements()["capabilities"]:
+            if "environment.host_bindings_v1" in (selected_requirements or {}).get("capabilities", []):
                 raise HarborConfigurationError(
                     "Native environment templates require private bindings"
                 )
@@ -136,6 +130,8 @@ class HarborConnector(Connector):
                 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", selected["asset_id"]):
                     raise HarborConfigurationError("Native image binding is invalid")
                 absolute_path(selected["cwd"])
+            if spec.get("purpose") != "evaluation":
+                agent_resources(native, binding["task"]["cwd"])
             config = {"evaluation_mode": "native", "prepare_timeout_seconds": 120, **spec["config"]}
             effective = {**deepcopy(spec), "config": config}
             if self.spec is not None and self.spec != effective:
@@ -167,7 +163,7 @@ class HarborConnector(Connector):
             "cwd": self.binding["task"]["cwd"],
             "prompt": self.native.task.instruction,
             "instructions": [],
-            "resources": [{"id": "tools", "kind": "tools", "config": {"names": ["bash"]}}],
+            "resources": agent_resources(self.native, self.binding["task"]["cwd"]),
             "process_policy": "retain_until_cleanup",
         }
         if self.native.task.config.agent.timeout_sec is not None:

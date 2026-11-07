@@ -51,6 +51,7 @@ def strict_native_schema():
     schema["properties"]["version"] = {"type": "string"}
     for name in ("memory", "storage"):
         schema["$defs"]["EnvironmentConfig"]["properties"][name] = {"type": "string"}
+    schema["$defs"]["MCPServerConfig"]["properties"]["transport"]["enum"].append("http")
     return schema
 
 

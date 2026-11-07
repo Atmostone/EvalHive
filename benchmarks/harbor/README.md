@@ -13,7 +13,8 @@ The package includes a Benchmark SDK worker, native shared/separate verification
 artifact capture and an offline administrator installation builder. Server
 enablement and complete runner acceptance remain in SPA-146. Unavailable native
 features remain explicit compatibility requirements, including Compose/sidecar
-bindings, artifact tar exclusions, native MCP/skills and dynamic network policy.
+bindings, artifact tar exclusions, legacy SSE, private MCP header bindings and
+dynamic network policy.
 
 `dataset.build_receipt` produces canonical SDK installation metadata from native
 task directories. `InstalledHarbor.resolve` checks the complete case descriptor,
@@ -31,8 +32,10 @@ missing/empty/invalid rewards and timeout remain separate error categories;
 numeric rewards keep their native names and values without an inferred binary
 success threshold. The function requires an already prepared environment adapter
 and an isolated worker with explicitly bound native configuration. Current unit
-coverage uses the real pinned Verifier and a deterministic environment fixture;
-full native task acceptance remains pending.
+coverage uses the real pinned Verifier and a deterministic environment fixture.
+The full coordinator has passed shared verification with real pinned Pi/OpenCode
+and a local fixture model. Separate verification and cold regrade acceptance
+remain pending.
 
 `environment.BrokerEnvironment` supplies the native verifier's command and
 directory-transfer interface using scoped Benchmark SDK broker requests. Native
@@ -56,8 +59,8 @@ Downloads validate archive paths, links, entry counts and logical bytes before
 extraction. Log selection uses Harbor's filter rules and preserves protected
 reward files. Unsupported filesystem entries and oversized transfers fail
 explicitly. The engineering fixture exercises the actual pinned native verifier,
-shell commands and toolchain without an external model; separate task/service
-isolation and full runner acceptance are still pending.
+shell commands and toolchain without an external model. Coordinator checks keep
+the worker and task isolated; complete separate-verifier acceptance is pending.
 
 `worker.HarborConnector` uses registered assets for its private staging service,
 task and optional separate verifier. Source instructions use Harbor's parser.
@@ -100,3 +103,11 @@ from Harbor's resolved verifier environment. Task requirements retain their
 original values. Artifact restoration uses the preparation budget; the native
 verifier timeout begins immediately before `Verifier.verify`, matching Harbor's
 separate-verifier lifecycle.
+
+`resources.agent_resources` maps native stdio/streamable HTTP MCP servers and
+task-local skills to the common Harness SDK resources. Commands and argument
+boundaries are retained; relative skills resolve against the native task workdir.
+Built-in shell access remains available alongside discovered MCP namespaces.
+Legacy SSE, nonportable/colliding namespaces and unresolved private header
+templates fail before preparation. Evaluation-only workers do not initialize
+agent resources.
