@@ -48,7 +48,7 @@ class ApiProcess:
         finally:
             connection.close()
 
-    def start(self, *, timeout=60):
+    def start(self, *, timeout=90):
         if self.process is not None:
             raise RuntimeError("One trial cannot replace its native API process")
         self.records.mkdir(parents=True, mode=0o700, exist_ok=True)

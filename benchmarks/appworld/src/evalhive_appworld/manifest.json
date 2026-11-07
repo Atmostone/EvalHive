@@ -14,6 +14,6 @@
   "requirements": {
     "capabilities": ["host.agent_api_v1", "host.resource_finalizers_v1", "host.rootless_storage_v1", "host.ephemeral_exec_v1", "host.exec_deadline_inheritance_v1", "host.model_gateway_v1"],
     "platform": {"os": "linux", "architecture": "amd64", "libc": "glibc"},
-    "resources": {"memory_mb": 512, "cpu_cores": 0.25, "disk_mb": 256}
+    "resources": {"memory_mb": 384, "cpu_cores": 0.5, "disk_mb": 256}
   }
 }

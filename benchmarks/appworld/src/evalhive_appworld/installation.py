@@ -56,8 +56,8 @@ def declarations(receipt, worker_image, task_image, *, world_image=None):
         "appworld.worker": container(
             worker_image,
             "worker",
-            512,
-            0.25,
+            384,
+            0.5,
             256,
             user="0",
             mounts=private,
@@ -74,7 +74,7 @@ def declarations(receipt, worker_image, task_image, *, world_image=None):
             world_image or worker_image,
             "service",
             1024,
-            0.75,
+            0.5,
             512,
             user="0",
             command=["/opt/venv/bin/python", "-m", "evalhive_appworld.world_service"],
@@ -105,6 +105,7 @@ def declarations(receipt, worker_image, task_image, *, world_image=None):
             1,
             384,
             user="0",
+            command=["sleep", "infinity"],
             workdir="/workspace",
             mounts=runtime,
             storage_slots={

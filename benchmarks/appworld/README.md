@@ -66,7 +66,7 @@ python -m evalhive_appworld.installation /installed/native-root /new/package \
 
 Installation freezes complete split membership, data hashes, runtime assets and
 image identities. Changed resource registrations require a new installation
-revision. The initial measured engineering budget is 512 MiB for the worker,
+revision. The initial measured engineering budget is 384 MiB for the worker,
 1,024 MiB for the World and 1,280 MiB for the Task. This is an adapter budget,
 not an upstream benchmark minimum; host reserves remain mandatory. Protected
 state/report archives stay evaluator-only. Independent regrading is explicitly

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import selectors
 import socket
 import socketserver
 import stat
@@ -92,11 +93,17 @@ def serve(factory, path=SOCKET, *, stop=None, deadline_seconds=86400):
                 pass
 
     try:
-        with socketserver.UnixStreamServer(str(path), Handler) as server:
+        with (
+            socketserver.UnixStreamServer(str(path), Handler) as server,
+            selectors.DefaultSelector() as ready,
+        ):
             os.chmod(path, 0o600)
-            server.timeout = 0.2
+            ready.register(server, selectors.EVENT_READ)
             while not stop.is_set():
-                server.handle_request()
+                # BaseServer.handle_request calculates deadlines with a Python clock
+                # that native simulated time can replace or restore mid-request.
+                if ready.select(0.2):
+                    server._handle_request_noblock()
     finally:
         world.close()
         path.unlink(missing_ok=True)

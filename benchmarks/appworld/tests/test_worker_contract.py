@@ -82,6 +82,7 @@ def test_plan_preserves_private_state_boundary_and_cleanup_order(connector):
         "read_only": True,
     } in world["mounts"]
     assert "state" not in task["storage_slots"]
+    assert task["command"] == ["sleep", "infinity"]
     assert not {"native-data", "worker-data"} & {mount["file_id"] for mount in task["mounts"]}
     assert all(
         output["visibility"] == "evaluator"
