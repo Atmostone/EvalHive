@@ -2,8 +2,10 @@
 
 This package targets the unmodified SWE-bench 5.0.2 evaluator at source revision
 `02e7a74ffd0b707aab73d203fe87bdc7c76afc8e` and the classic task repository at
-`3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d`. Execution wiring is in progress;
-catalog discovery does not claim that instance images are installed or runnable.
+`3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d`. The worker, private evaluation
+service and installation tools are implemented; full native coordinator
+acceptance is in progress. Catalog discovery does not claim that every instance
+image is installed or runnable.
 
 Native `published_tasks` determines subset and split membership. Verified is
 the default and contains 500 test cases. Lite publishes 300 test and 23 dev
@@ -25,3 +27,46 @@ unavailable cases in the catalog with honest execution availability. Evaluation
 must use a fresh environment and unique native run identity for every patch.
 Cached native reports must never replace a new evaluation or changed-patch
 regrade.
+
+The worker receives public catalog metadata. Protected tasks and native grading
+live in a separate World service. The agent container shares only its captured
+patch with that service; it never receives test scripts, gold patches or grader
+logs. A fresh evaluator uses the same pinned instance image and reads private
+evaluation inputs from a read-only stage. Its log storage is writable only by
+the evaluator and readable only by the private World. Large evidence files do
+not pass through JSONL command frames.
+
+Native images may commit environment setup and permission changes after the
+dataset's source base commit. Installation records both commits. Preparation
+checks the frozen image baseline, source ancestry and clean tracked state. Patch
+capture compares against the installed image commit, preserving upstream setup.
+Checkpoint metadata includes both commits, the case/image fingerprint and patch
+digest. Regrading needs no agent or orchestrator model and creates fresh native
+test evidence and a unique grading run directory.
+
+Image bindings are explicit administrator input. Each entry provides the image
+digest, source `base_commit`, inspected `image_commit`, separate `task_limits`
+and `evaluator_limits`, and `reserved_paths_checked=true`. Limits contain
+`memory_mb`, `cpu_cores` and `disk_mb`. Inspect the actual image before registering
+it; the installer neither pulls images nor executes them. Uninstalled cases
+remain in the catalog with `NATIVE_IMAGE_NOT_INSTALLED`. Changes to installed
+image identities change the frozen case fingerprint.
+
+Build the runtime with the verified offline wheel context, then publish a new
+installation revision:
+
+```bash
+docker build --target runtime \
+  --build-context runtime_wheels=/private/swebench-runtime-wheels \
+  -f benchmarks/swebench/Dockerfile -t evalhive-benchmark-swebench:0.1.0 .
+PYTHON_DOTENV_DISABLED=1 HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+python -m evalhive_swebench.installation /private/swe-bench-tasks /new/package \
+  --revision classic-local-v1 --subset verified --split test \
+  --worker-image sha256:<worker-image-id> --image-bindings /private/images.json
+```
+
+The default engineering allocation is 256 MiB for the worker and 512 MiB for
+the World. Task and evaluator limits come from inspected image bindings; they
+are admitted together before execution. Installed images retain their native
+testbed environment. Resource shortages, missing images and incomplete evidence
+remain explicit failures, without fabricated verdicts or reduced membership.

@@ -55,11 +55,27 @@ def native_cases(root, subset, split):
 
 
 def build_receipt(
-    root, revision, worker_image, *, subset="verified", split="test", dataset_id=None
+    root,
+    revision,
+    worker_image,
+    *,
+    subset="verified",
+    split="test",
+    dataset_id=None,
+    installed_images=None,
 ):
     root = directory(root)
     rows = native_cases(root, subset, split)
     identities = [row["instance_id"] for row in rows]
+    installed_images = deepcopy(installed_images or {})
+    if not isinstance(installed_images, dict) or not set(installed_images) <= set(identities):
+        raise NativeConfigurationError("Installed images contain an unknown native case")
+    if any(
+        not isinstance(image, str)
+        or not re.fullmatch(r"(?:sha256:|[^\s]+@sha256:)[a-f0-9]{64}", image)
+        for image in installed_images.values()
+    ):
+        raise NativeConfigurationError("Native instance images require immutable identities")
     records = inventory(root, identities)
     source_digest = fingerprint(
         {
@@ -82,7 +98,11 @@ def build_receipt(
             "title": row["instance_id"],
             "description": row["problem_statement"],
             "source_digest": fingerprint(
-                {"source": source_digest, "instance_id": row["instance_id"]}
+                {
+                    "source": source_digest,
+                    "instance_id": row["instance_id"],
+                    "installed_image": installed_images.get(row["instance_id"]),
+                }
             ),
             "native_ref": {
                 "instance_id": row["instance_id"],
@@ -95,6 +115,17 @@ def build_receipt(
             "requirements": {
                 "capabilities": ["host.agent_api_v1", "host.ephemeral_exec_v1"],
                 "platform": {"os": "linux", "architecture": "amd64", "libc": "glibc"},
+            },
+            "metadata": {
+                "execution_availability": "installed"
+                if row["instance_id"] in installed_images
+                else "unavailable",
+                "installed_image": installed_images.get(row["instance_id"]),
+                **(
+                    {}
+                    if row["instance_id"] in installed_images
+                    else {"unavailable_reason": "NATIVE_IMAGE_NOT_INSTALLED"}
+                ),
             },
         }
         for row in rows
@@ -119,6 +150,7 @@ def build_receipt(
                 "subset": subset,
                 "split": split,
                 "files": records,
+                "installed_images": installed_images,
             },
         }
     )
@@ -145,6 +177,7 @@ class InstalledSWEbench:
             subset=provenance["subset"],
             split=provenance["split"],
             dataset_id=self.receipt["dataset_id"],
+            installed_images=provenance.get("installed_images", {}),
         )
         if rebuilt != self.receipt:
             raise NativeConfigurationError(

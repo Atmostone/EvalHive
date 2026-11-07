@@ -80,3 +80,27 @@ def test_links_are_rejected_before_native_discovery_reads_protected_contents(sou
     (task / "gold.patch").symlink_to(Path("/uninstalled/evaluator-input"))
     with pytest.raises(NativeConfigurationError, match="links"):
         native_cases(root, "verified", "test")
+
+
+def test_image_installation_preserves_membership_and_changes_frozen_case_identity(source):
+    root, _ = source
+    worker = "sha256:" + "a" * 64
+    missing = build_receipt(root, "fixture", worker)
+    installed = build_receipt(
+        root, "fixture", worker, installed_images={"fixture__repo-1": "sha256:" + "b" * 64}
+    )
+    assert missing["cases"][0]["metadata"]["execution_availability"] == "unavailable"
+    assert installed["cases"][0]["metadata"]["execution_availability"] == "installed"
+    assert missing["cases"][0]["ref"] == installed["cases"][0]["ref"]
+    assert missing["cases"][0]["source_digest"] != installed["cases"][0]["source_digest"]
+    assert missing["source_digest"] == installed["source_digest"]
+    assert (
+        InstalledSWEbench(root, installed).resolve(installed["cases"][0])["instance_id"]
+        == "fixture__repo-1"
+    )
+    with pytest.raises(NativeConfigurationError, match="immutable"):
+        build_receipt(
+            root, "fixture", worker, installed_images={"fixture__repo-1": "unresolved:latest"}
+        )
+    with pytest.raises(NativeConfigurationError, match="unknown native case"):
+        build_receipt(root, "fixture", worker, installed_images={"another__repo-1": worker})
