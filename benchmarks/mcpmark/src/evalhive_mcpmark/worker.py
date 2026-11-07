@@ -444,6 +444,7 @@ class MCPMarkConnector(Connector):
                 {
                     "messages_sha256": digest,
                     "agent_success": self.completion["status"] == "success",
+                    "tool_effects_complete": self.transcript["tool_effects_complete"],
                 },
             )
             artifacts.append(

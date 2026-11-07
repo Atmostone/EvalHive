@@ -85,3 +85,46 @@ def test_missing_event_cannot_be_hidden_by_a_terminal_cursor():
             )
         )
     assert error.value.code == "NATIVE_TRANSCRIPT_GAP"
+
+
+def tool(kind, identity, *, status="completed", session="session"):
+    return {
+        "event": "tool." + kind,
+        "source": "fixture",
+        "session_id": session,
+        "data": {"call_id": identity, "status": status},
+    }
+
+
+def test_interleaved_nested_tools_use_call_and_session_identity():
+    transcript = Transcript()
+    for event in [
+        tool("start", "a"),
+        tool("start", "a", session="child"),
+        tool("end", "a", session="child"),
+        tool("end", "a"),
+    ]:
+        transcript.add(event)
+    assert not transcript.uncertain_tools and not transcript.pending_tools
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [tool("start", "missing-end")],
+        [tool("end", "missing-start")],
+        [tool("start", "failed"), tool("end", "failed", status="failed")],
+        [tool("start", None), tool("end", None)],
+        [
+            tool("start", "reuse"),
+            tool("end", "reuse"),
+            tool("start", "reuse"),
+            tool("end", "reuse"),
+        ],
+    ],
+)
+def test_unknown_or_failed_tool_effects_prevent_cleanup_confidence(events):
+    transcript = Transcript()
+    for event in events:
+        transcript.add(event)
+    assert transcript.uncertain_tools or transcript.pending_tools

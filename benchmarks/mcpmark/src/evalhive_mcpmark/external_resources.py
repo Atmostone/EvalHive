@@ -33,6 +33,12 @@ def configure_assets(assets, service, settings, *, world_image, site_image=None,
     image_pin(world_image)
     world, task = assets["mcpmark.world"], assets["mcpmark.task"]
     world["image"] = world_image
+    if service in {"github", "notion"}:
+        world["finalizer"] = {
+            "argv": ["/opt/venv/bin/python", "-m", "evalhive_mcpmark.finalizer"],
+            "timeout_seconds": 45,
+            "replay_safe": True,
+        }
     for member in (world, task):
         member["storage_slots"]["working"]["target"] = "/workspace"
     task["outputs"]["working"]["path"] = "/workspace"
@@ -102,6 +108,10 @@ def environment_plan(bindings, service, agent):
     }
     world = deepcopy(task)
     world["id"], world["config"]["asset_id"] = "world", bindings["assets"]["world"]
+    if service in {"github", "notion"}:
+        task["depends_on"].append("world")
+        resources.extend([world, task])
+        return _plan(resources, service, agent)
     resources.append(task)
     if service == "playwright_webarena":
         del world["config"]["network"]
@@ -119,6 +129,10 @@ def environment_plan(bindings, service, agent):
         ]
     else:
         resources.append(world)
+    return _plan(resources, service, agent)
+
+
+def _plan(resources, service, agent):
     return {
         "resources": resources,
         "agent": agent,

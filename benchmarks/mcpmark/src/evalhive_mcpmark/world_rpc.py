@@ -39,6 +39,7 @@ class World:
         self.operations, self.receipts = {}, OrderedDict()
         self.queue, self.lock = queue.Queue(MAX_OPERATIONS), threading.RLock()
         self.effects, self.effect_sequence = {}, 0
+        self.sealed = False
         self.closing = threading.Event()
         self.thread = threading.Thread(target=self._run, name="native-service", daemon=True)
         self.thread.start()
@@ -68,7 +69,7 @@ class World:
         """A native transport call waits for its scoped SDK broker receipt."""
         encoded(payload)
         with self.lock:
-            if self.closing.is_set() or time.monotonic() >= self.deadline:
+            if self.sealed or self.closing.is_set() or time.monotonic() >= self.deadline:
                 raise WorldError("Native service is stopping")
             if (
                 len(self.effects) >= MAX_RECEIPTS
@@ -115,7 +116,9 @@ class World:
         signature = encoded(request)
         with self.lock:
             if self.scope is None:
-                if method != "begin" or payload.get("method") != "prepare":
+                if method != "finalize" and (
+                    method != "begin" or payload.get("method") != "prepare"
+                ):
                     raise WorldError("Native service must be bound by preparation")
                 self.scope = deepcopy(scope)
             if scope != self.scope:
@@ -127,9 +130,24 @@ class World:
                 return deepcopy(previous[1])
             if method != "poll" and len(self.receipts) >= MAX_RECEIPTS:
                 raise WorldError("Native operation receipt budget is exhausted")
-            if self.closing.is_set() or time.monotonic() >= self.deadline:
+            finalizing = method == "finalize" or (
+                method == "poll" and payload.get("operation_id") == "host.finalize"
+            )
+            if self.closing.is_set() or (time.monotonic() >= self.deadline and not finalizing):
                 raise WorldError("Native service is stopping")
-            if method == "begin":
+            if method == "finalize":
+                if identity != "host.finalize" or payload:
+                    raise WorldError("Native finalization requires a stable host receipt")
+                self.sealed = True
+                for item in self.effects.values():
+                    if not item["future"].done():
+                        item["future"].set_exception(WorldError("Native service is finalizing"))
+                self.operations[identity] = {"state": "pending"}
+                self.queue.put_nowait((self.operations[identity], "cleanup", {}))
+                result = {"operation_id": identity}
+            elif method == "begin":
+                if self.sealed:
+                    raise WorldError("Native service is sealed for finalization")
                 if len(self.operations) >= MAX_OPERATIONS:
                     raise WorldError("Native operation budget is exhausted")
                 operation = {"state": "pending"}

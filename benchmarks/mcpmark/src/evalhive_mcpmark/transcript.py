@@ -16,6 +16,7 @@ class Transcript:
     def __init__(self):
         self.items = OrderedDict()
         self.events, self.bytes = 0, 0
+        self.pending_tools, self.finished_tools, self.uncertain_tools = set(), set(), False
 
     def add(self, event):
         self.events += 1
@@ -23,6 +24,21 @@ class Transcript:
             raise ProtocolError(
                 "NATIVE_TRANSCRIPT_LIMIT", "Native transcript exceeds its event budget", "recording"
             )
+        if event["event"] in {"tool.start", "tool.end"}:
+            data = event["data"]
+            identity = event["source"], event.get("session_id"), data.get("call_id")
+            if not identity[2]:
+                self.uncertain_tools = True
+            elif event["event"] == "tool.start":
+                self.uncertain_tools |= identity in self.finished_tools
+                self.pending_tools.add(identity)
+            else:
+                self.uncertain_tools |= (
+                    identity not in self.pending_tools | self.finished_tools
+                    or data.get("status") != "completed"
+                )
+                self.pending_tools.discard(identity)
+                self.finished_tools.add(identity)
         if event["event"] != "message.end" or event.get("parent_session_id"):
             return
         data = event["data"]
@@ -97,4 +113,6 @@ async def collect(context, scope, completion, *, timeout):
                 "attempt_id": session,
                 "through_seq": cursor - 1,
                 "messages": transcript.messages(),
+                "tool_effects_complete": not transcript.uncertain_tools
+                and not transcript.pending_tools,
             }

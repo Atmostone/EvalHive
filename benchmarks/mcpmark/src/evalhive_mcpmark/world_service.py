@@ -43,6 +43,8 @@ class NativeService:
         self.effect = effect
         self.secret_values = ()
         self.restore_results = []
+        self.external_namespace = None
+        self.external_mutations_started = False
 
     def __call__(self, method, payload):
         if method == "cleanup":
@@ -50,13 +52,7 @@ class NativeService:
                 raise WorldError("Native cleanup does not accept parameters")
             if self.closed:
                 return {"cleaned": True}
-            if self.state is not None and not self.state.clean_up(self.task):
-                raise WorldError("Native cleanup was not confirmed")
-            close = getattr(self.state, "close_all", None)
-            if close is not None:
-                close()
-            self.closed = True
-            return {"cleaned": True}
+            return self.cleanup()
         if self.closed:
             raise WorldError("Native service is closed")
         if method == "prepare":
@@ -97,6 +93,7 @@ class NativeService:
             self.state = self.postgres()
         else:
             self.state, initial_digest = self.external(task)
+        self.external_mutations_started = self.external_namespace is not None
         if not self.state.set_up(task):
             raise WorldError("Native state preparation was not confirmed")
         config = self.state.get_service_config_for_agent()
@@ -155,7 +152,7 @@ class NativeService:
                     and isinstance(item.get("value"), str)
                     and item["value"]
                 )
-        return create_state(
+        state = create_state(
             task.service,
             provenance.get("service_settings"),
             private,
@@ -163,7 +160,57 @@ class NativeService:
             initial_root=self.initial_root,
             private_root=Path("/control/native-state"),
             effect=self.effect,
-        ), initial_digest
+        )
+        if task.service in {"github", "notion"}:
+            from .external_namespace import prepare
+
+            self.external_namespace = prepare(task.service, state)
+        return state, initial_digest
+
+    def cleanup(self):
+        native_confirmed, namespace_proof = True, None
+        namespace_confirmed = self.external_namespace is None
+        try:
+            if self.state is not None:
+                native_confirmed = bool(self.state.clean_up(self.task))
+        except Exception:
+            native_confirmed = False
+        try:
+            if self.external_namespace is not None:
+                namespace_proof = self.external_namespace.cleanup()
+                namespace_confirmed = namespace_proof.get("empty") is True
+        except Exception:
+            namespace_confirmed = False
+        finally:
+            close = getattr(self.state, "close_all", None)
+            if close is not None:
+                close()
+        evidence_complete = not self.external_mutations_started or (
+            self.ready
+            and self.captured is not None
+            and self.captured.get("agent_success") is True
+            and self.captured.get("tool_effects_complete") is True
+        )
+        if self.external_namespace is not None:
+            report = self.records_root / "report"
+            report.mkdir(mode=0o700, parents=True, exist_ok=True)
+            (report / "external-cleanup.json").write_bytes(
+                canonical(
+                    {
+                        "namespace": namespace_proof,
+                        "native_cleanup_confirmed": native_confirmed,
+                        "namespace_cleanup_confirmed": namespace_confirmed,
+                        "mutation_evidence_complete": bool(evidence_complete),
+                        "cleanup_confirmed": bool(
+                            native_confirmed and namespace_confirmed and evidence_complete
+                        ),
+                    }
+                )
+            )
+        if not native_confirmed or not namespace_confirmed or not evidence_complete:
+            raise WorldError("Native cleanup was not confirmed by complete mutation evidence")
+        self.closed = True
+        return {"cleaned": True}
 
     def postgres(self):
         import psycopg2
@@ -222,8 +269,13 @@ class NativeService:
 
     def capture(self, payload):
         if (
-            set(payload) != {"messages_sha256", "agent_success"}
+            not {"messages_sha256", "agent_success"} <= set(payload)
+            or set(payload) - {"messages_sha256", "agent_success", "tool_effects_complete"}
             or type(payload["agent_success"]) is not bool
+            or (
+                "tool_effects_complete" in payload
+                and type(payload["tool_effects_complete"]) is not bool
+            )
         ):
             raise WorldError("Native message capture is invalid")
         encoded(payload)

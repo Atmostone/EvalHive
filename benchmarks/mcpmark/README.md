@@ -82,6 +82,21 @@ that external objects have been deleted. The current host does not advertise
 this capability, so these plans remain unavailable pending confirmed generic
 finalization and cold-recovery acceptance.
 
+External evaluation targets must initially be empty. GitHub inventories only the
+explicit evaluation owner; Notion requires its evaluation integration to expose
+one empty hub. Cleanup removes remaining repositories or hub children and then
+checks absence, with bounded inventories. Agent-created objects outside the hub
+prevent confirmation. Private cleanup reports retain the scope and confirmation
+states without credentials. Failed preparation, failed agent execution or an
+incomplete tool-call ledger prevents cleanup acknowledgement even when a best
+effort sweep succeeds: an unresolved mutation cannot establish remote absence.
+Tools are correlated by source, session and call ID, including interleaved calls.
+The installed replay-safe world finalizer seals new operations, interrupts pending
+broker effects and runs cleanup on the native service thread. Its successful
+receipt is required before the host may release the world container. Cold host
+recovery uses the same finalizer; an unavailable world remains an explicit cleanup
+failure. External live account acceptance remains unavailable on this VPS.
+
 WebArena's native Docker commands are translated to one registered site handle.
 The package cannot load images, select another container or publish host ports.
 World and site share the task's network namespace; the per-instance native port
