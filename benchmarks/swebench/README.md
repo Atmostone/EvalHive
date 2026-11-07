@@ -3,9 +3,9 @@
 This package targets the unmodified SWE-bench 5.0.2 evaluator at source revision
 `02e7a74ffd0b707aab73d203fe87bdc7c76afc8e` and the classic task repository at
 `3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d`. The worker, private evaluation
-service and installation tools are implemented; full native coordinator
-acceptance is in progress. Catalog discovery does not claim that every instance
-image is installed or runnable.
+service and installation tools support both Pi and OpenCode through the common
+coordinator. Catalog discovery does not claim that every instance image is
+installed or runnable.
 
 Native `published_tasks` determines subset and split membership. Verified is
 the default and contains 500 test cases. Lite publishes 300 test and 23 dev
@@ -70,3 +70,19 @@ the World. Task and evaluator limits come from inspected image bindings; they
 are admitted together before execution. Installed images retain their native
 testbed environment. Resource shortages, missing images and incomplete evidence
 remain explicit failures, without fabricated verdicts or reduced membership.
+
+Engineering acceptance exercises the original offline Verified case
+`pytest-dev__pytest-10051` through both real harnesses and a local fake model.
+The fixture adds a comment, captures its real patch and runs the original
+evaluator in a fresh instance container. Execution succeeds while native
+correctness remains false, as expected. Pi acceptance also restores the retained
+patch into a new evaluation context without an agent or additional model calls;
+the grading run ID changes, cached reports are not used, and the source trial
+journal and verdict digest remain unchanged. Database downgrade/upgrade is
+checked after each harness acceptance. This verifies integration, not model
+performance or complete dataset execution.
+
+Patch stdout is bounded independently from Git's internal repository writes.
+A process-wide file-size limit would also constrain rootless overlay copy-up of
+existing Git pack files. Capture retains its byte budget, deadline and process
+group cancellation without imposing that unrelated limit on repository files.
