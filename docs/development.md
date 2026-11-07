@@ -355,9 +355,10 @@ manifest names the deployed image's SHA, not the potentially newer checkout that
 runs the backup helper. Use `--source-sha` when quiescing the API before backup.
 
 Before large VPS image builds, run `python3 scripts/engineering-disk-guard.py`.
-The guard requires at least 8 GiB free and less than 90% disk usage. When a
-threshold is exceeded, it removes only unused build cache older than two hours
+The guard starts cleanup at 95% disk usage. It removes only unused build cache older than two hours
 from the current user's rootless Docker daemon, retaining a 2 GB cache budget.
-It never prunes images, containers or volumes. If headroom remains insufficient,
-defer the build and review obsolete engineering images explicitly; preserve the
+It never prunes images, containers or volumes. Build admission separately requires
+at least 8 GiB free; insufficient headroom below 95% defers the build without
+triggering cleanup. If headroom remains insufficient after cleanup, defer the
+build and review obsolete engineering images explicitly; preserve the
 deployed release, rollback images and paired database/object-store backups.

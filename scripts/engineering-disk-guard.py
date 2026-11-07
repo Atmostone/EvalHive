@@ -16,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--path", default="/opt/evalhive")
     parser.add_argument("--min-free-gib", type=float, default=8)
-    parser.add_argument("--max-used-percent", type=float, default=90)
+    parser.add_argument("--max-used-percent", type=float, default=95)
     args = parser.parse_args()
     if not 0 < args.min_free_gib or not 0 < args.max_used_percent < 100:
         parser.error("Disk thresholds must leave positive headroom")
@@ -27,9 +27,14 @@ def main():
         available = fs.f_bavail * fs.f_frsize
         percent = 100 * used / (used + available)
         print(f"Disk: {percent:.1f}% used; {available / GIB:.1f} GiB available", flush=True)
-        return available >= args.min_free_gib * GIB and percent < args.max_used_percent
+        return available, percent
 
-    if report():
+    available, percent = report()
+    if percent < args.max_used_percent:
+        if available < args.min_free_gib * GIB:
+            raise SystemExit(
+                "Insufficient build headroom: defer large builds; cleanup threshold not reached"
+            )
         return
     socket = Path(f"/run/user/{os.getuid()}/docker.sock")
     info = socket.stat()
@@ -64,7 +69,8 @@ def main():
                 "DOCKER_CONFIG": config,
             },
         )
-    if not report():
+    available, percent = report()
+    if available < args.min_free_gib * GIB or percent >= args.max_used_percent:
         raise SystemExit(
             "Insufficient disk headroom: defer large builds and review retained engineering images"
         )
