@@ -170,5 +170,6 @@ and closure without network access. Its fixed launcher explicitly sets the
 installed browser directory: a harness may intentionally clear inherited
 environment variables. Private control waits for its application socket under
 one deadline; container startup alone does not establish application readiness.
-The original extraction task has passed through Pi; OpenCode engineering
-acceptance is pending its native shutdown regression.
+The original extraction task has passed through both Pi and OpenCode 0.2.1
+using a local deterministic model endpoint, real browser tools and the original
+checker. This is engineering acceptance, not a benchmark quality measurement.
