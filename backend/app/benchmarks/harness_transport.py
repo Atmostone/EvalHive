@@ -15,16 +15,26 @@ class QuiescentHarnessProcess:
 
     def __init__(self, process, stop):
         self.process, self.stop, self.settled = process, stop, None
+        self.main_wait = None
 
     def __getattr__(self, name):
         return getattr(self.process, name)
 
     async def _wait(self):
-        code = await self.process.wait()
+        code = await self.wait()
         await self.stop()
         return code
 
     async def wait(self):
+        if self.main_wait is None:
+            self.main_wait = asyncio.create_task(self.process.wait())
+            self.main_wait.add_done_callback(
+                lambda task: task.exception() if not task.cancelled() else None
+            )
+        return await asyncio.shield(self.main_wait)
+
+    async def finalize_execution(self):
+        """Settle descendants after the runner has committed its terminal event."""
         if self.settled is None:
             self.settled = asyncio.create_task(self._wait())
             self.settled.add_done_callback(

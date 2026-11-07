@@ -76,7 +76,9 @@ def setup(tmp_path):
 
 
 @pytest.mark.parametrize("agent_user", [None, "1000:1000"])
-def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned_broker(tmp_path, agent_user):
+def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned_broker(
+    tmp_path, agent_user
+):
     async def scenario():
         host, native, prepared, bundle, manifest, process = setup(tmp_path)
         if agent_user is not None:
@@ -103,7 +105,7 @@ def test_registered_entrypoint_native_cwd_and_private_file_reference_reach_owned
     asyncio.run(scenario())
 
 
-def test_main_exit_waits_for_confirmed_descendant_shutdown_even_after_caller_cancellation():
+def test_terminal_finalization_waits_for_descendant_policy_even_after_caller_cancellation():
     from app.benchmarks.harness_transport import QuiescentHarnessProcess
 
     async def scenario():
@@ -116,14 +118,16 @@ def test_main_exit_waits_for_confirmed_descendant_shutdown_even_after_caller_can
 
         stopped = AsyncMock(side_effect=stop)
         wrapped = QuiescentHarnessProcess(process, stopped)
-        pending = asyncio.create_task(wrapped.wait())
+        assert await wrapped.wait() == 0
+        stopped.assert_not_awaited()
+        pending = asyncio.create_task(wrapped.finalize_execution())
         await entered.wait()
         assert not pending.done()
         pending.cancel()
         with pytest.raises(asyncio.CancelledError):
             await pending
         release.set()
-        assert await wrapped.wait() == 0
+        assert await wrapped.finalize_execution() == 0
         process.wait.assert_awaited_once()
         stopped.assert_awaited_once()
 
@@ -187,22 +191,33 @@ def test_prepared_task_is_copied_without_rewriting_the_native_environment_paths(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("condition", ["success", "cancelled", "failed", "expired", "cleaning"])
-async def test_registered_service_retention_requires_success_current_ownership_and_live_trial(tmp_path, condition):
+async def test_registered_service_retention_requires_success_current_ownership_and_live_trial(
+    tmp_path, condition
+):
     host, native, prepared, bundle, manifest, _ = setup(tmp_path)
     native["agent"]["process_policy"] = prepared["agent"]["process_policy"] = "retain_until_cleanup"
     native["requirements"]["capabilities"] = ["host.retained_agent_processes_v1"]
-    resource = next(item for item in native["resources"] if item["id"] == native["agent"]["environment_handle"])
+    resource = next(
+        item for item in native["resources"] if item["id"] == native["agent"]["environment_handle"]
+    )
     resource["config"]["asset_id"] = "retained.task"
-    host.assets.document = {"assets": {"retained.task": {"agent_process_policy": "retain_until_cleanup"}}}
+    host.assets.document = {
+        "assets": {"retained.task": {"agent_process_policy": "retain_until_cleanup"}}
+    }
     now = datetime.now(UTC)
 
     @asynccontextmanager
     async def transaction():
-        yield None, SimpleNamespace(
-            phase="cleaning" if condition == "cleaning" else "driving",
-            cancel_requested_at=now if condition == "cancelled" else None,
-            deadline_at=now + timedelta(seconds=-1 if condition == "expired" else 60),
-        ), SimpleNamespace(status="failed" if condition == "failed" else "success"), now
+        yield (
+            None,
+            SimpleNamespace(
+                phase="cleaning" if condition == "cleaning" else "driving",
+                cancel_requested_at=now if condition == "cancelled" else None,
+                deadline_at=now + timedelta(seconds=-1 if condition == "expired" else 60),
+            ),
+            SimpleNamespace(status="failed" if condition == "failed" else "success"),
+            now,
+        )
 
     host.agent_gateway = SimpleNamespace(calls=SimpleNamespace(runner_transaction=transaction))
     process = SimpleNamespace(wait=AsyncMock(return_value=0))
@@ -210,13 +225,17 @@ async def test_registered_service_retention_requires_success_current_ownership_a
     attached = str(uuid.uuid4())
     host.host_broker.handle.side_effect = [
         {"handle": attached},
-        {"handle": attached, "native": {"main_done": True}} if condition == "success" else {"handle": attached, "stopped": True},
+        {"handle": attached, "native": {"main_done": True}}
+        if condition == "success"
+        else {"handle": attached, "stopped": True},
     ]
     wrapped = await RootlessHarnessTransport(host, native, prepared, bundle, manifest)()
     assert await wrapped.wait() == 0
+    assert host.host_broker.handle.await_count == 1
+    assert await wrapped.finalize_execution() == 0
     last = host.host_broker.handle.await_args.args[0]
     assert last["id"] == ("harness.completed" if condition == "success" else "harness.quiesce")
-    assert await wrapped.wait() == 0
+    assert await wrapped.finalize_execution() == 0
     assert host.host_broker.handle.await_count == 2
 
 
@@ -226,3 +245,37 @@ def test_prepared_access_cannot_change_the_registered_process_policy(tmp_path):
     with pytest.raises(ManagedRuntimeError, match="process policy"):
         RootlessHarnessTransport(host, native, prepared, bundle, manifest)
     host.host_broker.handle.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_harness_execution_settles_native_descendants_after_runner_terminal_commit():
+    from unittest.mock import Mock
+
+    from app.benchmarks.harness_execution import HarnessExecution
+    from app.benchmarks.harness_transport import QuiescentHarnessProcess
+
+    state = {"committed": False}
+
+    async def settle():
+        assert state["committed"], (
+            "Native retention cannot be authorized by an uncommitted terminal"
+        )
+
+    stopped = AsyncMock(side_effect=settle)
+    wrapped = QuiescentHarnessProcess(SimpleNamespace(wait=AsyncMock(return_value=0)), stopped)
+
+    async def run():
+        assert await wrapped.wait() == 0
+        stopped.assert_not_awaited()
+        state["committed"] = True
+        return {"status": "success"}
+
+    executor = SimpleNamespace(
+        connector=SimpleNamespace(process=wrapped),
+        spool=SimpleNamespace(close=Mock()),
+        policy=SimpleNamespace(shutdown_seconds=1),
+    )
+    result = await HarnessExecution._run(executor, SimpleNamespace(run=run))
+    assert result == {"status": "success"}
+    stopped.assert_awaited_once()
+    executor.spool.close.assert_called_once()

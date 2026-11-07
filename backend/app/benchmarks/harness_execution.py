@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.benchmarks.agent_resources import compile_resources, private_inputs
-from app.benchmarks.async_control import consume
+from app.benchmarks.async_control import bounded, consume
 from app.benchmarks.harness_api import BenchmarkAttemptAPI
 from app.benchmarks.trials import failure
 from app.harnesses.attempts import TERMINAL, AttemptError, create_attempt, queue_command
@@ -203,7 +203,11 @@ class HarnessExecution:
             self.job = asyncio.create_task(self._run(runner))
             self.job.add_done_callback(consume)
         except BaseException:
-            await self.connector.close(grace=self.policy.shutdown_seconds)
+            try:
+                await self.connector.close(grace=self.policy.shutdown_seconds)
+            finally:
+                if finalize := getattr(self.connector.process, "finalize_execution", None):
+                    await bounded(finalize(), self.policy.shutdown_seconds)
             raise
         # Readiness means a committed start or terminal record, rather than
         # trusting an in-memory start response from the native process.
@@ -241,7 +245,11 @@ class HarnessExecution:
         try:
             return await runner.run()
         finally:
-            self.spool.close()
+            try:
+                if finalize := getattr(self.connector.process, "finalize_execution", None):
+                    await bounded(finalize(), self.policy.shutdown_seconds)
+            finally:
+                self.spool.close()
 
     async def wait(self):
         if self.job is None:
