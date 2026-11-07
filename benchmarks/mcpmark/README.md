@@ -71,6 +71,12 @@ manager/checker dependency closure. `Dockerfile.task` installs the native MCP
 servers from `clients/package-lock.json`; the image contains neither the native
 task/checker tree nor a Docker client. Its fixed launcher reads only the prepared
 connection and restricts Filesystem access to the native working-copy directory.
+For Filesystem, a bounded stdio bridge removes client-advertised MCP roots and
+root-change notifications: the upstream server would otherwise replace its
+explicit directory with the Harness workspace. All other MCP messages and
+capabilities pass through. The upstream server package is unmodified. The
+`tests/native_roots_probe.py` task-image probe confirms that advertised workspace
+roots cannot change this boundary or permit reads outside it.
 Both containers use rootless Docker; the installed resource declarations choose
 the same container UID for native file ownership to remain consistent.
 

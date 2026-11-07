@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -10,6 +11,79 @@ from pathlib import Path
 
 CONNECTION = Path("/evalhive-connection/connection.json")
 CLIENTS = Path("/opt/mcp-clients/node_modules/.bin")
+MAX_FRAME = 8 * 1024**2
+
+
+def fixed_roots_frame(line):
+    if not line.endswith(b"\n") or len(line) > MAX_FRAME:
+        raise ValueError("Native MCP frame exceeds its byte budget")
+    value = json.loads(line)
+    if not isinstance(value, dict):
+        raise ValueError("Native MCP frame is invalid")
+    if value.get("method") == "notifications/roots/list_changed":
+        return None
+    if value.get("method") == "initialize":
+        capabilities = value["params"].get("capabilities", {})
+        if not isinstance(capabilities, dict):
+            raise ValueError("Native MCP capabilities are invalid")
+        # The filesystem server otherwise replaces its explicit CLI directory
+        # with a Harness's workspace roots. Keep the prepared native boundary.
+        value["params"]["capabilities"] = {
+            key: item for key, item in capabilities.items() if key != "roots"
+        }
+        return (json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    return line
+
+
+async def filesystem_proxy(argv, environment):
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        env=environment,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=sys.stderr,
+        limit=MAX_FRAME + 1,
+    )
+    reader = asyncio.StreamReader(limit=MAX_FRAME + 1)
+    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
+    )
+
+    async def requests():
+        while line := await reader.readline():
+            frame = fixed_roots_frame(line)
+            if frame is not None:
+                process.stdin.write(frame)
+                await process.stdin.drain()
+        process.stdin.close()
+
+    async def responses():
+        while line := await process.stdout.readline():
+            if not line.endswith(b"\n") or len(line) > MAX_FRAME:
+                raise ValueError("Native MCP response exceeds its byte budget")
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+
+    tasks = [asyncio.create_task(requests()), asyncio.create_task(responses())]
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+        if tasks[0] in done:
+            await asyncio.wait_for(tasks[1], 5)
+        return await asyncio.wait_for(process.wait(), 5)
+    finally:
+        transport.close()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), 1)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
 
 
 def launch_config(connection):
@@ -39,7 +113,11 @@ def main():
             data = stream.read(64 * 1024 + 1)
             if len(data) != info.st_size:
                 raise ValueError("Prepared native connection changed")
-        argv, private_env = launch_config(json.loads(data))
+        connection = json.loads(data)
+        argv, private_env = launch_config(connection)
+        if connection["service"] == "filesystem":
+            code = asyncio.run(filesystem_proxy(argv, {**os.environ, **private_env}))
+            raise SystemExit(code)
         os.execve(argv[0], argv, {**os.environ, **private_env})
     except Exception:
         sys.stderr.write("Prepared native MCP client could not start\n")
