@@ -54,6 +54,65 @@ def request(scope, operation, payload=None, *, handle=None):
     return result
 
 
+def test_ephemeral_command_reaps_background_children_and_keeps_task_alive(environment):  # noqa: F811
+    async def scenario():
+        runtime, owned, native, _ = environment
+        scope = native.scope
+        task = ResourceLease(
+            native.resource_id,
+            scope,
+            "container",
+            ContainerSpec(scope, native.resource_id, native.image_id),
+            native,
+            "allocated",
+        )
+        authority = FixtureAuthority(scope, {"task": task})
+        provider = RootlessDockerProvider(runtime, authority, manifest())
+        try:
+            completed = await provider.handle(
+                request(
+                    scope,
+                    "exec",
+                    {
+                        "argv": [
+                            "python",
+                            "-c",
+                            "import subprocess; p=subprocess.Popen(['sleep','300'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); print(p.pid)",
+                        ],
+                        "process_policy": "stop_after_command",
+                    },
+                    handle=task.handle,
+                )
+            )
+            assert completed["state"] == "released" and completed["exit_code"] == 0
+            assert authority.resources[completed["handle"]].state == "released"
+            pid = int(completed["stdout"].strip())
+            assert runtime.inspect(native)["status"] == "running"
+            probe = await provider.handle(
+                request(
+                    scope,
+                    "exec",
+                    {
+                        "argv": [
+                            "python",
+                            "-c",
+                            "import os,sys\ntry: os.kill(int(sys.argv[1]),0)\nexcept ProcessLookupError: pass\nelse: raise AssertionError('Owned child survived command release')",
+                            str(pid),
+                        ],
+                        "process_policy": "stop_after_command",
+                    },
+                    handle=task.handle,
+                )
+            )
+            assert probe["exit_code"] == 0 and probe["state"] == "released"
+            assert not provider._processes
+            assert runtime.inspect(native)["status"] == "running"
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
 def test_isolated_benchmark_worker_prepares_captures_and_releases_through_sdk(environment):  # noqa: F811
     async def scenario():
         runtime, _, original, _ = environment
