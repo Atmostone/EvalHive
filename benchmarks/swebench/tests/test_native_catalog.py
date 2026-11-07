@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from evalhive_swebench.dataset import InstalledSWEbench, build_receipt, native_cases
-from evalhive_swebench.native import NativeConfigurationError, SUBSETS
+from evalhive_swebench.native import SUBSETS, NativeConfigurationError
 
 pytestmark = pytest.mark.skipif(
     os.getenv("EVALHIVE_NATIVE_SWEBENCH_CATALOG") != "1",
