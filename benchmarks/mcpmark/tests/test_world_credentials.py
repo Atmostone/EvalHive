@@ -3,7 +3,24 @@
 import json
 
 import pytest
-from evalhive_mcpmark.world_credentials import configure, read
+from evalhive_mcpmark.world_credentials import configure, main, read
+
+
+def test_owned_exec_private_input_is_read_from_its_file(monkeypatch, tmp_path, capsys):
+    import evalhive_mcpmark.world_credentials as credentials
+
+    data = b'{"service":"postgres","password":"isolated-file-fixture"}'
+    path = tmp_path / "input-0"
+    path.write_bytes(data)
+    path.chmod(0o600)
+    monkeypatch.setenv("EVALHIVE_SERVICE_CREDENTIALS_FILE", str(path))
+    observed = []
+    monkeypatch.setattr(
+        credentials, "configure", lambda value: observed.append(value) or {"configured": True}
+    )
+    main()
+    assert observed == [data]
+    assert json.loads(capsys.readouterr().out) == {"configured": True}
 
 
 def test_private_configuration_retries_match_and_receipts_never_contain_the_password(tmp_path):

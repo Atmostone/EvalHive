@@ -29,6 +29,16 @@ def test_postgres_registration_has_private_credentials_and_frozen_backup_mounts(
     assert assets["mcpmark.world"]["storage_slots"]["secret"]["read_only"] is False
     assert assets["mcpmark.postgres"]["storage_slots"]["secret"]["read_only"] is True
     for name in ("world", "postgres"):
+        assert (
+            len(
+                [
+                    mount
+                    for mount in assets["mcpmark." + name]["mounts"]
+                    if mount["file_id"] == "initial-state"
+                ]
+            )
+            == 1
+        )
         assert {
             "file_id": "initial-state",
             "target": "/opt/native/postgres_state",
@@ -85,7 +95,7 @@ def test_postgres_plan_has_owned_network_dependencies_and_requires_private_input
         "config": {},
         "models": {},
         "credential_refs": {"service_credentials": "fixture-reference"},
-        "limits": {"wall_time_seconds": 600, "memory_mb": 3072, "cpu_cores": 2, "disk_mb": 4096},
+        "limits": {"wall_time_seconds": 600, "memory_mb": 3072, "cpu_cores": 2.5, "disk_mb": 4096},
     }
     asyncio.run(worker.handle("validate", {"spec": spec}, None))
     plan = asyncio.run(worker.handle("plan", {"spec": spec}, None))

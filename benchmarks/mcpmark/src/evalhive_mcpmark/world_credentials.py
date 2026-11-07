@@ -71,7 +71,13 @@ def read(root=ROOT):
 
 def main():
     try:
-        data = os.environ.pop("EVALHIVE_SERVICE_CREDENTIALS").encode()
+        path = os.environ.pop("EVALHIVE_SERVICE_CREDENTIALS_FILE")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
+                raise ValueError("Native private input exceeds its regular-file budget")
+            data = stream.read(MAX_BYTES + 1)
         print(json.dumps(configure(data), separators=(",", ":")))
     except Exception:
         sys.stderr.write("Native private configuration failed\n")

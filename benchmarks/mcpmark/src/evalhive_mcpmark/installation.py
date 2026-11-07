@@ -91,7 +91,7 @@ def declarations(receipt, worker_image, task_image, *, postgres_image=None):
             task_image,
             "environment",
             1024,
-            0.5,
+            1,
             512,
             user="0",
             workdir="/workspace",
@@ -158,9 +158,9 @@ def declarations(receipt, worker_image, task_image, *, postgres_image=None):
             }
         )
         world, task = assets["mcpmark.world"], assets["mcpmark.task"]
-        world["mounts"].append(
-            {"file_id": "initial-state", "target": "/opt/native/postgres_state", "read_only": True}
-        )
+        for mount in world["mounts"]:
+            if mount["file_id"] == "initial-state":
+                mount["target"] = "/opt/native/postgres_state"
         world["storage_slots"]["secret"] = {"target": "/postgres-secret", "read_only": False}
         for member in (world, task):
             member["storage_slots"]["working"]["target"] = "/workspace"

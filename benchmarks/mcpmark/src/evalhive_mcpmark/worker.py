@@ -305,7 +305,7 @@ class MCPMarkConnector(Connector):
                 context,
                 "world_credentials",
                 [],
-                private_refs={"EVALHIVE_SERVICE_CREDENTIALS": "service_credentials"},
+                private_refs={"EVALHIVE_SERVICE_CREDENTIALS_FILE": "service_credentials"},
             )
         result = await self.native(context, "prepare", {"case": self.spec["case"]})
         if result["prompt"] != self._agent()["prompt"]:
