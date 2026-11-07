@@ -1,17 +1,47 @@
 """Registered PostgreSQL state and password storage stay inside one owned trial."""
 
 import asyncio
+import os
 from types import SimpleNamespace
 
 import pytest
 from evalhive_benchmark import ProtocolError, validate_environment
-from evalhive_mcpmark.installation import declarations
+from evalhive_mcpmark.installation import declarations, install
 from evalhive_mcpmark.native import NativeConfigurationError
 from evalhive_mcpmark.task_client import launch_config
 from evalhive_mcpmark.worker import MCPMarkConnector
 
 IMAGE = "sha256:" + "a" * 64
 RECEIPT = {"source_digest": "sha256:" + "b" * 64, "provenance": {"service": "postgres"}}
+
+
+def test_postgres_snapshot_is_readable_by_the_unprivileged_database_uid(tmp_path):
+    source = os.getenv("EVALHIVE_MCPMARK_NATIVE_ROOT")
+    if not source:
+        pytest.skip("Requires the pinned native catalog")
+    initial = tmp_path / "backups"
+    initial.mkdir(mode=0o700)
+    for name in ("employees", "chinook", "dvdrental", "sports", "lego"):
+        path = initial / (name + ".backup")
+        path.write_bytes(b"PGDMPfixture")
+        path.chmod(0o600)
+    output = tmp_path / "installed"
+    install(
+        source,
+        output,
+        initial_root=initial,
+        revision="fixture",
+        worker_image=IMAGE,
+        task_image=IMAGE,
+        postgres_image=IMAGE,
+        service="postgres",
+        suite="easy",
+    )
+    published = output / "initial-state"
+    assert published.stat().st_mode & 0o777 == 0o755
+    assert all(path.stat().st_mode & 0o777 == 0o444 for path in published.iterdir())
+    assert initial.stat().st_mode & 0o777 == 0o700
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in initial.iterdir())
 
 
 def test_postgres_registration_has_private_credentials_and_frozen_backup_mounts():

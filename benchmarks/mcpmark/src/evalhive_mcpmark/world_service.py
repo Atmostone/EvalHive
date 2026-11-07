@@ -20,6 +20,10 @@ from .world_rpc import MAX_BYTES, WorldError, encoded
 from .world_stage import read as read_messages
 
 
+class NativePostgresUnavailable(WorldError):
+    pass
+
+
 class NativeService:
     def __init__(
         self,
@@ -38,6 +42,7 @@ class NativeService:
         self.closed, self.ready = False, False
         self.effect = effect
         self.secret_values = ()
+        self.restore_results = []
 
     def __call__(self, method, payload):
         if method == "cleanup":
@@ -126,11 +131,29 @@ class NativeService:
                 break
             except psycopg2.OperationalError:
                 if time.monotonic() >= deadline:
-                    raise WorldError("Native PostgreSQL did not become ready") from None
+                    raise NativePostgresUnavailable(
+                        "Native PostgreSQL did not become ready"
+                    ) from None
                 time.sleep(0.2)
         native = importlib.import_module("src.mcp_services.postgres.postgres_state_manager")
-        with restore_transport(self.effect):
+        with restore_transport(self.restore):
             return native.PostgresStateManager(**connection)
+
+    def restore(self, operation, payload):
+        result = self.effect(operation, payload)
+        record = {
+            "argv": payload["argv"],
+            "exit_code": result["exit_code"],
+        }
+        for name in ("stdout", "stderr"):
+            value = self.redacted(result[name])
+            record[name] = value[:32768]
+            record[name + "_truncated"] = len(value) > 32768
+        self.restore_results.append(record)
+        report = self.records_root / "report"
+        report.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (report / "postgres-restore.json").write_bytes(canonical(self.restore_results))
+        return result
 
     def capture(self, payload):
         if (

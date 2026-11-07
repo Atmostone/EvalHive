@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import sys
 import time
 from copy import deepcopy
@@ -288,8 +289,15 @@ class MCPMarkConnector(Connector):
             if result["state"] == "completed":
                 return result["result"]
             if result["state"] == "failed":
+                exception = result.get("error", {}).get("exception", "UnknownError")
+                if not isinstance(exception, str) or not re.fullmatch(
+                    r"[A-Za-z_][A-Za-z_0-9]{0,79}", exception
+                ):
+                    exception = "UnknownError"
                 raise ProtocolError(
-                    "NATIVE_SERVICE_FAILED", "Native service operation failed", "execution"
+                    "NATIVE_SERVICE_FAILED",
+                    f"Native service {method} failed ({exception})",
+                    "execution",
                 )
             await asyncio.sleep(min(0.2, self.remaining()))
 

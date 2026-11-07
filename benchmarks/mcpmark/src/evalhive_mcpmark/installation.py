@@ -256,8 +256,11 @@ def install(
                     initial_root / category, initial / category, copy_function=shutil.copy2
                 )
         else:
+            initial.chmod(0o755)
             for record in assets[0]["files"]:
-                shutil.copy2(initial_root / record["path"], initial / record["path"])
+                target = initial / record["path"]
+                shutil.copy2(initial_root / record["path"], target)
+                target.chmod(0o444)
         if (
             inventory(data / "native", service, suite) != receipt["provenance"]["files"]
             or inventory(source, service, suite) != receipt["provenance"]["files"]
