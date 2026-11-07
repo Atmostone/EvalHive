@@ -269,7 +269,7 @@ class RootlessDockerRuntime:
                 source=name,
                 type="volume",
                 read_only=binding["mode"] == "ro",
-                no_copy=True,
+                no_copy=binding.get("no_copy", True),
             )
             for name, binding in RootlessVolumeRuntime(self).bindings(spec).items()
         ]
@@ -342,6 +342,15 @@ class RootlessDockerRuntime:
             "exit_code": state.get("ExitCode"),
             "image_id": handle.image_id,
             "resource_id": handle.resource_id,
+            **(
+                {
+                    "health": state["Health"].get("Status")
+                    if state["Health"].get("Status") in {"starting", "healthy", "unhealthy"}
+                    else "unknown"
+                }
+                if isinstance(state.get("Health"), dict)
+                else {}
+            ),
         }
 
     def stop(self, handle: ManagedContainer, *, grace_seconds: int = 10, remove: bool = False):

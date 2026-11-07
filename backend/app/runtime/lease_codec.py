@@ -88,7 +88,12 @@ def decode_lease(data: dict) -> ResourceLease:
                 "network": network(raw["network"]),
                 "namespace": container(raw["namespace"]),
                 "storage": tuple(
-                    VolumeMount(volume(item["volume"]), item["target"], item["read_only"])
+                    VolumeMount(
+                        volume(item["volume"]),
+                        item["target"],
+                        item["read_only"],
+                        item.get("no_copy", True),
+                    )
                     for item in raw.get("storage", [])
                 ),
             }

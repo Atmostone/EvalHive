@@ -114,6 +114,7 @@ class RootlessVolumeRuntime:
             mounts[mount.volume.name] = {
                 "bind": str(target),
                 "mode": "ro" if mount.read_only else "rw",
+                **({"no_copy": False} if not mount.no_copy else {}),
             }
             targets.append(target)
         return mounts

@@ -140,12 +140,14 @@ class VolumeMount:
     volume: ManagedVolume
     target: str
     read_only: bool = False
+    no_copy: bool = True
 
     def __post_init__(self):
         path = absolute_path(self.target)
         if (
             path == PurePosixPath("/")
             or type(self.read_only) is not bool
+            or type(self.no_copy) is not bool
             or any(path.is_relative_to(root) for root in ("/proc", "/sys", "/dev"))
         ):
             raise ManagedRuntimeError("Owned storage requires a contained mount target")

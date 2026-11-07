@@ -106,7 +106,8 @@ CONTAINER = obj(
             "maxProperties": 16,
             "propertyNames": ID,
             "additionalProperties": obj(
-                {"target": TEXT, "read_only": {"type": "boolean"}}, ("target", "read_only")
+                {"target": TEXT, "read_only": {"type": "boolean"}, "no_copy": {"type": "boolean"}},
+                ("target", "read_only"),
             ),
         },
         "outputs": {
@@ -356,7 +357,12 @@ class RootlessAssets:
                 if str(path) == "/":
                     raise ManagedRuntimeError("Storage cannot obscure the root filesystem")
                 bindings.append(
-                    {"resource": target, "target": str(path), "read_only": slots[slot]["read_only"]}
+                    {
+                        "resource": target,
+                        "target": str(path),
+                        "read_only": slots[slot]["read_only"],
+                        **({"no_copy": slots[slot]["no_copy"]} if "no_copy" in slots[slot] else {}),
+                    }
                 )
             if bindings:
                 selected["storage"] = bindings
@@ -455,8 +461,12 @@ class RootlessAssets:
                     raise ManagedRuntimeError("Agent requires a declared task container")
                 task_resource = resources[agent["environment_handle"]]
                 task_asset = self.document["assets"][task_resource["config"]["asset_id"]]
-                if agent.get("process_policy", "stop_after_agent") != task_asset.get("agent_process_policy", "stop_after_agent"):
-                    raise ManagedRuntimeError("Agent process policy differs from its registered task")
+                if agent.get("process_policy", "stop_after_agent") != task_asset.get(
+                    "agent_process_policy", "stop_after_agent"
+                ):
+                    raise ManagedRuntimeError(
+                        "Agent process policy differs from its registered task"
+                    )
                 if agent.get("user") != task_asset.get("agent_user"):
                     raise ManagedRuntimeError("Agent user differs from its registered task")
             absolute_path(agent["cwd"])

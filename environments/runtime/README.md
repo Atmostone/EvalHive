@@ -186,6 +186,17 @@ are independent.
 Services can receive validated DNS aliases on an owned private network. Aliases
 cannot select a foreign bridge or be silently ignored in a shared namespace.
 There are no published host ports or host networking in this resource interface.
+Container inspection exposes only the sanitized Docker health state, without
+healthcheck output. `host.container_health_v1` allows native adapters to wait for
+image readiness before exposing agent access.
+
+Registered storage slots may explicitly set `no_copy: false` when the native
+environment requires Docker's initial image-directory population of a named
+volume. This preserves native initial files and directory ownership/permissions.
+The default remains an empty owned volume (`no_copy: true`); old lease records
+without the flag retain that default. Only server-installed slot grants select
+the behavior, and the volume still belongs to the scoped resource group and its
+declared disk reservation. `host.volume_copy_up_v1` identifies this optional mode.
 
 `test_docker_provider_native.py` runs a standalone Benchmark SDK package in a
 separate container with neither backend modules nor a Docker client/socket. It

@@ -110,7 +110,8 @@ def test_volume_release_requires_actual_docker_detachment():
     storage.remove(handle)
 
 
-def test_storage_and_container_mounts_survive_private_lease_serialization():
+@pytest.mark.parametrize("no_copy", [True, False])
+def test_storage_and_container_mounts_survive_private_lease_serialization(no_copy):
     from app.runtime.broker import ResourceLease
     from app.runtime.lease_codec import decode_lease, encode_lease
 
@@ -125,10 +126,13 @@ def test_storage_and_container_mounts_survive_private_lease_serialization():
         request.scope,
         str(uuid.uuid4()),
         "sha256:" + "a" * 64,
-        storage=(VolumeMount(handle, "/workspace", True),),
+        storage=(VolumeMount(handle, "/workspace", True, no_copy),),
     )
     lease = ResourceLease(spec.resource_id, request.scope, "container", spec)
     assert decode_lease(encode_lease(lease)) == lease
+    old_mount = encode_lease(lease)
+    del old_mount["intent"]["storage"][0]["no_copy"]
+    assert decode_lease(old_mount).intent.storage[0].no_copy is True
     legacy = encode_lease(replace(lease, intent=replace(spec, storage=())))
     del legacy["intent"]["storage"]
     assert decode_lease(legacy).intent.storage == ()

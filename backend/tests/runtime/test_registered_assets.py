@@ -109,7 +109,9 @@ def catalog(data=None, files=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("registered,requested", [(False, True), (True, False), (True, True)])
-async def test_retained_agent_process_policy_is_authorized_by_the_installed_task(registered, requested):
+async def test_retained_agent_process_policy_is_authorized_by_the_installed_task(
+    registered, requested
+):
     data, native = document(), plan()
     if registered:
         data["assets"]["fixture.task"]["agent_process_policy"] = "retain_until_cleanup"
@@ -140,7 +142,8 @@ async def test_native_agent_user_must_match_its_installed_task(registered, reque
         assert await assets.compile(scope(), native)
 
 
-def test_shared_storage_has_registered_slots_dependencies_and_a_disk_only_reservation():
+@pytest.mark.parametrize("no_copy", [None, False])
+def test_shared_storage_has_registered_slots_dependencies_and_a_disk_only_reservation(no_copy):
     async def scenario():
         from app.runtime.admission import StorageDemand
 
@@ -149,6 +152,8 @@ def test_shared_storage_has_registered_slots_dependencies_and_a_disk_only_reserv
         data["assets"]["fixture.task"]["storage_slots"] = {
             "workspace": {"target": "/workspace", "read_only": False}
         }
+        if no_copy is not None:
+            data["assets"]["fixture.task"]["storage_slots"]["workspace"]["no_copy"] = no_copy
         native = plan()
         native["resources"].insert(
             0,
@@ -166,7 +171,12 @@ def test_shared_storage_has_registered_slots_dependencies_and_a_disk_only_reserv
         assert compiled.demands[0] == StorageDemand("files", 64)
         assert compiled.images == {"task": IMAGE}
         assert compiled.links["task"]["storage"] == [
-            {"resource": "files", "target": "/workspace", "read_only": False}
+            {
+                "resource": "files",
+                "target": "/workspace",
+                "read_only": False,
+                **({"no_copy": no_copy} if no_copy is not None else {}),
+            }
         ]
         assert compiled.leases["task"][1].dependencies == (compiled.leases["files"][1].handle,)
         native["resources"][1]["config"]["storage"] = {"unknown": "files"}

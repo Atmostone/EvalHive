@@ -611,7 +611,12 @@ class SqlResourceCall:
                                 "preparation",
                             )
                         mounts.append(
-                            VolumeMount(linked.native, binding["target"], binding["read_only"])
+                            VolumeMount(
+                                linked.native,
+                                binding["target"],
+                                binding["read_only"],
+                                binding.get("no_copy", True),
+                            )
                         )
                     spec = replace(spec, storage=tuple(mounts))
                     continue
