@@ -99,6 +99,7 @@ class AppWorldConnector(Connector):
                             "command": "/opt/venv/bin/python",
                             "args": ["/opt/environment/appworld_mcp.py", group["id"]],
                             "cwd": "/workspace",
+                            "timeout_seconds": self.config["mcp_timeout_seconds"],
                         },
                     }
                     for group in groups

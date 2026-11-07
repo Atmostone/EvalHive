@@ -29,7 +29,9 @@ def tracker(success):
         "passes": [{"requirement": "Native requirement", "label": "no_op_fail"}] if success else [],
         "failures": []
         if success
-        else [{"requirement": "Native requirement", "label": "no_op_fail", "trace": "Fixture failure"}],
+        else [
+            {"requirement": "Native requirement", "label": "no_op_fail", "trace": "Fixture failure"}
+        ],
     }
 
 

@@ -38,7 +38,9 @@ clock because the native world freezes Python clocks.
 The complete public catalog has 469 tools across ten applications. Deterministic
 groups preserve every app and tool within each harness MCP server budget. The
 native server receives the group's app names; administrative tools are never
-added. Native scenario grouping remains available for the official TGC/SGC
+added. `mcp_timeout_seconds` defaults to 90 seconds for initialization and calls;
+the complete native schema catalog can exceed a harness's 30-second default on
+one CPU. Parent attempt deadlines still apply. Native scenario grouping remains available for the official TGC/SGC
 calculation, including explicit handling of incomplete groups.
 
 The worker drives an independently owned World service and Task container on an
