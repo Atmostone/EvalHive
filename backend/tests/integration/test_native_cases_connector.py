@@ -6,7 +6,7 @@ import json
 import os
 import tarfile
 import uuid
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -36,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import undefer
 
+from tests.fixtures.native_model_endpoint import NativeModelEndpoint
 from tests.integration.test_benchmark_worker_host_native import WORKSPACE
 from tests.runtime.agent_worker_fixture import SERVER
 from tests.runtime.authority_fixture import FixtureArtifacts, manifest
@@ -54,18 +55,27 @@ async def native_engine(_engine, db_session):
         await pooled.dispose()
 
 
+@pytest.fixture
+def local_model_endpoint():
+    with ExitStack() as stack:
+        yield lambda key: stack.enter_context(NativeModelEndpoint(key))
+
+
 @pytest.mark.parametrize("connector_id", ["pi", "opencode"])
 async def test_installed_case_worker_runs_and_grades_through_real_harness(
-    native_engine, connector_id
+    native_engine, connector_id, local_model_endpoint
 ):
     # This import belongs to the engineering test process only, never backend code.
     from evalhive_cases.dataset import build_receipt
     from evalhive_cases.worker import MANIFEST
 
     engine = native_engine
+    owned_model = os.getenv("EVALHIVE_NATIVE_MODEL_GATEWAY") == "1"
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"]) / ("cases-" + connector_id)
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"] + "/cases-" + connector_id
     (local / "bundle").mkdir(parents=True)
+    bundle_root = Path(os.getenv("EVALHIVE_NATIVE_BUNDLE_DIR", str(local / "bundle")))
+    bundle_host = os.getenv("EVALHIVE_NATIVE_BUNDLE_HOST", host_root + "/bundle")
     source = local / "dataset"
     (source / "fixture").mkdir(parents=True)
     document = {
@@ -85,7 +95,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
         RuntimePolicy(
             PathMapping(host_root, str(local)),
             (
-                PathMapping(host_root + "/bundle", str(local / "bundle")),
+                PathMapping(bundle_host, str(bundle_root)),
                 PathMapping(host_root + "/dataset", str(source)),
             ),
         ),
@@ -105,7 +115,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
         install_bundle,
         runtime,
         installation,
-        PathMapping(host_root + "/bundle", str(local / "bundle")),
+        PathMapping(bundle_host, str(bundle_root)),
     )
     declaration = deepcopy(MANIFEST)
     declaration["image"] = worker_image["image_id"]
@@ -136,7 +146,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
                     "python",
                     "-c",
                     "from pathlib import Path;import time;Path('/workspace/result.txt').write_text('Prepared through the Benchmark SDK\\n');exec("
-                    + repr(SERVER)
+                    + repr("" if owned_model else SERVER)
                     + ");time.sleep(300)",
                 ],
                 "mounts": [
@@ -207,6 +217,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
 
     artifacts = Capture()
     credential = uuid.uuid4().hex
+    endpoint = local_model_endpoint(credential) if owned_model else None
     harness_spec = {
         "protocol_version": "1.0",
         "workspace_id": str(WORKSPACE),
@@ -218,7 +229,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
         "limits": {"max_turns": 4},
         "model": {
             "name": "fake-model",
-            "endpoint": "http://127.0.0.1:8765/v1",
+            "endpoint": endpoint.url if endpoint else "http://127.0.0.1:8765/v1",
             "credential_ref": "model_api_key",
         },
     }
@@ -243,6 +254,7 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
         bundle=bundle,
         credentials={"model_api_key": credential},
         spool_root=local / "spool",
+        model_gateway=owned_model,
     )
     host = controller.host
     run_spec = {
@@ -265,6 +277,11 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
         result = await asyncio.wait_for(controller.run(run_spec), 150)
         assert result["phase"] == "finished" and result["cleanup"] == "complete", result
         assert result["execution"] == "success" and result["evaluation"] == "completed", result
+        if owned_model:
+            assert len(endpoint.requests) == 2 and not endpoint.errors
+            listener = host.agent_gateway.executor.model_channel.listener
+            assert not listener.socket_path.exists()
+            assert not listener.directory.exists()
         with tarfile.open(fileobj=io.BytesIO(artifacts.values["workspace"])) as archive:
             assert archive.extractfile("workspace/agent-child.started").read() == b"started"
             assert (
@@ -288,6 +305,11 @@ async def test_installed_case_worker_runs_and_grades_through_real_harness(
             )
             assert any(event["event"] == "tool.end" for event in events)
             assert credential not in json.dumps(events)
+            if owned_model:
+                assert attempt.run_spec["metadata"]["model_gateway"]["transport"] == "unix_http_v1"
+                private = json.loads(host.host_private_inputs["agent.credentials"])
+                assert private["model_api_key"] != credential
+                assert credential not in json.dumps(private)
             leases = list(
                 await db.scalars(
                     select(BenchmarkResourceLease).where(

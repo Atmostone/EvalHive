@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, timedelta
 from pathlib import PurePosixPath
 from secrets import token_urlsafe
 
@@ -57,7 +57,12 @@ class AgentModelChannel:
                 deadline = trial.deadline_at
                 seconds = attempt.run_spec.get("limits", {}).get("wall_time_seconds")
                 if attempt.started_at is not None and seconds is not None:
-                    deadline = min(deadline, attempt.started_at + timedelta(seconds=seconds))
+                    started = attempt.started_at
+                    # Harness history stores UTC timestamps without a timezone;
+                    # benchmark trial deadlines are timezone-aware PostgreSQL values.
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=UTC)
+                    deadline = min(deadline, started + timedelta(seconds=seconds))
                 return (deadline - now).total_seconds()
         except ProtocolError:
             raise GatewayRejected("MODEL_GATEWAY_OWNER_UNAVAILABLE") from None

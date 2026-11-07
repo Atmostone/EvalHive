@@ -93,11 +93,14 @@ async def test_registered_mounts_cannot_shadow_the_control_channel(tmp_path, mou
 
 
 @pytest.mark.asyncio
-async def test_model_guard_checks_current_attempt_and_its_earlier_deadline():
+@pytest.mark.parametrize("naive_history", [True, False])
+async def test_model_guard_checks_current_attempt_and_its_earlier_deadline(naive_history):
     route, _ = model_connection(*inputs())
     now = datetime.now(UTC)
     trial = SimpleNamespace(phase="driving", cancel_requested_at=None, deadline_at=now + timedelta(seconds=60))
     attempt = SimpleNamespace(status="running", started_at=now - timedelta(seconds=5), run_spec={"limits": {"wall_time_seconds": 20}})
+    if naive_history:
+        attempt.started_at = attempt.started_at.replace(tzinfo=None)
 
     @asynccontextmanager
     async def transaction():
