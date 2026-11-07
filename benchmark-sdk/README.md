@@ -311,3 +311,9 @@ native-free lifecycle, broker RPC, cancellation, receipts/conflicts, scope bindi
 unsafe JSON, framing, resource dependencies and unknown measurements. These SDK
 checks do not establish that a real benchmark adapter or environment is installed;
 those require separate native and platform acceptance.
+
+Native platform requirements may declare only the fields actually specified by
+that benchmark, such as `platform: {os: "linux"}`. Omitted architecture or libc
+is unspecified, not an inferred host condition. A present platform object must
+contain at least one recognized field. Preflight compares each declared field;
+registered images still resolve to exact compatible platform/image identities.

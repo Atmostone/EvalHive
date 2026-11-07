@@ -1434,6 +1434,44 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "known native OS without inferred architecture",
+      "kind": "requirements",
+      "value": {
+        "platform": {
+          "os": "linux"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "known native architecture without inferred OS",
+      "kind": "requirements",
+      "value": {
+        "platform": {
+          "architecture": "x86_64"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "empty native platform requirement",
+      "kind": "requirements",
+      "value": {
+        "platform": {}
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "unknown native platform field",
+      "kind": "requirements",
+      "value": {
+        "platform": {
+          "accelerator": "imagined"
+        }
+      },
+      "error": "INVALID_MESSAGE"
     }
   ],
   "evaluation_spec": {

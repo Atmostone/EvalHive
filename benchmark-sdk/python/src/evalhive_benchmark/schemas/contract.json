@@ -84,11 +84,9 @@
               "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
             }
           },
-          "required": [
-            "os",
-            "architecture"
-          ],
-          "additionalProperties": false
+          "required": [],
+          "additionalProperties": false,
+          "minProperties": 1
         },
         "resources": {
           "type": "object",
