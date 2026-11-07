@@ -5,6 +5,7 @@ import hashlib
 import subprocess
 
 import pytest
+from evalhive_swebench import task_transfer
 from evalhive_swebench.task_transfer import execute
 
 
@@ -86,3 +87,43 @@ def test_changed_or_linked_patch_cannot_reuse_a_capture_receipt(repository, tmp_
     patch.symlink_to(repo / "existing.py")
     with pytest.raises(ValueError, match="links"):
         execute("read", {"id": identity, "offset": 0}, root=root, cwd=repo)
+
+
+def test_evidence_limit_does_not_limit_git_index_but_still_bounds_patch(
+    repository, tmp_path, monkeypatch
+):
+    repo, commit = repository
+    for index in range(30):
+        (repo / f"file-{index}.py").write_text("unchanged = True\n")
+    subprocess.run(["/usr/bin/git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "/usr/bin/git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "Larger index",
+        ],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    commit = (
+        subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=repo).decode().strip()
+    )
+    monkeypatch.setattr(task_transfer, "MAX_BYTES", 512)
+    assert (repo / ".git/index").stat().st_size > 512
+    (repo / "existing.py").write_text("after = True\n")
+    result = execute(
+        "capture", {"id": "d" * 32, "base_commit": commit}, root=tmp_path / "capture", cwd=repo
+    )
+    assert 0 < result["size_bytes"] < 512
+    (repo / "existing.py").write_text("large = True\n" * 1000)
+    with pytest.raises(ValueError, match="byte budget"):
+        execute(
+            "capture", {"id": "e" * 32, "base_commit": commit}, root=tmp_path / "capture", cwd=repo
+        )
+    assert not (tmp_path / "capture" / ("e" * 32) / "receipt.json").exists()

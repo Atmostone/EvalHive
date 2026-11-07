@@ -7,11 +7,13 @@ import hashlib
 import json
 import os
 import re
-import resource
+import selectors
 import signal
 import stat
 import subprocess
 import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 
 MAX_BYTES, CHUNK = 8 * 1024**2, 24 * 1024
@@ -37,9 +39,6 @@ def regular(path, *, maximum=MAX_BYTES):
 
 
 def git(arguments, *, cwd, output):
-    def limit():
-        resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_BYTES, MAX_BYTES))
-
     with output.open("xb") as stdout, output.with_suffix(".stderr").open("xb") as stderr:
         process = subprocess.Popen(
             [
@@ -52,10 +51,9 @@ def git(arguments, *, cwd, output):
             ],
             cwd=cwd,
             stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             start_new_session=True,
-            preexec_fn=limit,
             env={
                 "PATH": "/usr/bin:/bin",
                 "GIT_CONFIG_NOSYSTEM": "1",
@@ -64,12 +62,35 @@ def git(arguments, *, cwd, output):
                 "LC_ALL": "C.UTF-8",
             },
         )
+        deadline = time.monotonic() + 90
         try:
-            status = process.wait(timeout=90)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            # Bound exported evidence, not Git's internal files. RLIMIT_FSIZE
+            # also limits overlay copy-up of existing repository pack files.
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, (stdout, MAX_BYTES))
+                selector.register(process.stderr, selectors.EVENT_READ, (stderr, 64 * 1024))
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ValueError("Patch capture exceeded its deadline")
+                    for key, _ in selector.select(min(remaining, 0.2)):
+                        data = os.read(key.fileobj.fileno(), 64 * 1024)
+                        if not data:
+                            selector.unregister(key.fileobj)
+                            continue
+                        stream, maximum = key.data
+                        if stream.tell() + len(data) > maximum:
+                            raise ValueError("Patch capture exceeds its evidence byte budget")
+                        stream.write(data)
+            status = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except BaseException:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
-            raise ValueError("Patch capture exceeded its deadline") from None
+            raise
+        finally:
+            process.stdout.close()
+            process.stderr.close()
     if status != 0:
         raise ValueError("Patch capture did not complete; no empty patch is inferred")
 
