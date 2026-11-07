@@ -60,6 +60,11 @@ automatic request retries are disabled because an interrupted paid request can
 have an unknown outcome. Auxiliary usage is recorded once by the host, separately
 from harness usage; native usage inside private evidence is not counted again.
 
+Allow at least ten seconds of bounded host shutdown grace for this worker. Even
+an import-only native process takes over three seconds to exit at the registered
+half-CPU quota. This teardown allowance does not extend native simulation or
+evaluation deadlines. Incomplete delivery must still fail recording acceptance.
+
 An owned private recorder stores the bounded native trace, checkpoint and report.
 The checkpoint contains the native `SimulationRun` plus source and interface
 provenance. Cold regrade starts only a worker/recorder and never an agent or user
@@ -75,3 +80,13 @@ evidence transfer and cold regrade. The rootless Pi/OpenCode acceptance fixture
 is `backend/tests/integration/test_native_tau2_connector.py`; it requires explicit
 opt-in, pinned images and local fake model endpoints. Availability and successful
 live verification must be reported separately.
+
+The 2026-11-07 rootless acceptance passed the original airline/0 task through
+both pinned real harnesses with local fake model responses. Each run completed
+with native reward 1, `user_stop`, complete recording and complete cleanup. The
+same saved trajectory scored identically through the direct upstream evaluator.
+Pi cold regrade reproduced the reward without another agent/user request and
+left the source journal unchanged. Each execution recorded two agent and two
+user requests in distinct ledger groups; missing pricing/cache/reasoning stayed
+unknown. Migration downgrade/upgrade also passed. This is engineering acceptance
+of the integration, not a benchmark score for either harness or a model.
