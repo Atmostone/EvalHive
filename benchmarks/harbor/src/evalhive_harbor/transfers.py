@@ -82,19 +82,27 @@ class BrokerTransfers:
         with tempfile.TemporaryDirectory(dir=self.temporary, prefix="harbor-upload-") as temporary:
             archive = Path(temporary) / "payload.tar"
             proof = pack_directory(source_dir, archive)
-            await self._stage("create", {"id": identity})
+            small = proof["size_bytes"] <= CHUNK_BYTES
+            if small:
+                sealed = await self._stage("put", {
+                    "id": identity, **proof,
+                    "data": base64.b64encode(archive.read_bytes()).decode(),
+                })
+            else:
+                await self._stage("create", {"id": identity})
             try:
-                with archive.open("rb") as stream:
-                    offset = 0
-                    while data := stream.read(CHUNK_BYTES):
-                        receipt = await self._stage("write", {
-                            "id": identity, "offset": offset,
-                            "data": base64.b64encode(data).decode(),
-                        })
-                        if receipt.get("written") != len(data):
-                            raise TransferError("Native staging did not acknowledge the complete chunk")
-                        offset += len(data)
-                sealed = await self._stage("seal", {"id": identity, **proof})
+                if not small:
+                    with archive.open("rb") as stream:
+                        offset = 0
+                        while data := stream.read(CHUNK_BYTES):
+                            receipt = await self._stage("write", {
+                                "id": identity, "offset": offset,
+                                "data": base64.b64encode(data).decode(),
+                            })
+                            if receipt.get("written") != len(data):
+                                raise TransferError("Native staging did not acknowledge the complete chunk")
+                            offset += len(data)
+                    sealed = await self._stage("seal", {"id": identity, **proof})
                 remote = "/evalhive-stage/" + identity + ".tar"
                 if not sealed.get("sealed") or sealed.get("path") != remote:
                     raise TransferError("Native staging returned an unexpected archive")
@@ -176,19 +184,23 @@ class BrokerTransfers:
             try:
                 # BusyBox ash uses 1024-byte units for RLIMIT_FSIZE. Leave the
                 # native source untouched and reject oversized archive writes.
-                await task(
+                metadata = (await task(
                     "umask 077; " + self._tool("mkdir", "--", remote)
                     + " && ulimit -f " + str(MAX_ARCHIVE_BYTES // 1024)
                     + " && " + self._tool("tar", "-cf", archive, "-C", source_dir, "--", *(members or ["."]))
-                )
-                observed = (await task(self._tool("stat", "-c", "%s", archive))).strip()
+                    + " && " + self._tool("stat", "-c", "%s", archive)
+                    + " && " + self._tool("sha256sum", archive)
+                )).splitlines()
+                if len(metadata) != 2:
+                    raise TransferError("Native archive metadata is incomplete")
+                observed = metadata[0].strip()
                 if not observed.isdecimal() or not 0 < int(observed) <= MAX_ARCHIVE_BYTES:
                     raise TransferError("Native archive exceeds its transfer budget")
                 size = int(observed)
                 if size > self.download_remaining:
                     raise TransferError("Native downloads exceed their shared recording budget")
                 self.download_remaining -= size
-                proof = (await task(self._tool("sha256sum", archive))).split()[0]
+                proof = metadata[1].split()[0]
                 if not re.fullmatch(r"[a-f0-9]{64}", proof):
                     raise TransferError("Native archive has no valid byte proof")
                 with local.open("xb") as stream:

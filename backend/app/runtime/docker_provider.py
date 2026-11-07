@@ -308,8 +308,20 @@ class RootlessDockerProvider(EnvironmentProvider):
                 "mode",
                 "timeout_seconds",
                 "deadline_policy",
+                "process_policy",
             },
         )
+        process_policy = payload.get("process_policy", "retain_until_cleanup")
+        if (
+            not isinstance(process_policy, str)
+            or process_policy not in {"retain_until_cleanup", "stop_after_command"}
+            or (process_policy == "stop_after_command" and payload.get("mode", "wait") != "wait")
+        ):
+            raise ProtocolError(
+                "INVALID_RESOURCE_REQUEST",
+                "Native process policy requires a supported wait mode",
+                "configuration",
+            )
         if (
             container.kind != "container"
             or container.native is None
@@ -494,7 +506,19 @@ class RootlessDockerProvider(EnvironmentProvider):
                 "RESOURCE_TIMEOUT", "Native command exceeded its deadline", "execution"
             ) from None
         lease = await call.resource(lease.handle)
-        if lease.state not in {"stopped", "released", "unsafe"}:
+        if process_policy == "stop_after_command":
+            await call.save(replace(lease, state="releasing"))
+            try:
+                await asyncio.wait_for(asyncio.to_thread(self.owned.control, native, "release"), 9)
+            except TimeoutError:
+                raise UncertainRuntimeError(
+                    "Native command release requires reconciliation"
+                ) from None
+            await process.aclose()
+            self._processes.pop(lease.handle, None)
+            lease = replace(lease, state="released")
+            await call.save(lease)
+        elif lease.state not in {"stopped", "released", "unsafe"}:
             lease = replace(lease, state="retained")
             await call.save(lease)
         return {

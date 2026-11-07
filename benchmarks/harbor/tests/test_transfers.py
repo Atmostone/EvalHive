@@ -10,6 +10,23 @@ from evalhive_harbor.archive import CHUNK_BYTES, TransferError
 from evalhive_harbor.staging import operate
 
 
+def test_small_archive_is_sealed_exclusively_only_after_bounded_byte_proof(tmp_path):
+    identity, data = "c" * 32, b"native small archive"
+    payload = {"id": identity, "data": base64.b64encode(data).decode(),
+               "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    with pytest.raises(TransferError, match="proof"):
+        operate(tmp_path, "put", {**payload, "sha256": "0" * 64})
+    assert not list(tmp_path.iterdir())
+    assert operate(tmp_path, "put", payload)["sealed"]
+    path = tmp_path / (identity + ".tar")
+    assert path.read_bytes() == data and path.stat().st_mode & 0o777 == 0o444
+    with pytest.raises(FileExistsError):
+        operate(tmp_path, "put", payload)
+    with pytest.raises(TransferError, match="proof"):
+        operate(tmp_path, "put", {**payload, "id": "d" * 32,
+            "data": base64.b64encode(b"x" * (CHUNK_BYTES + 1)).decode()})
+
+
 def test_staging_replays_matching_chunks_and_rejects_conflicting_or_noncontiguous_bytes(tmp_path):
     identity = "a" * 32
     operate(tmp_path, "create", {"id": identity})
@@ -53,10 +70,12 @@ async def test_pinned_tools_transfer_native_tests_and_filtered_protected_rewards
     source.mkdir()
     (source / "test.sh").write_bytes(b"#!/bin/bash\nexit 0\n")
     (source / "test.sh").chmod(0o751)
+    (source / "large.bin").write_bytes(os.urandom(2 * CHUNK_BYTES + 97))
     target = tmp_path / "native-tests"
     await native_transfers.upload(source_dir=source, target_dir=str(target))
     assert (target / "test.sh").read_bytes() == (source / "test.sh").read_bytes()
     assert (target / "test.sh").stat().st_mode & 0o777 == 0o751
+    assert (target / "large.bin").read_bytes() == (source / "large.bin").read_bytes()
     assert list(Path("/evalhive-stage").iterdir()) == []
     (target / "reward.json").write_text('{"native_score": 0.5}')
     (target / "discard.log").write_text("unselected")

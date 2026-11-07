@@ -111,3 +111,10 @@ Built-in shell access remains available alongside discovered MCP namespaces.
 Legacy SSE, nonportable/colliding namespaces and unresolved private header
 templates fail before preparation. Evaluation-only workers do not initialize
 agent resources.
+
+Short transfer commands request `host.ephemeral_exec_v1`: their owned supervisors
+are released after completion instead of accumulating until trial cleanup. Small
+archives are written and sealed in one bounded staging operation with the same
+SHA-256/size proof; larger transfers retain chunk acknowledgements and limits.
+Archive creation, size and hash metadata share one task command. Native verifier
+deadlines and agent background-service retention remain unchanged.

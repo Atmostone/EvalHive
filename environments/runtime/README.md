@@ -161,6 +161,13 @@ Normal completion retains owned background services. Native output is drained
 without assuming JSONL, while returned diagnostics stay bounded. Full rootfs
 exports are private. Missing/oversized/partially consumed evidence fails explicitly.
 
+Wait-mode commands may explicitly request `process_policy: stop_after_command`.
+The provider then stops owned descendants and releases the supervisor before
+acknowledging the exit code, including nonzero exits. Uncertain release retains
+the lease for recovery. The default `retain_until_cleanup` preserves native
+background services; attached transports cannot request immediate release.
+`host.ephemeral_exec_v1` identifies hosts supporting this optional policy.
+
 SDK transports are a separate internal host operation. Only registered worker or
 grader containers and owned execs can be attached. Public RPC returns handles,
 not sockets or Python objects. A lost/already attached transport is not silently

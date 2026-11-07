@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -46,6 +47,19 @@ def operate(root, operation, payload):
     if not isinstance(identity, str) or not re.fullmatch(r"[a-f0-9]{32}", identity):
         raise TransferError("Native transfer identity is invalid")
     path = root / (identity + ".tar")
+    if operation == "put":
+        data = base64.b64decode(payload["data"], validate=True)
+        if (
+            not 0 < len(data) <= CHUNK_BYTES
+            or type(payload["size_bytes"]) is not int
+            or len(data) != payload["size_bytes"]
+            or hashlib.sha256(data).hexdigest() != payload["sha256"]
+        ):
+            raise TransferError("Native small archive proof does not match")
+        with path.open("xb") as stream:
+            stream.write(data)
+        path.chmod(0o444)
+        return {"sealed": True, "path": str(path)}
     if operation == "create":
         with path.open("xb"):
             pass
@@ -90,7 +104,7 @@ def operate(root, operation, payload):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["create", "write", "seal", "remove", "publish", "initialize", "restore"])
+    parser.add_argument("operation", choices=["create", "write", "seal", "put", "remove", "publish", "initialize", "restore"])
     parser.add_argument("payload")
     parser.add_argument("--root", default="/evalhive-stage")
     args = parser.parse_args()

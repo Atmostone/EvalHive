@@ -299,7 +299,8 @@ class HarborConnector(Connector):
             "resources": resources,
             "outputs": outputs,
             "requirements": {
-                "capabilities": [] if evaluation else ["host.retained_agent_processes_v1"]
+                "capabilities": ["host.ephemeral_exec_v1"]
+                + ([] if evaluation else ["host.retained_agent_processes_v1"])
             },
             "grading_mode": "container_native",
         }
@@ -336,6 +337,7 @@ class HarborConnector(Connector):
                 "cwd": "/tmp",
                 "timeout_seconds": min(remaining, 86400),
                 "deadline_policy": "inherit",
+                "process_policy": "stop_after_command",
                 **({"user": user} if user is not None else {}),
                 **({"environment": environment} if environment is not None else {}),
             },
