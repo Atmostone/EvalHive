@@ -9,6 +9,7 @@ from app.benchmarks.trials import Controller
 from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
 from app.models.benchmark_job import BenchmarkJob
 from app.models.benchmark_trial import BenchmarkTrial
+from app.models.task import Task
 from evalhive_benchmark import ProtocolError
 from sqlalchemy import inspect, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -189,3 +190,50 @@ async def test_enqueue_is_atomic_and_retries_preserve_the_original_frozen_inputs
     with pytest.raises(ProtocolError) as changed:
         await jobs.finish(owner, job_id, status="completed")
     assert changed.value.code == "LAUNCH_CONFLICT"
+
+
+@pytest.mark.parametrize("commit", [False, True])
+async def test_task_trial_and_launch_request_share_one_product_transaction(
+    public_trial, _engine, commit
+):
+    store, _, workspace_id = public_trial
+    task_id, trial_id, request_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    document = {"profile_id": "fixture-profile", "case_id": "fixture-case"}
+    async with AsyncSession(_engine) as db:
+        assert await find_request(db, workspace_id, request_id, document) is None
+        db.add(
+            Task(
+                id=task_id,
+                workspace_id=workspace_id,
+                title="Atomic benchmark request",
+                status="ready",
+            )
+        )
+        await db.flush()
+        trial = await store.create_pending(
+            db,
+            workspace_id,
+            trial_id=trial_id,
+            snapshot={"fixture": "atomic transaction"},
+            task_id=task_id,
+            deadline_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+        job = await enqueue(
+            db,
+            store,
+            workspace_id,
+            trial.id,
+            request_id,
+            document,
+            {"fixture": "private launch"},
+            deadline_at=trial.deadline_at,
+        )
+        job_id = job.id
+        if commit:
+            await db.commit()
+        else:
+            await db.rollback()
+    async with AsyncSession(_engine) as db:
+        assert (await db.get(Task, task_id) is not None) is commit
+        assert (await db.get(BenchmarkTrial, trial_id) is not None) is commit
+        assert (await db.get(BenchmarkJob, job_id) is not None) is commit

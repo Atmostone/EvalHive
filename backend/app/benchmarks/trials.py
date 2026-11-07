@@ -194,56 +194,81 @@ class TrialStore(HostAdmission, ControlLifecycle, StreamLedger):
         trial_id=None,
     ):
         """Called with a server-redacted snapshot, never a raw worker configuration."""
-        workspace_id, trial_id = uuid.UUID(str(workspace_id)), trial_id or uuid.uuid4()
-        _json_value(snapshot)
-        if not isinstance(snapshot, dict) or len(json.dumps(snapshot).encode()) > MAX_LINE_BYTES:
-            raise failure("INVALID_SNAPSHOT", "Trial snapshot exceeds its JSON object limit")
+        trial_id = trial_id or uuid.uuid4()
         async with database_fence(self.engine, trial_id) as db:
-            now = await db.scalar(select(func.clock_timestamp()))
-            if deadline_at.tzinfo is None or not now < deadline_at <= now + timedelta(days=7):
-                raise failure("INVALID_DEADLINE", "Trial requires a future bounded UTC deadline")
-            for model, selected in [
-                (Task, task_id),
-                (BenchmarkProfile, profile_id),
-                (BenchmarkTrial, retry_of_id),
-            ]:
-                if selected is not None:
-                    item = await db.get(model, selected)
-                    if item is None or item.workspace_id != workspace_id:
-                        raise failure(
-                            "INVALID_SCOPE", "Trial input is unavailable in this workspace"
-                        )
-            if dataset_case_id is not None:
-                case = await db.get(BenchmarkDatasetCase, dataset_case_id)
-                dataset = (
-                    None
-                    if case is None
-                    else await db.get(BenchmarkDatasetRevision, case.dataset_revision_id)
-                )
-                if dataset is None or dataset.workspace_id != workspace_id:
-                    raise failure("INVALID_SCOPE", "Dataset case is unavailable in this workspace")
-            validate(
-                "scope",
-                {"workspace_id": str(workspace_id), "trial_id": str(trial_id), "generation": 1},
-            )
-            trial = BenchmarkTrial(
-                id=trial_id,
-                workspace_id=workspace_id,
+            trial = await self.create_pending(
+                db,
+                workspace_id,
+                snapshot=snapshot,
+                deadline_at=deadline_at,
                 task_id=task_id,
                 dataset_case_id=dataset_case_id,
                 profile_id=profile_id,
                 retry_of_id=retry_of_id,
-                snapshot=snapshot,
-                deadline_at=deadline_at,
-                generation=1,
-                phase="created",
-                next_seq=0,
+                trial_id=trial_id,
             )
-            db.add(trial)
-            await db.flush()
-            await append_entry(db, trial, "trial.created")
             await db.commit()
             return trial
+
+    async def create_pending(
+        self,
+        db,
+        workspace_id,
+        *,
+        snapshot,
+        deadline_at,
+        task_id=None,
+        dataset_case_id=None,
+        profile_id=None,
+        retry_of_id=None,
+        trial_id=None,
+    ):
+        """Join a product transaction without publishing a partial task/trial/job."""
+        workspace_id, trial_id = uuid.UUID(str(workspace_id)), trial_id or uuid.uuid4()
+        _json_value(snapshot)
+        if not isinstance(snapshot, dict) or len(json.dumps(snapshot).encode()) > MAX_LINE_BYTES:
+            raise failure("INVALID_SNAPSHOT", "Trial snapshot exceeds its JSON object limit")
+        now = await db.scalar(select(func.clock_timestamp()))
+        if deadline_at.tzinfo is None or not now < deadline_at <= now + timedelta(days=7):
+            raise failure("INVALID_DEADLINE", "Trial requires a future bounded UTC deadline")
+        for model, selected in [
+            (Task, task_id),
+            (BenchmarkProfile, profile_id),
+            (BenchmarkTrial, retry_of_id),
+        ]:
+            if selected is not None:
+                item = await db.get(model, selected)
+                if item is None or item.workspace_id != workspace_id:
+                    raise failure("INVALID_SCOPE", "Trial input is unavailable in this workspace")
+        if dataset_case_id is not None:
+            case = await db.get(BenchmarkDatasetCase, dataset_case_id)
+            dataset = (
+                None
+                if case is None
+                else await db.get(BenchmarkDatasetRevision, case.dataset_revision_id)
+            )
+            if dataset is None or dataset.workspace_id != workspace_id:
+                raise failure("INVALID_SCOPE", "Dataset case is unavailable in this workspace")
+        validate(
+            "scope", {"workspace_id": str(workspace_id), "trial_id": str(trial_id), "generation": 1}
+        )
+        trial = BenchmarkTrial(
+            id=trial_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            dataset_case_id=dataset_case_id,
+            profile_id=profile_id,
+            retry_of_id=retry_of_id,
+            snapshot=snapshot,
+            deadline_at=deadline_at,
+            generation=1,
+            phase="created",
+            next_seq=0,
+        )
+        db.add(trial)
+        await db.flush()
+        await append_entry(db, trial, "trial.created")
+        return trial
 
     async def claim(self, workspace_id, trial_id, controller_id):
         """Expired ownership is fenced; uncertain native sessions are never resumed."""
