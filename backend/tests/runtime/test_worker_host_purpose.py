@@ -115,6 +115,29 @@ def test_admitted_session_keeps_purpose_and_evaluator_cannot_drive(evaluation, m
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("evaluation", [False, True])
+def test_native_resource_requirements_are_selected_for_the_controller_purpose(
+    evaluation, monkeypatch
+):
+    async def scenario():
+        monkeypatch.setattr("app.benchmarks.worker_host.install_session", AsyncMock())
+        host, spec, plan = invocation(evaluation)
+        spec["case"]["requirements"] = {"resources": {"memory_mb": 8192, "cpu_cores": 4}}
+        spec["case"]["evaluation_requirements"] = {
+            "resources": {"memory_mb": 128, "cpu_cores": 0.25}
+        }
+        await host.install_plan(spec, plan)
+        assert (
+            host.store.reserve.await_args.kwargs["native_resources"]
+            == spec["case"]["evaluation_requirements" if evaluation else "requirements"][
+                "resources"
+            ]
+        )
+        assert spec["case"]["requirements"]["resources"]["memory_mb"] == 8192
+
+    asyncio.run(scenario())
+
+
 def test_retained_archive_and_spool_must_fit_the_trial_before_admission_or_download():
     async def scenario():
         host, spec, plan = invocation(True)

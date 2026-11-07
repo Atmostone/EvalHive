@@ -274,7 +274,11 @@ class RootlessWorkerHost:
             scope, plan, reserved_ids=(self.WORKER_ID,), retained_inputs=retained.grants
         )
         requirements = merged_requirements(
-            self.manifest["requirements"], spec["case"]["requirements"], plan["requirements"]
+            self.manifest["requirements"],
+            spec["case"].get("evaluation_requirements", spec["case"]["requirements"])
+            if self.purpose == "evaluation"
+            else spec["case"]["requirements"],
+            plan["requirements"],
         )
         demands = (self.worker_demand, *compiled.demands, *extra_demands)
         processes = tuple(item for item in demands if isinstance(item, ResourceDemand))
@@ -382,6 +386,8 @@ class RootlessWorkerHost:
             await self.worker_broker.detach()
         finally:
             if self.agent_gateway is not None:
-                detach_environment = getattr(self.agent_gateway.executor, "detach_environment", None)
+                detach_environment = getattr(
+                    self.agent_gateway.executor, "detach_environment", None
+                )
                 if detach_environment is not None:
                     await detach_environment()

@@ -2,6 +2,7 @@
 
 import asyncio
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,8 +22,11 @@ ARTIFACT = {
 }
 
 
-def installed(tmp_path, *, separate=False, extra=""):
-    task(tmp_path, extra + ('[verifier]\nenvironment_mode="separate"\n' if separate else ""))
+def installed(tmp_path, *, separate=False, extra="", verifier_timeout=None):
+    verifier = '[verifier]\nenvironment_mode="separate"\n' if separate else ""
+    if verifier_timeout is not None:
+        verifier += "timeout_sec=" + str(verifier_timeout) + "\n"
+    task(tmp_path, extra + verifier)
     receipt = build_receipt(tmp_path, "fixture-native", IMAGE)
     dataset = InstalledHarbor(tmp_path, receipt)
     case = receipt["cases"][0]
@@ -231,3 +235,49 @@ async def test_native_aggregation_uses_harbor_mean_and_preserves_unscored_count(
     assert result["native"]["unscored"] == 1
     assert result["expected"] == 3 and result["observed"] == 2
     await worker.close(None)
+
+
+@pytest.mark.asyncio
+async def test_separate_artifact_restoration_does_not_consume_the_native_verifier_budget(
+    tmp_path, monkeypatch
+):
+    worker, spec = installed(tmp_path, separate=True, verifier_timeout=10)
+    worker._load(spec)
+    worker.ready = True
+    clock = [100]
+    monkeypatch.setattr("evalhive_harbor.worker.time", SimpleNamespace(monotonic=lambda: clock[0]))
+    environment = SimpleNamespace(
+        empty_dirs=AsyncMock(),
+        recording_complete=True,
+        deadline=220,
+        transfers=SimpleNamespace(publish=AsyncMock()),
+    )
+    monkeypatch.setattr(worker, "_environment", lambda context, identity: environment)
+    monkeypatch.setattr(worker, "_export", AsyncMock(return_value=ARTIFACT))
+
+    async def restore(native, selected, paths):
+        assert worker.operation_deadline == 220
+        clock[0] += 30
+
+    async def verify(native, selected, paths):
+        assert worker.operation_deadline == environment.deadline == 140
+        assert native.task.config.verifier.timeout_sec == 10
+        return SimpleNamespace(rewards={"quality": 0.625})
+
+    monkeypatch.setattr("evalhive_harbor.worker.restore_artifacts", restore)
+    monkeypatch.setattr("evalhive_harbor.worker.run_verifier", verify)
+    result = await worker._evaluate(Context())
+    assert result["status"] == "completed" and result["native"]["rewards"] == {"quality": 0.625}
+    await worker.close(None)
+
+
+@pytest.mark.asyncio
+async def test_native_hardware_cannot_fall_back_to_an_unrequested_cpu_run(tmp_path):
+    worker, spec = installed(tmp_path, extra="[environment]\ngpus=1\n")
+    context = Context()
+    with pytest.raises(ProtocolError) as error:
+        await worker.handle("validate", {"spec": spec}, context)
+    assert error.value.code == "NATIVE_HARDWARE_UNAVAILABLE"
+    assert error.value.kind == "unsupported"
+    assert context.calls == []
+    await worker.close(context)

@@ -344,3 +344,10 @@ Harness profile budget and the remaining trial deadline. Prepared access cannot
 change the planned budget. Omission preserves the selected profile and parent
 limits; it does not invent a benchmark-specific timeout. The verifier retains
 its own phase budget.
+
+A case may provide `evaluation_requirements` for an independent evaluator
+controller. The execution controller continues to use `requirements` throughout
+its complete resource group. Cold evaluation uses the evaluator requirements,
+which must preserve the native verifier's own resources and capabilities.
+Omission conservatively retains the existing case requirements. This does not
+rewrite execution requirements or authorize lower limits for the original task.

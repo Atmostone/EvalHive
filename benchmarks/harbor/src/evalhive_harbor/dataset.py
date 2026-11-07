@@ -29,13 +29,16 @@ def task_path(root, relative):
 
 
 def descriptor(native, relative, dataset_id, revision):
-    return {
+    result = {
         "ref": {"dataset_id": dataset_id, "revision": revision, "case_id": relative},
         "title": relative,
         "source_digest": native.source_digest,
         "native_ref": {"path": relative, "verifier_mode": native.verifier_mode},
         "requirements": native.requirements(),
     }
+    if (requirements := native.evaluation_requirements()) is not None:
+        result["evaluation_requirements"] = requirements
+    return result
 
 
 def build_receipt(root, revision, worker_image, *, dataset_id="terminal-bench-2", task_paths=None):

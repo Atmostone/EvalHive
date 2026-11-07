@@ -295,6 +295,9 @@
         "metadata": {
           "type": "object",
           "additionalProperties": true
+        },
+        "evaluation_requirements": {
+          "$ref": "#/$defs/requirements"
         }
       },
       "required": [

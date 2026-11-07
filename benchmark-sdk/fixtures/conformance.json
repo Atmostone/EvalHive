@@ -1796,6 +1796,59 @@
         "grading_mode": "snapshot"
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "native-evaluator-requirements",
+      "kind": "case_descriptor",
+      "value": {
+        "ref": {
+          "dataset_id": "example",
+          "revision": "1",
+          "case_id": "echo"
+        },
+        "title": "Echo and verify",
+        "description": "Create an example artifact",
+        "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "native_ref": {
+          "case": "echo"
+        },
+        "requirements": {
+          "capabilities": []
+        },
+        "evaluation_requirements": {
+          "resources": {
+            "cpu_cores": 0.25,
+            "memory_mb": 128
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "invalid-evaluator-requirements",
+      "kind": "case_descriptor",
+      "value": {
+        "ref": {
+          "dataset_id": "example",
+          "revision": "1",
+          "case_id": "echo"
+        },
+        "title": "Echo and verify",
+        "description": "Create an example artifact",
+        "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "native_ref": {
+          "case": "echo"
+        },
+        "requirements": {
+          "capabilities": []
+        },
+        "evaluation_requirements": {
+          "resources": {
+            "cpu_cores": 0
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
     }
   ],
   "evaluation_spec": {

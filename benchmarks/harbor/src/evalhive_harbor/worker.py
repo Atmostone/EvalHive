@@ -78,6 +78,19 @@ class HarborConnector(Connector):
         try:
             installed = self.installed()
             native = installed.resolve(spec["case"])
+            selected_requirements = (
+                native.evaluation_requirements()
+                if spec.get("purpose") == "evaluation"
+                else native.requirements()
+            )
+            if {"hardware.gpu", "hardware.tpu"} & set(
+                (selected_requirements or {}).get("capabilities", [])
+            ):
+                raise ProtocolError(
+                    "NATIVE_HARDWARE_UNAVAILABLE",
+                    "Native hardware requires an installed provider adapter",
+                    "unsupported",
+                )
             if self.bindings is None:
                 path = self.root / "runtime.json"
                 if path.is_symlink() or path.stat().st_size > 64 * 1024**2:
@@ -509,7 +522,7 @@ class HarborConnector(Connector):
     async def _evaluate(self, context):
         if not self.ready:
             return unavailable("NATIVE_ENVIRONMENT_NOT_READY")
-        self.operation_deadline = time.monotonic() + self.native.task.config.verifier.timeout_sec
+        self.operation_deadline = time.monotonic() + self.config["prepare_timeout_seconds"]
         identity = "verifier" if self.native.verifier_mode == "separate" else "task"
         environment = self._environment(context, identity)
         paths = self.paths
@@ -519,6 +532,10 @@ class HarborConnector(Connector):
                 await environment.empty_dirs(["/logs/verifier"], chmod=True)
                 await restore_artifacts(self.native, environment, paths)
             if self.config["evaluation_mode"] != "deferred":
+                self.operation_deadline = (
+                    time.monotonic() + self.native.task.config.verifier.timeout_sec
+                )
+                environment.deadline = self.operation_deadline
                 verdict = await run_verifier(self.native, environment, paths)
                 result = {
                     "status": "completed",

@@ -94,3 +94,9 @@ parser, native verifier, file selection, artifact handling and aggregation.
 Harbor's own agent loops, cloud providers and model clients are not imported.
 The complete upstream wheel remains pinned; unused optional execution paths
 must not be enabled without installing and validating their dependencies.
+
+Separate-verifier case metadata records independent `evaluation_requirements`
+from Harbor's resolved verifier environment. Task requirements retain their
+original values. Artifact restoration uses the preparation budget; the native
+verifier timeout begins immediately before `Verifier.verify`, matching Harbor's
+separate-verifier lifecycle.

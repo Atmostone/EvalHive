@@ -17,10 +17,13 @@ from harbor.constants import MAIN_SERVICE_NAME
 from harbor.models.task.artifacts import normalize_artifact_entries
 from harbor.models.task.config import TaskConfig
 from harbor.models.task.task import Task
-from harbor.models.task.verifier_mode import resolve_task_verifier_mode
+from harbor.models.task.verifier_mode import (
+    resolve_task_verifier_mode,
+    resolve_verifier_environment_definition,
+)
 from jsonschema import Draft202012Validator
 
-from .policies import network_requirements
+from .policies import network_plan, network_requirements
 
 NATIVE_VERSION = "0.25.0"
 NATIVE_REVISION = "fdba28fc411e47e8765420a1a063b4918fce3def"
@@ -150,16 +153,67 @@ class NativeTask:
         artifacts = normalize_artifact_entries(self.task.config.artifacts)
         if any(artifact.exclude for artifact in artifacts):
             capabilities.append("harbor.artifact_excludes_v1")
-        if any(artifact.service not in {None, MAIN_SERVICE_NAME} for artifact in artifacts) or any(hook.service != MAIN_SERVICE_NAME for hook in self.task.config.verifier.collect):
+        if any(artifact.service not in {None, MAIN_SERVICE_NAME} for artifact in artifacts) or any(
+            hook.service != MAIN_SERVICE_NAME for hook in self.task.config.verifier.collect
+        ):
             capabilities.append("harbor.sidecars_v1")
         budget = self.task.config.agent.timeout_sec
         if budget is not None and (not float(budget).is_integer() or not 1 <= budget <= 86400):
             capabilities.append("agent.native_deadline_adapter")
-        if any("${" in value for value in [*environment.env.values(), *self.task.config.verifier.env.values()]):
+        if any(
+            "${" in value
+            for value in [*environment.env.values(), *self.task.config.verifier.env.values()]
+        ):
             capabilities.append("environment.host_bindings_v1")
         return {
             "resources": resources,
             "capabilities": sorted(capabilities),
+            "platform": {"os": environment.os.value},
+        }
+
+    def evaluation_requirements(self):
+        definition = resolve_verifier_environment_definition(self.task.config, self.task.paths)
+        if definition is None:
+            return None
+        environment = definition.config
+        resources = {}
+        for source, target in (
+            ("cpus", "cpu_cores"),
+            ("memory_mb", "memory_mb"),
+            ("storage_mb", "disk_mb"),
+        ):
+            value = getattr(environment, source)
+            if value is not None:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value <= 0
+                ):
+                    raise HarborConfigurationError(
+                        "Native verifier resources must be positive and finite"
+                    )
+                resources[target] = value
+        capabilities = []
+        if environment.gpus or environment.gpu_types:
+            capabilities.append("hardware.gpu")
+        if environment.tpu is not None:
+            capabilities.append("hardware.tpu")
+        policies = network_plan(self.task)
+        if policies.verifier_phase.network_mode.value == "allowlist":
+            capabilities.append("network.allowlist")
+        if policies.verifier_phase_baseline != policies.verifier_phase:
+            capabilities.append("network.dynamic_policy")
+        if (definition.directory / "docker-compose.yaml").exists():
+            capabilities.append("harbor.compose_v1")
+        if any(
+            "${" in value
+            for value in [*environment.env.values(), *self.task.config.verifier.env.values()]
+        ):
+            capabilities.append("environment.host_bindings_v1")
+        return {
+            "resources": resources,
+            "capabilities": sorted(set(capabilities)),
             "platform": {"os": environment.os.value},
         }
 
@@ -183,6 +237,7 @@ def parse_task(root):
         native = Task(root)
         result = NativeTask(native, raw, proof)
         result.requirements()
+        result.evaluation_requirements()
         return result
     except HarborConfigurationError:
         raise
