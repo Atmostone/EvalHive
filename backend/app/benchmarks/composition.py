@@ -234,6 +234,8 @@ class RootlessCoordinator:
     async def evaluation(self, store, owner):
         if owner.control_id is None:
             raise ManagedRuntimeError("Regrading requires an independent evaluation controller")
+        if self.evidence.store is not store or not callable(getattr(self.evidence, "open_verified", None)):
+            raise ManagedRuntimeError("Regrading requires its scoped verified evidence reader")
         frozen = await load_retained_installation(store, owner, self.runtime)
         factories = self._providers(store, owner)
         host = RootlessWorkerHost(

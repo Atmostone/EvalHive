@@ -165,3 +165,14 @@ def test_execution_owner_cannot_be_used_as_an_evaluation_controller(tmp_path):
     coordinator, store, owner, _, _, _ = setup(tmp_path)
     with pytest.raises(ManagedRuntimeError):
         asyncio.run(coordinator.evaluation(store, owner))
+
+
+@pytest.mark.asyncio
+async def test_missing_regrade_evidence_reader_fails_before_loading_or_starting_native_resources(tmp_path, monkeypatch):
+    coordinator, store, owner, _, _, _ = setup(tmp_path)
+    owner = replace(owner, control_id=uuid.uuid4())
+    load = AsyncMock()
+    monkeypatch.setattr("app.benchmarks.composition.load_retained_installation", load)
+    with pytest.raises(ManagedRuntimeError, match="verified evidence reader"):
+        await coordinator.evaluation(store, owner)
+    load.assert_not_awaited()
