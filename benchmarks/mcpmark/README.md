@@ -48,7 +48,7 @@ timeout is incomplete grading. The retained native result preserves this
 distinction. `MCP_MESSAGES` receives the documented normalized Harness message
 projection, not a fabricated byte-identical upstream agent transcript.
 
-The current executable runtime supports installed Filesystem categories. The
+The currently accepted native service path uses installed Filesystem categories. The
 catalog still lists the complete upstream suite; validation rejects cases whose
 initial category has not been installed. Other service catalogs are available
 for inspection but their executable resource bindings are not advertised as
@@ -61,9 +61,18 @@ must confirm all five successful template restores; upstream warnings alone
 cannot establish a valid baseline. The private-configuration helper accepts
 credentials through an owned-exec private input, writes the world's private
 configuration and a password file shared only with its PostgreSQL service, and
-returns no credential values. These components are foundations; PostgreSQL
-worker resource bindings, MCP client installation and native lifecycle acceptance
-are still pending.
+returns no credential values. PostgreSQL resource bindings and the native MCP
+client are installed; acceptance of the complete native database lifecycle is
+still pending. Its private network has no public egress, and its data volume
+explicitly preserves the native image's PostgreSQL UID through Docker copy-up.
+
+The PostgreSQL client uses `postgres-mcp==0.3.0`. Its required `pglast==7.2.0`
+release is no longer downloadable from PyPI. `Dockerfile.pglast` rebuilds version
+7.2 from the exact upstream tag and pinned parser submodule, with the complete
+source inventory checked before compilation. The source, build tools and wheel
+result are recorded in the `pglast-*.lock*` files. The task build requires a
+verified `postgres_wheels` context and checks both package dependencies and an
+actual SQL parse before accepting the image.
 
 `Dockerfile` uses the verified `native_wheel` and `runtime_wheels` build contexts.
 It installs the unmodified native wheel with `--no-deps` and only the pinned

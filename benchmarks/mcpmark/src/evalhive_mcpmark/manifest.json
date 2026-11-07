@@ -14,7 +14,7 @@
     },
     "additionalProperties": false
   },
-  "secret_schema": {"type": "object", "additionalProperties": false},
+  "secret_schema": {"type": "object", "properties": {"service_credentials": {"type": "string"}}, "additionalProperties": false},
   "capabilities": {
     "prepare": "native", "drive": "native", "capture": "native",
     "evaluate": "native", "aggregate": "unsupported", "cleanup": "native",

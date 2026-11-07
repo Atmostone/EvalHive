@@ -7,11 +7,37 @@ import json
 import os
 import stat
 import sys
+import time
 from pathlib import Path
+from urllib.parse import quote
 
 CONNECTION = Path("/evalhive-connection/connection.json")
 CLIENTS = Path("/opt/mcp-clients/node_modules/.bin")
 MAX_FRAME = 8 * 1024**2
+DIAGNOSTICS = Path("/tmp/evalhive-mcpmark-client.jsonl")
+
+
+def trace(event, **fields):
+    """Record bounded process states only, never protocol bodies or credentials."""
+    try:
+        descriptor = os.open(
+            DIAGNOSTICS,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+        )
+        with os.fdopen(descriptor, "ab") as stream:
+            info = os.fstat(stream.fileno())
+            if stat.S_ISREG(info.st_mode) and info.st_size < 64 * 1024:
+                stream.write(
+                    (
+                        json.dumps(
+                            {"pid": os.getpid(), "time": time.monotonic(), "event": event, **fields}
+                        )
+                        + "\n"
+                    ).encode()
+                )
+    except OSError:
+        pass
 
 
 def fixed_roots_frame(line):
@@ -36,6 +62,7 @@ def fixed_roots_frame(line):
 
 
 async def filesystem_proxy(argv, environment):
+    trace("proxy.start")
     process = await asyncio.create_subprocess_exec(
         *argv,
         env=environment,
@@ -45,6 +72,7 @@ async def filesystem_proxy(argv, environment):
         limit=MAX_FRAME + 1,
     )
     reader = asyncio.StreamReader(limit=MAX_FRAME + 1)
+    trace("server.spawned", child_pid=process.pid)
     transport, _ = await asyncio.get_running_loop().connect_read_pipe(
         lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
     )
@@ -53,16 +81,24 @@ async def filesystem_proxy(argv, environment):
         while line := await reader.readline():
             frame = fixed_roots_frame(line)
             if frame is not None:
+                if json.loads(line).get("method") == "initialize":
+                    trace("client.initialize")
                 process.stdin.write(frame)
                 await process.stdin.drain()
+        trace("client.closed")
         process.stdin.close()
 
     async def responses():
+        first = True
         while line := await process.stdout.readline():
             if not line.endswith(b"\n") or len(line) > MAX_FRAME:
                 raise ValueError("Native MCP response exceeds its byte budget")
+            if first:
+                trace("server.responded")
+                first = False
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
+        trace("server.closed", exit_code=process.returncode)
 
     tasks = [asyncio.create_task(requests()), asyncio.create_task(responses())]
     try:
@@ -72,7 +108,11 @@ async def filesystem_proxy(argv, environment):
         if tasks[0] in done:
             await asyncio.wait_for(tasks[1], 5)
         return await asyncio.wait_for(process.wait(), 5)
+    except Exception as error:
+        trace("proxy.error", exception=type(error).__name__)
+        raise
     finally:
+        trace("proxy.stopping", exit_code=process.returncode)
         transport.close()
         for task in tasks:
             task.cancel()
@@ -100,6 +140,36 @@ def launch_config(connection):
         if not target.is_relative_to(root) or target == root or ".." in target.parts:
             raise ValueError("Prepared filesystem directory is unavailable")
         return [str(CLIENTS / "mcp-server-filesystem"), str(target)], {}
+    if service == "postgres":
+        if set(config) != {
+            "host",
+            "port",
+            "username",
+            "password",
+            "current_database",
+            "database_url",
+        }:
+            raise ValueError("Prepared PostgreSQL settings are invalid")
+        if (
+            config["host"] != "postgres"
+            or config["port"] != 5432
+            or config["username"] != "postgres"
+        ):
+            raise ValueError("Prepared PostgreSQL is outside its owned service")
+        if not all(
+            isinstance(config[name], str) and config[name]
+            for name in ("password", "current_database")
+        ):
+            raise ValueError("Prepared PostgreSQL credentials or database are unavailable")
+        uri = (
+            "postgresql://postgres:"
+            + quote(config["password"], safe="")
+            + "@postgres:5432/"
+            + quote(config["current_database"], safe="")
+        )
+        return ["/opt/postgres-client/bin/postgres-mcp", "--access-mode=unrestricted"], {
+            "DATABASE_URI": uri
+        }
     raise ValueError("Native MCP client runtime is not installed for this service")
 
 
@@ -119,7 +189,8 @@ def main():
             code = asyncio.run(filesystem_proxy(argv, {**os.environ, **private_env}))
             raise SystemExit(code)
         os.execve(argv[0], argv, {**os.environ, **private_env})
-    except Exception:
+    except Exception as error:
+        trace("client.failed", exception=type(error).__name__)
         sys.stderr.write("Prepared native MCP client could not start\n")
         raise SystemExit(1) from None
 

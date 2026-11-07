@@ -48,6 +48,10 @@ class MCPMarkConnector(Connector):
         try:
             installed = self.installed()
             task = installed.resolve(spec["case"])
+            postgres = task.service == "postgres"
+            assets = {"working", "connection", "world", "task"} | (
+                {"network", "data", "secret", "postgres"} if postgres else set()
+            )
             if self.bindings is None:
                 path = self.root / "runtime.json"
                 if path.is_symlink() or path.stat().st_size > 1024**2:
@@ -56,14 +60,15 @@ class MCPMarkConnector(Connector):
             if (
                 self.bindings.get("format_version") != "1.0"
                 or self.bindings.get("source_digest") != installed.receipt["source_digest"]
-                or set(self.bindings.get("assets", {}))
-                != {"working", "connection", "world", "task"}
-                or task.service != "filesystem"
+                or set(self.bindings.get("assets", {})) != assets
+                or task.service not in {"filesystem", "postgres"}
                 or not any(
-                    asset.get("id") == "filesystem." + task.category_id
+                    asset.get("id")
+                    == ("postgres.backups" if postgres else "filesystem." + task.category_id)
                     for asset in installed.receipt["provenance"].get("initial_assets", [])
                 )
                 or spec["models"]
+                or set(spec["credential_refs"]) != ({"service_credentials"} if postgres else set())
                 or spec.get("purpose") == "evaluation"
             ):
                 raise NativeConfigurationError(
@@ -127,10 +132,42 @@ class MCPMarkConnector(Connector):
             }
             for name in ("world", "task")
         )
+        if self.task.service == "postgres":
+            working, connection, world, task = resources
+            extras = [
+                {
+                    "id": name,
+                    "kind": kind,
+                    "provider": PROVIDER,
+                    "config": {"asset_id": self.bindings["assets"][name]},
+                }
+                for name, kind in (("network", "network"), ("data", "volume"), ("secret", "volume"))
+            ]
+            postgres = {
+                "id": "postgres",
+                "kind": "container",
+                "provider": PROVIDER,
+                "config": {
+                    "asset_id": self.bindings["assets"]["postgres"],
+                    "storage": {"data": "data", "secret": "secret"},
+                    "network": "network",
+                    "network_aliases": ["postgres"],
+                },
+                "depends_on": ["data", "secret", "network"],
+            }
+            world["config"]["storage"]["secret"] = "secret"
+            for member, alias in ((world, "world"), (task, "task")):
+                member["config"].update(network="network", network_aliases=[alias])
+                member["depends_on"].append("network")
+            world["depends_on"].append("secret")
+            task["depends_on"].append("postgres")
+            resources = [working, connection, *extras, world, postgres, task]
         return {
             "resources": resources,
             "agent": self._agent(),
-            "requirements": {},
+            "requirements": {"capabilities": ["host.volume_copy_up_v1"]}
+            if self.task.service == "postgres"
+            else {},
             "grading_mode": "environment",
             "outputs": [
                 {
@@ -147,7 +184,7 @@ class MCPMarkConnector(Connector):
                 {
                     "id": "working",
                     "resource_id": "task",
-                    "path": "/opt/native/.mcpmark_backups",
+                    "path": self.bindings.get("working_path", "/opt/native/.mcpmark_backups"),
                     "visibility": "user",
                     "required": False,
                     "stage": "capture",
@@ -174,7 +211,7 @@ class MCPMarkConnector(Connector):
             durable_host=True,
         )
 
-    async def execute(self, context, module, args):
+    async def execute(self, context, module, args, *, private_refs=None):
         result = await self.broker(
             context,
             "exec",
@@ -184,6 +221,7 @@ class MCPMarkConnector(Connector):
                 "timeout_seconds": self.remaining(),
                 "deadline_policy": "inherit",
                 "process_policy": "stop_after_command",
+                **({"private_input_refs": private_refs} if private_refs else {}),
             },
             resource="world",
         )
@@ -214,11 +252,38 @@ class MCPMarkConnector(Connector):
         started = await self.control(context, "begin", {"method": method, "params": params or {}})
         while True:
             result = await self.control(context, "poll", {"operation_id": started["operation_id"]})
-            if result["effects"]:
-                raise ProtocolError(
-                    "NATIVE_EFFECT_UNAVAILABLE",
-                    "Native service requires an uninstalled transport",
-                    "unsupported",
+            for effect in result["effects"]:
+                if effect["operation"] != "postgres.restore" or self.task.service != "postgres":
+                    raise ProtocolError(
+                        "NATIVE_EFFECT_UNAVAILABLE",
+                        "Native service requires an uninstalled transport",
+                        "unsupported",
+                    )
+                payload = effect["payload"]
+                receipt = await self.broker(
+                    context,
+                    "exec",
+                    {
+                        "argv": [
+                            "sh",
+                            "-c",
+                            'IFS= read -r PGPASSWORD < /postgres-secret/password; export PGPASSWORD; exec "$@"',
+                            "native-pg-restore",
+                            *payload["argv"],
+                        ],
+                        "timeout_seconds": min(payload["timeout_seconds"], self.remaining()),
+                        "deadline_policy": "inherit",
+                        "process_policy": "stop_after_command",
+                    },
+                    resource="postgres",
+                )
+                await self.control(
+                    context,
+                    "resume",
+                    {
+                        "effect_id": effect["id"],
+                        "result": {key: receipt[key] for key in ("exit_code", "stdout", "stderr")},
+                    },
                 )
             if result["state"] == "completed":
                 return result["result"]
@@ -235,6 +300,13 @@ class MCPMarkConnector(Connector):
         for resource in self._plan()["resources"]:
             result = await self.broker(context, "allocate", {"resource_id": resource["id"]})
             self.handles[resource["id"]] = result["handle"]
+        if self.task.service == "postgres":
+            await self.execute(
+                context,
+                "world_credentials",
+                [],
+                private_refs={"EVALHIVE_SERVICE_CREDENTIALS": "service_credentials"},
+            )
         result = await self.native(context, "prepare", {"case": self.spec["case"]})
         if result["prompt"] != self._agent()["prompt"]:
             raise ProtocolError(

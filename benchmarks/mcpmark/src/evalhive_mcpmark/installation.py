@@ -12,7 +12,7 @@ from pathlib import Path
 
 from evalhive_benchmark.installation import dataset_key
 
-from .assets import filesystem_asset
+from .assets import filesystem_asset, postgres_asset
 from .dataset import CONNECTOR_ID, CONNECTOR_VERSION, build_receipt
 from .native import NativeConfigurationError, fingerprint, inventory
 
@@ -45,7 +45,7 @@ def container(image, role, memory, cpu, disk, **settings):
     }
 
 
-def declarations(receipt, worker_image, task_image):
+def declarations(receipt, worker_image, task_image, *, postgres_image=None):
     common = [{"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}]
     assets = {
         "mcpmark.worker": container(
@@ -111,6 +111,62 @@ def declarations(receipt, worker_image, task_image):
             },
         ),
     }
+    service = receipt["provenance"]["service"]
+    names = ["working", "connection", "world", "task"]
+    if service == "postgres":
+        image_pin(postgres_image)
+        names += ["network", "data", "secret", "postgres"]
+        assets.update(
+            {
+                "mcpmark.network": {"kind": "network", "egress": False},
+                "mcpmark.data": {"kind": "volume", "disk_mb": 1024},
+                "mcpmark.secret": {"kind": "volume", "disk_mb": 1},
+                "mcpmark.postgres": container(
+                    postgres_image,
+                    "service",
+                    512,
+                    0.25,
+                    256,
+                    user="999:999",
+                    command=[
+                        "sh",
+                        "-c",
+                        "count=0; while [ ! -s /postgres-secret/password ]; do count=$((count+1)); [ $count -le 600 ] || exit 1; sleep 0.2; done; exec docker-entrypoint.sh postgres -c shared_buffers=32MB -c max_connections=20",
+                    ],
+                    environment={
+                        "POSTGRES_USER": "postgres",
+                        "POSTGRES_DB": "postgres",
+                        "POSTGRES_PASSWORD_FILE": "/postgres-secret/password",
+                    },
+                    mounts=[
+                        *common,
+                        {
+                            "file_id": "initial-state",
+                            "target": "/opt/native/postgres_state",
+                            "read_only": True,
+                        },
+                    ],
+                    storage_slots={
+                        "data": {
+                            "target": "/var/lib/postgresql/data",
+                            "read_only": False,
+                            "no_copy": False,
+                        },
+                        "secret": {"target": "/postgres-secret", "read_only": True},
+                    },
+                ),
+            }
+        )
+        world, task = assets["mcpmark.world"], assets["mcpmark.task"]
+        world["mounts"].append(
+            {"file_id": "initial-state", "target": "/opt/native/postgres_state", "read_only": True}
+        )
+        world["storage_slots"]["secret"] = {"target": "/postgres-secret", "read_only": False}
+        for member in (world, task):
+            member["storage_slots"]["working"]["target"] = "/workspace"
+        task["outputs"]["working"]["path"] = "/workspace"
+    elif service != "filesystem":
+        raise NativeConfigurationError("Native executable service is not installed")
     return (
         {
             "format_version": "1.0",
@@ -123,9 +179,10 @@ def declarations(receipt, worker_image, task_image):
         {
             "format_version": "1.0",
             "source_digest": receipt["source_digest"],
-            "assets": {
-                name: "mcpmark." + name for name in ("working", "connection", "world", "task")
-            },
+            "assets": {name: "mcpmark." + name for name in names},
+            "working_path": "/workspace"
+            if service == "postgres"
+            else "/opt/native/.mcpmark_backups",
         },
     )
 
@@ -135,12 +192,14 @@ def install(
     output,
     *,
     initial_root,
-    categories,
+    categories=None,
     revision,
     worker_image,
     task_image,
     suite="standard",
     dataset_id=None,
+    service="filesystem",
+    postgres_image=None,
 ):
     """Publish an installation atomically; downloading is an earlier admin operation."""
     source, output, initial_root = map(
@@ -151,21 +210,34 @@ def install(
     if (
         output.exists()
         or output.is_symlink()
-        or not categories
-        or len(categories) != len(set(categories))
+        or service not in {"filesystem", "postgres"}
+        or service == "filesystem"
+        and (not categories or len(categories) != len(set(categories)))
+        or service == "postgres"
+        and categories
     ):
         raise NativeConfigurationError("Native installation output or categories are invalid")
-    assets = [filesystem_asset(initial_root, category) for category in sorted(categories)]
+
+    def inspect_initial(root):
+        return (
+            [filesystem_asset(root, category) for category in sorted(categories)]
+            if service == "filesystem"
+            else [postgres_asset(root)]
+        )
+
+    assets = inspect_initial(initial_root)
     receipt = build_receipt(
         source,
         revision,
         worker_image,
-        service="filesystem",
+        service=service,
         suite=suite,
         dataset_id=dataset_id,
         assets=assets,
     )
-    resources, runtime = declarations(receipt, worker_image, task_image)
+    resources, runtime = declarations(
+        receipt, worker_image, task_image, postgres_image=postgres_image
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".evalhive-mcpmark-", dir=output.parent))
     try:
@@ -178,14 +250,19 @@ def install(
                 shutil.copyfileobj(origin, destination)
         initial = staging / "initial-state"
         initial.mkdir(mode=0o700)
-        for category in sorted(categories):
-            shutil.copytree(initial_root / category, initial / category, copy_function=shutil.copy2)
+        if service == "filesystem":
+            for category in sorted(categories):
+                shutil.copytree(
+                    initial_root / category, initial / category, copy_function=shutil.copy2
+                )
+        else:
+            for record in assets[0]["files"]:
+                shutil.copy2(initial_root / record["path"], initial / record["path"])
         if (
-            inventory(data / "native", "filesystem", suite) != receipt["provenance"]["files"]
-            or inventory(source, "filesystem", suite) != receipt["provenance"]["files"]
-            or [filesystem_asset(initial, category) for category in sorted(categories)] != assets
-            or [filesystem_asset(initial_root, category) for category in sorted(categories)]
-            != assets
+            inventory(data / "native", service, suite) != receipt["provenance"]["files"]
+            or inventory(source, service, suite) != receipt["provenance"]["files"]
+            or inspect_initial(initial) != assets
+            or inspect_initial(initial_root) != assets
         ):
             raise NativeConfigurationError("Native installation inputs changed while copying")
         write_json(data / "installation.json", receipt)
@@ -228,7 +305,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("source", "output", "initial-root", "revision", "worker-image", "task-image"):
         parser.add_argument("--" + name, required=True)
-    parser.add_argument("--categories", nargs="+", required=True)
+    parser.add_argument("--categories", nargs="+")
+    parser.add_argument("--service", default="filesystem", choices=["filesystem", "postgres"])
+    parser.add_argument("--postgres-image")
     parser.add_argument("--suite", default="standard")
     parser.add_argument("--dataset-id")
     args = vars(parser.parse_args())
