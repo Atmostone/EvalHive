@@ -209,6 +209,23 @@ private inputs or changing execution state. Its terminal receipt requires a
 finished owned lifecycle; queue state never authorizes resource-broker effects.
 These storage primitives are separate from the product launch/dispatch wiring.
 
+An installed connector can register distinct runtime packages for its dataset
+revisions. The connector root retains its single `manifest.json` and the complete
+`datasets/` receipt catalog. An optional `installations.json` contains
+`format_version: "1.0"` and an `installations` object mapping SDK
+`dataset_key(dataset_id, revision)` values to contained relative package
+directories. Each selected package contains its own matching manifest and dataset
+receipt, plus its `resources.json` and `files.json`. This supports different
+environment types through one connector without benchmark-name branches.
+Standalone packages without an index retain their direct layout.
+
+`app.benchmarks.installations.resolve_package` checks the registered receipt,
+worker image, package containment and matching metadata without importing a
+worker. Missing runtime registration does not remove cases from the metadata
+catalog. A metadata digest binds the selected resource/file declarations for
+launch composition; resource compilation and native file verification still run
+before model access. Only administrator-installed files can populate this index.
+
 The neutral rootless runtime now preserves image startup/workspace semantics and
 checks workspace/trial/session/generation ownership for containers, networks and
 native execs. Its static supervisor and SDK process transport retain task state
