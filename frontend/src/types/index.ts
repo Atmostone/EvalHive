@@ -1657,8 +1657,8 @@ export interface ExperimentPreview {
   n_cases: number
   n_runs_per_cell: number
   total_runs: number
-  est_cost_usd: number
-  est_duration_minutes: number
+  est_cost_usd: number | null
+  est_duration_minutes: number | null
   warnings: string[]
 }
 

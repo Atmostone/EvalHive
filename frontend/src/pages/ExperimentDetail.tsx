@@ -18,6 +18,7 @@ import {
 import { experimentsApi, qualityApi } from '@/api/client'
 import RunAnalysis from '@/components/quality/RunAnalysis'
 import SummaryRadarPanel from '@/components/quality/SummaryRadarPanel'
+import NativeBenchmarkExperiment from '@/components/experiments/NativeBenchmarkExperiment'
 import type { ExperimentConfig, ExperimentDetail as ExperimentDetailType, ExperimentReport, ExperimentTrustAxis } from '@/types'
 import { StatusPill } from './Experiments'
 import { ArrowLeft, Copy, Download, Pause, Play, RefreshCw, RotateCcw, Square, Trash2, X } from 'lucide-react'
@@ -2179,6 +2180,18 @@ function RunsTab({ id, detail, filter }: {
 }
 
 export default function ExperimentDetail() {
+  const { id = '' } = useParams()
+  const query = useQuery({ queryKey: ['experiment', id], queryFn: () => experimentsApi.get(id),
+    refetchInterval: current => current.state.data?.dataset.source === 'benchmark_sdk'
+      && (['running', 'paused'].includes(current.state.data.status) || !current.state.data.completed_at && current.state.data.status === 'cancelled') ? 2000 : false,
+  })
+  if (query.error) return <p role="alert" className="p-6 text-red-600">{query.error.message}</p>
+  if (!query.data) return <p className="p-6 text-sm text-gray-500">Loading experiment…</p>
+  if (query.data.dataset.source === 'benchmark_sdk') return <NativeBenchmarkExperiment detail={query.data} />
+  return <LegacyExperimentDetail />
+}
+
+function LegacyExperimentDetail() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()

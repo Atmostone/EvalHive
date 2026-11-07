@@ -965,3 +965,49 @@ or models. Group admission uses `BENCHMARK_GROUP_MEMORY_MB` (4096 by default) an
 limits remain independent. `BENCHMARK_RESOURCE_FINALIZERS` and the explicit
 `BENCHMARK_LINUX_CAPABILITIES` allowlist determine advertised host capabilities.
 Disabling new execution still permits recovery of existing owned resources.
+
+## Native experiment matrices
+
+The existing experiment API accepts `dataset.source: "benchmark_sdk"`, a
+workspace `profile_id`, `dataset_revision_id`, and optional `case_ids` containing
+registered case UUIDs. Configurations require `harness_profile_id` and may supply
+`model_id`, `harness_config`, `benchmark_config`, `limits`, and `agent_max_turns`.
+The same fields are supported as cartesian axes. Unknown settings, orchestration,
+template-relative tool overrides, external judge overrides and legacy service
+lanes are rejected before execution. Native matrices use serial admission.
+An unverifiable dollar cap is rejected; per-trial request and resource budgets
+remain explicit. Preview cost and duration are null when unknown.
+
+The draft transaction freezes a private `BenchmarkExperimentPlan` per
+configuration/case pair. Its workspace and experiment are bound by a composite
+foreign key. Database triggers reject changes to its public snapshot, condition
+digest and encrypted native inputs. Full SHA-256 condition identities include
+the selected manifests, source receipts, applied configurations and model
+routes; secret values are excluded. Existing 32-character comparison columns
+retain 128-bit projections while the plans and configuration pins keep the full
+digests. Historical matrices and fingerprints are not rewritten.
+
+Starting the matrix creates pending cells. Claiming a cell binds fresh trial,
+task and harness-attempt identities to a copy of its frozen inputs and uses the
+same atomic launch transaction as Work. The execution deadline begins at this
+claim rather than while the draft or earlier cells wait. Profile edits do not
+change the frozen conditions; connection authorization and key rotation are
+still checked at execution. No benchmark implementation is imported by this
+matrix service.
+
+Pausing stops new claims while the current run finishes. Cancellation skips
+unclaimed cells, requests cancellation of the owned trial and retains the
+in-flight cell until cleanup and Task/Job projection finish. The matrix stores
+native correctness separately from execution success and leaves rubric and
+trajectory scores unset. Model cost remains null when its observations are
+incomplete. Ordinary task judging and legacy benchmark environment paths do not
+run for these cells.
+
+Experiments offers an installed-native-benchmark form with case selection,
+multiple harness profiles and repetitions. Its result view opens the same
+native trial panel as Work, with native verdicts, metrics, files and lifecycle
+states. The API additionally supports bounded multi-case selections and
+configuration axes. Limits are 24 configurations, 300 cases, 20 repetitions and
+1000 total runs. Existing task-dataset experiment forms and historical result
+views remain available. Editing, retiring or cloning native conditions requires
+an explicit frozen-plan lineage; ordinary mutation helpers cannot rewrite them.

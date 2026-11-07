@@ -5,6 +5,7 @@ import { benchmarksApi, experimentsApi, harnessesApi, providersApi, registryApi,
 import type { ExperimentCreateBody } from '@/api/client'
 import type { Experiment, ExperimentStatus, LLMModel, RegistryEntry } from '@/types'
 import { FlaskConical, Plus, Trash2, X } from 'lucide-react'
+import NativeBenchmarkExperimentForm from '@/components/experiments/NativeBenchmarkExperimentForm'
 
 export const STATUS_COLORS: Record<ExperimentStatus, string> = {
   draft: 'bg-gray-100 text-gray-600',
@@ -84,6 +85,7 @@ function parseJsonl(text: string): { cases: Record<string, unknown>[]; errors: s
 }
 
 function ExperimentForm({ onClose }: { onClose: () => void }) {
+  const [nativeMode, setNativeMode] = useState(false)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
 
@@ -243,7 +245,13 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="p-1 rounded hover:bg-gray-100"><X className="h-5 w-5" /></button>
         </div>
 
-        <div className="space-y-4">
+        <label className="block text-sm mb-4">Experiment type
+          <select aria-label="Experiment type" value={nativeMode ? 'benchmark_sdk' : 'tasks'} onChange={event => setNativeMode(event.target.value === 'benchmark_sdk')}
+            className="block w-full border rounded px-2 py-1.5 mt-1">
+            <option value="tasks">Task dataset</option><option value="benchmark_sdk">Installed native benchmark</option>
+          </select>
+        </label>
+        {nativeMode ? <NativeBenchmarkExperimentForm onClose={onClose} /> : <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label htmlFor="exp-name" className="block text-sm font-medium text-gray-700 mb-1">
@@ -601,7 +609,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
             <div className="border rounded-lg p-3 bg-blue-50 text-sm">
               <span className="font-medium">{preview.total_runs} runs</span>
               <span className="text-gray-600"> = {preview.n_configs} configs × {preview.n_cases} cases × {preview.n_runs_per_cell} · </span>
-              <span className="text-gray-700">est. ${preview.est_cost_usd.toFixed(2)} · ~{preview.est_duration_minutes} min</span>
+              <span className="text-gray-700">est. {preview.est_cost_usd == null ? 'unknown cost' : `$${preview.est_cost_usd.toFixed(2)}`} · {preview.est_duration_minutes == null ? 'unknown duration' : `~${preview.est_duration_minutes} min`}</span>
               {preview.warnings.map((w) => (
                 <div key={w} className="text-amber-700 text-xs mt-1">⚠ {w}</div>
               ))}
@@ -625,7 +633,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
             className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium">
             {createMutation.isPending ? 'Creating…' : 'Create Experiment (draft)'}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   )
