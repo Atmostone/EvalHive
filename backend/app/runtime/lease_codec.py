@@ -85,6 +85,7 @@ def decode_lease(data: dict) -> ResourceLease:
                 "entrypoint": None if raw["entrypoint"] is None else tuple(raw["entrypoint"]),
                 "command": None if raw["command"] is None else tuple(raw["command"]),
                 "network_aliases": tuple(raw["network_aliases"]),
+                "capabilities": tuple(raw.get("capabilities", [])),
                 "network": network(raw["network"]),
                 "namespace": container(raw["namespace"]),
                 "storage": tuple(

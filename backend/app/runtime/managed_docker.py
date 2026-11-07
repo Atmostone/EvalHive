@@ -201,6 +201,8 @@ class RootlessDockerRuntime:
         # is inside the UncertainRuntimeError boundary used by durable recovery.
         resource_id = _resource_id(spec.resource_id)
         spec.quota.validate(self.policy)
+        if not set(spec.capabilities) <= set(self.policy.allowed_capabilities):
+            raise ManagedRuntimeError("Native Linux capabilities exceed runtime policy")
         if spec.role not in {"environment", "service", "worker", "grader"}:
             raise ManagedRuntimeError("Unsupported managed process role")
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", spec.image_id):
@@ -291,6 +293,7 @@ class RootlessDockerRuntime:
                 cpu_quota=int(spec.quota.cpu_cores * 100000),
                 pids_limit=spec.quota.pids,
                 cap_drop=["ALL"],
+                cap_add=list(spec.capabilities),
                 security_opt=["no-new-privileges:true"],
                 init=True,
                 stdin_open=True,

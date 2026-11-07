@@ -866,3 +866,19 @@ Omission keeps the Task's native default. Registered runtime bundles are
 traversable by unprivileged task users and mounted read-only. An older private
 installation root is retained for historical references; new installations use
 a separate `.readable-v1` directory rather than changing that source in place.
+# Registered Linux capabilities
+
+Container assets may declare a `capabilities` list. `RuntimePolicy.allowed_capabilities`
+is an explicit server allowlist and defaults to empty. Registration cannot grant
+permissions outside it, and a worker plan cannot add permissions to an asset.
+The supported names are restricted to Docker's ordinary default container set;
+`ALL`, `SYS_ADMIN` and `NET_ADMIN` are rejected. Execution retains rootless Docker,
+`cap_drop=ALL` and `no-new-privileges`, then adds only the declared allowed set.
+Stored leases retain the set; older leases default to no additional capabilities.
+
+Packages must declare `host.linux_capabilities_v1` and the required individual
+`linux.capability.<lowercase-name>` capabilities. Server capability discovery must
+reflect the configured allowlist. Supporting the API does not authorize an
+undeclared package or a configuration supplied by an agent. See the official
+[Docker capability reference](https://docs.docker.com/engine/containers/run/#runtime-privilege-and-linux-capabilities)
+for the native default permissions.

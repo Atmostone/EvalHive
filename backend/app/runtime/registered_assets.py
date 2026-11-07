@@ -85,6 +85,12 @@ CONTAINER = obj(
         "command": ARGV,
         "workdir": TEXT,
         "user": TEXT,
+        "capabilities": {
+            "type": "array",
+            "maxItems": 14,
+            "uniqueItems": True,
+            "items": {"type": "string", "maxLength": 64},
+        },
         "agent_process_policy": {"enum": ["stop_after_agent", "retain_until_cleanup"]},
         "agent_user": TEXT,
         "environment": {
@@ -284,7 +290,10 @@ class RootlessAssets:
             mounts=tuple(mounts),
             quota=quota,
             readonly_root=asset.get("readonly_root", False),
+            capabilities=tuple(asset.get("capabilities", [])),
         )
+        if not set(spec.capabilities) <= set(self.runtime.policy.allowed_capabilities):
+            raise ManagedRuntimeError("Native Linux capabilities exceed runtime policy")
         if spec.workdir is not None:
             absolute_path(spec.workdir)
         demand = ResourceDemand(

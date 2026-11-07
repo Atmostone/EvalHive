@@ -19,6 +19,39 @@ class UncertainRuntimeError(ManagedRuntimeError):
     """Reconcile the durable intent before retrying a mutating runtime operation."""
 
 
+CONTAINER_CAPABILITIES = frozenset(
+    {
+        "AUDIT_WRITE",
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "FSETID",
+        "KILL",
+        "MKNOD",
+        "NET_BIND_SERVICE",
+        "NET_RAW",
+        "SETFCAP",
+        "SETGID",
+        "SETPCAP",
+        "SETUID",
+        "SYS_CHROOT",
+    }
+)
+
+
+def container_capabilities(values):
+    if (
+        not isinstance(values, (tuple, list))
+        or len(values) > len(CONTAINER_CAPABILITIES)
+        or any(
+            not isinstance(value, str) or value not in CONTAINER_CAPABILITIES for value in values
+        )
+        or len(set(values)) != len(values)
+    ):
+        raise ManagedRuntimeError("Unsupported container Linux capabilities")
+    return tuple(sorted(values))
+
+
 def absolute_path(value: str) -> PurePosixPath:
     if not isinstance(value, str) or not value or "\0" in value:
         raise ManagedRuntimeError("Invalid runtime path")
@@ -73,6 +106,12 @@ class RuntimePolicy:
     max_memory_mb: int = 2048
     max_cpu_cores: float = 1.0
     max_pids: int = 1024
+    allowed_capabilities: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(
+            self, "allowed_capabilities", container_capabilities(self.allowed_capabilities)
+        )
 
 
 @dataclass(frozen=True)
@@ -172,6 +211,10 @@ class ContainerSpec:
     namespace: ManagedContainer | None = None
     readonly_root: bool = False
     storage: tuple[VolumeMount, ...] = ()
+    capabilities: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "capabilities", container_capabilities(self.capabilities))
 
 
 @dataclass(frozen=True)
