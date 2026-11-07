@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from evalhive_harbor.artifacts import collect_artifacts, restore_artifacts
 from evalhive_harbor.environment import BrokerEnvironment
 from evalhive_harbor.native import parse_task
 from evalhive_harbor.verification import run_verifier
@@ -51,3 +52,11 @@ async def test_official_verifier_uses_real_broker_commands_and_trusted_file_tran
     assert "native checker output" in paths.test_stdout_path.read_text()
     assert any(payload.get("environment") == {"NATIVE_SCORE": "0.625"} for payload in calls)
     assert environment.recording_complete
+    Path("/logs/artifacts").mkdir(parents=True, exist_ok=True)
+    Path("/logs/artifacts/answer.txt").write_text("native recorded artifact")
+    collected = await collect_artifacts(native, environment, paths)
+    assert collected["complete"]
+    assert collected["manifest"][0]["status"] == "ok"
+    Path("/logs/artifacts/answer.txt").unlink()
+    await restore_artifacts(native, environment, paths)
+    assert Path("/logs/artifacts/answer.txt").read_text() == "native recorded artifact"

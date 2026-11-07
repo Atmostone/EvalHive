@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ class BrokerEnvironment:
         self.provider, self.handle = provider, handle
         self.cwd, self.deadline, self.transfers, self.os = cwd, deadline, transfers, task_os
         self.default_user, self.sequence = None, 0
+        self.request_prefix = "native.environment." + hashlib.sha256(handle.encode()).hexdigest()
         self.recording_complete = True
 
     @contextmanager
@@ -47,7 +49,7 @@ class BrokerEnvironment:
         if service not in {None, MAIN_SERVICE_NAME}:
             raise ProtocolError("NATIVE_SERVICE_UNAVAILABLE", "Native service requires its installed adapter", "unsupported")
 
-    async def exec(self, *, command, env=None, user=None, timeout_sec=None):
+    async def exec(self, command, *, env=None, user=None, timeout_sec=None):
         if self.os != TaskOS.LINUX:
             raise ProtocolError("NATIVE_OS_UNAVAILABLE", "Native execution requires an installed OS adapter", "unsupported")
         remaining = self.deadline - time.monotonic()
@@ -69,7 +71,7 @@ class BrokerEnvironment:
         self.sequence += 1
         result = await self.context.broker(
             self.scope, self.provider, "exec", payload, handle=self.handle,
-            request_id="native.environment.exec." + str(self.sequence),
+            request_id=self.request_prefix + ".exec." + str(self.sequence),
             timeout=remaining + 5, durable_host=True,
         )
         if (
@@ -106,6 +108,25 @@ class BrokerEnvironment:
     async def path_is_dir(self, path, *, service=None, user=None):
         self._service(service)
         return await self.transfers.path_is_dir(str(path))
+
+    async def service_is_dir(self, path, *, service=None, user=None):
+        return await self.path_is_dir(path, service=service, user=user)
+
+    async def service_download_dir(self, source_dir, target_dir, *, service=None):
+        await self.download_dir(source_dir=source_dir, target_dir=target_dir, service=service)
+
+    async def service_download_file(self, source_path, target_path, *, service=None):
+        await self.download_file(source_path=source_path, target_path=target_path, service=service)
+
+    async def service_download_dir_with_exclusions(self, *, source_dir, target_dir, exclude, service=None):
+        self._service(service)
+        raise ProtocolError("NATIVE_ARTIFACT_EXCLUDES_UNAVAILABLE", "Native tar exclusion rules require an installed adapter", "unsupported")
+
+    async def service_exec(self, command, *, service=None, cwd=None, **options):
+        self._service(service)
+        if cwd is not None and str(cwd) != self.cwd:
+            raise ProtocolError("NATIVE_WORKDIR_UNAVAILABLE", "Native service working directory differs from its binding", "unsupported")
+        return await self.exec(command=command, **options)
 
     async def ensure_dirs(self, dirs, *, chmod=True):
         if dirs:

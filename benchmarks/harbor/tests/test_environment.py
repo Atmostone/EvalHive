@@ -42,7 +42,7 @@ async def test_native_command_user_environment_and_workdir_use_only_the_scoped_b
     assert options["handle"] == "owned-handle" and options["durable_host"]
     await environment.exec(command="next", user="root", timeout_sec=1)
     assert context.broker.await_args.args[3]["user"] == "root"
-    assert context.broker.await_args.kwargs["request_id"] == "native.environment.exec.2"
+    assert context.broker.await_args.kwargs["request_id"] == environment.request_prefix + ".exec.2"
 
 
 @pytest.mark.asyncio
@@ -89,3 +89,13 @@ async def test_native_file_transfer_semantics_are_delegated_without_host_path_lo
     assert transfers.download.await_count == 2
     assert transfers.download.await_args.kwargs["protect"] == ["reward.json", "reward.txt"]
     assert not environment.is_path_mounted("/logs/verifier", tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_distinct_native_environments_do_not_reuse_the_same_durable_command_identity():
+    first, context, transfers = setup()
+    second = BrokerEnvironment(context, first.scope, first.provider, "other-owned-handle", cwd=first.cwd, deadline=first.deadline, transfers=transfers)
+    await first.exec(command="first")
+    await second.exec(command="second")
+    identifiers = [call.kwargs["request_id"] for call in context.broker.await_args_list]
+    assert len(set(identifiers)) == 2

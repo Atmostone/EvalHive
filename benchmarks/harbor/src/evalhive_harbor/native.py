@@ -13,10 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harbor import __version__
+from harbor.constants import MAIN_SERVICE_NAME
+from harbor.models.task.artifacts import normalize_artifact_entries
 from harbor.models.task.config import TaskConfig
 from harbor.models.task.task import Task
 from harbor.models.task.verifier_mode import resolve_task_verifier_mode
 from jsonschema import Draft202012Validator
+
+from .policies import network_requirements
 
 NATIVE_VERSION = "0.25.0"
 NATIVE_REVISION = "fdba28fc411e47e8765420a1a063b4918fce3def"
@@ -136,10 +140,23 @@ class NativeTask:
             capabilities.append("hardware.tpu")
         if self.task.config.steps:
             capabilities.append("harbor.multi_step_v1")
-        if environment.network_mode.value == "allowlist":
-            capabilities.append("network.allowlist")
-        if environment.network_mode.value == "no-network":
-            capabilities.append("host.model_gateway_v1")
+        capabilities.extend(network_requirements(self.task))
+        if environment.mcp_servers:
+            capabilities.append("harbor.native_mcp_v1")
+        if environment.skills_dir:
+            capabilities.append("harbor.native_skills_v1")
+        if (self.task.paths.environment_dir / "docker-compose.yaml").exists():
+            capabilities.append("harbor.compose_v1")
+        artifacts = normalize_artifact_entries(self.task.config.artifacts)
+        if any(artifact.exclude for artifact in artifacts):
+            capabilities.append("harbor.artifact_excludes_v1")
+        if any(artifact.service not in {None, MAIN_SERVICE_NAME} for artifact in artifacts) or any(hook.service != MAIN_SERVICE_NAME for hook in self.task.config.verifier.collect):
+            capabilities.append("harbor.sidecars_v1")
+        budget = self.task.config.agent.timeout_sec
+        if budget is not None and (not float(budget).is_integer() or not 1 <= budget <= 86400):
+            capabilities.append("agent.native_deadline_adapter")
+        if any("${" in value for value in [*environment.env.values(), *self.task.config.verifier.env.values()]):
+            capabilities.append("environment.host_bindings_v1")
         return {
             "resources": resources,
             "capabilities": sorted(capabilities),

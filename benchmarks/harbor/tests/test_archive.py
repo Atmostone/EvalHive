@@ -32,8 +32,8 @@ def test_native_upload_rejects_large_logical_files_and_links(tmp_path):
     with pytest.raises(TransferError, match="logical"):
         pack_directory(source, tmp_path / "large.tar", limit=1024)
     (source / "large").unlink()
-    (source / "link").symlink_to("missing")
-    with pytest.raises(TransferError, match="unsupported"):
+    (source / "link").symlink_to("../outside")
+    with pytest.raises(TransferError, match="unsafe"):
         pack_directory(source, tmp_path / "link.tar")
 
 
@@ -76,6 +76,22 @@ def test_internal_relative_links_are_preserved(tmp_path):
     unpack_directory(source, tmp_path / "destination")
     assert (tmp_path / "destination/alias").is_symlink()
     assert (tmp_path / "destination/alias").read_text() == "ok"
+
+
+def test_staging_preserves_internal_symbolic_and_hard_link_artifacts(tmp_path):
+    import os
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "answer").write_text("native")
+    (source / "alias").symlink_to("answer")
+    os.link(source / "answer", source / "hardlink")
+    packed = tmp_path / "payload.tar"
+    pack_directory(source, packed)
+    unpack_directory(packed, tmp_path / "destination")
+    assert (tmp_path / "destination/alias").is_symlink()
+    assert (tmp_path / "destination/alias").read_text() == "native"
+    assert (tmp_path / "destination/answer").stat().st_ino == (tmp_path / "destination/hardlink").stat().st_ino
 
 
 @pytest.mark.parametrize("entries", [

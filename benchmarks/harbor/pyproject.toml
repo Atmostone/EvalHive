@@ -11,3 +11,6 @@ dependencies = ["evalhive-benchmark==0.1.0", "harbor==0.25.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+evalhive_harbor = ["manifest.json", "tools.lock.json"]

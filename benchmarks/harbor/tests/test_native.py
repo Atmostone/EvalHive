@@ -65,6 +65,16 @@ def test_no_network_requires_separate_model_access_without_widening_task_egress(
     assert parsed.raw_config["environment"]["allow_internet"] is False
 
 
+def test_native_agent_phase_overrides_cannot_disappear_into_the_environment_baseline(tmp_path):
+    parsed = parse_task(task(tmp_path, '[agent]\nnetwork_mode="no-network"\n'))
+    assert {"host.model_gateway_v1", "network.dynamic_policy"} <= set(parsed.requirements()["capabilities"])
+
+
+def test_native_verifier_allowlist_and_phase_change_are_explicit_requirements(tmp_path):
+    parsed = parse_task(task(tmp_path, '[verifier]\nnetwork_mode="allowlist"\nallowed_hosts=["fixture.invalid"]\n'))
+    assert {"network.allowlist", "network.dynamic_policy"} <= set(parsed.requirements()["capabilities"])
+
+
 def test_native_source_proof_rejects_links_special_files_and_oversize_bytes(tmp_path):
     root = task(tmp_path)
     (root / "external").symlink_to(tmp_path / "not-a-task-file")

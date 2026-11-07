@@ -54,7 +54,11 @@ def pack_directory(source, destination, *, limit=MAX_ARCHIVE_BYTES):
                     raise TransferError("Native transfer exceeds its entry budget")
                 path = Path(child.path)
                 info = child.stat(follow_symlinks=False)
-                if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):
+                if stat.S_ISLNK(info.st_mode):
+                    link = os.readlink(path)
+                    if os.path.isabs(link) or not (path.parent / link).resolve().is_relative_to(source.resolve()):
+                        raise TransferError("Native upload contains an unsafe link")
+                elif not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):
                     raise TransferError("Native upload contains unsupported filesystem entries")
                 logical += info.st_size if stat.S_ISREG(info.st_mode) else 0
                 if logical > limit:
@@ -67,7 +71,7 @@ def pack_directory(source, destination, *, limit=MAX_ARCHIVE_BYTES):
         with tarfile.open(fileobj=BoundedWriter(stream, limit), mode="w|") as archive:
             for path in members(source):
                 info = archive.gettarinfo(str(path), arcname=path.relative_to(source).as_posix())
-                if not info.isdir() and not info.isfile():
+                if not info.isdir() and not info.isfile() and not info.issym() and not info.islnk():
                     raise TransferError("Native upload changed its filesystem type")
                 info.uid = info.gid = 0
                 info.uname = info.gname = ""
@@ -112,12 +116,24 @@ def unpack_directory(source, destination, *, limit=MAX_ARCHIVE_BYTES):
         # This permits native relative aliases while making validation independent
         # of extraction order and of future link targets.
         links = {PurePosixPath(member.name) for member in entries if member.issym() or member.islnk()}
+        by_name = {PurePosixPath(member.name): member for member in entries}
         for member in entries:
             name = PurePosixPath(member.name)
             if any(parent in links for parent in name.parents):
                 raise TransferError("Native archive entry descends through a link")
             if member.issym() or member.islnk():
                 target = name.parent / member.linkname if member.issym() else PurePosixPath(member.linkname)
-                if any(parent in links for parent in (target, *target.parents)):
+                if any(parent in links for parent in target.parents):
                     raise TransferError("Native archive contains chained links")
+                seen = set()
+                while target in links:
+                    linked = by_name[target]
+                    if linked.issym() or target in seen:
+                        raise TransferError("Native archive contains chained symbolic links")
+                    seen.add(target)
+                    target = PurePosixPath(linked.linkname)
+                    if any(parent in links for parent in target.parents):
+                        raise TransferError("Native archive contains chained link parents")
+                if member.islnk() and (target not in by_name or not by_name[target].isfile()):
+                    raise TransferError("Native hard link does not resolve to a recorded regular file")
         archive.extractall(destination, members=entries, filter="data")
