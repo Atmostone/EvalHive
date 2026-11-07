@@ -13,3 +13,11 @@ The current package contains parsing and installation foundations only. It is no
 an enabled server installation or a completed runtime connector. Native image
 registration, service planning, readiness, shared/separate verifier execution,
 trusted reward collection and engineering acceptance are tracked in SPA-146.
+
+`dataset.build_receipt` produces canonical SDK installation metadata from native
+task directories. `InstalledHarbor.resolve` checks the complete case descriptor,
+source bytes and unchanged native requirements before returning Harbor's parsed
+Task. Private tests, solutions and instructions are not copied into the public
+catalog. Nested native paths retain their native case identities; references
+are validated independently before filesystem access. The caller must register exact worker and task images separately;
+a dataset receipt does not build images or enable execution.
