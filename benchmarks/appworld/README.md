@@ -2,8 +2,11 @@
 
 The package targets native revision `42b5bcf3cd334fee33f0c37c02070a9f5807add5`,
 package version `0.2.0.dev0`, and official data version `0.2.0`. Native execution
-and cancellation persistence have passed offline container probes. Full
-Pi/OpenCode coordinator acceptance is in progress.
+and cancellation persistence have passed offline container probes. Full Pi
+coordinator acceptance has passed with an original dev task, the 469-tool public
+MCP catalog, persisted API effects and the native evaluator. OpenCode coordinator
+acceptance is in progress. Offline model responses exercise infrastructure and
+do not claim to solve the original task.
 
 `native.lock.json` records the official data bundle, source Git LFS objects and
 the unmodified wheel built with the upstream build backend. Materialize the
