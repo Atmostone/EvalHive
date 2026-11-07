@@ -75,5 +75,6 @@ async def test_native_user_simulator_uses_only_its_host_bound_role():
         assert output.usage["prompt_tokens"] == 7
         assert len(calls) == 1
         assert bound.arguments["num_retries"] == 0 and state.messages
+        assert bound.arguments["temperature"] == 0.0
     finally:
         bound.close()

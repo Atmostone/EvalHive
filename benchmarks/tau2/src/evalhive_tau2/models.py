@@ -101,6 +101,7 @@ class BoundModel:
             max_retries=0,
         )
         self.arguments = {
+            "temperature": 0.0,
             **config,
             "api_key": "host-bound-role",
             "api_base": "http://auxiliary.invalid/v1",
