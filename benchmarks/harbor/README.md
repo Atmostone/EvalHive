@@ -118,3 +118,10 @@ archives are written and sealed in one bounded staging operation with the same
 SHA-256/size proof; larger transfers retain chunk acknowledgements and limits.
 Archive creation, size and hash metadata share one task command. Native verifier
 deadlines and agent background-service retention remain unchanged.
+
+`compose.read_compose` is an administrator-side parser for bounded native service
+descriptions. It preserves argv, literal environment values, service-start
+dependencies, scoped named volumes and resource minima; it performs no host
+interpolation or Docker operation. Cycles, duplicate keys and unsupported native
+options fail explicitly. Service binding/planning integration remains pending;
+the parser alone does not enable Compose execution.

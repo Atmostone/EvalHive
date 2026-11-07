@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = ["evalhive-benchmark==0.1.0", "harbor==0.25.0"]
 
 [project.optional-dependencies]
-admin = ["docker==7.1.0"]
+admin = ["docker==7.1.0", "PyYAML==6.0.3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
