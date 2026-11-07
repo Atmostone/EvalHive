@@ -65,6 +65,9 @@ assert not Path('/evalhive-stage').joinpath('private-gold').exists()
 os.umask(0o077)
 Path('/workspace/result.txt').write_text('Driven through the Benchmark SDK\n')
 Path('/logs/artifacts/answer.txt').write_text('Native artifact\n')
+sidecar=Path('/workspace/sidecar.txt')
+if sidecar.exists():
+ sidecar.write_text(sidecar.read_text()+'Agent changed sidecar\n')
 if os.fork()==0:
  os.setsid()
  descriptor=os.open('/dev/null',os.O_RDWR)
@@ -123,7 +126,7 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
     else:
         config += 'user="1000"\n'
     if services_enabled:
-        config = config.replace('network_mode="no-network"', 'network_mode="public"', 1)
+        config = config.replace('network_mode="no-network"', 'network_mode="public"')
         config = config.replace(
             'artifacts=["/workspace/result.txt"]',
             'artifacts=["/workspace/result.txt",{source="/workspace/sidecar.txt",service="database"}]',
@@ -172,10 +175,10 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
         checker += "from urllib.request import urlopen\nassert urlopen('http://127.0.0.1:8767',timeout=2).read()==b'Owned native service'\n"
     if services_enabled:
         checker += (
-            "assert Path('/workspace/sidecar.txt').read_text()=='Native sidecar artifact\\n'\n"
+            "assert Path('/workspace/sidecar.txt').read_text()=='Native sidecar artifact\\nAgent changed sidecar\\n'\n"
         )
         if mode == "shared":
-            checker += "assert urlopen('http://database:8768/sidecar.txt',timeout=2).read()==b'Native sidecar artifact\\n'\n"
+            checker += "assert urlopen('http://database:8768/sidecar.txt',timeout=2).read()==b'Native sidecar artifact\\nAgent changed sidecar\\n'\n"
     checker += "Path('/logs/verifier/reward.json').write_text(json.dumps({'quality':0.625}))\n"
     (native / "tests/test.sh").write_text("#!/bin/bash\npython - <<'PY'\n" + checker + "PY\n")
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=20)
@@ -224,11 +227,16 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
             }
         }
         images["volumes"] = {"task": {"shared": 64}}
+        if mode == "separate":
+            # Upstream falls back to environment/docker-compose.yaml when no
+            # verifier-specific image/build definition exists under tests/.
+            images["services"]["verifier"] = deepcopy(images["services"]["task"])
+            images["volumes"]["verifier"] = {"shared": 64}
     installed = local / "installed"
     receipt = install(
         source,
         installed,
-        revision="native-services-2" if services_enabled else "native-engineering-1",
+        revision="native-services-3" if services_enabled else "native-engineering-1",
         worker_image=worker_id,
         image_bindings={"native-engineering": images},
         transfer_tools=tools,
@@ -526,7 +534,7 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                 "wall_time_seconds": 240,
                 "memory_mb": 2048,
                 "cpu_cores": 1.5,
-                "disk_mb": 1536,
+                "disk_mb": 2048 if services_enabled and mode == "separate" else 1536,
             },
         }
         try:
@@ -571,7 +579,7 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                 if services_enabled:
                     assert (
                         archive.extractfile("artifacts/workspace/sidecar.txt").read()
-                        == b"Native sidecar artifact\n"
+                        == b"Native sidecar artifact\nAgent changed sidecar\n"
                     )
             async with AsyncSession(engine) as db:
                 evaluation = await db.scalar(

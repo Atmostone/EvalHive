@@ -140,5 +140,6 @@ containers start only when grading begins, after task artifact collection and
 shutdown. Sidecar artifacts are restored into the verifier main container using
 Harbor's native replay rules. Pi and OpenCode shared-verifier engineering checks
 have passed with a healthchecked HTTP sidecar, a shared volume and a native
-UID-1000 file with mode 0600. Separate service replay acceptance is tracked in
-SPA-146; the shared checks alone do not assert it.
+UID-1000 file with mode 0600. Pi separate verification and fresh cold regrade
+also reproduced the native reward after restoring an agent-modified sidecar
+file into a new verifier group. The original trial journal remained unchanged.
