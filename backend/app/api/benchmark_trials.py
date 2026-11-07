@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import AsyncExitStack
 from typing import Literal
 
 from evalhive_benchmark import ProtocolError
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from starlette.background import BackgroundTask
 
 from app.api.benchmark_sdk import SafeValidationRoute
 from app.auth.dependencies import get_current_workspace, require_role
-from app.benchmarks.evidence import reference
+from app.benchmarks.evidence import CHUNK_BYTES, _io, reference
 from app.benchmarks.launch import queue_execution
 from app.benchmarks.private_store import PrivateStore
 from app.benchmarks.trials import TrialStore
@@ -37,6 +40,15 @@ def get_trial_store():
     if not secret:
         raise HTTPException(503, "Private benchmark storage is not configured")
     return TrialStore(database.engine, PrivateStore(secret))
+
+
+def get_public_evidence(store=Depends(get_trial_store)):
+    from app.benchmarks.product_runtime import evidence_store
+
+    try:
+        return evidence_store(store)
+    except Exception:
+        raise HTTPException(503, "Benchmark evidence storage is unavailable") from None
 
 
 class TrialLimits(BaseModel):
@@ -254,6 +266,61 @@ async def read_artifacts(
         {"id": str(row.id), "artifact": reference(row), "created_at": row.created_at}
         for row in rows
     ]
+
+
+@router.get("/{trial_id}/artifacts/{artifact_id}/download")
+async def download_artifact(
+    trial_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    evidence=Depends(get_public_evidence),
+):
+    await scoped_trial(db, workspace, trial_id)
+    row = await db.scalar(
+        select(BenchmarkArtifact).where(
+            BenchmarkArtifact.id == artifact_id,
+            BenchmarkArtifact.trial_id == trial_id,
+            BenchmarkArtifact.workspace_id == workspace.id,
+            BenchmarkArtifact.visibility.in_(("user", "agent")),
+        )
+    )
+    if row is None:
+        raise HTTPException(404, "Benchmark artifact not found")
+    artifact = reference(row)
+    lifetime = AsyncExitStack()
+    try:
+        spool = await lifetime.enter_async_context(
+            evidence.open_verified(
+                workspace.id, trial_id, artifact, visibilities={"user", "agent"}, db=db
+            )
+        )
+    except (ProtocolError, ValueError, OSError):
+        await lifetime.aclose()
+        raise HTTPException(
+            409, "Benchmark artifact bytes are unavailable or failed verification"
+        ) from None
+    except BaseException:
+        await lifetime.aclose()
+        raise
+
+    async def chunks():
+        try:
+            while data := await _io(lambda: spool.read(CHUNK_BYTES)):
+                yield data
+        finally:
+            await lifetime.aclose()
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{artifact_id}.bin"',
+            "Content-Length": str(artifact["size_bytes"]),
+            "X-Content-Type-Options": "nosniff",
+        },
+        background=BackgroundTask(lifetime.aclose),
+    )
 
 
 @router.get("/{trial_id}/usage")

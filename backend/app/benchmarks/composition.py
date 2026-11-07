@@ -106,6 +106,7 @@ class RootlessCoordinator:
         limits=None,
         runner_policy=None,
         resource_finalizers=False,
+        group_policy=None,
     ):
         validate("manifest", provider_manifest)
         if provider_manifest["kind"] != "environment_provider":
@@ -116,6 +117,7 @@ class RootlessCoordinator:
         if type(resource_finalizers) is not bool:
             raise ManagedRuntimeError("Resource finalization requires an explicit host choice")
         self.resource_finalizers = resource_finalizers
+        self.group_policy = group_policy
 
     def _providers(self, store, owner):
         if self.evidence.store is not store:
@@ -174,6 +176,7 @@ class RootlessCoordinator:
         profile_id=None,
         model_gateway=False,
         auxiliary_models=None,
+        redaction_values=(),
     ):
         if owner.control_id is not None:
             raise ManagedRuntimeError("Agent execution requires an execution controller")
@@ -197,7 +200,13 @@ class RootlessCoordinator:
             for key, value in credentials.items()
         ):
             raise ManagedRuntimeError("Harness credentials require a private string map")
-        private_values = tuple(value for value in credentials.values() if value)
+        if not isinstance(redaction_values, (tuple, list)) or any(
+            not isinstance(value, str) for value in redaction_values
+        ):
+            raise ManagedRuntimeError("Additional private values require an explicit string list")
+        private_values = tuple(
+            value for value in (*credentials.values(), *redaction_values) if value
+        )
         route, private_credentials = (
             model_connection(harness_spec, credentials) if model_gateway else (None, credentials)
         )
@@ -273,6 +282,7 @@ class RootlessCoordinator:
             host_auxiliary_disk_mb=1 if route else 0,
             startup_seconds=self.limits.phase_seconds,
             resource_finalizers=self.resource_finalizers,
+            group_policy=self.group_policy,
         )
         return self._driver(host, factories, TrialDriver)
 
@@ -300,5 +310,17 @@ class RootlessCoordinator:
             else None,
             startup_seconds=self.limits.phase_seconds,
             resource_finalizers=self.resource_finalizers,
+            group_policy=self.group_policy,
         )
         return self._driver(host, factories, RegradeDriver)
+
+    def recovery(self, store, owner):
+        """Reconcile persisted leases without loading a current benchmark package."""
+        from app.benchmarks.recovery_host import RecoveryHost
+
+        host = RecoveryHost(store, owner, self.runtime, self.provider["id"], self.evidence)
+        return self._driver(
+            host,
+            self._providers(store, owner),
+            RegradeDriver if owner.control_id is not None else TrialDriver,
+        )

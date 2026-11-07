@@ -228,7 +228,13 @@ async def enqueue_command(
     db: AsyncSession = Depends(get_db),
     _role=Depends(require_role("owner", "admin", "member")),
 ):
-    await scoped_attempt(db, workspace, attempt_id)
+    from app.benchmarks.task_routing import require_ordinary_task
+    from app.models.task import Task
+
+    attempt = await scoped_attempt(db, workspace, attempt_id)
+    task = await db.get(Task, attempt.task_id)
+    if task is not None:
+        require_ordinary_task(task)
     body = await bounded_json(request)
     try:
         if (

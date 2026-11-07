@@ -384,6 +384,8 @@ async def finish_interrupted_attempt(db, attempt_id, reason, *, cleanup_confirme
 
 
 async def reconcile_attempts(db):
+    from app.benchmarks.task_routing import ordinary_tasks
+
     runtime = get_process_runtime()
     attempts = list(
         await db.execute(
@@ -395,6 +397,7 @@ async def reconcile_attempts(db):
             )
             .join(Task, Task.current_attempt_id == ExecutionAttempt.id)
             .where(
+                ordinary_tasks(),
                 or_(
                     ExecutionAttempt.status.in_(["created", "running", "stopping"]),
                     ExecutionAttempt.status.in_(TERMINAL)

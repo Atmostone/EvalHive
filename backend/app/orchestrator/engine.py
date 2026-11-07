@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api._resolve_model import resolve_workspace_model
 from app.api.settings import get_setting
 from app.api.templates import template_to_dict
+from app.benchmarks.task_routing import is_benchmark_task, ordinary_tasks
 from app.database import async_session
 from app.models.experiment import ExperimentRun
 from app.models.task import Task, TaskStatus
@@ -123,6 +124,8 @@ async def _spawn_sdk_task(db, task, template=None):
 
 async def process_ready_task(db: AsyncSession, task: Task):
     """Process a single Ready task: decompose or select template + spawn agent."""
+    if is_benchmark_task(task):
+        return
     logger.info(f"Processing task {task.id}: {task.title}")
 
     from app.harnesses.launch import execution_mode, selected_template
@@ -396,6 +399,7 @@ async def check_timed_out_tasks():
                     Task.status == TaskStatus.IN_PROGRESS.value,
                     Task.started_at.isnot(None),
                     Task.current_attempt_id.is_(None),
+                    ordinary_tasks(),
                 )
             )
             tasks = result.scalars().all()
@@ -446,6 +450,9 @@ async def orchestrator_loop():
 
     while True:
         try:
+            from app.benchmarks.dispatch import benchmark_tick
+
+            benchmark_busy = await benchmark_tick()
             async with async_session() as db:
                 # Find tasks with status=ready, prioritized, deps satisfied
                 priority_order = case(
@@ -457,7 +464,7 @@ async def orchestrator_loop():
                 )
                 result = await db.execute(
                     select(Task.id, Task.depends_on)
-                    .where(Task.status == TaskStatus.READY.value)
+                    .where(Task.status == TaskStatus.READY.value, ordinary_tasks())
                     .order_by(priority_order, Task.created_at)
                 )
                 candidates = result.all()
@@ -479,7 +486,7 @@ async def orchestrator_loop():
                         picked_id = cand_id
                         break
 
-                if picked_id is not None:
+                if picked_id is not None and not benchmark_busy:
                     # Re-fetch with row lock; SKIP LOCKED so concurrent orchestrators
                     # never pick the same row.
                     locked = (
@@ -488,6 +495,7 @@ async def orchestrator_loop():
                             .where(
                                 Task.id == picked_id,
                                 Task.status == TaskStatus.READY.value,
+                                ordinary_tasks(),
                             )
                             .with_for_update(skip_locked=True)
                         )
