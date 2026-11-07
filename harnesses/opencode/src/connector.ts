@@ -558,15 +558,35 @@ export class OpenCodeConnector implements Connector {
       this.stopped = true;
       context.signal.removeEventListener('abort', abort);
       streamAbort.abort();
-      await events;
-      await this.interrupt();
-      if (server) await stopServer(server.proc);
-      await observer.close();
-      await resourceSet?.close();
-      await modelGateway?.close();
+      let cleanupFailed = false;
+      const cleanup = async (stage: string, operation: () => Promise<unknown> | void) => {
+        try { await operation(); }
+        catch (error) {
+          cleanupFailed = true;
+          const code = object(error).code;
+          output.native('connector.cleanup_failure', {
+            stage,
+            name: error instanceof Error ? error.name.slice(0, 80) : 'Error',
+            code: typeof code === 'string' && /^[A-Z_]{1,64}$/.test(code) ? code : 'UNKNOWN',
+          });
+        }
+      };
+      await cleanup('event_stream', async () => { await events; });
+      await cleanup('session_abort', () => this.interrupt());
+      // Close native MCP clients while the server can still supervise their children.
+      if (this.client) await Promise.allSettled(Object.keys(plan.mcp).map(name =>
+        this.client!.mcp.disconnect({name}, {throwOnError: true, signal: AbortSignal.timeout(5000)})));
+      await cleanup('server', async () => { if (server) await stopServer(server.proc); });
+      await cleanup('observer', () => observer.close());
+      await cleanup('external_resources', async () => { await resourceSet?.close(); });
+      await cleanup('model_gateway', async () => { await modelGateway?.close(); });
       this.client = undefined;
       this.sessionId = undefined;
-      rmSync(state, { recursive: true, force: true });
+      await cleanup('state_directory', () => rmSync(state, {
+        recursive: true, force: true, maxRetries: 5, retryDelay: 100,
+      }));
+      await output.drain().catch(() => {});
+      if (cleanupFailed) throw new ProtocolError('OPENCODE_CLEANUP_FAILED', 'OpenCode cleanup did not complete');
     }
   }
 

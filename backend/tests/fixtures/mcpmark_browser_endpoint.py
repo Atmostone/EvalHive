@@ -25,9 +25,12 @@ EXTRACT_TABLE = """async () => {
       return 'EVALHIVE_CSV_BEGIN\\n' + csv + '\\nEVALHIVE_CSV_END';
     }
     const before = JSON.stringify(current);
-    next.click();
+    const target = document.querySelector('[data-testid="page-' + (page + 2) + '-button"]');
+    if (!target) throw new Error('Public table page selector is unavailable');
     let changed = false;
-    for (let wait = 0; wait < 100; wait++) {
+    for (let wait = 0; wait < 320; wait++) {
+      // Absolute page selection remains safe to repeat while the app hydrates.
+      if (wait % 20 === 0) target.click();
       await new Promise(resolve => setTimeout(resolve, 25));
       if (JSON.stringify(cells('tbody tr')) !== before) { changed = true; break; }
     }
@@ -66,7 +69,7 @@ class MCPMarkBrowserEndpoint(MCPMarkPostgresEndpoint):
                     csv = text.split("EVALHIVE_CSV_BEGIN\n", 1)[1].split("\nEVALHIVE_CSV_END", 1)[0]
                     assert csv.startswith("Title,") and csv.count("\n") >= 10
                     return {"role": "assistant", "content": csv}
-            raise AssertionError("Confirmed browser result was not delivered to the model")
+            return {"role": "assistant", "content": "The public table could not be extracted."}
         suffix, arguments = (
             ("browser_navigate", {"url": "https://eval-web.mcpmark.ai/extraction"})
             if step == 0

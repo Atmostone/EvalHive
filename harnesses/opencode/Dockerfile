@@ -22,6 +22,14 @@ FROM build AS test
 COPY harnesses/shared harnesses/shared
 CMD ["npm", "test", "--prefix", "/opt/evalhive/harnesses/opencode"]
 
+FROM test AS conformance
+RUN --network=none npm test --prefix /opt/evalhive/harnesses/opencode \
+    && mkdir /conformance \
+    && printf 'Native OpenCode connector conformance passed.\n' > /conformance/result.txt
+
+FROM scratch AS conformance-result
+COPY --from=conformance /conformance/ /
+
 FROM build AS production-dependencies
 RUN npm prune --omit=dev --omit=optional --prefix harnesses/opencode && npm prune --omit=dev --prefix sdk/typescript
 

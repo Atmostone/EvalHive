@@ -1,6 +1,6 @@
 {
   "name": "@evalhive/harness-opencode",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "EvalHive connector for the official OpenCode server and SDK",
   "exports": {

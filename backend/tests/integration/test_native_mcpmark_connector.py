@@ -5,6 +5,7 @@ import io
 import json
 import os
 import tarfile
+import traceback
 import uuid
 from contextlib import suppress
 from copy import deepcopy
@@ -284,6 +285,20 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
                 model_gateway=True,
             )
             host = controller.host
+            original_install_plan = host.install_plan
+
+            async def observed_install_plan(*args, **kwargs):
+                try:
+                    return await original_install_plan(*args, **kwargs)
+                except Exception:
+                    (local / "engineering-plan-failure.txt").write_text(
+                        traceback.format_exc()
+                        .replace(key, "[redacted]")
+                        .replace(db_password, "[redacted]")
+                    )
+                    raise
+
+            host.install_plan = observed_install_plan
             original_capture = controller._capture
 
             async def observed_capture(channel):
