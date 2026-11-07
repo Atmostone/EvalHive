@@ -46,7 +46,9 @@ class BrokerTransfers:
     The stage is writable only by the private service, never by the task.
     """
 
-    def __init__(self, task_exec, stage_exec, *, loader="ld-musl-x86_64.so.1", temporary=None, read_user="0"):
+    def __init__(
+        self, task_exec, stage_exec, *, loader="ld-musl-x86_64.so.1", temporary=None, read_user="0"
+    ):
         if not re.fullmatch(r"ld-musl-[a-z0-9_]+\.so\.1", loader):
             raise TransferError("Native transfer loader is invalid")
         self.task_exec, self.stage_exec = task_exec, stage_exec
@@ -54,10 +56,19 @@ class BrokerTransfers:
         self.download_remaining = MAX_ARCHIVE_BYTES
         self.read_user = str(read_user or "0")
 
-    async def _task(self, script, *, user="0"):
+    async def _task(self, script, *, user="0", arguments=()):
         result = await self.task_exec(
-            [TOOLS + "/" + self.loader, TOOLS + "/busybox", "ash", "-c", script],
-            user=user, environment={"LD_PRELOAD": "", "LD_LIBRARY_PATH": ""},
+            [
+                TOOLS + "/" + self.loader,
+                TOOLS + "/busybox",
+                "ash",
+                "-c",
+                script,
+                "harbor-transfer",
+                *arguments,
+            ],
+            user=user,
+            environment={"LD_PRELOAD": "", "LD_LIBRARY_PATH": ""},
         )
         if result.get("exit_code") != 0:
             raise FilesystemOperationError("Native filesystem operation failed")
@@ -69,11 +80,20 @@ class BrokerTransfers:
         return shlex.join([TOOLS + "/" + self.loader, TOOLS + "/busybox", *arguments])
 
     async def _stage(self, operation, payload):
-        result = await self.stage_exec([
-            "/opt/venv/bin/python", "-m", "evalhive_harbor.staging", operation,
-            json.dumps(payload, separators=(",", ":")),
-        ])
-        if result.get("exit_code") != 0 or result.get("stdout_truncated") or result.get("stderr_truncated"):
+        result = await self.stage_exec(
+            [
+                "/opt/venv/bin/python",
+                "-m",
+                "evalhive_harbor.staging",
+                operation,
+                json.dumps(payload, separators=(",", ":")),
+            ]
+        )
+        if (
+            result.get("exit_code") != 0
+            or result.get("stdout_truncated")
+            or result.get("stderr_truncated")
+        ):
             raise TransferError("Private native staging operation failed")
         return json.loads(result["stdout"])
 
@@ -84,10 +104,14 @@ class BrokerTransfers:
             proof = pack_directory(source_dir, archive)
             small = proof["size_bytes"] <= CHUNK_BYTES
             if small:
-                sealed = await self._stage("put", {
-                    "id": identity, **proof,
-                    "data": base64.b64encode(archive.read_bytes()).decode(),
-                })
+                sealed = await self._stage(
+                    "put",
+                    {
+                        "id": identity,
+                        **proof,
+                        "data": base64.b64encode(archive.read_bytes()).decode(),
+                    },
+                )
             else:
                 await self._stage("create", {"id": identity})
             try:
@@ -95,12 +119,18 @@ class BrokerTransfers:
                     with archive.open("rb") as stream:
                         offset = 0
                         while data := stream.read(CHUNK_BYTES):
-                            receipt = await self._stage("write", {
-                                "id": identity, "offset": offset,
-                                "data": base64.b64encode(data).decode(),
-                            })
+                            receipt = await self._stage(
+                                "write",
+                                {
+                                    "id": identity,
+                                    "offset": offset,
+                                    "data": base64.b64encode(data).decode(),
+                                },
+                            )
                             if receipt.get("written") != len(data):
-                                raise TransferError("Native staging did not acknowledge the complete chunk")
+                                raise TransferError(
+                                    "Native staging did not acknowledge the complete chunk"
+                                )
                             offset += len(data)
                     sealed = await self._stage("seal", {"id": identity, **proof})
                 remote = "/evalhive-stage/" + identity + ".tar"
@@ -112,10 +142,56 @@ class BrokerTransfers:
 
     async def upload(self, *, source_dir, target_dir):
         target_dir = absolute_path(target_dir)
+        with tempfile.TemporaryDirectory(dir=self.temporary, prefix="harbor-inline-") as temporary:
+            archive = Path(temporary) / "payload.tar"
+            proof = pack_directory(source_dir, archive)
+            if proof["size_bytes"] <= CHUNK_BYTES:
+                encoded = base64.b64encode(archive.read_bytes()).decode()
+                chunks = [
+                    encoded[offset : offset + 4096] for offset in range(0, len(encoded), 4096)
+                ]
+                remote = "/tmp/.evalhive-harbor-upload-" + uuid.uuid4().hex
+                payload = remote + "/payload.tar"
+                script = (
+                    "umask 077; "
+                    + self._tool("mkdir", "--", remote)
+                    + " || exit $?; "
+                    + self._tool("printf", "%s")
+                    + ' "$@" | '
+                    + self._tool("base64", "-d")
+                    + " > "
+                    + shlex.quote(payload)
+                    + " && "
+                    + self._tool("test")
+                    + ' "$('
+                    + self._tool("stat", "-c", "%s", payload)
+                    + ')" = '
+                    + str(proof["size_bytes"])
+                    + " && "
+                    + self._tool("sha256sum", payload)
+                    + " > "
+                    + shlex.quote(remote + "/proof")
+                    + " && read -r native_sha native_path < "
+                    + shlex.quote(remote + "/proof")
+                    + " && "
+                    + self._tool("test")
+                    + ' "$native_sha" = '
+                    + shlex.quote(proof["sha256"])
+                    + " && umask 022 && "
+                    + self._tool("mkdir", "-p", "--", target_dir)
+                    + " && "
+                    + self._tool("tar", "-xf", payload, "-C", target_dir)
+                    + "; native_status=$?; "
+                    + self._tool("rm", "-rf", "--", remote)
+                    + '; exit "$native_status"'
+                )
+                await self._task(script, arguments=chunks)
+                return
 
         async def extract(identity, remote):
             await self._task(
-                self._tool("mkdir", "-p", "--", target_dir) + " && "
+                self._tool("mkdir", "-p", "--", target_dir)
+                + " && "
                 + self._tool("tar", "-xf", remote, "-C", target_dir)
             )
 
@@ -131,18 +207,27 @@ class BrokerTransfers:
 
     async def upload_file(self, *, source_path, target_path):
         target = PurePosixPath(absolute_path(target_path))
-        with tempfile.TemporaryDirectory(dir=self.temporary, prefix="harbor-upload-file-") as temporary:
+        with tempfile.TemporaryDirectory(
+            dir=self.temporary, prefix="harbor-upload-file-"
+        ) as temporary:
             shutil.copy2(source_path, Path(temporary) / target.name)
             await self.upload(source_dir=temporary, target_dir=str(target.parent))
 
     async def path_is_dir(self, path):
         path = absolute_path(path)
         for user in dict.fromkeys(["0", self.read_user]):
-            value = (await self._task(
-                "if " + self._tool("test", "-d", path) + "; then "
-                + self._tool("printf", "directory") + "; else "
-                + self._tool("printf", "other") + "; fi", user=user,
-            )).strip()
+            value = (
+                await self._task(
+                    "if "
+                    + self._tool("test", "-d", path)
+                    + "; then "
+                    + self._tool("printf", "directory")
+                    + "; else "
+                    + self._tool("printf", "other")
+                    + "; fi",
+                    user=user,
+                )
+            ).strip()
             if value not in {"directory", "other"}:
                 raise TransferError("Native path inspection returned an invalid receipt")
             if value == "directory":
@@ -151,8 +236,12 @@ class BrokerTransfers:
 
     async def download_file(self, *, source_path, target_path):
         source = PurePosixPath(absolute_path(source_path))
-        with tempfile.TemporaryDirectory(dir=self.temporary, prefix="harbor-download-file-") as temporary:
-            await self.download(source_dir=str(source.parent), target_dir=temporary, members=[source.name])
+        with tempfile.TemporaryDirectory(
+            dir=self.temporary, prefix="harbor-download-file-"
+        ) as temporary:
+            await self.download(
+                source_dir=str(source.parent), target_dir=temporary, members=[source.name]
+            )
             destination = Path(target_path)
             destination.parent.mkdir(parents=True, exist_ok=True)
             staged = Path(temporary) / source.name
@@ -160,18 +249,30 @@ class BrokerTransfers:
                 raise TransferError("Native file download did not produce a regular file")
             shutil.copy2(staged, destination)
 
-    async def download(self, *, source_dir, target_dir, include=None, exclude=None, protect=None, members=None):
+    async def download(
+        self, *, source_dir, target_dir, include=None, exclude=None, protect=None, members=None
+    ):
         users = list(dict.fromkeys(["0", self.read_user]))
         for index, user in enumerate(users):
             try:
-                return await self._download(source_dir=source_dir, target_dir=target_dir, include=include, exclude=exclude, protect=protect, members=members, user=user)
+                return await self._download(
+                    source_dir=source_dir,
+                    target_dir=target_dir,
+                    include=include,
+                    exclude=exclude,
+                    protect=protect,
+                    members=members,
+                    user=user,
+                )
             except FilesystemOperationError:
                 if index == len(users) - 1:
                     raise
 
     async def _download(self, *, source_dir, target_dir, include, exclude, protect, members, user):
         source_dir = absolute_path(source_dir)
-        if members is not None and any(not name or "/" in name or name in {".", ".."} for name in members):
+        if members is not None and any(
+            not name or "/" in name or name in {".", ".."} for name in members
+        ):
             raise TransferError("Native file transfer requires source-relative basenames")
         remote = "/tmp/.evalhive-harbor-" + uuid.uuid4().hex
         archive = remote + "/payload.tar"
@@ -179,18 +280,29 @@ class BrokerTransfers:
         async def task(script):
             return await self._task(script, user=user)
 
-        with tempfile.TemporaryDirectory(dir=self.temporary, prefix="harbor-download-") as temporary:
+        with tempfile.TemporaryDirectory(
+            dir=self.temporary, prefix="harbor-download-"
+        ) as temporary:
             local = Path(temporary) / "payload.tar"
             try:
                 # BusyBox ash uses 1024-byte units for RLIMIT_FSIZE. Leave the
                 # native source untouched and reject oversized archive writes.
-                metadata = (await task(
-                    "umask 077; " + self._tool("mkdir", "--", remote)
-                    + " && ulimit -f " + str(MAX_ARCHIVE_BYTES // 1024)
-                    + " && " + self._tool("tar", "-cf", archive, "-C", source_dir, "--", *(members or ["."]))
-                    + " && " + self._tool("stat", "-c", "%s", archive)
-                    + " && " + self._tool("sha256sum", archive)
-                )).splitlines()
+                metadata = (
+                    await task(
+                        "umask 077; "
+                        + self._tool("mkdir", "--", remote)
+                        + " && ulimit -f "
+                        + str(MAX_ARCHIVE_BYTES // 1024)
+                        + " && "
+                        + self._tool(
+                            "tar", "-cf", archive, "-C", source_dir, "--", *(members or ["."])
+                        )
+                        + " && "
+                        + self._tool("stat", "-c", "%s", archive)
+                        + " && "
+                        + self._tool("sha256sum", archive)
+                    )
+                ).splitlines()
                 if len(metadata) != 2:
                     raise TransferError("Native archive metadata is incomplete")
                 observed = metadata[0].strip()
@@ -206,9 +318,15 @@ class BrokerTransfers:
                 with local.open("xb") as stream:
                     for offset in range(0, size, CHUNK_BYTES):
                         encoded = await task(
-                            self._tool("dd", "if=" + archive, "bs=" + str(CHUNK_BYTES),
-                                       "skip=" + str(offset // CHUNK_BYTES), "count=1")
-                            + " | " + self._tool("base64")
+                            self._tool(
+                                "dd",
+                                "if=" + archive,
+                                "bs=" + str(CHUNK_BYTES),
+                                "skip=" + str(offset // CHUNK_BYTES),
+                                "count=1",
+                            )
+                            + " | "
+                            + self._tool("base64")
                         )
                         data = base64.b64decode("".join(encoded.split()), validate=True)
                         if len(data) != min(CHUNK_BYTES, size - offset):
@@ -223,9 +341,14 @@ class BrokerTransfers:
                 if include is None and exclude is None and not protect:
                     shutil.copytree(extracted, target, dirs_exist_ok=True, symlinks=True)
                 else:
-                    files = [path.relative_to(extracted).as_posix() for path in extracted.rglob("*")
-                             if path.is_file() and not path.is_symlink()]
-                    selected = set(filter_paths_by_patterns(files, include=include, exclude=exclude))
+                    files = [
+                        path.relative_to(extracted).as_posix()
+                        for path in extracted.rglob("*")
+                        if path.is_file() and not path.is_symlink()
+                    ]
+                    selected = set(
+                        filter_paths_by_patterns(files, include=include, exclude=exclude)
+                    )
                     selected.update(set(protect or ()) & set(files))
                     for name in sorted(selected):
                         destination = target / name

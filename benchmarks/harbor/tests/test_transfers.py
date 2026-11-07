@@ -65,6 +65,32 @@ def test_staging_rejects_oversized_chunks_and_invalid_archive_proofs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_small_upload_uses_one_owned_command_without_private_stage(native_transfers, tmp_path):
+    async def no_stage(*args, **kwargs):
+        pytest.fail("A small upload must not start a staging process")
+
+    calls = []
+    original = native_transfers.task_exec
+
+    async def tracked(argv, **kwargs):
+        calls.append(argv)
+        return await original(argv, **kwargs)
+
+    native_transfers.stage_exec = no_stage
+    native_transfers.task_exec = tracked
+    source = tmp_path / "small source"
+    source.mkdir()
+    (source / "checker.sh").write_text("#!/bin/sh\nexit 0\n")
+    (source / "checker.sh").chmod(0o751)
+    target = tmp_path / "native ' target"
+    await native_transfers.upload(source_dir=source, target_dir=str(target))
+    assert len(calls) == 1
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert (target / "checker.sh").read_bytes() == (source / "checker.sh").read_bytes()
+    assert (target / "checker.sh").stat().st_mode & 0o777 == 0o751
+
+
+@pytest.mark.asyncio
 async def test_pinned_tools_transfer_native_tests_and_filtered_protected_rewards(native_transfers, tmp_path):
     source = tmp_path / "private-tests"
     source.mkdir()
