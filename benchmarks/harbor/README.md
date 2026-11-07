@@ -21,3 +21,14 @@ Task. Private tests, solutions and instructions are not copied into the public
 catalog. Nested native paths retain their native case identities; references
 are validated independently before filesystem access. The caller must register exact worker and task images separately;
 a dataset receipt does not build images or enable execution.
+
+`verification.run_verifier` delegates test staging, stale reward removal, command
+construction and reward parsing to Harbor's official `Verifier`. It applies the
+native verifier user and the earlier native/parent deadline. Native image
+precedence determines whether tests are bundled. Checker transfer failures,
+missing/empty/invalid rewards and timeout remain separate error categories;
+numeric rewards keep their native names and values without an inferred binary
+success threshold. The function requires an already prepared environment adapter
+and an isolated worker with explicitly bound native configuration. Current unit
+coverage uses the real pinned Verifier and a deterministic environment fixture;
+rootless environment adaptation and full native task acceptance remain pending.
