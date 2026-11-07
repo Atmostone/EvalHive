@@ -108,11 +108,40 @@ async def test_native_plan_has_only_registered_assets_and_private_checker_is_not
     )
     context = Context()
     prepared = await worker.handle("prepare", {"spec": spec, "plan": plan}, context)
+    assert "verifier" not in [
+        payload["resource_id"] for operation, payload, _ in context.calls if operation == "allocate"
+    ]
     validate_environment(spec, prepared, kind="prepared")
     assert prepared["agent"]["environment_handle"] == "owned-task"
     assert context.agent.await_count == 0
     driven = await worker.handle("drive", {"scope": SCOPE}, context)
     assert driven["agent_outcome"]["attempt_id"] == "attempt"
+    await worker.close(context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("states,ready", [(["starting", "healthy"], True), (["unhealthy"], False)])
+async def test_native_container_health_is_confirmed_before_agent_access(tmp_path, states, ready):
+    worker, spec = installed(tmp_path)
+
+    class HealthContext(Context):
+        async def broker(self, scope, provider, operation, payload, **options):
+            result = await super().broker(scope, provider, operation, payload, **options)
+            if operation == "inspect" and options.get("handle") == "owned-task":
+                result["native"]["health"] = states.pop(0)
+            return result
+
+    context = HealthContext()
+    plan = await worker.handle("plan", {"spec": spec}, context)
+    if ready:
+        prepared = await worker.handle("prepare", {"spec": spec, "plan": plan}, context)
+        assert prepared["ready"]
+    else:
+        with pytest.raises(ProtocolError) as caught:
+            await worker.handle("prepare", {"spec": spec, "plan": plan}, context)
+        assert caught.value.code == "NATIVE_NOT_READY"
+    context.agent.assert_not_awaited()
+    assert not states
     await worker.close(context)
 
 
@@ -255,7 +284,8 @@ async def test_separate_artifact_restoration_does_not_consume_the_native_verifie
     monkeypatch.setattr(worker, "_environment", lambda context, identity: environment)
     monkeypatch.setattr(worker, "_export", AsyncMock(return_value=ARTIFACT))
 
-    async def restore(native, selected, paths):
+    async def restore(native, selected, paths, *, source_services):
+        assert source_services == {}
         assert worker.operation_deadline == 220
         clock[0] += 30
 

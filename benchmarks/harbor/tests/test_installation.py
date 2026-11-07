@@ -4,11 +4,13 @@ import hashlib
 import json
 
 import pytest
+from evalhive_benchmark import validate_environment
 from evalhive_harbor.dataset import InstalledHarbor
 from evalhive_harbor.installation import install
 from evalhive_harbor.native import HarborConfigurationError
 from evalhive_harbor.worker import HarborConnector
 from test_native import task
+from test_worker import SCOPE, Context
 
 IMAGE = "sha256:" + "a" * 64
 
@@ -38,6 +40,97 @@ def metadata():
             }
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_native_service_installation_drives_one_scoped_group_with_native_dependencies(
+    tmp_path, tools
+):
+    source = tmp_path / "source"
+    root = task(
+        source,
+        '[environment]\nmemory_mb=128\ncpus=0.25\nstorage_mb=64\nnetwork_mode="public"\n[environment.healthcheck]\ncommand="printf native-ready"\n',
+    )
+    (root / "environment/docker-compose.yaml").write_text("""services:
+  main:
+    depends_on: [database]
+    environment: {ORIGIN: "native-compose"}
+    volumes: [shared:/workspace]
+  database:
+    image: native-database:fixture
+    command: [python, -m, http.server, "8768"]
+    working_dir: /data
+    cpus: 0.1
+    mem_limit: 64m
+    volumes: [shared:/data]
+volumes:
+  shared: {}
+""")
+    images = metadata()
+    images["native-task"]["services"] = {
+        "task": {
+            "database": {
+                **metadata()["native-task"]["task"],
+                "limits": {"memory_mb": 64, "cpu_cores": 0.1, "disk_mb": 64},
+            }
+        }
+    }
+    images["native-task"]["volumes"] = {"task": {"shared": 64}}
+    output = tmp_path / "installed"
+    receipt = install(
+        source,
+        output,
+        revision="native-service-fixture",
+        worker_image=IMAGE,
+        image_bindings=images,
+        transfer_tools=tools,
+    )
+    assets = json.loads((output / "resources.json").read_text())["assets"]
+    bindings = json.loads((output / "worker-data/runtime.json").read_text())["cases"][
+        "native-task"
+    ]["task"]
+    assert bindings["order"] == ["database", "main"]
+    assert assets[bindings["services"]["database"]["asset_id"]]["command"] == [
+        "python",
+        "-m",
+        "http.server",
+        "8768",
+    ]
+    assert assets[bindings["asset_id"]]["environment"] == {"ORIGIN": "native-compose"}
+    assert assets[bindings["volumes"]["shared"]] == {"kind": "volume", "disk_mb": 64}
+    assert assets[bindings["asset_id"]]["storage_slots"]["native.shared"]["no_copy"] is False
+    worker = HarborConnector(output / "worker-data")
+    spec = {
+        "protocol_version": "1.0",
+        "scope": SCOPE,
+        "case": receipt["cases"][0],
+        "config": {},
+        "credential_refs": {},
+        "models": {},
+        "limits": {"wall_time_seconds": 60, "memory_mb": 1024, "cpu_cores": 1, "disk_mb": 1536},
+    }
+    context = Context()
+    plan = await worker.handle("plan", {"spec": spec}, context)
+    validate_environment(spec, plan)
+    task_plan = next(item for item in plan["resources"] if item["id"] == "task")
+    database = next(item for item in plan["resources"] if item["id"] == "task.service.database")
+    assert "task.service.database" in task_plan["depends_on"]
+    assert database["config"]["network_aliases"] == ["database"]
+    assert database["config"]["storage"] == {
+        "stage": "stage",
+        "native.shared": "task.volume.shared",
+    }
+    prepared = await worker.handle("prepare", {"spec": spec, "plan": plan}, context)
+    validate_environment(spec, prepared, kind="prepared")
+    allocations = [
+        payload["resource_id"] for operation, payload, _ in context.calls if operation == "allocate"
+    ]
+    assert allocations.index("task.service.database") < allocations.index("task")
+    assert (
+        worker._environment(context, "task").services["database"].handle
+        == "owned-task.service.database"
+    )
+    await worker.close(context)
 
 
 def test_installation_is_atomic_and_keeps_native_user_workdir_files_and_tool_grants(
@@ -122,16 +215,34 @@ def test_invalid_native_binding_cannot_publish_a_partial_installation(tmp_path, 
 
 
 @pytest.mark.parametrize("mode", ["shared", "separate"])
-def test_every_container_running_broker_commands_has_the_readonly_process_runtime(tmp_path, tools, mode):
+def test_every_container_running_broker_commands_has_the_readonly_process_runtime(
+    tmp_path, tools, mode
+):
     source = tmp_path / "source"
-    task(source, '[environment]\nmemory_mb=128\ncpus=0.25\nstorage_mb=64\n[verifier]\nenvironment_mode="' + mode + '"\n')
+    task(
+        source,
+        '[environment]\nmemory_mb=128\ncpus=0.25\nstorage_mb=64\n[verifier]\nenvironment_mode="'
+        + mode
+        + '"\n',
+    )
     images = metadata()
     if mode == "separate":
         images["native-task"]["verifier"] = dict(images["native-task"]["task"])
     output = tmp_path / "installed"
-    install(source, output, revision="runtime-binding", worker_image=IMAGE, image_bindings=images, transfer_tools=tools)
+    install(
+        source,
+        output,
+        revision="runtime-binding",
+        worker_image=IMAGE,
+        image_bindings=images,
+        transfer_tools=tools,
+    )
     assets = json.loads((output / "resources.json").read_text())["assets"]
     for asset in assets.values():
         if asset["kind"] == "container" and asset["role"] != "worker":
-            runtime_mounts = [mount for mount in asset.get("mounts", []) if mount["target"] == "/evalhive-runtime"]
-            assert runtime_mounts == [{"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}]
+            runtime_mounts = [
+                mount for mount in asset.get("mounts", []) if mount["target"] == "/evalhive-runtime"
+            ]
+            assert runtime_mounts == [
+                {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}
+            ]

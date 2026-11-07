@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import os
+import shlex
 import tarfile
 import uuid
 from contextlib import suppress
@@ -98,6 +99,7 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
     from evalhive_harbor.worker import MANIFEST
 
     engine = native_engine
+    services_enabled = os.getenv("EVALHIVE_NATIVE_HARBOR_SERVICES") == "1"
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"]) / (
         "harbor-" + connector_id + "-" + mode
     )
@@ -120,11 +122,60 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
         config += '[verifier.environment]\ncpus=0.25\nmemory_mb=128\nstorage_mb=64\nnetwork_mode="no-network"\n'
     else:
         config += 'user="1000"\n'
+    if services_enabled:
+        config = config.replace('network_mode="no-network"', 'network_mode="public"', 1)
+        config = config.replace(
+            'artifacts=["/workspace/result.txt"]',
+            'artifacts=["/workspace/result.txt",{source="/workspace/sidecar.txt",service="database"}]',
+        )
+        health = shlex.join(
+            [
+                "python",
+                "-c",
+                "from urllib.request import urlopen; assert urlopen('http://database:8768/sidecar.txt',timeout=2).read()==b'Native sidecar artifact\\n'",
+            ]
+        )
+        config += (
+            "\n[environment.healthcheck]\ncommand="
+            + json.dumps(health)
+            + "\ntimeout_sec=10\ninterval_sec=0.2\n"
+        )
+        database = native / "environment/database"
+        database.mkdir()
+        (database / "Dockerfile").write_text(
+            (Path(__file__).parents[1] / "fixtures/harbor_task/Dockerfile.service").read_text()
+        )
+        server = "import os\nfrom pathlib import Path\nassert os.getuid()==1000\nos.umask(0o077)\nPath('/workspace/sidecar.txt').write_text('Native sidecar artifact\\n')\nfrom http.server import HTTPServer,SimpleHTTPRequestHandler\nHTTPServer(('0.0.0.0',8768),SimpleHTTPRequestHandler).serve_forever()\n"
+        (native / "environment/docker-compose.yaml").write_text(
+            json.dumps(
+                {
+                    "services": {
+                        "main": {"depends_on": ["database"], "volumes": ["shared:/workspace"]},
+                        "database": {
+                            "build": "database",
+                            "command": ["python", "-c", server],
+                            "user": "1000",
+                            "cpus": 0.25,
+                            "mem_limit": "128m",
+                            "volumes": ["shared:/workspace"],
+                        },
+                    },
+                    "volumes": {"shared": {}},
+                },
+                indent=2,
+            )
+        )
     (native / "task.toml").write_text(config)
     checker = "import os,json\nfrom pathlib import Path\nassert os.getuid()==0\nassert 'Driven through the Benchmark SDK' in Path('/workspace/result.txt').read_text()\nassert Path('/logs/artifacts/answer.txt').read_text()=='Native artifact\\n'\n"
     if mode == "shared":
         checker = checker.replace("os.getuid()==0", "os.getuid()==1000")
         checker += "from urllib.request import urlopen\nassert urlopen('http://127.0.0.1:8767',timeout=2).read()==b'Owned native service'\n"
+    if services_enabled:
+        checker += (
+            "assert Path('/workspace/sidecar.txt').read_text()=='Native sidecar artifact\\n'\n"
+        )
+        if mode == "shared":
+            checker += "assert urlopen('http://database:8768/sidecar.txt',timeout=2).read()==b'Native sidecar artifact\\n'\n"
     checker += "Path('/logs/verifier/reward.json').write_text(json.dumps({'quality':0.625}))\n"
     (native / "tests/test.sh").write_text("#!/bin/bash\npython - <<'PY'\n" + checker + "PY\n")
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=20)
@@ -133,7 +184,9 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
     worker_image.tag(
         "evalhive-benchmark-harbor", "retained-" + worker_id.removeprefix("sha256:")[:12]
     )
-    task_id = client.images.get("evalhive-harbor-task:engineering").id
+    task_image = client.images.get("evalhive-harbor-task:engineering")
+    task_id = task_image.id
+    task_image.tag("evalhive-harbor-task", "retained-" + task_id.removeprefix("sha256:")[:12])
     tools = local / "transfer-tools"
     tools.mkdir()
     exported = client.containers.create(
@@ -156,15 +209,30 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
         images["verifier"] = inspect_image(
             client, task_id, limits={"memory_mb": 128, "cpu_cores": 0.25, "disk_mb": 64}
         )
+    if services_enabled:
+        service_image = client.images.get("evalhive-harbor-service:engineering")
+        service_image.tag(
+            "evalhive-harbor-service", "retained-" + service_image.id.removeprefix("sha256:")[:12]
+        )
+        images["services"] = {
+            "task": {
+                "database": inspect_image(
+                    client,
+                    service_image.id,
+                    limits={"memory_mb": 128, "cpu_cores": 0.25, "disk_mb": 64},
+                )
+            }
+        }
+        images["volumes"] = {"task": {"shared": 64}}
     installed = local / "installed"
     receipt = install(
         source,
         installed,
-        revision="native-engineering-1",
+        revision="native-services-2" if services_enabled else "native-engineering-1",
         worker_image=worker_id,
         image_bindings={"native-engineering": images},
         transfer_tools=tools,
-        dataset_id="harbor-engineering",
+        dataset_id="harbor-services-engineering" if services_enabled else "harbor-engineering",
     )
     installed_host = host_root + "/installed"
     bundle_root = Path(os.environ["EVALHIVE_NATIVE_BUNDLE_DIR"]) / connector_id
@@ -308,6 +376,7 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                     {
                         "request_id": operation.request_id,
                         "operation": request.get("operation"),
+                        "handle": request.get("handle"),
                         "state": operation.state,
                         "error_code": operation.error_code,
                         "started_at": operation.started_at.isoformat(),
@@ -315,6 +384,11 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                         if operation.finished_at
                         else None,
                         "exit_code": response.get("exit_code"),
+                        "native_state": {
+                            key: response["native"][key]
+                            for key in ("status", "health", "exit_code")
+                            if key in response.get("native", {})
+                        },
                         "stderr": str(response.get("stderr", "")).replace(credential, "[redacted]")[
                             :512
                         ],
@@ -346,7 +420,15 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                             }
                             for entry in journal
                         ],
-                        "leases": [{"kind": lease.kind, "state": lease.state} for lease in leases],
+                        "leases": [
+                            {
+                                "handle": str(lease.id),
+                                "logical_id": lease.logical_id,
+                                "kind": lease.kind,
+                                "state": lease.state,
+                            }
+                            for lease in leases
+                        ],
                     },
                     indent=2,
                 )
@@ -486,6 +568,11 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                     archive.extractfile("artifacts/logs/artifacts/answer.txt").read()
                     == b"Native artifact\n"
                 )
+                if services_enabled:
+                    assert (
+                        archive.extractfile("artifacts/workspace/sidecar.txt").read()
+                        == b"Native sidecar artifact\n"
+                    )
             async with AsyncSession(engine) as db:
                 evaluation = await db.scalar(
                     select(BenchmarkEvaluationAttempt)

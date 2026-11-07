@@ -12,14 +12,15 @@ from harbor.trial.artifact_handler import ArtifactHandler
 from .native import HarborConfigurationError, source_digest
 
 
-def validate_main_artifacts(native):
+def validate_artifacts(native, *, services=()):
     """Reject unavailable service/exclusion behavior before native effects."""
-    if any(hook.service != MAIN_SERVICE_NAME for hook in native.task.config.verifier.collect):
+    available = {MAIN_SERVICE_NAME, *services}
+    if any(hook.service not in available for hook in native.task.config.verifier.collect):
         raise HarborConfigurationError(
             "Native sidecar collection needs an installed service binding"
         )
     for artifact in normalize_artifact_entries(native.task.config.artifacts):
-        if artifact.service not in {None, MAIN_SERVICE_NAME}:
+        if artifact.service not in {None, *available}:
             raise HarborConfigurationError(
                 "Native sidecar artifacts need an installed service binding"
             )
@@ -30,7 +31,8 @@ def validate_main_artifacts(native):
 
 
 async def collect_artifacts(native, environment, paths):
-    validate_main_artifacts(native)
+    services = {MAIN_SERVICE_NAME, *getattr(environment, "services", {})}
+    validate_artifacts(native, services=services)
     if source_digest(native.task.paths.task_dir) != native.source_digest:
         raise HarborConfigurationError("Native artifact source changed after installation")
     hooks = []
@@ -60,7 +62,7 @@ async def collect_artifacts(native, environment, paths):
         environment,
         paths.artifacts_dir,
         source_artifacts_dir=EnvironmentPaths.for_os(environment.os).artifacts_dir,
-        services={MAIN_SERVICE_NAME},
+        services=services,
     )
     return {
         "manifest": manifest.to_json_data(),
@@ -71,8 +73,8 @@ async def collect_artifacts(native, environment, paths):
     }
 
 
-async def restore_artifacts(native, environment, paths):
-    validate_main_artifacts(native)
+async def restore_artifacts(native, environment, paths, *, source_services=()):
+    validate_artifacts(native, services=source_services)
     handler = ArtifactHandler(
         artifacts=native.task.config.artifacts, logger=logging.getLogger(__name__)
     )

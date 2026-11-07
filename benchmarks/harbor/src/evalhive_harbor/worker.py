@@ -19,7 +19,7 @@ from harbor.metrics.mean import Mean
 from harbor.models.trial.paths import TrialPaths
 
 from .archive import TransferError
-from .artifacts import collect_artifacts, restore_artifacts, validate_main_artifacts
+from .artifacts import collect_artifacts, restore_artifacts, validate_artifacts
 from .dataset import CONNECTOR_ID, CONNECTOR_VERSION, InstalledHarbor
 from .environment import BrokerEnvironment
 from .native import HarborConfigurationError
@@ -51,6 +51,11 @@ def unavailable(reason):
         "artifacts": [],
         "completeness": {"native_verdict": False},
     }
+
+
+def verifier_resource(resource):
+    identity = resource["id"]
+    return identity in {"verifier", "verifier-network"} or identity.startswith("verifier.")
 
 
 class HarborConnector(Connector):
@@ -109,7 +114,6 @@ class HarborConnector(Connector):
                 raise HarborConfigurationError(
                     "Native execution requires its installed step/OS adapter"
                 )
-            validate_main_artifacts(native)
             budget = native.task.config.agent.timeout_sec
             if budget is not None and (not float(budget).is_integer() or not 1 <= budget <= 86400):
                 raise HarborConfigurationError(
@@ -121,15 +125,35 @@ class HarborConnector(Connector):
                 raise HarborConfigurationError(
                     "Native phase networking requires an installed policy adapter"
                 )
-            if "environment.host_bindings_v1" in (selected_requirements or {}).get("capabilities", []):
+            if "environment.host_bindings_v1" in (selected_requirements or {}).get(
+                "capabilities", []
+            ):
                 raise HarborConfigurationError(
                     "Native environment templates require private bindings"
                 )
             for name in ("task", "verifier") if native.verifier_mode == "separate" else ("task",):
                 selected = binding[name]
-                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", selected["asset_id"]):
-                    raise HarborConfigurationError("Native image binding is invalid")
-                absolute_path(selected["cwd"])
+                services = selected.get("services", {})
+                order = selected.get("order", ["main"])
+                if (
+                    not isinstance(services, dict)
+                    or not isinstance(order, list)
+                    or len(order) != len(set(order))
+                    or set(order) != {"main", *services}
+                ):
+                    raise HarborConfigurationError("Native service group ordering is invalid")
+                seen = set()
+                for member in order:
+                    data = selected if member == "main" else services[member]
+                    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", data["asset_id"]):
+                        raise HarborConfigurationError("Native image binding is invalid")
+                    absolute_path(data["cwd"])
+                    if not set(data.get("depends_on", [])) <= seen:
+                        raise HarborConfigurationError(
+                            "Native service dependencies are not ordered"
+                        )
+                    seen.add(member)
+            validate_artifacts(native, services=binding["task"].get("services", {}))
             if spec.get("purpose") != "evaluation":
                 agent_resources(native, binding["task"]["cwd"])
             config = {"evaluation_mode": "native", "prepare_timeout_seconds": 120, **spec["config"]}
@@ -226,40 +250,52 @@ class HarborConnector(Connector):
                 **world_config,
             )
         )
-        if not evaluation:
-            resources.append(
-                resource(
-                    "task",
-                    self.binding["task"]["asset_id"],
-                    dependencies=(
-                        "world",
-                        "stage",
-                        "verifier-logs",
-                        "agent-artifacts",
-                        "agent-logs",
-                        *([networks["task"]] if "task" in networks else []),
-                    ),
-                    storage=deepcopy(world_config["storage"]),
-                    **({"network": networks["task"]} if "task" in networks else {}),
+        for role in ("task", "verifier"):
+            if (
+                role == "task"
+                and evaluation
+                or role == "verifier"
+                and self.native.verifier_mode != "separate"
+            ):
+                continue
+            group = self.binding[role]
+            for name, asset in group.get("volumes", {}).items():
+                resources.append(resource(role + ".volume." + name, asset, kind="volume"))
+
+            def logical(name, role=role):
+                return role if name == "main" else role + ".service." + name
+
+            for name in group.get("order", ["main"]):
+                member = group if name == "main" else group["services"][name]
+                storage = (
+                    deepcopy(world_config["storage"]) if name == "main" else {"stage": "stage"}
                 )
-            )
-        if self.native.verifier_mode == "separate":
-            resources.append(
-                resource(
-                    "verifier",
-                    self.binding["verifier"]["asset_id"],
-                    dependencies=(
-                        "world",
-                        "stage",
-                        "verifier-logs",
-                        "agent-artifacts",
-                        "agent-logs",
-                        *([networks["verifier"]] if "verifier" in networks else []),
-                    ),
-                    storage=deepcopy(world_config["storage"]),
-                    **({"network": networks["verifier"]} if "verifier" in networks else {}),
+                storage.update(
+                    {
+                        slot: role + ".volume." + volume
+                        for slot, volume in member.get("storage", {}).items()
+                    }
                 )
-            )
+                dependencies = [
+                    "world",
+                    *storage.values(),
+                    *(logical(target) for target in member.get("depends_on", [])),
+                ]
+                options = {}
+                if role in networks:
+                    dependencies.append(networks[role])
+                    options["network"] = networks[role]
+                    if "order" in group:
+                        options["network_aliases"] = [name]
+                resources.append(
+                    resource(
+                        logical(name),
+                        member["asset_id"],
+                        dependencies=tuple(dict.fromkeys(dependencies)),
+                        storage=storage,
+                        **options,
+                    )
+                )
         outputs = [
             {
                 "id": "native-report",
@@ -299,7 +335,16 @@ class HarborConnector(Connector):
             "resources": resources,
             "outputs": outputs,
             "requirements": {
-                "capabilities": ["host.ephemeral_exec_v1"]
+                "capabilities": ["host.ephemeral_exec_v1", "host.container_health_v1"]
+                + (
+                    ["host.volume_copy_up_v1"]
+                    if any(
+                        group.get("volumes")
+                        for group in self.binding.values()
+                        if isinstance(group, dict)
+                    )
+                    else []
+                )
                 + ([] if evaluation else ["host.retained_agent_processes_v1"])
             },
             "grading_mode": "container_native",
@@ -353,12 +398,19 @@ class HarborConnector(Connector):
             async def stage_exec(argv):
                 return await self._exec(context, "world", argv)
 
-            binding = self.binding.get(identity, self.binding["task"])
+            role, separator, service = identity.partition(".service.")
+            binding = (
+                self.binding[role]["services"][service]
+                if separator
+                else self.binding.get(identity, self.binding["task"])
+            )
             native_user = (
                 self.native.task.config.agent.user
                 if identity == "task"
                 else self.native.task.config.verifier.user
                 if identity == "verifier"
+                else binding.get("user", "0")
+                if separator
                 else "0"
             )
             transfers = BrokerTransfers(
@@ -377,6 +429,11 @@ class HarborConnector(Connector):
             )
         result = self.environments[identity]
         result.deadline = self.operation_deadline
+        if identity in {"task", "verifier"}:
+            result.services = {
+                name: self._environment(context, identity + ".service." + name)
+                for name in self.binding[identity].get("services", {})
+            }
         return result
 
     async def _stage(self, context, operation, payload=None):
@@ -397,9 +454,10 @@ class HarborConnector(Connector):
             )
         return json.loads(response["stdout"])
 
-    async def _prepare(self, context):
-        self.operation_deadline = time.monotonic() + self.config["prepare_timeout_seconds"]
-        for resource in self._plan()["resources"]:
+    async def _allocate(self, context, resources):
+        for resource in resources:
+            if resource["id"] in self.handles:
+                continue
             allocated = await self._broker(context, "allocate", {"resource_id": resource["id"]})
             self.handles[resource["id"]] = allocated["handle"]
             if resource["id"] == "world":
@@ -409,18 +467,38 @@ class HarborConnector(Connector):
                         "Native logging storage was not initialized",
                         "preparation",
                     )
+
+    async def _wait_ready(self, context, resources):
         for identity in (
-            resource["id"]
-            for resource in self._plan()["resources"]
-            if resource["kind"] == "container"
+            resource["id"] for resource in resources if resource["kind"] == "container"
         ):
             if identity not in self.handles:
                 continue
-            inspected = await self._broker(context, "inspect", identity=identity)
-            if (inspected.get("native") or {}).get("status") != "running":
-                raise ProtocolError(
-                    "NATIVE_NOT_READY", "Native environment is not running", "preparation"
-                )
+            while True:
+                inspected = await self._broker(context, "inspect", identity=identity)
+                state = inspected.get("native") or {}
+                if state.get("status") != "running" or state.get("health") in {
+                    "unhealthy",
+                    "unknown",
+                }:
+                    raise ProtocolError(
+                        "NATIVE_NOT_READY", "Native environment is not ready", "preparation"
+                    )
+                if state.get("health") in {None, "healthy"}:
+                    break
+                if state.get("health") != "starting" or time.monotonic() >= self.operation_deadline:
+                    raise ProtocolError(
+                        "NATIVE_NOT_READY", "Native environment readiness timed out", "preparation"
+                    )
+                await asyncio.sleep(min(0.2, max(0, self.operation_deadline - time.monotonic())))
+
+    async def _prepare(self, context):
+        self.operation_deadline = time.monotonic() + self.config["prepare_timeout_seconds"]
+        initial = [
+            resource for resource in self._plan()["resources"] if not verifier_resource(resource)
+        ]
+        await self._allocate(context, initial)
+        await self._wait_ready(context, initial)
         if self.spec.get("purpose") == "evaluation":
             if (
                 await self._stage(
@@ -514,7 +592,9 @@ class HarborConnector(Connector):
                 result.pop("regrade_reason", None)
             else:
                 result["regrade_reason"] = "NATIVE_ARTIFACT_RECORDING_INCOMPLETE"
-            await self._broker(context, "stop", identity="task")
+            for name in reversed(self.binding["task"].get("order", ["main"])):
+                identity = "task" if name == "main" else "task.service." + name
+                await self._broker(context, "stop", identity=identity)
         return result
 
     async def _evaluate(self, context):
@@ -522,13 +602,26 @@ class HarborConnector(Connector):
             return unavailable("NATIVE_ENVIRONMENT_NOT_READY")
         self.operation_deadline = time.monotonic() + self.config["prepare_timeout_seconds"]
         identity = "verifier" if self.native.verifier_mode == "separate" else "task"
-        environment = self._environment(context, identity)
         paths = self.paths
         result = unavailable("QUALITY_EVALUATION_DEFERRED")
         try:
             if self.native.verifier_mode == "separate":
+                resources = [
+                    resource
+                    for resource in self._plan()["resources"]
+                    if verifier_resource(resource)
+                ]
+                await self._allocate(context, resources)
+                await self._wait_ready(context, resources)
+            environment = self._environment(context, identity)
+            if self.native.verifier_mode == "separate":
                 await environment.empty_dirs(["/logs/verifier"], chmod=True)
-                await restore_artifacts(self.native, environment, paths)
+                await restore_artifacts(
+                    self.native,
+                    environment,
+                    paths,
+                    source_services=self.binding["task"].get("services", {}),
+                )
             if self.config["evaluation_mode"] != "deferred":
                 self.operation_deadline = (
                     time.monotonic() + self.native.task.config.verifier.timeout_sec

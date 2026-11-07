@@ -12,8 +12,8 @@ and other unavailable capabilities also remain explicit compatibility requiremen
 The package includes a Benchmark SDK worker, native shared/separate verification,
 artifact capture and an offline administrator installation builder. Server
 enablement and complete runner acceptance remain in SPA-146. Unavailable native
-features remain explicit compatibility requirements, including Compose/sidecar
-bindings, artifact tar exclusions, legacy SSE, private MCP header bindings and
+features remain explicit compatibility requirements, including unsupported Compose
+options, artifact tar exclusions, legacy SSE, private MCP header bindings and
 dynamic network policy.
 
 `dataset.build_receipt` produces canonical SDK installation metadata from native
@@ -51,8 +51,11 @@ after cleanup merely by copying files. A replacement separate verifier may grade
 an originally shared trial only when its declared inputs were recorded, as
 specified by Harbor's native regrade contract.
 
-`transfers.BrokerTransfers` stages checker uploads in a private service volume
-mounted read-only in the task. Task filesystem operations use an explicitly
+`transfers.BrokerTransfers` stages large checker uploads in a private service
+volume mounted read-only in the task. Small uploads use one owned command with
+the same size and SHA-256 proof and private temporary files. Newly created
+destination directories retain normal traversal permissions for the native
+verifier user. Task filesystem operations use an explicitly
 loaded, immutable BusyBox toolchain rather than task-provided utilities. Transfers
 use 24 KiB chunks with archive size and SHA-256 verification. The 64 MiB archive
 limit and temporary copies must be included in the installation's resource plan.
@@ -124,5 +127,18 @@ deadlines and agent background-service retention remain unchanged.
 descriptions. It preserves argv, literal environment values, service-start
 dependencies, scoped named volumes and resource minima; it performs no host
 interpolation or Docker operation. Cycles, duplicate keys and unsupported native
-options fail explicitly. Service binding/planning integration remains pending;
-the parser alone does not enable Compose execution.
+options fail explicitly. Installation requires exact immutable image bindings
+for every native service and explicit disk budgets for named volumes. The worker
+plans owned service containers, networks and scoped named volumes through the
+common provider API. Default Docker copy-up preserves image files and directory
+permissions. Native DNS names, start dependencies, image healthchecks and service
+artifact paths are retained; no host Compose process or Docker socket is exposed
+to the connector.
+
+The entire resource group is reserved before execution. A separate verifier's
+containers start only when grading begins, after task artifact collection and
+shutdown. Sidecar artifacts are restored into the verifier main container using
+Harbor's native replay rules. Pi and OpenCode shared-verifier engineering checks
+have passed with a healthchecked HTTP sidecar, a shared volume and a native
+UID-1000 file with mode 0600. Separate service replay acceptance is tracked in
+SPA-146; the shared checks alone do not assert it.

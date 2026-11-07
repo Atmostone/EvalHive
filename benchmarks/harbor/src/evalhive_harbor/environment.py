@@ -19,7 +19,7 @@ from harbor.models.task.config import TaskOS
 class BrokerEnvironment:
     """The connector supplies transfers; this bridge receives no Docker access."""
 
-    def __init__(self, context, scope, provider, handle, *, cwd, deadline, transfers, task_os=TaskOS.LINUX):
+    def __init__(self, context, scope, provider, handle, *, cwd, deadline, transfers, task_os=TaskOS.LINUX, services=None):
         path = PurePosixPath(cwd)
         if not path.is_absolute() or ".." in path.parts or "\0" in cwd:
             raise ValueError("Native environment requires its resolved absolute working directory")
@@ -30,7 +30,16 @@ class BrokerEnvironment:
         self.cwd, self.deadline, self.transfers, self.os = cwd, deadline, transfers, task_os
         self.default_user, self.sequence = None, 0
         self.request_prefix = "native.environment." + hashlib.sha256(handle.encode()).hexdigest()
-        self.recording_complete = True
+        self._recording_complete = True
+        self.services = dict(services or {})
+
+    @property
+    def recording_complete(self):
+        return self._recording_complete and all(service.recording_complete for service in self.services.values())
+
+    @recording_complete.setter
+    def recording_complete(self, value):
+        self._recording_complete = value
 
     @contextmanager
     def with_default_user(self, user):
@@ -44,12 +53,14 @@ class BrokerEnvironment:
         # Worker and Task have independent filesystems, including verifier logs.
         return False
 
-    @staticmethod
-    def _service(service):
-        if service not in {None, MAIN_SERVICE_NAME}:
+    def _service(self, service):
+        if service in {None, MAIN_SERVICE_NAME}:
+            return self
+        if service not in self.services:
             raise ProtocolError("NATIVE_SERVICE_UNAVAILABLE", "Native service requires its installed adapter", "unsupported")
+        return self.services[service]
 
-    async def exec(self, command, *, env=None, user=None, timeout_sec=None):
+    async def exec(self, command, *, env=None, user=None, timeout_sec=None, cwd=None):
         if self.os != TaskOS.LINUX:
             raise ProtocolError("NATIVE_OS_UNAVAILABLE", "Native execution requires an installed OS adapter", "unsupported")
         remaining = self.deadline - time.monotonic()
@@ -62,8 +73,12 @@ class BrokerEnvironment:
         if remaining > 86400:
             raise ProtocolError("NATIVE_TIMEOUT_UNAVAILABLE", "Native command exceeds the installed execution duration", "unsupported")
         selected_user = user if user is not None else self.default_user
+        selected_cwd = self.cwd if cwd is None else str(cwd)
+        path = PurePosixPath(selected_cwd)
+        if not path.is_absolute() or ".." in path.parts or "\0" in selected_cwd:
+            raise ProtocolError("NATIVE_WORKDIR_UNAVAILABLE", "Native service needs an absolute environment path", "configuration")
         payload = {
-            "argv": UnixOps.exec_shell_args(command), "cwd": self.cwd,
+            "argv": UnixOps.exec_shell_args(command), "cwd": selected_cwd,
             "timeout_seconds": remaining, "deadline_policy": "inherit",
             **({"environment": env} if env is not None else {}),
             **({"user": str(selected_user)} if selected_user is not None else {}),
@@ -88,12 +103,10 @@ class BrokerEnvironment:
         await self.transfers.upload(source_dir=source_dir, target_dir=target_dir)
 
     async def download_dir(self, *, source_dir, target_dir, service=None):
-        self._service(service)
-        await self.transfers.download(source_dir=source_dir, target_dir=target_dir)
+        await self._service(service).transfers.download(source_dir=source_dir, target_dir=target_dir)
 
     async def download_dir_filtered(self, *, source_dir, target_dir, include=None, exclude=None, protect=None, service=None):
-        self._service(service)
-        await self.transfers.download(
+        await self._service(service).transfers.download(
             source_dir=source_dir, target_dir=target_dir, include=include,
             exclude=exclude, protect=protect,
         )
@@ -102,12 +115,10 @@ class BrokerEnvironment:
         await self.transfers.upload_file(source_path=source_path, target_path=target_path)
 
     async def download_file(self, *, source_path, target_path, service=None):
-        self._service(service)
-        await self.transfers.download_file(source_path=source_path, target_path=target_path)
+        await self._service(service).transfers.download_file(source_path=source_path, target_path=target_path)
 
     async def path_is_dir(self, path, *, service=None, user=None):
-        self._service(service)
-        return await self.transfers.path_is_dir(str(path))
+        return await self._service(service).transfers.path_is_dir(str(path))
 
     async def service_is_dir(self, path, *, service=None, user=None):
         return await self.path_is_dir(path, service=service, user=user)
@@ -123,10 +134,7 @@ class BrokerEnvironment:
         raise ProtocolError("NATIVE_ARTIFACT_EXCLUDES_UNAVAILABLE", "Native tar exclusion rules require an installed adapter", "unsupported")
 
     async def service_exec(self, command, *, service=None, cwd=None, **options):
-        self._service(service)
-        if cwd is not None and str(cwd) != self.cwd:
-            raise ProtocolError("NATIVE_WORKDIR_UNAVAILABLE", "Native service working directory differs from its binding", "unsupported")
-        return await self.exec(command=command, **options)
+        return await self._service(service).exec(command=command, cwd=cwd, **options)
 
     async def ensure_dirs(self, dirs, *, chmod=True):
         if dirs:

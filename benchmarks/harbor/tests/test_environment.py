@@ -99,3 +99,23 @@ async def test_distinct_native_environments_do_not_reuse_the_same_durable_comman
     await second.exec(command="second")
     identifiers = [call.kwargs["request_id"] for call in context.broker.await_args_list]
     assert len(set(identifiers)) == 2
+
+
+@pytest.mark.asyncio
+async def test_service_commands_and_files_use_the_bound_sidecar_and_its_own_workdir(tmp_path):
+    main, main_context, main_transfers = setup()
+    sidecar, context, transfers = setup()
+    sidecar.handle = "owned-sidecar"
+    main.services = {"database": sidecar}
+    await main.service_exec("native-database-check", service="database", cwd="/native/database", user="1000")
+    assert context.broker.await_args.kwargs["handle"] == "owned-sidecar"
+    assert context.broker.await_args.args[3]["cwd"] == "/native/database"
+    assert context.broker.await_args.args[3]["user"] == "1000"
+    await main.service_download_dir("/native/data", tmp_path, service="database")
+    transfers.download.assert_awaited_once_with(source_dir="/native/data", target_dir=tmp_path)
+    main_transfers.download.assert_not_awaited()
+    main_context.broker.assert_not_awaited()
+    sidecar.recording_complete = False
+    assert not main.recording_complete
+    with pytest.raises(ProtocolError):
+        await main.service_exec("unavailable", service="foreign")

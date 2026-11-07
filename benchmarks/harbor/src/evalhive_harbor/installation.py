@@ -11,12 +11,13 @@ import re
 import shutil
 import tempfile
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from evalhive_benchmark.installation import dataset_key
 from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
 from .archive import digest_file
+from .compose import read_compose
 from .dataset import CONNECTOR_ID, CONNECTOR_VERSION, InstalledHarbor, build_receipt
 from .native import HarborConfigurationError
 from .transfers import absolute_path
@@ -52,27 +53,12 @@ def container(image, role, memory, cpu, disk, **settings):
     }
 
 
-def native_asset(native, selected, *, verifier=False):
-    """Selected metadata comes from the administrator's exact image inspection."""
+def image_limits(selected):
+    """Validate only administrator-inspected metadata, never execute an image."""
     if set(selected) - {"image", "image_user", "image_workdir", "limits", "reserved_paths_checked"}:
         raise HarborConfigurationError("Native image binding has unknown settings")
     if selected.get("reserved_paths_checked") is not True:
         raise HarborConfigurationError("Native image control paths were not inspected")
-    config = (
-        resolve_verifier_environment_definition(native.task.config, native.task.paths).config
-        if verifier
-        else native.task.config.environment
-    )
-    if (
-        native.task.paths.task_dir
-        / ("tests" if verifier else "environment")
-        / "docker-compose.yaml"
-    ).exists():
-        raise HarborConfigurationError("Native Compose requires installed service bindings")
-    if any("${" in value for value in config.env.values()):
-        raise HarborConfigurationError(
-            "Native environment templates require explicit private bindings"
-        )
     limits = selected["limits"]
     if set(limits) != {"memory_mb", "cpu_cores", "disk_mb"}:
         raise HarborConfigurationError("Native image limits must be explicit")
@@ -86,6 +72,31 @@ def native_asset(native, selected, *, verifier=False):
         raise HarborConfigurationError("Native image limits must be positive and finite")
     if type(limits["memory_mb"]) is not int or type(limits["disk_mb"]) is not int:
         raise HarborConfigurationError("Native memory and disk budgets must be whole MiB")
+    image_pin(selected["image"])
+    return limits
+
+
+def native_asset(native, selected, *, verifier=False, compose=None):
+    """Selected metadata comes from the administrator's exact image inspection."""
+    limits = image_limits(selected)
+    config = (
+        resolve_verifier_environment_definition(native.task.config, native.task.paths).config
+        if verifier
+        else native.task.config.environment
+    )
+    if (
+        compose is None
+        and (
+            native.task.paths.task_dir
+            / ("tests" if verifier else "environment")
+            / "docker-compose.yaml"
+        ).exists()
+    ):
+        raise HarborConfigurationError("Native Compose requires installed service bindings")
+    if any("${" in value for value in config.env.values()):
+        raise HarborConfigurationError(
+            "Native environment templates require explicit private bindings"
+        )
     for name, required in (
         ("memory_mb", config.memory_mb),
         ("cpu_cores", config.cpus),
@@ -130,6 +141,111 @@ def native_asset(native, selected, *, verifier=False):
             }
         }
     return result, cwd
+
+
+def compose_asset(selected, description, *, original=None):
+    limits = image_limits(selected)
+    for name, minimum in description.get("native_limits", {}).items():
+        if limits[name] < minimum:
+            raise HarborConfigurationError("Installed limits lower native Compose requirements")
+    result = original or container(
+        selected["image"],
+        "service",
+        limits["memory_mb"],
+        limits["cpu_cores"],
+        limits["disk_mb"],
+        workdir=selected.get("image_workdir") or "/",
+        **({"user": selected["image_user"]} if selected.get("image_user") else {}),
+        storage_slots={"stage": {"target": "/evalhive-stage", "read_only": True}},
+        mounts=[
+            {"file_id": "transfer-tools", "target": "/evalhive-transfer", "read_only": True},
+            {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True},
+        ],
+    )
+    for key in ("command", "entrypoint", "workdir", "user"):
+        if key in description:
+            result[key] = deepcopy(description[key])
+    result["environment"] = {**result.get("environment", {}), **description.get("environment", {})}
+    storage = {}
+    protected = [PurePosixPath(value["target"]) for value in result["storage_slots"].values()]
+    protected += [PurePosixPath(value["target"]) for value in result["mounts"]]
+    protected.append(PurePosixPath("/evalhive-model"))
+    for mount in description.get("storage", []):
+        target = PurePosixPath(mount["target"])
+        if any(target.is_relative_to(other) or other.is_relative_to(target) for other in protected):
+            raise HarborConfigurationError(
+                "Native Compose storage overlaps an installed control mount"
+            )
+        protected.append(target)
+        slot = "native." + mount["volume"]
+        if slot in result["storage_slots"]:
+            raise HarborConfigurationError(
+                "Native Compose needs separate slots for repeated volume mounts"
+            )
+        result["storage_slots"][slot] = {
+            "target": mount["target"],
+            "read_only": mount["read_only"],
+            "no_copy": False,
+        }
+        storage[slot] = mount["volume"]
+    if len(result["storage_slots"]) > 16:
+        raise HarborConfigurationError("Native Compose storage exceeds installed slot capacity")
+    return result, storage
+
+
+def bind_role(native, selected, role, assets, prefix):
+    description = read_compose(native, verifier=role == "verifier")
+    images = selected.get("services", {}).get(role, {})
+    volumes = selected.get("volumes", {}).get(role, {})
+    if description is None and (images or volumes):
+        raise HarborConfigurationError("Service bindings have no native Compose source")
+    main, cwd = native_asset(
+        native, selected[role], verifier=role == "verifier", compose=description
+    )
+    asset_id = prefix + "." + role
+    binding = {"asset_id": asset_id, "cwd": cwd, "user": main.get("user") or "0"}
+    assets[asset_id] = main
+    if description is None:
+        return binding
+    if not isinstance(images, dict) or set(images) != set(description["services"]) - {"main"}:
+        raise HarborConfigurationError("Native service image bindings must cover the exact group")
+    if not isinstance(volumes, dict) or set(volumes) != set(description["volumes"]):
+        raise HarborConfigurationError("Native volume budgets must cover the exact group")
+    binding.update(services={}, volumes={}, order=description["order"])
+    for name, disk in volumes.items():
+        if type(disk) is not int or not 1 <= disk <= 1024**2:
+            raise HarborConfigurationError(
+                "Native service volume needs a bounded explicit MiB budget"
+            )
+        volume_id = prefix + "." + role + ".volume." + name
+        assets[volume_id] = {"kind": "volume", "disk_mb": disk}
+        binding["volumes"][name] = volume_id
+    for name in description["order"]:
+        service = description["services"][name]
+        image = selected[role] if name == "main" else images[name]
+        result, storage = compose_asset(image, service, original=main if name == "main" else None)
+        identity = asset_id if name == "main" else prefix + "." + role + ".service." + name
+        assets[identity] = result
+        service_binding = {
+            "asset_id": identity,
+            "cwd": result["workdir"],
+            "user": result.get("user") or "0",
+            "storage": storage,
+            "depends_on": service.get("depends_on", []),
+        }
+        if name == "main":
+            config = (
+                resolve_verifier_environment_definition(
+                    native.task.config, native.task.paths
+                ).config
+                if role == "verifier"
+                else native.task.config.environment
+            )
+            service_binding["cwd"] = config.workdir or result["workdir"]
+            binding.update(service_binding)
+        else:
+            binding["services"][name] = service_binding
+    return binding
 
 
 def declarations(installed, worker_image, image_bindings):
@@ -201,19 +317,17 @@ def declarations(installed, worker_image, image_bindings):
         native = installed.resolve(case)
         selected = image_bindings[name]
         roles = {"task", "verifier"} if native.verifier_mode == "separate" else {"task"}
-        if set(selected) != roles:
+        if set(selected) - {"services", "volumes"} != roles:
             raise HarborConfigurationError("Native image roles differ from verifier mode")
+        for key in ("services", "volumes"):
+            if not isinstance(selected.get(key, {}), dict) or set(selected.get(key, {})) - roles:
+                raise HarborConfigurationError(
+                    "Native service bindings have invalid environment roles"
+                )
         binding = {"source_digest": native.source_digest}
         for role in sorted(roles):
-            asset_id = "harbor.case." + hashlib.sha256(name.encode()).hexdigest() + "." + role
-            assets[asset_id], cwd = native_asset(
-                native, selected[role], verifier=role == "verifier"
-            )
-            binding[role] = {
-                "asset_id": asset_id,
-                "cwd": cwd,
-                "user": selected[role].get("image_user") or "0",
-            }
+            prefix = "harbor.case." + hashlib.sha256(name.encode()).hexdigest()
+            binding[role] = bind_role(native, selected, role, assets, prefix)
         runtime["cases"][name] = binding
     resources = {
         "format_version": "1.0",
