@@ -124,8 +124,15 @@ else: raise AssertionError('Control input was exposed to the child')
 child=os.fork()
 if child==0:
  os.setsid();open('/tmp/owned.pid','w').write(str(os.getpid()))
- while True: time.sleep(1)
-while not os.path.exists('/tmp/owned.pid'): time.sleep(.01)
+ from http.server import BaseHTTPRequestHandler,HTTPServer
+ class Handler(BaseHTTPRequestHandler):
+  def log_message(self,*args): pass
+  def do_GET(self):
+   self.send_response(200);self.end_headers();self.wfile.write(b'native service preserved')
+ server=HTTPServer(('127.0.0.1',0),Handler)
+ open('/tmp/service.port','w').write(str(server.server_port))
+ server.serve_forever()
+while not os.path.exists('/tmp/service.port'): time.sleep(.01)
 open('/tmp/result.txt','w').write('retained')
 print('{"result":"ready"}',flush=True)
 """,
@@ -144,7 +151,7 @@ print('{"result":"ready"}',flush=True)
                     [
                         "python",
                         "-c",
-                        'import os;assert open("/tmp/result.txt").read()=="retained";os.kill(int(open("/tmp/owned.pid").read()),0)',
+                        'import os,urllib.request;assert open("/tmp/result.txt").read()=="retained";os.kill(int(open("/tmp/owned.pid").read()),0);assert urllib.request.urlopen("http://127.0.0.1:"+open("/tmp/service.port").read(),timeout=2).read()==b"native service preserved"',
                     ]
                 ).exit_code
                 == 0

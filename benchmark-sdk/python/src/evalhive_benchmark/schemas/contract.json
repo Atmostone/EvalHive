@@ -648,6 +648,12 @@
             "additionalProperties": false
           },
           "maxItems": 256
+        },
+        "process_policy": {
+          "enum": [
+            "stop_after_agent",
+            "retain_until_cleanup"
+          ]
         }
       },
       "required": [
@@ -658,7 +664,31 @@
         "instructions",
         "resources"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "process_policy": {
+                "const": "retain_until_cleanup"
+              }
+            },
+            "required": [
+              "process_policy"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mode": {
+                "const": "in_environment"
+              }
+            },
+            "required": [
+              "environment_handle"
+            ]
+          }
+        }
+      ]
     },
     "environment_plan": {
       "type": "object",
@@ -765,6 +795,44 @@
           "else": {
             "required": [
               "agent"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "agent": {
+                "properties": {
+                  "process_policy": {
+                    "const": "retain_until_cleanup"
+                  }
+                },
+                "required": [
+                  "process_policy"
+                ]
+              }
+            },
+            "required": [
+              "agent"
+            ]
+          },
+          "then": {
+            "properties": {
+              "requirements": {
+                "properties": {
+                  "capabilities": {
+                    "contains": {
+                      "const": "host.retained_agent_processes_v1"
+                    }
+                  }
+                },
+                "required": [
+                  "capabilities"
+                ]
+              }
+            },
+            "required": [
+              "requirements"
             ]
           }
         }

@@ -2,8 +2,10 @@
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -177,3 +179,46 @@ def test_prepared_task_is_copied_without_rewriting_the_native_environment_paths(
     original = deepcopy(prepared)
     RootlessHarnessTransport(host, native, prepared, bundle, manifest)
     assert prepared == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("condition", ["success", "cancelled", "failed", "expired", "cleaning"])
+async def test_registered_service_retention_requires_success_current_ownership_and_live_trial(tmp_path, condition):
+    host, native, prepared, bundle, manifest, _ = setup(tmp_path)
+    native["agent"]["process_policy"] = prepared["agent"]["process_policy"] = "retain_until_cleanup"
+    native["requirements"]["capabilities"] = ["host.retained_agent_processes_v1"]
+    resource = next(item for item in native["resources"] if item["id"] == native["agent"]["environment_handle"])
+    resource["config"]["asset_id"] = "retained.task"
+    host.assets.document = {"assets": {"retained.task": {"agent_process_policy": "retain_until_cleanup"}}}
+    now = datetime.now(UTC)
+
+    @asynccontextmanager
+    async def transaction():
+        yield None, SimpleNamespace(
+            phase="cleaning" if condition == "cleaning" else "driving",
+            cancel_requested_at=now if condition == "cancelled" else None,
+            deadline_at=now + timedelta(seconds=-1 if condition == "expired" else 60),
+        ), SimpleNamespace(status="failed" if condition == "failed" else "success"), now
+
+    host.agent_gateway = SimpleNamespace(calls=SimpleNamespace(runner_transaction=transaction))
+    process = SimpleNamespace(wait=AsyncMock(return_value=0))
+    host.host_broker.open_transport.return_value = process
+    attached = str(uuid.uuid4())
+    host.host_broker.handle.side_effect = [
+        {"handle": attached},
+        {"handle": attached, "native": {"main_done": True}} if condition == "success" else {"handle": attached, "stopped": True},
+    ]
+    wrapped = await RootlessHarnessTransport(host, native, prepared, bundle, manifest)()
+    assert await wrapped.wait() == 0
+    last = host.host_broker.handle.await_args.args[0]
+    assert last["id"] == ("harness.completed" if condition == "success" else "harness.quiesce")
+    assert await wrapped.wait() == 0
+    assert host.host_broker.handle.await_count == 2
+
+
+def test_prepared_access_cannot_change_the_registered_process_policy(tmp_path):
+    host, native, prepared, bundle, manifest, _ = setup(tmp_path)
+    prepared["agent"]["process_policy"] = "retain_until_cleanup"
+    with pytest.raises(ManagedRuntimeError, match="process policy"):
+        RootlessHarnessTransport(host, native, prepared, bundle, manifest)
+    host.host_broker.handle.assert_not_awaited()

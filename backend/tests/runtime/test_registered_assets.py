@@ -107,6 +107,23 @@ def catalog(data=None, files=None):
     return assets, reads
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered,requested", [(False, True), (True, False), (True, True)])
+async def test_retained_agent_process_policy_is_authorized_by_the_installed_task(registered, requested):
+    data, native = document(), plan()
+    if registered:
+        data["assets"]["fixture.task"]["agent_process_policy"] = "retain_until_cleanup"
+    if requested:
+        native["agent"]["process_policy"] = "retain_until_cleanup"
+        native["requirements"]["capabilities"] = ["host.retained_agent_processes_v1"]
+    assets, _ = catalog(data)
+    if registered != requested:
+        with pytest.raises(ManagedRuntimeError, match="process policy"):
+            await assets.compile(scope(), native)
+    else:
+        assert await assets.compile(scope(), native)
+
+
 def test_shared_storage_has_registered_slots_dependencies_and_a_disk_only_reservation():
     async def scenario():
         from app.runtime.admission import StorageDemand

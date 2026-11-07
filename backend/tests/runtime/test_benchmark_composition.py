@@ -121,13 +121,15 @@ def test_native_target_controls_applied_image_and_actual_resource_provenance(tmp
     assert applied["task"]["prompt"] == "Native public instruction"
 
 
-@pytest.mark.parametrize("change", ["handle", "role", "provider"])
+@pytest.mark.parametrize("change", ["handle", "role", "provider", "policy"])
 def test_prepared_target_cannot_select_another_container_or_private_world(tmp_path, change):
     coordinator, store, owner, assets, plan, options = setup(tmp_path)
     controller = coordinator.execution(store, owner, MANIFEST, assets, **options)
     prepared = prepared_target(controller, plan)
     if change == "handle":
         prepared["agent"]["environment_handle"] = str(uuid.uuid4())
+    elif change == "policy":
+        prepared["agent"]["process_policy"] = "retain_until_cleanup"
     else:
         target = plan["agent"]["environment_handle"]
         provider, lease = controller.host.environment.leases[target]

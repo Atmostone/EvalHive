@@ -11,7 +11,7 @@ from app.runtime.managed_spec import ContainerSpec, ManagedRuntimeError
 
 
 class QuiescentHarnessProcess:
-    """Main-process exit is insufficient proof that agent descendants stopped."""
+    """Confirm completion under the installed environment's process policy."""
 
     def __init__(self, process, stop):
         self.process, self.stop, self.settled = process, stop, None
@@ -71,6 +71,16 @@ class RootlessHarnessTransport:
             raise ManagedRuntimeError("Harness bundle identity differs from the frozen connector")
         if credential_ref is not None and credential_ref not in host.host_private_inputs:
             raise ManagedRuntimeError("Harness credentials require a host-only private input grant")
+        self.process_policy = planned.get("process_policy", "stop_after_agent")
+        if agent.get("process_policy", "stop_after_agent") != self.process_policy:
+            raise ManagedRuntimeError("Prepared agent process policy differs from its plan")
+        if self.process_policy == "retain_until_cleanup":
+            resource = next((item for item in plan["resources"] if item["id"] == planned["environment_handle"]), None)
+            if resource is None:
+                raise ManagedRuntimeError("Retained agent services require their planned task")
+            registered = host.assets.document["assets"][resource["config"]["asset_id"]]
+            if registered.get("agent_process_policy", "stop_after_agent") != self.process_policy:
+                raise ManagedRuntimeError("Retained agent services require a registered task policy")
         self.host, self.bundle, self.manifest = host, bundle, deepcopy(manifest)
         self.handle, self.cwd, self.credential_ref = lease.handle, agent["cwd"], credential_ref
         self.used = False
@@ -111,6 +121,22 @@ class RootlessHarnessTransport:
         )
 
         async def stop():
+            if self.process_policy == "retain_until_cleanup":
+                # Only a committed successful, current attempt can hand its
+                # descendants to the environment's remaining trial lifetime.
+                async with self.host.agent_gateway.calls.runner_transaction() as (_, trial, attempt, now):
+                    retain = (
+                        attempt.status == "success" and trial.cancel_requested_at is None
+                        and trial.deadline_at > now and trial.phase == "driving"
+                    )
+                if retain:
+                    receipt = await self.host.host_broker.handle(self.host.request(
+                        self.host.scope, "inspect", handle=attached["handle"], request_id="harness.completed"
+                    ))
+                    native = receipt.get("native", {})
+                    if receipt.get("handle") != attached["handle"] or native.get("main_done") is not True:
+                        raise ManagedRuntimeError("Harness main-process completion could not be confirmed")
+                    return
             result = await self.host.host_broker.handle(
                 self.host.request(
                     self.host.scope, "stop", handle=attached["handle"], request_id="harness.quiesce"

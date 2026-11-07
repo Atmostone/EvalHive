@@ -836,3 +836,25 @@ endpoint. This option currently supplies the agent role; auxiliary benchmark
 roles and recovery of orphaned control socket files after a host process crash
 remain integration work. Preflight must not advertise `host.model_gateway_v1`
 until that runtime composition and recovery are enabled.
+
+## Task-owned services after agent completion
+
+The installed environment can authorize `agent_process_policy:
+"retain_until_cleanup"`. Its plan and prepared agent access must select the same
+`process_policy` and declare `host.retained_agent_processes_v1`. The default
+continues to stop all agent descendants before capture.
+
+For the retention policy, the transport checks the committed current attempt's
+success, cancellation state, deadline and driving phase, then obtains an owned
+main-process completion receipt. Its descendants stay in their existing owned
+execution and Task; they are not detached from ownership or the trial deadline.
+This lets native evaluation inspect agent-started services. Failure, cancellation
+or expiry follows complete descendant shutdown. Normal cleanup still stops and
+releases all owned executions and containers. Public Harness specifications
+record `environment_process_policy`; the registered asset and native plan also
+contribute to environment provenance.
+
+This is an environment lifecycle capability. Connectors must not equate a retained
+service with a complete cold checkpoint. Process memory and external state need
+an explicit native checkpoint policy. Runtime preflight should advertise the
+capability only where this owned process lifecycle is enabled.

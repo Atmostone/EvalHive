@@ -317,3 +317,17 @@ that benchmark, such as `platform: {os: "linux"}`. Omitted architecture or libc
 is unspecified, not an inferred host condition. A present platform object must
 contain at least one recognized field. Preflight compares each declared field;
 registered images still resolve to exact compatible platform/image identities.
+
+Agent access can select `process_policy: "retain_until_cleanup"` for an
+`in_environment` agent. The default is `stop_after_agent`. Retention requires
+`host.retained_agent_processes_v1` in the plan's required capabilities and a
+matching installed Task asset policy; prepared access cannot change it.
+
+Retention hands successfully completed agent descendants to the remaining owned
+environment lifetime. It does not resume a harness or remove trial deadlines.
+The host confirms main-process completion through its owned supervisor; failed,
+cancelled, expired or fenced execution does not authorize a successful handoff.
+Native verification can then use a server that the task asked the agent to start.
+Cancellation and environment cleanup stop the complete owned process tree.
+A filesystem checkpoint must separately declare whether live service state is
+restorable; retaining a process is not evidence of process-memory replay.

@@ -85,6 +85,7 @@ CONTAINER = obj(
         "command": ARGV,
         "workdir": TEXT,
         "user": TEXT,
+        "agent_process_policy": {"enum": ["stop_after_agent", "retain_until_cleanup"]},
         "environment": {
             "type": "object",
             "maxProperties": 128,
@@ -451,6 +452,10 @@ class RootlessAssets:
                     or selected[1].intent.role != "environment"
                 ):
                     raise ManagedRuntimeError("Agent requires a declared task container")
+                task_resource = resources[agent["environment_handle"]]
+                task_asset = self.document["assets"][task_resource["config"]["asset_id"]]
+                if agent.get("process_policy", "stop_after_agent") != task_asset.get("agent_process_policy", "stop_after_agent"):
+                    raise ManagedRuntimeError("Agent process policy differs from its registered task")
             absolute_path(agent["cwd"])
         files = {
             mount["file_id"]: self.files[mount["file_id"]].source_digest

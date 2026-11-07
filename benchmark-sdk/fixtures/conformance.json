@@ -1472,6 +1472,130 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "declared environment service retention",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "process_policy": "retain_until_cleanup"
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": [
+            "host.retained_agent_processes_v1"
+          ]
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "service retention requires capability",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "process_policy": "retain_until_cleanup"
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "service retention requires native environment",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "connector_container",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "process_policy": "retain_until_cleanup"
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": [
+            "host.retained_agent_processes_v1"
+          ]
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
     }
   ],
   "evaluation_spec": {
