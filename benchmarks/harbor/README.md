@@ -31,4 +31,17 @@ numeric rewards keep their native names and values without an inferred binary
 success threshold. The function requires an already prepared environment adapter
 and an isolated worker with explicitly bound native configuration. Current unit
 coverage uses the real pinned Verifier and a deterministic environment fixture;
-rootless environment adaptation and full native task acceptance remain pending.
+full native task acceptance remains pending.
+
+`environment.BrokerEnvironment` supplies the native verifier's command and
+directory-transfer interface using scoped Benchmark SDK broker requests. Native
+commands retain their working directory, user, environment and the earlier
+native/parent deadline. Unconfirmed execution receipts fail explicitly;
+truncated diagnostics mark the recording incomplete. Transfer implementations
+must keep private checker inputs outside the agent environment until grading.
+
+Harbor regrade requires a separate verifier and its declared recorded artifacts.
+A shared verifier runs against the live task environment; it cannot be rerun
+after cleanup merely by copying files. A replacement separate verifier may grade
+an originally shared trial only when its declared inputs were recorded, as
+specified by Harbor's native regrade contract.
