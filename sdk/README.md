@@ -66,6 +66,15 @@ connector-neutral facts: `kind` (`model_error`, `limit`, `timeout`, `harness_err
 The canonical schema validates these facts. Core consumers classify the facts;
 native error-message parsing stays in the connector. Missing facts remain unknown.
 
+TypeScript connectors use `nativePayload` for raw native observations. Ordinary
+payloads retain their historical shape. Numbers outside the protocol's safe
+numeric range are represented as strings inside an explicit
+`{encoding: "evalhive.native-numbers.v1", value, number_paths}` envelope.
+`number_paths` contains RFC 6901 pointers identifying only converted values;
+strings remain ordinary fields so credential redaction still applies. This
+records the native JavaScript values without modifying model/tool schemas or
+relaxing numeric validation for normalized events and protocol counters.
+
 `failure.observed` records a failed provider request even when the native harness
 recovers and ultimately succeeds. It carries `request_id`, `purpose` and the same
 typed failure `facts`. Core consumers preserve infrastructure contamination

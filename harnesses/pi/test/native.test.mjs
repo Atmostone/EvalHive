@@ -62,6 +62,23 @@ test('official Pi SDK uses an owned Unix model channel with an unreachable publi
   assert.equal(requests.length, 1);
 });
 
+test('native MCP schema bounds survive event recording unchanged at the model boundary', {timeout: 30000}, async () => {
+  const maximum = 2 ** 63;
+  const mcp = await fakeMcpHTTP(() => {}, [{name: 'bounded_native_tool', description: 'Native schema fixture',
+    inputSchema: {type: 'object', properties: {limit: {type: 'integer', maximum}}}}]);
+  try {
+    const {result, events, requests} = await runFixture((body, index, response) => {
+      assert.equal(body.tools[0].function.parameters.properties.limit.maximum, maximum);
+      stream(response, index, {content: 'Completed with the original native schema'});
+    }, {resources: [{id: 'native-tools', kind: 'tools', config: {names: ['mcp__fixture__*']}},
+      {id: 'fixture', kind: 'mcp', config: {transport: 'http', url: mcp.url}}]});
+    assert.equal(result.status, 'success', JSON.stringify(result));
+    assert.equal(requests.length, 1);
+    assert(events.some(event => event.event === 'native' &&
+      event.data.payload?.encoding === 'evalhive.native-numbers.v1'));
+  } finally {await mcp.close();}
+});
+
 test('official Pi SDK completes with normalized provider usage', {timeout: 20000}, async () => {
   const {result, events, requests} = await runFixture((body, index, res, req) => {
     assert.equal(req.headers.authorization, 'Bearer fake-key-for-local-tests');

@@ -1,4 +1,4 @@
-import { ProtocolError, type JsonObject, type RunContext } from '@evalhive/harness-sdk';
+import { ProtocolError, nativePayload, type JsonObject, type RunContext } from '@evalhive/harness-sdk';
 import { ADAPTER_VERSION, object } from './config.js';
 import { createHash } from 'node:crypto';
 
@@ -36,7 +36,7 @@ export class EventWriter {
     try {
       this.emit(
         'native',
-        { name, payload: JSON.parse(JSON.stringify(value)), adapter_version: ADAPTER_VERSION },
+        { name, payload: nativePayload(value), adapter_version: ADAPTER_VERSION },
         session,
         parent,
       );
