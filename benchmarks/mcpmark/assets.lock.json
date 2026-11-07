@@ -1,0 +1,18 @@
+{
+  "format_version": "1.0",
+  "native_revision": "cd45b7f57923b9b3985467f5139927575f83141c",
+  "assets": [
+    {
+      "id": "filesystem.file_context",
+      "service": "filesystem",
+      "format_version": "1.0",
+      "url": "https://storage.mcpmark.ai/filesystem/file_context.zip",
+      "sha256": "d133c03da0ea824a41dbae4ae9af38cf3c4086a0145174aad0ea5666249bbcd8",
+      "size_bytes": 14238,
+      "category": "file_context",
+      "retrieved_at": "2026-11-07T10:18:09Z",
+      "members": 44,
+      "uncompressed_bytes": 7847
+    }
+  ]
+}
