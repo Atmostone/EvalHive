@@ -1,0 +1,19 @@
+{
+  "protocol_version": "1.0", "kind": "benchmark", "id": "appworld", "version": "0.1.0",
+  "display_name": "AppWorld MCP",
+  "entrypoint": ["python", "-m", "evalhive_appworld.worker"],
+  "image": "evalhive-benchmark-appworld:0.1.0",
+  "config_schema": {
+    "type": "object", "properties": {
+      "evaluation_mode": {"enum": ["native", "deferred"], "default": "native"},
+      "prepare_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 180}
+    }, "additionalProperties": false
+  },
+  "secret_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+  "capabilities": {"prepare": "native", "drive": "native", "capture": "native", "evaluate": "native", "aggregate": "unsupported", "cleanup": "native", "regrade": "unsupported"},
+  "requirements": {
+    "capabilities": ["host.agent_api_v1", "host.resource_finalizers_v1", "host.rootless_storage_v1", "host.ephemeral_exec_v1", "host.exec_deadline_inheritance_v1", "host.model_gateway_v1"],
+    "platform": {"os": "linux", "architecture": "amd64", "libc": "glibc"},
+    "resources": {"memory_mb": 512, "cpu_cores": 0.25, "disk_mb": 256}
+  }
+}

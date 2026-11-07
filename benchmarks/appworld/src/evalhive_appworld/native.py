@@ -60,16 +60,9 @@ def file_record(root, path):
     }
 
 
-def load(root):
-    root = directory(root)
-    cache = os.environ.get("APPWORLD_CACHE")
-    if (
-        os.environ.get("PYTHON_DOTENV_DISABLED") != "1"
-        or os.environ.get("APPWORLD_ROOT") != str(root)
-        or not cache
-        or not Path(cache).is_absolute()
-    ):
-        raise NativeConfigurationError("Native imports require explicit roots and disabled dotenv")
+def verified_code():
+    if os.environ.get("PYTHON_DOTENV_DISABLED") != "1":
+        raise NativeConfigurationError("Native imports require disabled dotenv")
     if importlib.metadata.version("appworld") != VERSION:
         raise NativeConfigurationError("Native AppWorld package differs from its pinned version")
     spec = importlib.util.find_spec("appworld")
@@ -79,6 +72,15 @@ def load(root):
     files = [file_record(code, path) for path in sorted(code.rglob("*.py"))]
     if CODE_LOCK["revision"] != REVISION or files != CODE_LOCK["files"]:
         raise NativeConfigurationError("Native AppWorld code differs from its pinned source")
+    return code
+
+
+def load(root):
+    root = directory(root)
+    cache = os.environ.get("APPWORLD_CACHE")
+    if os.environ.get("APPWORLD_ROOT") != str(root) or not cache or not Path(cache).is_absolute():
+        raise NativeConfigurationError("Native imports require explicit roots and disabled dotenv")
+    verified_code()
     for path in (root / "data/version.txt", root / "data/base_dbs/version.txt"):
         file_record(root, path)
         if path.read_text().strip() != DATA_VERSION:
