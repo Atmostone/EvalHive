@@ -32,6 +32,12 @@ await serveStdio({
           {agent:fixture.plan.agent,native_state:{fixture:true}})};
     }
     if (method === 'drive') {
+      if (params.payload.model_role) {
+        let result = await context.model(params.scope, params.payload.model_role, {model:'fixture-model'}, {requestId:'fixture-model-call'});
+        if (params.payload.repeat_model)
+          result = await context.model(params.scope, params.payload.model_role, {model:'fixture-model'}, {requestId:'fixture-model-call'});
+        return {model:result};
+      }
       if (params.payload.agent_operation) {
         const options = {requestId:params.payload.agent_request_id ?? 'fixture-agent-call', ...(params.payload.agent_session ? {sessionId:params.payload.agent_session} : {})};
         let result = await context.agent(params.scope, params.payload.agent_operation, params.payload.agent_payload ?? {}, options);
@@ -44,6 +50,7 @@ await serveStdio({
     }
     if (method === 'capture') return {artifacts: [], regrade: 'available', checkpoint:fixture.checkpoint};
     if (method === 'evaluate') {
+      if (params.payload.model_role) await context.model(params.scope, params.payload.model_role, {model:'fixture-model'});
       if (params.payload.agent_operation) await context.agent(params.scope, 'run', {});
       return fixture.evaluation;
     }

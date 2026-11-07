@@ -6,6 +6,32 @@ preparation, interaction, evaluation and aggregation. EvalHive owns authorizatio
 resource admission, process supervision, durable receipts, evidence and storage.
 The SDK imports neither the backend, Docker nor an LLM client.
 
+## Auxiliary model roles
+
+Hosts may negotiate `host.model_api_v1`. Python `Context.model` and TypeScript
+`Context.model` send a reverse `model.call` request containing the owner scope,
+declared auxiliary role, operation and JSON body. Initially supported operations
+are nonstreaming OpenAI-compatible `chat/completions` and `responses`; the result
+contains `status_code` and a bounded JSON `body`. The agent role remains a Harness
+session and cannot use this API. Model roles and private credential references
+must already appear in `TrialSpec.models`; evaluation workers may use only the
+roles recorded in their checkpoint.
+
+The host resolves connections, restricts each role to authorized phases, checks
+full resource admission and applies `limits.model_requests` (default 128, host
+maximum 10,000). A worker never receives the provider key or chooses the upstream
+endpoint in a request. The same owner, cancellation and deadline checks continue
+while an upstream response is silent. Receipts are encrypted and committed before
+replying; repeating an identity reads its saved result. An interrupted request
+remains uncertain and must not be submitted again as a transport retry.
+
+Host usage begins with an unknown cumulative observation before transmission and
+is refined atomically with the response receipt. Retries of the receipt add no
+charge. Missing token/cache/cost fields remain unknown, including requests that
+may have been charged before losing their response. Connectors retain native
+usage in private evidence but must not emit a second overlapping SDK usage series
+for these host-mediated requests.
+
 The canonical contract is
 `python/src/evalhive_benchmark/schemas/contract.json` (JSON Schema 2020-12).
 Both language packages validate the same definitions and conformance fixtures.

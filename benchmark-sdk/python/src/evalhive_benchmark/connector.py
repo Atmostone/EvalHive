@@ -9,6 +9,7 @@ from .peer import Context, Peer
 from .protocol import MAX_LINE_BYTES, ProtocolError, validate, validate_environment, validate_spec
 
 RESULT_TYPES = {
+    "model.call": "model_result",
     "describe": "manifest",
     "list_cases": "case_page",
     "resolve_case": "case_descriptor",
@@ -38,8 +39,8 @@ async def serve(connector: Connector, lines, write, **limits):
     async def handle(request):
         nonlocal purpose
         method, params = request["method"], request["params"]
-        if method == "agent.call":
-            raise ProtocolError("WRONG_DIRECTION", "Agent calls target the host", "configuration")
+        if method in {"agent.call", "model.call"}:
+            raise ProtocolError("WRONG_DIRECTION", "Reverse calls target the host", "configuration")
         if method == "describe":
             return connector.manifest
         if method == "shutdown":
@@ -56,6 +57,17 @@ async def serve(connector: Connector, lines, write, **limits):
                 )
             purpose = selected
             context.purpose = selected
+            context.model_roles = set(params["spec"]["models"]) - {"agent"}
+            context.model_enabled = "host.model_api_v1" in {
+                *connector.manifest["requirements"].get("capabilities", []),
+                *(
+                    params["spec"]["case"].get(
+                        "evaluation_requirements", params["spec"]["case"]["requirements"]
+                    )
+                    if selected == "evaluation"
+                    else params["spec"]["case"]["requirements"]
+                ).get("capabilities", []),
+            }
             context.agent_enabled = "host.agent_api_v1" in {
                 *connector.manifest["requirements"].get("capabilities", []),
                 *params["spec"]["case"]["requirements"].get("capabilities", []),

@@ -317,6 +317,8 @@ class Context:
         self.scope = None
         self.purpose = None
         self.agent_enabled = False
+        self.model_enabled = False
+        self.model_roles = set()
 
     def bind(self, scope):
         if self.scope is not None and self.scope != scope:
@@ -434,6 +436,46 @@ class Context:
                     raise ProtocolError(
                         "AGENT_REPLY_INVALID", "Host agent response is invalid", "recording"
                     ) from error
+                await self.peer.acknowledge("command", request["id"])
+                return receipt["result"]
+            error = receipt["error"]
+            raise ProtocolError(error["code"], error["message"], error["kind"])
+        finally:
+            for task in (pending, stopped):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(pending, stopped, return_exceptions=True)
+
+    async def model(
+        self, scope, role, body, *, operation="chat/completions", request_id=None, timeout=30
+    ):
+        """Request an explicitly bound auxiliary model without receiving its credentials."""
+        if not self.model_enabled or role not in self.model_roles or self.purpose is None:
+            raise ProtocolError(
+                "MODEL_ROLE_UNAVAILABLE", "Auxiliary model role is not declared", "unsupported"
+            )
+        if self.cancelled.is_set():
+            raise ProtocolError("CANCELLED", "Trial was cancelled", "execution")
+        self.bind(scope)
+        request = command(
+            request_id or uuid.uuid4().hex,
+            "model.call",
+            {
+                "scope": scope,
+                "role": role,
+                "operation": operation,
+                "body": body,
+            },
+        )
+        pending = asyncio.create_task(self.peer.request(request, timeout=timeout, receipt=True))
+        stopped = asyncio.create_task(self.cancelled.wait())
+        try:
+            done, _ = await asyncio.wait({pending, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            if stopped in done:
+                raise ProtocolError("CANCELLED", "Trial was cancelled", "execution")
+            receipt = await pending
+            if receipt["ok"]:
+                validate("model_result", receipt["result"])
                 await self.peer.acknowledge("command", request["id"])
                 return receipt["result"]
             error = receipt["error"]

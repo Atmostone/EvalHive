@@ -15,6 +15,7 @@ export class ConnectorClient {
   constructor(readonly process: ChildProcessWithoutNullStreams, options: {
     broker?: (request: WireMessage) => Promise<JsonValue>; brokerReplay?: (request: WireMessage) => Promise<JsonValue>; eventBuffer?: number;
     agent?: (request: WireMessage) => Promise<JsonValue>; agentReplay?: (request: WireMessage) => Promise<JsonValue>;
+    model?: (request: WireMessage) => Promise<JsonValue>; modelReplay?: (request: WireMessage) => Promise<JsonValue>;
     maxPending?: number; maxActive?: number; receiptLimit?: number;
   } = {}) {
     const eventBuffer = options.eventBuffer ?? 128;
@@ -23,15 +24,16 @@ export class ConnectorClient {
       let selected;
       if (request.type === 'broker_request') selected = replay ? options.brokerReplay : options.broker;
       else if (request.method === 'agent.call') selected = replay ? options.agentReplay : options.agent;
-      else throw new ProtocolError('WRONG_DIRECTION', 'Only agent calls may target the host', 'configuration');
+      else if (request.method === 'model.call') selected = replay ? options.modelReplay : options.model;
+      else throw new ProtocolError('WRONG_DIRECTION', 'Only declared reverse calls may target the host', 'configuration');
       if (!selected) throw new ProtocolError(replay ? 'RECEIPT_UNAVAILABLE' : 'HOST_CAPABILITY_UNAVAILABLE', 'Requested host operation is unavailable', replay ? 'uncertain' : 'unsupported');
       return selected(request);
     };
     this.peer = new Peer(frame => new Promise<void>((resolve, reject) => {
       process.stdin.write(frame, error => error ? reject(error) : resolve());
-    }), {...options, handler: options.agent ? request => reverse(request) : options.broker,
-      replayHandler: options.agent ? request => reverse(request, true) : options.brokerReplay,
-      requestTypes: options.agent ? ['command', 'broker_request'] : ['broker_request'], eventHandler: async event => {
+    }), {...options, handler: options.agent || options.model ? request => reverse(request) : options.broker,
+      replayHandler: options.agent || options.model ? request => reverse(request, true) : options.brokerReplay,
+      requestTypes: options.agent || options.model ? ['command', 'broker_request'] : ['broker_request'], eventHandler: async event => {
       if (this.queue.length >= eventBuffer) throw new ProtocolError('EVENT_BUFFER_FULL', 'Event consumer fell behind');
       this.queue.push(event); this.receivedEvents++; this.wake?.();
     }});
@@ -44,6 +46,7 @@ export class ConnectorClient {
   static launch(argv: string[], options: {cwd?: string; env?: NodeJS.ProcessEnv;
     broker?: (request: WireMessage) => Promise<JsonValue>; brokerReplay?: (request: WireMessage) => Promise<JsonValue>; eventBuffer?: number;
     agent?: (request: WireMessage) => Promise<JsonValue>; agentReplay?: (request: WireMessage) => Promise<JsonValue>;
+    model?: (request: WireMessage) => Promise<JsonValue>; modelReplay?: (request: WireMessage) => Promise<JsonValue>;
     maxPending?: number; maxActive?: number; receiptLimit?: number} = {}): ConnectorClient {
     if (!argv.length || !argv.every(value => typeof value === 'string' && value.length && !value.includes('\0')))
       throw new Error('Entrypoint must be a nonempty argv list');

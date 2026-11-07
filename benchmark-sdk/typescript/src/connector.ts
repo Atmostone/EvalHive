@@ -3,6 +3,7 @@ import {ProtocolError, validate, validateSpec, validateEnvironment, type JsonObj
   type Manifest, type Scope, type TrialSpec, type WireMessage} from './protocol.js';
 
 export const RESULT_TYPES: Record<string, string> = {
+  'model.call': 'model_result',
   describe: 'manifest', list_cases: 'case_page', resolve_case: 'case_descriptor',
   validate: 'validation_result', plan: 'environment_plan', prepare: 'prepared',
   evaluate: 'evaluation_result', aggregate: 'aggregate_result',
@@ -19,7 +20,7 @@ export async function serve(connector: Connector, input: AsyncIterable<Uint8Arra
   let purpose: 'execution' | 'evaluation' | undefined;
   const handler = async (request: WireMessage): Promise<JsonValue> => {
     const method = String(request.method), params = request.params as JsonObject;
-    if (method === 'agent.call') throw new ProtocolError('WRONG_DIRECTION', 'Agent calls target the host', 'configuration');
+    if (['agent.call', 'model.call'].includes(method)) throw new ProtocolError('WRONG_DIRECTION', 'Reverse calls target the host', 'configuration');
     if (method === 'describe') return connector.manifest;
     if (method === 'shutdown') {context.controller.abort(); return {stopped: true};}
     if ('spec' in params) {
@@ -29,6 +30,9 @@ export async function serve(connector: Connector, input: AsyncIterable<Uint8Arra
         throw new ProtocolError('PURPOSE_CONFLICT', 'A worker cannot change its execution purpose', 'configuration');
       purpose = selected;
       context.purpose = selected;
+      context.modelRoles = new Set(Object.keys(spec.models).filter(role => role !== 'agent'));
+      context.modelEnabled = [...((connector.manifest.requirements.capabilities ?? []) as string[]),
+        ...((((selected === 'evaluation' ? spec.case.evaluation_requirements ?? spec.case.requirements : spec.case.requirements) as JsonObject).capabilities ?? []) as string[])].includes('host.model_api_v1');
       context.agentEnabled = [...((connector.manifest.requirements.capabilities ?? []) as string[]),
         ...(((spec.case.requirements as JsonObject).capabilities ?? []) as string[])].includes('host.agent_api_v1');
     }

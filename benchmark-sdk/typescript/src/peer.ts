@@ -144,6 +144,8 @@ export class Peer {
 export class Context {
   purpose: 'execution' | 'evaluation' | undefined;
   agentEnabled = false;
+  modelEnabled = false;
+  modelRoles = new Set<string>();
   private sequences = new Map<string, number>();
   private emitting: Promise<void> = Promise.resolve();
   readonly controller = new AbortController();
@@ -195,6 +197,24 @@ export class Context {
           throw new ProtocolError('AGENT_EVENT_CONFLICT', 'Agent event page violates its cursor or limit', 'recording');
       } catch {throw new ProtocolError('AGENT_REPLY_INVALID', 'Host agent response is invalid', 'recording');}
       await this.peer.acknowledge('command', String(request.id)); return receipt.result;
+    }
+    const error = receipt.error as JsonObject;
+    throw new ProtocolError(String(error.code), String(error.message), error.kind as ErrorKind);
+  }
+  async model(scope: Scope, role: string, body: JsonObject,
+    options: {operation?: string; requestId?: string; timeout?: number} = {}): Promise<JsonValue> {
+    if (!this.modelEnabled || !this.modelRoles.has(role) || this.purpose === undefined)
+      throw new ProtocolError('MODEL_ROLE_UNAVAILABLE', 'Auxiliary model role is not declared', 'unsupported');
+    if (this.signal.aborted) throw new ProtocolError('CANCELLED', 'Trial was cancelled', 'execution');
+    this.bind(scope);
+    const request = command(options.requestId ?? randomUUID(), 'model.call', {
+      scope, role, operation: options.operation ?? 'chat/completions', body,
+    });
+    const receipt = await this.peer.request(request, options.timeout, true, this.signal) as WireMessage;
+    if (receipt.ok) {
+      validate('model_result', receipt.result);
+      await this.peer.acknowledge('command', String(request.id));
+      return receipt.result;
     }
     const error = receipt.error as JsonObject;
     throw new ProtocolError(String(error.code), String(error.message), error.kind as ErrorKind);

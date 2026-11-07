@@ -1145,7 +1145,8 @@
             "cleanup",
             "cancel",
             "shutdown",
-            "agent.call"
+            "agent.call",
+            "model.call"
           ]
         },
         "params": {
@@ -1657,6 +1658,16 @@
                   }
                 }
               ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "model.call"
+            },
+            "params": {
+              "$ref": "#/$defs/model_call_params"
             }
           }
         }
@@ -2622,6 +2633,67 @@
         "events",
         "cursor",
         "closed"
+      ],
+      "additionalProperties": false
+    },
+    "model_call_params": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "role": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,63}$"
+        },
+        "operation": {
+          "enum": [
+            "chat/completions",
+            "responses"
+          ]
+        },
+        "body": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "stream": {
+              "const": false
+            }
+          },
+          "required": [
+            "model"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "scope",
+        "role",
+        "operation",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "model_result": {
+      "type": "object",
+      "properties": {
+        "status_code": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 599
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "status_code",
+        "body"
       ],
       "additionalProperties": false
     }

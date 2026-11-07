@@ -37,6 +37,8 @@ class ConnectorClient:
         broker_replay=None,
         agent=None,
         agent_replay=None,
+        model=None,
+        model_replay=None,
         event_buffer=128,
         **limits,
     ):
@@ -62,9 +64,13 @@ class ConnectorClient:
                 selected = broker_replay if replay else broker
             elif request["method"] == "agent.call":
                 selected = agent_replay if replay else agent
+            elif request["method"] == "model.call":
+                selected = model_replay if replay else model
             else:
                 raise ProtocolError(
-                    "WRONG_DIRECTION", "Only agent calls may target the host", "configuration"
+                    "WRONG_DIRECTION",
+                    "Only declared reverse calls may target the host",
+                    "configuration",
                 )
             if selected is None:
                 raise ProtocolError(
@@ -76,11 +82,13 @@ class ConnectorClient:
 
         self.peer = Peer(
             write,
-            handler=reverse if agent is not None else broker,
+            handler=reverse if agent is not None or model is not None else broker,
             replay_handler=(lambda request: reverse(request, replay=True))
-            if agent is not None
+            if agent is not None or model is not None
             else broker_replay,
-            request_type=("command", "broker_request") if agent is not None else "broker_request",
+            request_type=("command", "broker_request")
+            if agent is not None or model is not None
+            else "broker_request",
             event_handler=on_event,
             **limits,
         )
