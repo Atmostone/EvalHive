@@ -2,11 +2,11 @@
 
 The package targets native revision `42b5bcf3cd334fee33f0c37c02070a9f5807add5`,
 package version `0.2.0.dev0`, and official data version `0.2.0`. Native execution
-and cancellation persistence have passed offline container probes. Full Pi
-coordinator acceptance has passed with an original dev task, the 469-tool public
-MCP catalog, persisted API effects and the native evaluator. OpenCode coordinator
-acceptance is in progress. Offline model responses exercise infrastructure and
-do not claim to solve the original task.
+and cancellation persistence have passed offline container probes. Full Pi and
+OpenCode coordinator acceptance has passed with original dev/train tasks, the
+469-tool public MCP catalog, persisted API effects and the native evaluator.
+Offline model responses exercise infrastructure and do not claim to solve the
+original tasks.
 
 `native.lock.json` records the official data bundle, source Git LFS objects and
 the unmodified wheel built with the upstream build backend. Materialize the
@@ -40,8 +40,14 @@ groups preserve every app and tool within each harness MCP server budget. The
 native server receives the group's app names; administrative tools are never
 added. `mcp_timeout_seconds` defaults to 90 seconds for initialization and calls;
 the complete native schema catalog can exceed a harness's 30-second default on
-one CPU. Parent attempt deadlines still apply. Native scenario grouping remains available for the official TGC/SGC
-calculation, including explicit handling of incomplete groups.
+one CPU. Parent attempt deadlines still apply. Native scenario grouping remains
+available for the official TGC/SGC calculation, including explicit handling of
+incomplete groups.
+
+The engineering OpenCode profile uses `apiTimeoutSeconds=120` for native server
+observations with the full catalog. This is a harness profile setting; the
+benchmark connector does not override native harness settings. MCP operation
+timeouts and the parent trial deadline remain independent limits.
 
 The worker drives an independently owned World service and Task container on an
 internal network. The World owns protected data, evaluator reports and a private

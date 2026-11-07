@@ -187,7 +187,7 @@ async def test_original_native_mcp_state_persistence_and_verdict(
                 "attempt_id": str(uuid.uuid4()),
                 "task": {"prompt": "Bound by native prepared access"},
                 "cwd": "/workspace",
-                "config": {},
+                "config": {"apiTimeoutSeconds": 120} if connector_id == "opencode" else {},
                 "limits": {"max_turns": 8},
                 "interaction": {"version": "1.0", "mode": "single_turn"},
                 "model": {
@@ -250,7 +250,55 @@ async def test_original_native_mcp_state_persistence_and_verdict(
                     "model_requests": 8,
                 },
             }
-            result = await asyncio.wait_for(controller.run(spec), 900)
+            samples = []
+
+            async def observe_memory():
+                while True:
+                    if host.environment is not None:
+                        for name, (_, lease) in list(host.environment.leases.items()):
+                            if lease.kind != "container":
+                                continue
+                            try:
+                                container = await asyncio.to_thread(
+                                    runtime.find, host.environment.scope, lease.handle
+                                )
+                                if container is None:
+                                    continue
+                                native_container = client.containers.get(container.container_id)
+                                if native_container.status != "running":
+                                    continue
+                                observed = await asyncio.to_thread(
+                                    native_container.exec_run,
+                                    [
+                                        "/bin/cat",
+                                        "/sys/fs/cgroup/memory.peak",
+                                        "/sys/fs/cgroup/memory.swap.current",
+                                        "/sys/fs/cgroup/memory.events",
+                                    ],
+                                )
+                                samples.append(
+                                    {
+                                        "resource": name,
+                                        "observed_at": datetime.now(UTC).isoformat(),
+                                        "exit_code": observed.exit_code,
+                                        "memory": observed.output.decode(errors="replace"),
+                                    }
+                                )
+                            except Exception as error:
+                                samples.append(
+                                    {"resource": name, "exception": type(error).__name__}
+                                )
+                        (local / "engineering-memory.json").write_text(
+                            json.dumps(samples[-200:], indent=2)
+                        )
+                    await asyncio.sleep(8)
+
+            observing = asyncio.create_task(observe_memory())
+            try:
+                result = await asyncio.wait_for(controller.run(spec), 900)
+            finally:
+                observing.cancel()
+                await asyncio.gather(observing, return_exceptions=True)
             observations = {}
             if host.environment is not None:
                 for name, (_, lease) in host.environment.leases.items():
