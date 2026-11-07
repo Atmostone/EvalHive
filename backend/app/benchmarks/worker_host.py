@@ -53,6 +53,7 @@ class RootlessWorkerHost:
         worker_image_pin=None,
         host_private_inputs=None,
         agent_factory=None,
+        model_factory=None,
         host_auxiliary_disk_mb=0,
         startup_seconds=30,
     ):
@@ -98,6 +99,13 @@ class RootlessWorkerHost:
             store, owner, assets.runtime.policy, retained_evidence
         )
         self.plan, self.prepared, self.agent_gateway = None, None, None
+        self.auxiliary_models = model_factory(self) if model_factory is not None else None
+        if self.auxiliary_models is not None and (
+            self.auxiliary_models.store is not store
+            or self.auxiliary_models.owner != owner
+            or self.auxiliary_models.actor_id != self.worker_actor
+        ):
+            raise ManagedRuntimeError("Auxiliary model gateway differs from its worker ownership")
         if agent_factory is not None:
             if self.purpose != "execution":
                 raise ManagedRuntimeError("Agent factories require an execution controller")
@@ -228,6 +236,8 @@ class RootlessWorkerHost:
             broker_replay=self.worker_broker.replay,
             agent=None if self.agent_gateway is None else self.agent_gateway.handle,
             agent_replay=None if self.agent_gateway is None else self.agent_gateway.replay,
+            model=None if self.auxiliary_models is None else self.auxiliary_models.handle,
+            model_replay=None if self.auxiliary_models is None else self.auxiliary_models.replay,
         )
         self.channel = await WorkerChannel.attach(self.store, self.owner, self.worker_actor, client)
         description = await self.channel.invoke(
@@ -276,6 +286,8 @@ class RootlessWorkerHost:
             self.scope,
             session_id=str(uuid.uuid5(self.owner.controller_id, "benchmark.environment")),
         )
+        if self.auxiliary_models is not None:
+            self.auxiliary_models.configure(spec)
         retained = self.retained_inputs.plan(spec, plan, scope)
         host_inputs = self.host_private_inputs
         if self.agent_gateway is not None:
@@ -397,9 +409,13 @@ class RootlessWorkerHost:
             await self.host_broker.detach()
             await self.worker_broker.detach()
         finally:
-            if self.agent_gateway is not None:
-                detach_environment = getattr(
-                    self.agent_gateway.executor, "detach_environment", None
-                )
-                if detach_environment is not None:
-                    await detach_environment()
+            try:
+                if self.agent_gateway is not None:
+                    detach_environment = getattr(
+                        self.agent_gateway.executor, "detach_environment", None
+                    )
+                    if detach_environment is not None:
+                        await detach_environment()
+            finally:
+                if self.auxiliary_models is not None:
+                    await self.auxiliary_models.close()

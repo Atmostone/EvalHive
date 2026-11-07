@@ -19,6 +19,7 @@ from app.benchmarks.deadlines import DeadlineService
 from app.benchmarks.driver import DriverLimits, TrialDriver
 from app.benchmarks.harness_execution import HarnessExecution
 from app.benchmarks.harness_transport import RootlessHarnessTransport
+from app.benchmarks.model_calls import AuxiliaryModels
 from app.benchmarks.model_channel import AgentModelChannel, model_connection
 from app.benchmarks.recovery import RecoveryService
 from app.benchmarks.regrade_driver import RegradeDriver
@@ -147,6 +148,7 @@ class RootlessCoordinator:
         spool_root,
         profile_id=None,
         model_gateway=False,
+        auxiliary_models=None,
     ):
         if owner.control_id is not None:
             raise ManagedRuntimeError("Agent execution requires an execution controller")
@@ -237,13 +239,18 @@ class RootlessCoordinator:
             factories,
             retained_evidence=self.evidence,
             agent_factory=agent_factory,
+            model_factory=(
+                lambda host: AuxiliaryModels(store, owner, host.worker_actor, auxiliary_models)
+            )
+            if auxiliary_models is not None
+            else None,
             host_private_inputs={"agent.credentials": encoded},
             host_auxiliary_disk_mb=1 if route else 0,
             startup_seconds=self.limits.phase_seconds,
         )
         return self._driver(host, factories, TrialDriver)
 
-    async def evaluation(self, store, owner):
+    async def evaluation(self, store, owner, *, auxiliary_models=None):
         if owner.control_id is None:
             raise ManagedRuntimeError("Regrading requires an independent evaluation controller")
         if self.evidence.store is not store or not callable(
@@ -260,6 +267,11 @@ class RootlessCoordinator:
             factories,
             retained_evidence=self.evidence,
             worker_image_pin=frozen.worker_image_id,
+            model_factory=(
+                lambda host: AuxiliaryModels(store, owner, host.worker_actor, auxiliary_models)
+            )
+            if auxiliary_models is not None
+            else None,
             startup_seconds=self.limits.phase_seconds,
         )
         return self._driver(host, factories, RegradeDriver)

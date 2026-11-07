@@ -19,6 +19,7 @@ from app.models.benchmark_command import BenchmarkCommand
 from app.models.benchmark_trial import BenchmarkEventStream, BenchmarkHostReservation
 
 COMMAND_PHASES = {
+    "model.call": {"driving", "evaluating"},
     "describe": {
         "planning",
         "preparing",
@@ -99,7 +100,7 @@ class CommandStore:
     def _receipt(self, row):
         return self.trials.private.open("command-response:" + str(row.id), row.private_response)
 
-    async def begin(self, frame):
+    async def begin(self, frame, *, replay_only=False, authorize=None, record=None):
         validate("command", frame)
         encode_line(frame)
         expected_scope = {
@@ -135,6 +136,8 @@ class CommandStore:
                 return CommandTicket(
                     previous.id, frame["id"], self._receipt(previous), previous.error_code
                 )
+            if replay_only:
+                raise failure("RECEIPT_UNAVAILABLE", "Command receipt is unavailable", "uncertain")
             if trial.phase not in COMMAND_PHASES[frame["method"]] or stream.final_seq is not None:
                 raise failure("INVALID_PHASE", "Worker command is unavailable in this phase")
             if frame["method"] not in {"cancel", "capture", "cleanup", "shutdown"}:
@@ -144,7 +147,7 @@ class CommandStore:
                         "Trial cancellation or deadline prevents a new command",
                         "execution",
                     )
-            if frame["method"] in {"prepare", "drive", "evaluate"}:
+            if frame["method"] in {"prepare", "drive", "evaluate", "model.call"}:
                 reservation = await db.get(BenchmarkHostReservation, self.trials.host_id)
                 if reservation is None or (
                     reservation.trial_id,
@@ -162,6 +165,8 @@ class CommandStore:
                         "Worker execution requires complete group admission",
                         "preparation",
                     )
+            if authorize is not None:
+                await authorize(db, trial, stream, now)
             row = BenchmarkCommand(
                 id=uuid.uuid4(),
                 trial_id=self.owner.trial_id,
@@ -174,6 +179,8 @@ class CommandStore:
             )
             row.private_request = self.trials.private.seal("command-request:" + str(row.id), frame)
             db.add(row)
+            if record is not None:
+                await record(db, trial, row)
             await self.trials.append(
                 db, trial, "command.sent", {"command_id": str(row.id), "method": row.method}
             )
@@ -182,7 +189,7 @@ class CommandStore:
             # lose work, but cannot justify repeating a possibly executed effect.
             return CommandTicket(row.id, row.request_id)
 
-    async def receive(self, command_id, receipt):
+    async def receive(self, command_id, receipt, *, record=None):
         validate("response", receipt)
         encode_line(receipt)
         async with AsyncSession(self.trials.engine, expire_on_commit=False) as db:
@@ -206,6 +213,8 @@ class CommandStore:
                 "command-response:" + str(row.id), receipt
             )
             row.response_hash, row.received_at, row.state = digest, now, "received"
+            if record is not None:
+                await record(db, trial, row, receipt)
             await self.trials.append(db, trial, "command.received", {"command_id": str(row.id)})
             await db.commit()
 
