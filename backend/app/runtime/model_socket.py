@@ -41,6 +41,7 @@ class ModelSocket:
         self.task_path = self.target + "/model.sock"
         self.server, self.job, self.listener = None, None, None
         self.directory_fd, self.identity = None, None
+        self.directory_owned = False
         self.used = False
 
     @property
@@ -56,6 +57,7 @@ class ModelSocket:
         # Only this control directory is mounted. Different container UIDs must
         # traverse it; the role token authorizes requests to its sole socket.
         self.directory.mkdir(parents=True, mode=0o711, exist_ok=False)
+        self.directory_owned = True
         try:
             self.directory_fd = os.open(
                 self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -129,5 +131,6 @@ class ModelSocket:
                 if self.directory_fd is not None:
                     os.close(self.directory_fd)
                     self.directory_fd = None
-            if self.directory.exists():
+            if self.directory_owned and self.directory.exists():
                 self.directory.rmdir()
+                self.directory_owned = False

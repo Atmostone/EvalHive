@@ -299,6 +299,10 @@ class RootlessWorkerHost:
             auxiliary_disk_mb=retained.disk_mb + self.host_auxiliary_disk_mb,
         )
         await self.retained_inputs.materialize(retained)
+        if self.agent_gateway is not None:
+            bind_environment = getattr(self.agent_gateway.executor, "bind_environment", None)
+            if bind_environment is not None:
+                compiled = bind_environment(compiled, plan)
         resources = tuple(compiled.leases)
         policy = ActorPolicy(
             (self.assets.provider_id,),
@@ -347,6 +351,10 @@ class RootlessWorkerHost:
         )
         self.environment = compiled
         self.plan = deepcopy(plan)
+        if self.agent_gateway is not None:
+            start_environment = getattr(self.agent_gateway.executor, "start_environment", None)
+            if start_environment is not None:
+                await start_environment()
         return compiled
 
     async def bind_prepared(self, prepared):
@@ -363,11 +371,17 @@ class RootlessWorkerHost:
 
         from app.benchmarks.async_control import bounded, cancel_tasks
 
-        if self.channel is not None:
-            await self.channel.detach(grace=grace)
-        elif self.client is not None:
-            await cancel_tasks([self.client.reading], grace)
-            with suppress(TimeoutError):
-                await bounded(self.client.process.aclose(), grace)
-        await self.host_broker.detach()
-        await self.worker_broker.detach()
+        try:
+            if self.channel is not None:
+                await self.channel.detach(grace=grace)
+            elif self.client is not None:
+                await cancel_tasks([self.client.reading], grace)
+                with suppress(TimeoutError):
+                    await bounded(self.client.process.aclose(), grace)
+            await self.host_broker.detach()
+            await self.worker_broker.detach()
+        finally:
+            if self.agent_gateway is not None:
+                detach_environment = getattr(self.agent_gateway.executor, "detach_environment", None)
+                if detach_environment is not None:
+                    await detach_environment()

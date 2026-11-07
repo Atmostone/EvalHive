@@ -802,3 +802,37 @@ private references and explicit secret redaction; ordinary native settings such
 as workspace paths and boolean flags must not become global redaction patterns.
 The Harness attempt record contains references, with no inline MCP environment
 or header values.
+
+## Owned model channel for isolated agents
+
+`RootlessCoordinator.execution(..., model_gateway=True)` selects a host-owned
+OpenAI-compatible model channel. This is an explicit server option. The
+coordinator requires the installed Harness connector's `model_gateway`
+capability, resolves the selected private model connection, and replaces its
+Task credential with a random role token before creating private input grants.
+The actual provider key remains in the host's route. Other declared resource
+credentials keep their own references.
+
+After full group admission, the executor binds a read-only control directory to
+only the selected Task lease. The directory belongs to that environment session;
+it is not an installed dataset file or retained checkpoint input. The stable
+transport descriptor contributes to the environment fingerprint. A 1 MiB host
+control allowance contributes to admission, in addition to the Harness spool.
+The Unix listener starts after durable session installation and before native
+preparation allocates the Task. Construction and rejected admission open no
+listener. World and evaluator containers receive no agent channel mount.
+
+Every model request requires the role token and exact selected model. The host
+checks the bound current Harness attempt and controller, the driving phase,
+cancellation, and the earlier trial/attempt deadline. Waiting for response
+headers or a silent SSE stream also rechecks ownership. The listener closes on
+host detach, including a failing worker detach. The Task's native network policy
+is unchanged; a network-disabled container can use the filesystem socket.
+
+Native rootless checks cover both root and an unprivileged Task UID, a read-only
+control mount, and an isolated host protocol fixture. Native Pi/OpenCode SDK
+checks cover the local HTTP-to-Unix adaptation with an unreachable public model
+endpoint. This option currently supplies the agent role; auxiliary benchmark
+roles and recovery of orphaned control socket files after a host process crash
+remain integration work. Preflight must not advertise `host.model_gateway_v1`
+until that runtime composition and recovery are enabled.

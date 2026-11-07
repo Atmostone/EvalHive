@@ -19,6 +19,7 @@ from app.benchmarks.deadlines import DeadlineService
 from app.benchmarks.driver import TrialDriver
 from app.benchmarks.harness_execution import HarnessExecution
 from app.benchmarks.harness_transport import RootlessHarnessTransport
+from app.benchmarks.model_channel import AgentModelChannel, model_connection
 from app.benchmarks.recovery import RecoveryService
 from app.benchmarks.regrade_driver import RegradeDriver
 from app.benchmarks.retained_installation import load_retained_installation
@@ -29,9 +30,26 @@ from app.runtime.reconcile import RootlessReconciler
 
 
 class _RegisteredHarness(HarnessExecution):
-    def __init__(self, *args, host, **kwargs):
+    def __init__(self, *args, host, model_channel=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.host = host
+        self.model_channel = model_channel
+
+    def bind_environment(self, compiled, plan):
+        if self.model_channel is None:
+            return compiled
+        compiled, descriptor = self.model_channel.bind(compiled, plan, self.host.assets.provider_id)
+        self.spec["metadata"] = {**self.spec.get("metadata", {}), "model_gateway": descriptor}
+        validate_run(self.manifest, self.spec)
+        return compiled
+
+    async def start_environment(self):
+        if self.model_channel is not None:
+            await self.model_channel.start()
+
+    async def detach_environment(self):
+        if self.model_channel is not None:
+            await self.model_channel.close()
 
     def configure_access(self, prepared):
         agent = prepared.get("agent", {})
@@ -122,12 +140,17 @@ class RootlessCoordinator:
         credentials,
         spool_root,
         profile_id=None,
+        model_gateway=False,
     ):
         if owner.control_id is not None:
             raise ManagedRuntimeError("Agent execution requires an execution controller")
         if assets.runtime is not self.runtime or assets.provider_id != self.provider["id"]:
             raise ManagedRuntimeError("Installed assets require another runtime provider")
         validate_run(harness_manifest, harness_spec)
+        if type(model_gateway) is not bool or "model_gateway" in harness_spec.get("metadata", {}):
+            raise ManagedRuntimeError("Model transport must be selected by the coordinator")
+        if model_gateway and harness_manifest["capabilities"].get("model_gateway") not in {"native", "emulated"}:
+            raise ManagedRuntimeError("Harness connector cannot use an owned model channel")
         if (bundle.connector_id, bundle.connector_version) != (
             harness_manifest["id"],
             harness_manifest["version"],
@@ -138,7 +161,9 @@ class RootlessCoordinator:
             for key, value in credentials.items()
         ):
             raise ManagedRuntimeError("Harness credentials require a private string map")
-        encoded = json.dumps(credentials, ensure_ascii=False).encode()
+        private_values = tuple(value for value in credentials.values() if value)
+        route, private_credentials = model_connection(harness_spec, credentials) if model_gateway else (None, credentials)
+        encoded = json.dumps(private_credentials, ensure_ascii=False).encode()
         if len(encoded) > 1024**2:
             raise ManagedRuntimeError("Harness credential input exceeds its byte limit")
         spool_root = Path(spool_root)
@@ -159,7 +184,8 @@ class RootlessCoordinator:
             "runtime_bundle_image_id": bundle.image_id,
             "runtime_bundle_fingerprint": bundle.fingerprint,
         }
-        private_values = tuple(value for value in credentials.values() if value)
+        if route is not None:
+            private_values += (route.token,)
         factories = self._providers(store, owner)
 
         def agent_factory(host):
@@ -184,6 +210,7 @@ class RootlessCoordinator:
                     transport,
                     spool_root / str(calls.session_id) / "events.sqlite",
                     host=host,
+                    model_channel=AgentModelChannel(calls, self.runtime, route) if route else None,
                     profile_id=profile_id,
                     credential_ref="agent.credentials",
                     private_values=private_values,
@@ -200,6 +227,7 @@ class RootlessCoordinator:
             retained_evidence=self.evidence,
             agent_factory=agent_factory,
             host_private_inputs={"agent.credentials": encoded},
+            host_auxiliary_disk_mb=1 if route else 0,
         )
         return self._driver(host, factories, TrialDriver)
 
