@@ -37,12 +37,19 @@ export class OpenCodeConnector implements Connector {
   private permissions = new Map<string, string>();
   private feedbackGeneration = 0;
   private started = false;
+  private apiTimeoutMs = 30000;
+  private runSignal: AbortSignal | undefined;
   private promptOptions: { model: { providerID: string; modelID: string }; agent: string } | undefined;
 
   constructor(
     private credentials: Record<string, string>,
     private transport: { fetch?: typeof fetch } = {},
   ) {}
+
+  private apiSignal(): AbortSignal {
+    const timeout = AbortSignal.timeout(this.apiTimeoutMs);
+    return this.runSignal ? AbortSignal.any([this.runSignal, timeout]) : timeout;
+  }
 
   async validate(spec: RunSpec): Promise<JsonValue> {
     const config = effectiveConfig(spec);
@@ -89,7 +96,7 @@ export class OpenCodeConnector implements Connector {
       sessionID = this.sessionId!;
     const before = await client.session.messages(
       { sessionID },
-      { throwOnError: true, signal: AbortSignal.timeout(5000) },
+      { throwOnError: true, signal: this.apiSignal() },
     );
     const known = new Set(before.data!.map((entry) => entry.info.id));
     await client.session.promptAsync(
@@ -98,11 +105,11 @@ export class OpenCodeConnector implements Connector {
     );
     // The native 202 response admits background work; acknowledge feedback only
     // after its user message is visible in the persisted native transcript.
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + this.apiTimeoutMs;
     while (Date.now() < deadline) {
       const response = await client.session.messages(
         { sessionID },
-        { throwOnError: true, signal: AbortSignal.timeout(5000) },
+        { throwOnError: true, signal: this.apiSignal() },
       );
       if (
         response.data!.some(
@@ -140,6 +147,8 @@ export class OpenCodeConnector implements Connector {
         batch = gate.announce(messageId, messageId, calls, content).catch(error => {externalFailure = error; void this.interrupt();});
       },
     } : undefined);
+    this.apiTimeoutMs = Number(config.apiTimeoutSeconds) * 1000;
+    this.runSignal = context.signal;
     let resourceSet: Awaited<ReturnType<typeof externalResources>> | undefined;
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
     let events: Promise<void> | undefined;
@@ -304,7 +313,7 @@ export class OpenCodeConnector implements Connector {
         if (resource.enabled !== false && object(statuses.data?.[name]).status !== 'connected')
           throw new ProtocolError('MCP_UNAVAILABLE', 'A configured MCP server could not be initialized');
       }
-      const toolIds = await client.tool.ids({}, { throwOnError: true, signal: AbortSignal.timeout(10000) });
+      const toolIds = await client.tool.ids({}, { throwOnError: true, signal: this.apiSignal() });
       const tools = plan.selection
         ? Object.fromEntries(
             toolIds.data!.map((name) => [
@@ -336,19 +345,19 @@ export class OpenCodeConnector implements Connector {
           for (const identity of [session.id, ...translator.parents.keys()]) {
             const response = await client.session.messages(
               { sessionID: identity },
-              { throwOnError: true, signal: AbortSignal.timeout(10000) },
+              { throwOnError: true, signal: this.apiSignal() },
             );
             translator.snapshot(response.data!);
             if (identity === session.id) main = response.data;
           }
           const pending = await client.permission.list(
             {},
-            { throwOnError: true, signal: AbortSignal.timeout(10000) },
+            { throwOnError: true, signal: this.apiSignal() },
           );
           for (const item of pending.data!) publishPermission(object(item));
           const questions = await client.question.list(
             {},
-            { throwOnError: true, signal: AbortSignal.timeout(10000) },
+            { throwOnError: true, signal: this.apiSignal() },
           );
           if (questions.data!.length && !unsupportedInteraction) {
             unsupportedInteraction = true;
@@ -442,7 +451,7 @@ export class OpenCodeConnector implements Connector {
           last = object([...messages].reverse().find((item) => item.info.role === 'assistant')?.info);
           const active = await client.session.status(
             {},
-            { throwOnError: true, signal: AbortSignal.timeout(10000) },
+            { throwOnError: true, signal: this.apiSignal() },
           );
           const idle = !active.data?.[session.id] || active.data[session.id].type === 'idle';
           if (context.signal.aborted) {await this.interrupt(); break;}

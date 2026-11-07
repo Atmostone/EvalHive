@@ -25,6 +25,13 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "apiTimeoutSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 120,
+        "default": 30,
+        "description": "Budget for native server observations; the attempt deadline still applies."
+      },
       "contextWindow": {
         "type": "integer",
         "minimum": 128,

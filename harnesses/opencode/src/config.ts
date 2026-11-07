@@ -31,6 +31,7 @@ export function effectiveConfig(spec: RunSpec): JsonObject {
     autoCompaction: true,
     reasoning: false,
     permissionMode: 'allow',
+    apiTimeoutSeconds: 30,
     ...config,
   };
 }
