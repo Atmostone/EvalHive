@@ -77,6 +77,9 @@ def declarations(receipt, surface, worker_image, task_image):
             64,
             user="0",
             command=["/opt/venv/bin/python", "-c", "import time; time.sleep(86400)"],
+            mounts=[
+                {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}
+            ],
             outputs=outputs,
         ),
         "tau2.task": container(
@@ -202,7 +205,7 @@ def install(
                     "public-surface": {
                         "kind": "relative",
                         "path": "public-surface",
-                        "source_digest": surface["fingerprint"],
+                        "source_digest": "sha256:" + surface["fingerprint"],
                     },
                     "public-sdk": {
                         "kind": "relative",

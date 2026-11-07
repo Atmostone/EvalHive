@@ -1,6 +1,7 @@
 """The official user simulator generates through the credential-free host API."""
 
 import asyncio
+import json
 import os
 import time
 from types import SimpleNamespace
@@ -76,5 +77,89 @@ async def test_native_user_simulator_uses_only_its_host_bound_role():
         assert len(calls) == 1
         assert bound.arguments["num_retries"] == 0 and state.messages
         assert bound.arguments["temperature"] == 0.0
+    finally:
+        bound.close()
+
+
+@pytest.mark.asyncio
+async def test_native_nl_evaluator_uses_explicit_judge_and_restores_native_defaults():
+    root = os.environ.get("EVALHIVE_NATIVE_TAU2_DATA")
+    if not root:
+        pytest.skip("Requires the pinned native tau2 wheel and private baseline data")
+    load_domain(root, "airline")
+    from tau2.data_model.message import AssistantMessage
+    from tau2.data_model.tasks import Task
+    from tau2.evaluator import evaluator_nl_assertions as native
+
+    previous = native.DEFAULT_LLM_NL_ASSERTIONS, native.DEFAULT_LLM_NL_ASSERTIONS_ARGS
+    calls = []
+
+    async def model(scope, role, body, **options):
+        calls.append(role)
+        assert role == "judge" and body["model"] == "fixture-judge"
+        return {
+            "status_code": 200,
+            "body": {
+                "id": "native-judge",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "fixture-judge",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "results": [
+                                        {
+                                            "expectedOutcome": "The agent says Done",
+                                            "metExpectation": True,
+                                            "reasoning": "Observed",
+                                        }
+                                    ]
+                                }
+                            ),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11},
+            },
+        }
+
+    task = Task(
+        id="judge-fixture",
+        user_scenario={"instructions": "private"},
+        evaluation_criteria={
+            "nl_assertions": ["The agent says Done"],
+            "reward_basis": ["NL_ASSERTION"],
+        },
+    )
+    bound = BoundModel(
+        SimpleNamespace(model=model, cancelled=asyncio.Event()),
+        {
+            "scope": {"trial_id": "trial"},
+            "models": {
+                "judge": {
+                    "name": "fixture-judge",
+                    "endpoint": "http://owner-provider.invalid/v1",
+                    "credential_ref": "explicit-judge",
+                }
+            },
+        },
+        "judge",
+        asyncio.get_running_loop(),
+        time.monotonic() + 30,
+    )
+    try:
+        with bound.judge(root, "airline"):
+            reward = await asyncio.to_thread(
+                native.NLAssertionsEvaluator.calculate_reward,
+                task,
+                [AssistantMessage(role="assistant", content="Done")],
+            )
+        assert reward.reward == 1.0 and calls == ["judge"]
+        assert (native.DEFAULT_LLM_NL_ASSERTIONS, native.DEFAULT_LLM_NL_ASSERTIONS_ARGS) == previous
     finally:
         bound.close()

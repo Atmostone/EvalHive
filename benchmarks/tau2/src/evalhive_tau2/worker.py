@@ -122,7 +122,7 @@ class Tau2Connector(Connector):
             "interaction": "external_steps",
             "environment_handle": self.handles.get("task", "task"),
             "cwd": "/workspace",
-            "prompt": "",
+            "prompt": self.surface["instructions"],
             "instructions": [self.surface["instructions"]],
             "resources": agent_resources(),
         }

@@ -149,6 +149,9 @@ async def test_full_native_lifecycle_and_cold_grade_have_same_reward_without_reo
     assert "private-user-scenario" not in str(plan)
     task_mounts = resources["assets"]["tau2.task"]["mounts"]
     assert "worker-data" not in str(task_mounts)
+    assert resources["assets"]["tau2.recorder"]["mounts"] == [
+        {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}
+    ]
     prepared = await worker.handle("prepare", {"spec": spec, "plan": plan}, context)
     validate_environment(spec, prepared, kind="prepared")
     driven = await worker.handle("drive", {"scope": SCOPE}, context)
@@ -241,6 +244,8 @@ def test_installation_snapshots_only_selected_private_domain_and_public_sdk(setu
     validate("manifest", manifest)
     assert manifest["image"] == IMAGE
     assert (output / "public-sdk/evalhive_benchmark/tool_catalog.py").is_file()
+    files = json.loads((output / "files.json").read_text())["files"]
+    assert files["public-surface"]["source_digest"] == "sha256:" + surface["fingerprint"]
     assert (output / "public-sdk/evalhive_benchmark").stat().st_mode & 0o777 == 0o755
     with pytest.raises(ValueError, match="already exists"):
         install(

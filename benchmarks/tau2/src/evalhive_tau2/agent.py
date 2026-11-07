@@ -87,14 +87,13 @@ class ExternalSession:
             return
         result = await self.call("open", {"initial_history": history})
         self.session_id = result["session_id"]
+        idle = False
         while True:
             event = await self.event()
             self.mapped(event)
             if event["event"] == "session.waiting_input" and event["data"]["revision"] == 0:
-                if self.schemas and not self.mapping:
-                    raise ProtocolError(
-                        "NATIVE_TOOL_MAPPING", "Harness omitted its native tool mapping"
-                    )
+                idle = True
+            if idle and (not self.schemas or self.mapping):
                 self.waiting = True
                 return
 

@@ -143,6 +143,22 @@ async def test_cancelled_participant_never_opens_a_harness():
 
 
 @pytest.mark.asyncio
+async def test_initial_idle_and_tool_mapping_can_arrive_in_either_order():
+    class EarlyIdleHarness(Harness):
+        async def agent(self, scope, operation, payload, **options):
+            result = await super().agent(scope, operation, payload, **options)
+            if operation == "open":
+                self.events.reverse()
+            return result
+
+    harness = EarlyIdleHarness()
+    driver = session(harness)
+    await driver.open(harness.initial_history)
+    assert driver.waiting and driver.mapping == {"chosen_calculate": "calculate"}
+    assert not harness.commands
+
+
+@pytest.mark.asyncio
 async def test_native_step_limit_aborts_a_pending_batch_before_confirming_close():
     class StoppableHarness(Harness):
         stopped = False
