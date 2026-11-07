@@ -112,12 +112,12 @@ def native_asset(native, selected, *, verifier=False):
         environment=deepcopy(config.env),
         **({"user": user} if user else {}),
         storage_slots=storage,
-        mounts=[{"file_id": "transfer-tools", "target": "/evalhive-transfer", "read_only": True}],
+        mounts=[
+            {"file_id": "transfer-tools", "target": "/evalhive-transfer", "read_only": True},
+            {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True},
+        ],
     )
     if not verifier:
-        result["mounts"].append(
-            {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}
-        )
         result["agent_process_policy"] = "retain_until_cleanup"
         if native.task.config.agent.user is not None:
             result["agent_user"] = str(native.task.config.agent.user)
@@ -169,6 +169,9 @@ def declarations(installed, worker_image, image_bindings):
             entrypoint=[],
             command=["/opt/venv/bin/python", "-c", "import time;time.sleep(86400)"],
             storage_slots=deepcopy(slots),
+            mounts=[
+                {"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}
+            ],
             outputs={
                 "native-report": {
                     "path": "/reports/native-verifier",

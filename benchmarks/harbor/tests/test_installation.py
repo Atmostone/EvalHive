@@ -119,3 +119,19 @@ def test_invalid_native_binding_cannot_publish_a_partial_installation(tmp_path, 
         )
     assert not output.exists()
     assert not list(tmp_path.glob(".evalhive-harbor-*"))
+
+
+@pytest.mark.parametrize("mode", ["shared", "separate"])
+def test_every_container_running_broker_commands_has_the_readonly_process_runtime(tmp_path, tools, mode):
+    source = tmp_path / "source"
+    task(source, '[environment]\nmemory_mb=128\ncpus=0.25\nstorage_mb=64\n[verifier]\nenvironment_mode="' + mode + '"\n')
+    images = metadata()
+    if mode == "separate":
+        images["native-task"]["verifier"] = dict(images["native-task"]["task"])
+    output = tmp_path / "installed"
+    install(source, output, revision="runtime-binding", worker_image=IMAGE, image_bindings=images, transfer_tools=tools)
+    assets = json.loads((output / "resources.json").read_text())["assets"]
+    for asset in assets.values():
+        if asset["kind"] == "container" and asset["role"] != "worker":
+            runtime_mounts = [mount for mount in asset.get("mounts", []) if mount["target"] == "/evalhive-runtime"]
+            assert runtime_mounts == [{"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}]
