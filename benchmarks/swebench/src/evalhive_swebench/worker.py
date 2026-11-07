@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import sys
 import time
 from copy import deepcopy
 from pathlib import Path
 
 from evalhive_benchmark import Connector, ProtocolError, validate_spec
-from evalhive_benchmark.connector import serve
+from evalhive_benchmark.connector import serve_stdio
 from evalhive_benchmark.installation import validate_installation
 from evalhive_benchmark.protocol import MAX_LINE_BYTES
 from evalhive_benchmark.world_client import WorldClient
@@ -463,7 +462,7 @@ class SWEbenchConnector(Connector):
 
 
 def main():
-    asyncio.run(serve(SWEbenchConnector(), sys.stdin.buffer, sys.stdout.buffer))
+    asyncio.run(serve_stdio(SWEbenchConnector()))
 
 
 if __name__ == "__main__":

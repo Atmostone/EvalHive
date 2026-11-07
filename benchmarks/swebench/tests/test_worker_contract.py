@@ -1,15 +1,42 @@
 """Public catalogs, retained worktrees and private evaluator storage stay separate."""
 
 import asyncio
+import os
+import sys
 from copy import deepcopy
+from pathlib import Path
 
+import evalhive_benchmark
+import evalhive_swebench
 import pytest
-from evalhive_benchmark import ProtocolError, validate, validate_environment
+from evalhive_benchmark import ConnectorClient, ProtocolError, validate, validate_environment
 from evalhive_swebench.installation import declarations
 from evalhive_swebench.native import REVISION, TASK_REVISION, VERSION
 from evalhive_swebench.worker import MANIFEST, SWEbenchConnector
 
 IMAGE = "sha256:" + "a" * 64
+
+
+def test_real_worker_entrypoint_exchanges_sdk_commands_without_native_imports():
+    paths = [
+        Path(module.__file__).parent.parent for module in (evalhive_benchmark, evalhive_swebench)
+    ]
+
+    async def run():
+        client = await ConnectorClient.launch(
+            [sys.executable, "-m", "evalhive_swebench.worker"],
+            env={
+                "PATH": os.defpath,
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONPATH": os.pathsep.join(str(path) for path in paths),
+            },
+        )
+        try:
+            assert (await client.request("describe"))["id"] == "swebench"
+        finally:
+            await client.close(grace=1)
+
+    asyncio.run(run())
 
 
 @pytest.fixture
