@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import uuid
 from collections import defaultdict
 from copy import deepcopy
 from decimal import Decimal, localcontext
@@ -17,6 +19,49 @@ TOKEN_FIELDS = (
     "cache_write_tokens",
 )
 AXES = ("role", "model", "purpose", "mode")
+
+
+def harness_usage(attempt_id, event):
+    """Project one committed Harness observation without its terminal summary."""
+    native = event["data"]
+    identity = json.dumps(
+        [event["source"], event.get("session_id"), native["usage_id"]], separators=(",", ":")
+    )
+    model = native.get("model")
+    purpose = native["purpose"]
+    metadata = {
+        "source": "host.harness_sdk",
+        "attempt_id": str(attempt_id),
+        "native_usage_id": native["usage_id"],
+        "native_purpose": purpose,
+    }
+    if model is not None and (not model or len(model) > 500):
+        metadata["unrepresentable_model"] = model
+        model = None
+    if len(purpose) > 100:
+        purpose = "native." + hashlib.sha256(purpose.encode()).hexdigest()
+    cost = deepcopy(native.get("cost"))
+    if cost is not None:
+        metadata["native_cost"] = deepcopy(cost)
+        if cost["currency"] != "USD":
+            cost = None
+        else:
+            if cost["source"] == "configured":
+                cost["source"] = "estimate"
+            whole, dot, fraction = cost["amount"].partition(".")
+            cost["amount"] = (whole.lstrip("0") or "0") + (dot + fraction if dot else "")
+    usage = {
+        "usage_id": "harness." + uuid.uuid5(uuid.UUID(str(attempt_id)), identity).hex,
+        "role": "agent",
+        "model": model,
+        "purpose": purpose,
+        "mode": native["mode"],
+        **{name: native.get(name) for name in TOKEN_FIELDS},
+        "cost": cost,
+        "metadata": metadata,
+    }
+    validate("usage", usage)
+    return usage
 
 
 def _amount(values):

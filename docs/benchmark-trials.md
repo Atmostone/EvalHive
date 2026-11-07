@@ -340,6 +340,14 @@ does not need to fabricate outputs for a completed verdict; any references it
 does report still undergo integrity checks. Different captures of a changing
 native path require different logical output IDs to preserve immutable evidence.
 
+Confirmed Harness SDK usage is projected into this journal in the same SQL
+transaction that accepts the Harness events. Repeated event delivery adds no
+observations. Request identities include the attempt, native source and session,
+so nested sessions cannot merge equal native IDs. Only usage events are projected;
+terminal summaries are not added to their intermediate measurements. The host
+assigns the agent role. Native configured USD rates remain estimates, and costs
+in other currencies remain unknown rather than receiving an invented conversion.
+
 `trial_usage` rebuilds a ledger from the scoped immutable journal in bounded
 pages, with a fixed high-water mark for a live trial. It groups by role, model and
 purpose. Within a registered actor stream, `usage_id` identifies one model

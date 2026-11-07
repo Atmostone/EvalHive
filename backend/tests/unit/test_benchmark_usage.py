@@ -142,3 +142,27 @@ def test_cost_outside_policy_remains_unknown_and_reported():
         "worker", 0, observation(cost={"currency": "USD", "amount": "1" * 81, "source": "provider"})
     )
     assert not ledger.summary()["valid"] and group(ledger)["cost"]["amount"] is None
+
+
+def test_harness_projection_preserves_unknown_currency_and_bounds_native_labels():
+    import uuid
+
+    from app.benchmarks.usage import harness_usage
+
+    value = harness_usage(
+        uuid.uuid4(),
+        {
+            "source": "fixture",
+            "session_id": "session",
+            "data": {
+                "usage_id": "id" * 200,
+                "mode": "cumulative",
+                "model": "m" * 600,
+                "purpose": "p" * 200,
+                "cost": {"amount": "001.20", "currency": "EUR", "source": "provider"},
+            },
+        },
+    )
+    assert value["role"] == "agent" and value["model"] is None and value["cost"] is None
+    assert value["purpose"].startswith("native.") and len(value["usage_id"]) <= 200
+    assert value["metadata"]["native_cost"]["currency"] == "EUR"

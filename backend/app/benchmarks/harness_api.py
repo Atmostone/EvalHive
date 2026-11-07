@@ -2,7 +2,10 @@
 
 import uuid
 
+from sqlalchemy import select
+
 from app.benchmarks.trials import failure
+from app.benchmarks.usage import harness_usage
 from app.harnesses.attempts import (
     TERMINAL,
     acknowledge_command,
@@ -11,7 +14,7 @@ from app.harnesses.attempts import (
     prepare_configuration,
     queue_command,
 )
-from app.models.execution_attempt import ExecutionCommand
+from app.models.execution_attempt import ExecutionCommand, ExecutionEvent
 
 
 class BenchmarkAttemptAPI:
@@ -25,8 +28,32 @@ class BenchmarkAttemptAPI:
         self.calls = calls
 
     async def events(self, batch):
-        async with self.calls.runner_transaction() as (db, _, attempt, _):
-            return await ingest_events(db, attempt.id, batch)
+        async with self.calls.runner_transaction() as (db, trial, attempt, _):
+            before = attempt.next_seq
+            result = await ingest_events(db, attempt.id, batch)
+            observations = await db.scalars(
+                select(ExecutionEvent)
+                .where(
+                    ExecutionEvent.attempt_id == attempt.id,
+                    ExecutionEvent.seq >= before,
+                    ExecutionEvent.event == "usage",
+                )
+                .order_by(ExecutionEvent.seq)
+            )
+            for observation in observations:
+                usage = harness_usage(attempt.id, observation.payload)
+                entry_id = uuid.uuid4()
+                await self.calls.trials.append(
+                    db,
+                    trial,
+                    "usage",
+                    {"source": "host.harness_sdk"},
+                    id=entry_id,
+                    private_data=self.calls.trials.private.seal(
+                        "journal:" + str(entry_id), {"data": usage}
+                    ),
+                )
+            return result
 
     async def prepare(self, config):
         async with self.calls.runner_transaction() as (db, trial, attempt, now):
