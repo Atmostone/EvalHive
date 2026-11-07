@@ -267,10 +267,12 @@ async def test_native_aggregation_uses_harbor_mean_and_preserves_unscored_count(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_timeout,parent_timeout", [(10, 120), (900, 120)])
 async def test_separate_artifact_restoration_does_not_consume_the_native_verifier_budget(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, native_timeout, parent_timeout
 ):
-    worker, spec = installed(tmp_path, separate=True, verifier_timeout=10)
+    worker, spec = installed(tmp_path, separate=True, verifier_timeout=native_timeout)
+    spec["limits"]["wall_time_seconds"] = parent_timeout
     worker._load(spec)
     worker.ready = True
     clock = [100]
@@ -290,8 +292,12 @@ async def test_separate_artifact_restoration_does_not_consume_the_native_verifie
         clock[0] += 30
 
     async def verify(native, selected, paths):
-        assert worker.operation_deadline == environment.deadline == 140
-        assert native.task.config.verifier.timeout_sec == 10
+        assert (
+            worker.operation_deadline
+            == environment.deadline
+            == 130 + min(native_timeout, parent_timeout)
+        )
+        assert native.task.config.verifier.timeout_sec == native_timeout
         return SimpleNamespace(rewards={"quality": 0.625})
 
     monkeypatch.setattr("evalhive_harbor.worker.restore_artifacts", restore)

@@ -71,6 +71,11 @@ class HarborConnector(Connector):
         self.paths.mkdir()
         self.logger = logging.getLogger(__name__)
 
+    def _deadline(self, seconds):
+        # The broker inherits the actual remaining parent deadline. Its saved
+        # per-command grant is also bounded by the original trial budget.
+        return time.monotonic() + min(seconds, self.spec["limits"]["wall_time_seconds"])
+
     def installed(self):
         if self.dataset is None:
             path = self.root / "installation.json"
@@ -356,6 +361,11 @@ class HarborConnector(Connector):
         return result
 
     async def _broker(self, context, operation, payload=None, *, identity=None):
+        remaining = self.operation_deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProtocolError(
+                "NATIVE_PHASE_TIMEOUT", "Native operation deadline expired", "execution"
+            )
         self.sequence += 1
         return await context.broker(
             self.spec["scope"],
@@ -364,7 +374,7 @@ class HarborConnector(Connector):
             payload or {},
             **({"handle": self.handles[identity]} if identity else {}),
             request_id="harbor." + str(self.sequence),
-            timeout=(payload or {}).get("timeout_seconds", 30) + 5,
+            timeout=(payload or {}).get("timeout_seconds", min(remaining, 86400)) + 5,
             durable_host=True,
         )
 
@@ -493,7 +503,7 @@ class HarborConnector(Connector):
                 await asyncio.sleep(min(0.2, max(0, self.operation_deadline - time.monotonic())))
 
     async def _prepare(self, context):
-        self.operation_deadline = time.monotonic() + self.config["prepare_timeout_seconds"]
+        self.operation_deadline = self._deadline(self.config["prepare_timeout_seconds"])
         initial = [
             resource for resource in self._plan()["resources"] if not verifier_resource(resource)
         ]
@@ -549,9 +559,7 @@ class HarborConnector(Connector):
         return self.collected
 
     async def _capture(self, context):
-        self.operation_deadline = time.monotonic() + min(
-            120, self.spec["limits"]["wall_time_seconds"]
-        )
+        self.operation_deadline = self._deadline(120)
         result = {
             "artifacts": [],
             "regrade": "unavailable",
@@ -600,7 +608,7 @@ class HarborConnector(Connector):
     async def _evaluate(self, context):
         if not self.ready:
             return unavailable("NATIVE_ENVIRONMENT_NOT_READY")
-        self.operation_deadline = time.monotonic() + self.config["prepare_timeout_seconds"]
+        self.operation_deadline = self._deadline(self.config["prepare_timeout_seconds"])
         identity = "verifier" if self.native.verifier_mode == "separate" else "task"
         paths = self.paths
         result = unavailable("QUALITY_EVALUATION_DEFERRED")
@@ -623,8 +631,8 @@ class HarborConnector(Connector):
                     source_services=self.binding["task"].get("services", {}),
                 )
             if self.config["evaluation_mode"] != "deferred":
-                self.operation_deadline = (
-                    time.monotonic() + self.native.task.config.verifier.timeout_sec
+                self.operation_deadline = self._deadline(
+                    self.native.task.config.verifier.timeout_sec
                 )
                 environment.deadline = self.operation_deadline
                 verdict = await run_verifier(self.native, environment, paths)
@@ -658,9 +666,7 @@ class HarborConnector(Connector):
                     "kind": "grading",
                 },
             }
-        self.operation_deadline = time.monotonic() + min(
-            120, self.spec["limits"]["wall_time_seconds"]
-        )
+        self.operation_deadline = self._deadline(120)
         if self.native.verifier_mode == "shared":
             result["native"]["artifact_collection"] = await self._collect(context)
             await self._environment(context, "world").transfers.publish(
