@@ -4,6 +4,38 @@ const BASE = '/api'
 
 import type { HarnessManifest, HarnessProfile, HarnessSecret } from '@/types'
 import type { ExecutionAttempt, AttemptEvent, AttemptCommand } from '@/types'
+import type {
+  BenchmarkCatalogEntry, BenchmarkProfile, BenchmarkProfileInput, BenchmarkCredential,
+  BenchmarkDataset, BenchmarkCase, BenchmarkPreflight,
+} from '@/types/benchmarks'
+
+export const benchmarkSdkApi = {
+  catalog: () => request<BenchmarkCatalogEntry[]>('/benchmarks'),
+  profiles: () => request<BenchmarkProfile[]>('/benchmark-profiles'),
+  createProfile: (data: BenchmarkProfileInput) => request<BenchmarkProfile>('/benchmark-profiles', {
+    method: 'POST', body: JSON.stringify(data),
+  }),
+  updateProfile: (id: string, data: Partial<Omit<BenchmarkProfileInput, 'connector_id'>>) =>
+    request<BenchmarkProfile>(`/benchmark-profiles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteProfile: (id: string) => request<void>(`/benchmark-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  validateProfile: (id: string) => request<{ valid: boolean; configured: boolean; missing: string[]; live_verified: boolean }>(
+    `/benchmark-profiles/${encodeURIComponent(id)}/validate`, { method: 'POST' }),
+  credentials: () => request<BenchmarkCredential[]>('/benchmark-secrets'),
+  createCredential: (name: string, value: string) => request<BenchmarkCredential>('/benchmark-secrets', {
+    method: 'POST', body: JSON.stringify({ name, value }),
+  }),
+  replaceCredential: (id: string, name: string, value: string) => request<BenchmarkCredential>(
+    `/benchmark-secrets/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ name, value }) }),
+  deleteCredential: (id: string) => request<void>(`/benchmark-secrets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  datasets: () => request<BenchmarkDataset[]>('/benchmark-datasets'),
+  registerDataset: (profileId: string, datasetId: string, revision: string) => request<BenchmarkDataset>('/benchmark-datasets', {
+    method: 'POST', body: JSON.stringify({ profile_id: profileId, dataset_id: datasetId, revision }),
+  }),
+  cases: (id: string, offset = 0, limit = 100) => request<{ total: number; offset: number; cases: BenchmarkCase[] }>(
+    `/benchmark-datasets/${encodeURIComponent(id)}/cases?offset=${offset}&limit=${limit}`),
+  preflight: (selection: { profile_id: string; dataset_revision_id: string; case_id: string; harness_profile_id: string }) =>
+    request<BenchmarkPreflight>('/benchmarks/preflight', { method: 'POST', body: JSON.stringify(selection) }),
+}
 
 export const attemptsApi = {
   list: (taskId: string) => request<ExecutionAttempt[]>(`/tasks/${taskId}/attempts?limit=1`),
