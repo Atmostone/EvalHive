@@ -14,6 +14,7 @@ from app.api.benchmark_sdk import datasets_router as benchmark_datasets_router
 from app.api.benchmark_sdk import profiles_router as benchmark_profiles_router
 from app.api.benchmark_sdk import router as benchmark_catalog_router
 from app.api.benchmark_sdk import secrets_router as benchmark_secrets_router
+from app.api.benchmark_trials import router as benchmark_trials_router
 from app.api.benchmarks import router as benchmarks_router
 from app.api.chat import router as chat_router
 from app.api.data_lake import router as data_lake_router
@@ -371,3 +372,4 @@ app.include_router(benchmark_catalog_router)
 app.include_router(benchmark_profiles_router)
 app.include_router(benchmark_secrets_router)
 app.include_router(benchmark_datasets_router)
+app.include_router(benchmark_trials_router)

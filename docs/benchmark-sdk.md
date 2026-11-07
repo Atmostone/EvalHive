@@ -178,6 +178,26 @@ incompatibility reasons. The initial `static` stage always reports
 and resource checks; B04 reserves and revalidates before launching a trial.
 Static policy capacity alone must never authorize execution.
 
+Settings now supports benchmark profiles, connector-provided configuration
+schemas, write-only credentials, role-specific model references, registration of
+already installed dataset revisions and paginated case browsing. A compatibility
+selector binds profile, revision, case and harness without installing packages or
+running a model. Installed, configured, compatible and live-verified states remain
+separate. The isolated browser check is
+`frontend/browser-tests/benchmark-settings.py`; it serves a production build and
+intercepts API requests with synthetic workspace data.
+
+The workspace-scoped `/api/benchmark-trials` read API lists trials, exposes their
+independent execution/evaluation/recording/cleanup states and returns public
+snapshots. `/{id}/events` reads public journal entries strictly after `after_seq`
+with a bounded page size; its `next_seq` is the last returned cursor.
+`/{id}/evaluations` preserves each evaluator's status, native metrics and verdict.
+`/{id}/artifacts` lists only user/agent-visible receipts; it never returns private
+storage locators or evaluator-only files. `/{id}/usage` reads the existing role
+ledger. Operator-only `POST /{id}/cancel` records a monotonic cancellation request
+and is safe to repeat. These reads do not themselves authorize a new execution;
+product queue and launch composition remain part of B14.
+
 The neutral rootless runtime now preserves image startup/workspace semantics and
 checks workspace/trial/session/generation ownership for containers, networks and
 native execs. Its static supervisor and SDK process transport retain task state

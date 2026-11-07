@@ -1,0 +1,222 @@
+"""Workspace-scoped public trial journals, verdict history and cancellation."""
+
+from __future__ import annotations
+
+import uuid
+
+from evalhive_benchmark import ProtocolError
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+
+from app.api.benchmark_sdk import SafeValidationRoute
+from app.auth.dependencies import get_current_workspace, require_role
+from app.benchmarks.evidence import reference
+from app.benchmarks.private_store import PrivateStore
+from app.benchmarks.trials import TrialStore
+from app.benchmarks.usage import trial_usage
+from app.config import get_settings
+from app.database import get_db
+from app.models.benchmark_artifact import BenchmarkArtifact
+from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
+from app.models.benchmark_trial import BenchmarkJournalEntry, BenchmarkTrial
+
+router = APIRouter(
+    prefix="/api/benchmark-trials", tags=["benchmark-trials"], route_class=SafeValidationRoute
+)
+OPERATOR = Depends(require_role("owner", "admin", "member"))
+
+
+def get_trial_store():
+    from app import database
+
+    secret = get_settings().jwt_secret
+    if not secret:
+        raise HTTPException(503, "Private benchmark storage is not configured")
+    return TrialStore(database.engine, PrivateStore(secret))
+
+
+async def scoped_trial(db, workspace, trial_id):
+    trial = await db.scalar(
+        select(BenchmarkTrial).where(
+            BenchmarkTrial.id == trial_id, BenchmarkTrial.workspace_id == workspace.id
+        )
+    )
+    if trial is None:
+        raise HTTPException(404, "Benchmark trial not found")
+    return trial
+
+
+def trial_dict(trial):
+    return {
+        "id": str(trial.id),
+        "task_id": str(trial.task_id) if trial.task_id else None,
+        "dataset_case_id": str(trial.dataset_case_id) if trial.dataset_case_id else None,
+        "profile_id": str(trial.profile_id) if trial.profile_id else None,
+        "retry_of_id": str(trial.retry_of_id) if trial.retry_of_id else None,
+        "snapshot": trial.snapshot,
+        "phase": trial.phase,
+        "execution_status": trial.execution_status,
+        "evaluation_status": trial.evaluation_status,
+        "recording_status": trial.recording_status,
+        "cleanup_status": trial.cleanup_status,
+        "cancel_requested_at": trial.cancel_requested_at,
+        "deadline_at": trial.deadline_at,
+        "created_at": trial.created_at,
+        "finished_at": trial.finished_at,
+        "next_seq": trial.next_seq,
+    }
+
+
+def evaluation_dict(attempt):
+    return {
+        "id": str(attempt.id),
+        "trial_id": str(attempt.trial_id),
+        "source_evaluation_id": str(attempt.source_evaluation_id)
+        if attempt.source_evaluation_id
+        else None,
+        "kind": attempt.kind,
+        "status": attempt.status,
+        "verdict": attempt.verdict,
+        "success": attempt.success,
+        "metrics": attempt.metrics,
+        "primary_metric": attempt.primary_metric,
+        "error_kind": attempt.error_kind,
+        "input_digest": attempt.input_digest,
+        "result_digest": attempt.result_digest,
+        "started_at": attempt.started_at,
+        "finished_at": attempt.finished_at,
+    }
+
+
+@router.get("")
+async def list_trials(
+    task_id: uuid.UUID | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+):
+    query = select(BenchmarkTrial).where(BenchmarkTrial.workspace_id == workspace.id)
+    if task_id is not None:
+        query = query.where(BenchmarkTrial.task_id == task_id)
+    rows = await db.scalars(
+        query.order_by(BenchmarkTrial.created_at.desc(), BenchmarkTrial.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    return [trial_dict(row) for row in rows]
+
+
+@router.get("/{trial_id}")
+async def read_trial(
+    trial_id: uuid.UUID, workspace=Depends(get_current_workspace), db=Depends(get_db)
+):
+    return trial_dict(await scoped_trial(db, workspace, trial_id))
+
+
+@router.get("/{trial_id}/events")
+async def read_events(
+    trial_id: uuid.UUID,
+    after_seq: int = Query(-1, ge=-1),
+    limit: int = Query(100, ge=1, le=500),
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+):
+    trial = await scoped_trial(db, workspace, trial_id)
+    rows = list(
+        await db.scalars(
+            select(BenchmarkJournalEntry)
+            .where(
+                BenchmarkJournalEntry.trial_id == trial.id,
+                BenchmarkJournalEntry.seq > after_seq,
+            )
+            .order_by(BenchmarkJournalEntry.seq)
+            .limit(limit)
+        )
+    )
+    return {
+        "events": [
+            {
+                "seq": row.seq,
+                "event": row.event,
+                "data": row.public_data,
+                "created_at": row.created_at,
+            }
+            for row in rows
+        ],
+        "next_seq": rows[-1].seq if rows else after_seq,
+    }
+
+
+@router.get("/{trial_id}/evaluations")
+async def read_evaluations(
+    trial_id: uuid.UUID,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+):
+    await scoped_trial(db, workspace, trial_id)
+    rows = await db.scalars(
+        select(BenchmarkEvaluationAttempt)
+        .where(
+            BenchmarkEvaluationAttempt.trial_id == trial_id,
+            BenchmarkEvaluationAttempt.workspace_id == workspace.id,
+        )
+        .order_by(BenchmarkEvaluationAttempt.started_at, BenchmarkEvaluationAttempt.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    return [evaluation_dict(row) for row in rows]
+
+
+@router.get("/{trial_id}/artifacts")
+async def read_artifacts(
+    trial_id: uuid.UUID,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+):
+    await scoped_trial(db, workspace, trial_id)
+    rows = await db.scalars(
+        select(BenchmarkArtifact)
+        .where(
+            BenchmarkArtifact.trial_id == trial_id,
+            BenchmarkArtifact.workspace_id == workspace.id,
+            BenchmarkArtifact.visibility.in_(("user", "agent")),
+        )
+        .order_by(BenchmarkArtifact.created_at, BenchmarkArtifact.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    return [
+        {"id": str(row.id), "artifact": reference(row), "created_at": row.created_at}
+        for row in rows
+    ]
+
+
+@router.get("/{trial_id}/usage")
+async def read_usage(
+    trial_id: uuid.UUID,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    store=Depends(get_trial_store),
+):
+    await scoped_trial(db, workspace, trial_id)
+    try:
+        return await trial_usage(store, workspace.id, trial_id)
+    except (ProtocolError, ValueError):
+        raise HTTPException(409, "Benchmark usage evidence is unavailable or incomplete") from None
+
+
+@router.post("/{trial_id}/cancel", dependencies=[OPERATOR])
+async def cancel_trial(
+    trial_id: uuid.UUID,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    store=Depends(get_trial_store),
+):
+    await scoped_trial(db, workspace, trial_id)
+    requested = await store.request_cancel(workspace.id, trial_id)
+    return {"requested": requested}
