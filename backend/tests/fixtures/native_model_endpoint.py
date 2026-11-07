@@ -9,7 +9,7 @@ from tests.runtime.agent_worker_fixture import TOOL_SCRIPT
 
 
 class NativeModelEndpoint:
-    def __init__(self, key):
+    def __init__(self, key, *, tool_script=TOOL_SCRIPT):
         self.requests, self.errors = [], []
         endpoint = self
 
@@ -28,7 +28,7 @@ class NativeModelEndpoint:
                     endpoint.requests.append(body)
                     if first:
                         assert any(tool["function"]["name"] == "bash" for tool in body["tools"])
-                    command = "python -c " + shlex.quote(TOOL_SCRIPT)
+                    command = "python -c " + shlex.quote(tool_script)
                     delta = {"role": "assistant", "tool_calls": [{
                         "index": 0, "id": "native-shell", "type": "function", "function": {
                             "name": "bash", "arguments": json.dumps({

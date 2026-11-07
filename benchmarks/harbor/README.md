@@ -32,10 +32,11 @@ missing/empty/invalid rewards and timeout remain separate error categories;
 numeric rewards keep their native names and values without an inferred binary
 success threshold. The function requires an already prepared environment adapter
 and an isolated worker with explicitly bound native configuration. Current unit
-coverage uses the real pinned Verifier and a deterministic environment fixture.
-The full coordinator has passed shared verification with real pinned Pi/OpenCode
-and a local fixture model. Separate verification and cold regrade acceptance
-remain pending.
+coverage uses the real pinned Verifier and deterministic native-format fixtures.
+The full coordinator has passed shared/separate verification with real pinned
+Pi/OpenCode and a local fixture model. Pi cold regrade has independently restored
+the recorded files and reproduced the native reward without running an agent.
+These are engineering acceptance checks, not Terminal-Bench performance results.
 
 `environment.BrokerEnvironment` supplies the native verifier's command and
 directory-transfer interface using scoped Benchmark SDK broker requests. Native
@@ -60,7 +61,7 @@ extraction. Log selection uses Harbor's filter rules and preserves protected
 reward files. Unsupported filesystem entries and oversized transfers fail
 explicitly. The engineering fixture exercises the actual pinned native verifier,
 shell commands and toolchain without an external model. Coordinator checks keep
-the worker and task isolated; complete separate-verifier acceptance is pending.
+the worker, task and separate verifier isolated and preserve nonroot 0600 files.
 
 `worker.HarborConnector` uses registered assets for its private staging service,
 task and optional separate verifier. Source instructions use Harbor's parser.
