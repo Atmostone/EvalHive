@@ -9,7 +9,7 @@ import stat
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 CONNECTION = Path("/evalhive-connection/connection.json")
 CLIENTS = Path("/opt/mcp-clients/node_modules/.bin")
@@ -170,6 +170,57 @@ def launch_config(connection):
         return ["/opt/postgres-client/bin/postgres-mcp", "--access-mode=unrestricted"], {
             "DATABASE_URI": uri
         }
+    if service in {"github", "notion"}:
+        field = "github_token" if service == "github" else "notion_key"
+        if (
+            set(config) != {field}
+            or not isinstance(config[field], str)
+            or not config[field]
+            or "\0" in config[field]
+        ):
+            raise ValueError("Prepared native external credentials are invalid")
+        if service == "github":
+            return ["/opt/github-mcp-server/github-mcp-server", "stdio"], {
+                "GITHUB_PERSONAL_ACCESS_TOKEN": config[field]
+            }
+        return [str(CLIENTS / "notion-mcp-server")], {
+            "OPENAPI_MCP_HEADERS": json.dumps(
+                {"Authorization": "Bearer " + config[field], "Notion-Version": "2022-06-28"}
+            )
+        }
+    if service in {"playwright", "playwright_webarena"}:
+        allowed = (
+            {"browser", "headless", "browser_state", "test_environments"}
+            if service == "playwright"
+            else {"environment", "base_url", "docker"}
+        )
+        if set(config) - allowed:
+            raise ValueError("Prepared native browser configuration is invalid")
+        browser = config.get("browser", "chromium")
+        if browser not in {"chromium", "firefox"} or config.get("headless", True) is not True:
+            raise ValueError("Native browser requires a supported headless engine")
+        if service == "playwright_webarena":
+            endpoint = urlsplit(config.get("base_url", ""))
+            if (
+                endpoint.scheme != "http"
+                or endpoint.hostname != "localhost"
+                or endpoint.port != 80
+                or endpoint.username is not None
+                or endpoint.password is not None
+                or endpoint.query
+                or endpoint.fragment
+            ):
+                raise ValueError("Native WebArena connection is outside its owned namespace")
+        return [
+            str(CLIENTS / "playwright-mcp"),
+            "--headless",
+            "--isolated",
+            "--no-sandbox",
+            "--browser",
+            browser,
+            "--viewport-size",
+            "1280,720",
+        ], {}
     raise ValueError("Native MCP client runtime is not installed for this service")
 
 

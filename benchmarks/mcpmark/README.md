@@ -48,12 +48,14 @@ timeout is incomplete grading. The retained native result preserves this
 distinction. `MCP_MESSAGES` receives the documented normalized Harness message
 projection, not a fabricated byte-identical upstream agent transcript.
 
-The currently accepted native service path uses installed Filesystem categories. The
-catalog still lists the complete upstream suite; validation rejects cases whose
-initial category has not been installed. Other service catalogs are available
-for inspection but their executable resource bindings are not advertised as
-accepted yet. The five original PostgreSQL backups are frozen in the asset lock;
-that alone does not establish PostgreSQL lifecycle acceptance.
+The native Filesystem and PostgreSQL paths have passed serial coordinator tests
+through real Pi and OpenCode with local fixture model responses. The original
+Filesystem checker confirms six produced files. PostgreSQL restores all five
+original backups, uses the native MCP SQL client and confirms the created index
+through the original checker. These are engineering checks of selected cases;
+they do not establish correctness or performance across the complete catalog.
+Validation rejects Filesystem categories and GitHub templates that have not been
+installed.
 
 The PostgreSQL transport keeps the upstream state manager's restore algorithm
 and sends only its CLI transport through a scoped broker effect. A fresh world
@@ -61,10 +63,39 @@ must confirm all five successful template restores; upstream warnings alone
 cannot establish a valid baseline. The private-configuration helper accepts
 credentials through an owned-exec private input, writes the world's private
 configuration and a password file shared only with its PostgreSQL service, and
-returns no credential values. PostgreSQL resource bindings and the native MCP
-client are installed; acceptance of the complete native database lifecycle is
-still pending. Its private network has no public egress, and its data volume
+returns no credential values. Owned exec passes the private input's file path,
+which the helper opens with a bounded read; it does not expect inline JSON in the
+environment variable. PostgreSQL's private network has no public egress, and its data volume
 explicitly preserves the native image's PostgreSQL UID through Docker copy-up.
+The published backup directory and files are readable by that unprivileged UID;
+the original source permissions remain unchanged. Bounded, redacted restore
+diagnostics are retained in the private report even before grading starts.
+
+The other native variants have install, plan, state-manager, client and checker
+bindings. External service settings are closed, explicit installation inputs and
+contribute to the source fingerprint. GitHub requires a dedicated evaluation
+owner and rejects upstream fallback to the authenticated user's account. Notion
+uses separate source/evaluation keys and a private browser state file. No owner
+accounts or browser profiles are discovered. GitHub and Notion additionally
+require `host.resource_finalizers_v1`: stopping a local container cannot prove
+that external objects have been deleted. The current host does not advertise
+this capability, so these plans remain unavailable pending confirmed generic
+finalization and cold-recovery acceptance.
+
+WebArena's native Docker commands are translated to one registered site handle.
+The package cannot load images, select another container or publish host ports.
+World and site share the task's network namespace; the per-instance native port
+configuration uses port 80. The original category image/name/readiness rules and
+native setup/check/cleanup logic remain authoritative. Explicit site resource
+minima are retained, including values that exceed the current VPS policy. Browser
+images, external accounts and heavy site images require separate installation
+and live acceptance; constructor and mocked-transport tests do not establish it.
+
+GitHub's prepared repository context and WebArena's prepared URL are applied to
+the public prompt after native setup. The Harness run specification freezes that
+actual prompt before execution while retaining its checked model and resource
+bindings. External live state without a frozen snapshot has an unknown initial
+asset digest, rather than a fabricated immutable identifier.
 
 The PostgreSQL client uses `postgres-mcp==0.3.0`. Its required `pglast==7.2.0`
 release is no longer downloadable from PyPI. `Dockerfile.pglast` rebuilds version
@@ -80,6 +111,8 @@ manager/checker dependency closure. `Dockerfile.task` installs the native MCP
 servers from `clients/package-lock.json`; the image contains neither the native
 task/checker tree nor a Docker client. Its fixed launcher reads only the prepared
 connection and restricts Filesystem access to the native working-copy directory.
+It also embeds the official GitHub MCP Server v0.15.0 from an immutable image and
+checks the binary hash and native version from `github-client.lock.json`.
 For Filesystem, a bounded stdio bridge removes client-advertised MCP roots and
 root-change notifications: the upstream server would otherwise replace its
 explicit directory with the Harness workspace. All other MCP messages and

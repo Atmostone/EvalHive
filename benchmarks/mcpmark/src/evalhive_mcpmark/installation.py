@@ -12,9 +12,9 @@ from pathlib import Path
 
 from evalhive_benchmark.installation import dataset_key
 
-from .assets import filesystem_asset, postgres_asset
+from .assets import filesystem_asset, github_asset, postgres_asset
 from .dataset import CONNECTOR_ID, CONNECTOR_VERSION, build_receipt
-from .native import NativeConfigurationError, fingerprint, inventory
+from .native import SERVICES, NativeConfigurationError, fingerprint, inventory
 
 
 def image_pin(value):
@@ -45,7 +45,16 @@ def container(image, role, memory, cpu, disk, **settings):
     }
 
 
-def declarations(receipt, worker_image, task_image, *, postgres_image=None):
+def declarations(
+    receipt,
+    worker_image,
+    task_image,
+    *,
+    postgres_image=None,
+    world_image=None,
+    site_image=None,
+    site_limits=None,
+):
     common = [{"file_id": "harness-runtime", "target": "/evalhive-runtime", "read_only": True}]
     assets = {
         "mcpmark.worker": container(
@@ -166,7 +175,16 @@ def declarations(receipt, worker_image, task_image, *, postgres_image=None):
             member["storage_slots"]["working"]["target"] = "/workspace"
         task["outputs"]["working"]["path"] = "/workspace"
     elif service != "filesystem":
-        raise NativeConfigurationError("Native executable service is not installed")
+        from .external_resources import configure_assets
+
+        names = configure_assets(
+            assets,
+            service,
+            receipt["provenance"].get("service_settings"),
+            world_image=world_image,
+            site_image=site_image,
+            site_limits=site_limits,
+        )
     return (
         {
             "format_version": "1.0",
@@ -180,9 +198,9 @@ def declarations(receipt, worker_image, task_image, *, postgres_image=None):
             "format_version": "1.0",
             "source_digest": receipt["source_digest"],
             "assets": {name: "mcpmark." + name for name in names},
-            "working_path": "/workspace"
-            if service == "postgres"
-            else "/opt/native/.mcpmark_backups",
+            "working_path": "/opt/native/.mcpmark_backups"
+            if service == "filesystem"
+            else "/workspace",
         },
     )
 
@@ -200,6 +218,10 @@ def install(
     dataset_id=None,
     service="filesystem",
     postgres_image=None,
+    world_image=None,
+    site_image=None,
+    site_limits=None,
+    service_settings=None,
 ):
     """Publish an installation atomically; downloading is an earlier admin operation."""
     source, output, initial_root = map(
@@ -210,20 +232,21 @@ def install(
     if (
         output.exists()
         or output.is_symlink()
-        or service not in {"filesystem", "postgres"}
-        or service == "filesystem"
+        or service not in SERVICES
+        or service in {"filesystem", "github"}
         and (not categories or len(categories) != len(set(categories)))
-        or service == "postgres"
+        or service not in {"filesystem", "github"}
         and categories
     ):
         raise NativeConfigurationError("Native installation output or categories are invalid")
 
     def inspect_initial(root):
-        return (
-            [filesystem_asset(root, category) for category in sorted(categories)]
-            if service == "filesystem"
-            else [postgres_asset(root)]
-        )
+        if service in {"filesystem", "github"}:
+            asset = filesystem_asset if service == "filesystem" else github_asset
+            return [asset(root, category) for category in sorted(categories)]
+        if service == "postgres":
+            return [postgres_asset(root)]
+        return []
 
     assets = inspect_initial(initial_root)
     receipt = build_receipt(
@@ -234,9 +257,16 @@ def install(
         suite=suite,
         dataset_id=dataset_id,
         assets=assets,
+        service_settings=service_settings,
     )
     resources, runtime = declarations(
-        receipt, worker_image, task_image, postgres_image=postgres_image
+        receipt,
+        worker_image,
+        task_image,
+        postgres_image=postgres_image,
+        world_image=world_image,
+        site_image=site_image,
+        site_limits=site_limits,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".evalhive-mcpmark-", dir=output.parent))
@@ -250,12 +280,12 @@ def install(
                 shutil.copyfileobj(origin, destination)
         initial = staging / "initial-state"
         initial.mkdir(mode=0o700)
-        if service == "filesystem":
+        if service in {"filesystem", "github"}:
             for category in sorted(categories):
                 shutil.copytree(
                     initial_root / category, initial / category, copy_function=shutil.copy2
                 )
-        else:
+        elif service == "postgres":
             initial.chmod(0o755)
             for record in assets[0]["files"]:
                 target = initial / record["path"]
@@ -309,8 +339,12 @@ def main():
     for name in ("source", "output", "initial-root", "revision", "worker-image", "task-image"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--categories", nargs="+")
-    parser.add_argument("--service", default="filesystem", choices=["filesystem", "postgres"])
+    parser.add_argument("--service", default="filesystem", choices=SERVICES)
     parser.add_argument("--postgres-image")
+    parser.add_argument("--world-image")
+    parser.add_argument("--site-image")
+    parser.add_argument("--site-limits", type=json.loads)
+    parser.add_argument("--service-settings", type=json.loads)
     parser.add_argument("--suite", default="standard")
     parser.add_argument("--dataset-id")
     args = vars(parser.parse_args())

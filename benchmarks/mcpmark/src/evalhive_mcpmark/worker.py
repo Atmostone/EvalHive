@@ -18,7 +18,7 @@ from evalhive_benchmark.protocol import MAX_LINE_BYTES
 
 from .dataset import InstalledMCPMark
 from .instructions import native_instruction
-from .native import NativeConfigurationError, canonical
+from .native import SERVICES, NativeConfigurationError, canonical
 from .transcript import collect
 from .world_stage import CHUNK, MAX_BYTES
 
@@ -35,6 +35,7 @@ class MCPMarkConnector(Connector):
         self.spec, self.task, self.config = None, None, None
         self.handles, self.sequence = {}, 0
         self.ready, self.completion, self.captured, self.transcript = False, None, None, None
+        self.prepared_prompt, self.site_transport = None, None
 
     def installed(self):
         if self.dataset is None:
@@ -50,9 +51,36 @@ class MCPMarkConnector(Connector):
             installed = self.installed()
             task = installed.resolve(spec["case"])
             postgres = task.service == "postgres"
+            external = task.service not in {"filesystem", "postgres"}
             assets = {"working", "connection", "world", "task"} | (
                 {"network", "data", "secret", "postgres"} if postgres else set()
             )
+            if external:
+                from .external_state import validate_settings
+
+                validate_settings(
+                    task.service, installed.receipt["provenance"].get("service_settings")
+                )
+                assets.add("network")
+                if task.service == "playwright_webarena":
+                    assets.add("site")
+            initial = installed.receipt["provenance"].get("initial_assets", [])
+            initial_ready = (
+                any(
+                    asset.get("id")
+                    == ("postgres.backups" if postgres else "filesystem." + task.category_id)
+                    for asset in initial
+                )
+                if not external
+                else task.service != "github" or bool(initial)
+            )
+            if task.service == "github":
+                from .external_state import github_template
+
+                template = github_template(task.category_id)
+                initial_ready = bool(template) and any(
+                    asset.get("id") == "github." + template for asset in initial
+                )
             if self.bindings is None:
                 path = self.root / "runtime.json"
                 if path.is_symlink() or path.stat().st_size > 1024**2:
@@ -62,14 +90,15 @@ class MCPMarkConnector(Connector):
                 self.bindings.get("format_version") != "1.0"
                 or self.bindings.get("source_digest") != installed.receipt["source_digest"]
                 or set(self.bindings.get("assets", {})) != assets
-                or task.service not in {"filesystem", "postgres"}
-                or not any(
-                    asset.get("id")
-                    == ("postgres.backups" if postgres else "filesystem." + task.category_id)
-                    for asset in installed.receipt["provenance"].get("initial_assets", [])
-                )
+                or task.service not in SERVICES
+                or not initial_ready
                 or spec["models"]
-                or set(spec["credential_refs"]) != ({"service_credentials"} if postgres else set())
+                or set(spec["credential_refs"])
+                != (
+                    {"service_credentials"}
+                    if task.service in {"postgres", "github", "notion"}
+                    else set()
+                )
                 or spec.get("purpose") == "evaluation"
             ):
                 raise NativeConfigurationError(
@@ -93,7 +122,13 @@ class MCPMarkConnector(Connector):
             "interaction": "autonomous",
             "environment_handle": self.handles.get("task", "task"),
             "cwd": "/workspace",
-            "prompt": self.installed().manager.get_task_instruction(self.task),
+            "prompt": self.prepared_prompt
+            if self.prepared_prompt is not None
+            else (
+                self.task.get_task_instruction()
+                if self.task.service == "playwright_webarena"
+                else self.installed().manager.get_task_instruction(self.task)
+            ),
             "instructions": [native_instruction()],
             "resources": [
                 {"id": "native-tools", "kind": "tools", "config": {"names": ["mcp__mcpmark__*"]}},
@@ -111,6 +146,10 @@ class MCPMarkConnector(Connector):
         }
 
     def _plan(self):
+        if self.task.service not in {"filesystem", "postgres"}:
+            from .external_resources import environment_plan
+
+            return environment_plan(self.bindings, self.task.service, self._agent())
         resources = [
             {
                 "id": name,
@@ -249,35 +288,54 @@ class MCPMarkConnector(Connector):
             context, "world_control", [base64.b64encode(canonical(request)).decode()]
         )
 
+    async def native_effect(self, context, effect):
+        payload = effect["payload"]
+        if effect["operation"] == "webarena.command" and self.task.service == "playwright_webarena":
+            from .webarena_transport import SiteTransport
+
+            if self.site_transport is None:
+                self.site_transport = SiteTransport(
+                    self.installed().receipt["provenance"]["service_settings"]["site"],
+                    None,
+                    remaining=self.remaining,
+                    handles=self.handles,
+                )
+            return await self.site_transport.command(
+                payload["argv"],
+                broker=lambda operation, data, **options: self.broker(
+                    context, operation, data, **options
+                ),
+            )
+        if effect["operation"] != "postgres.restore" or self.task.service != "postgres":
+            raise ProtocolError(
+                "NATIVE_EFFECT_UNAVAILABLE",
+                "Native service requires an uninstalled transport",
+                "unsupported",
+            )
+        return await self.broker(
+            context,
+            "exec",
+            {
+                "argv": [
+                    "sh",
+                    "-c",
+                    'IFS= read -r PGPASSWORD < /postgres-secret/password; export PGPASSWORD; exec "$@"',
+                    "native-pg-restore",
+                    *payload["argv"],
+                ],
+                "timeout_seconds": min(payload["timeout_seconds"], self.remaining()),
+                "deadline_policy": "inherit",
+                "process_policy": "stop_after_command",
+            },
+            resource="postgres",
+        )
+
     async def native(self, context, method, params=None):
         started = await self.control(context, "begin", {"method": method, "params": params or {}})
         while True:
             result = await self.control(context, "poll", {"operation_id": started["operation_id"]})
             for effect in result["effects"]:
-                if effect["operation"] != "postgres.restore" or self.task.service != "postgres":
-                    raise ProtocolError(
-                        "NATIVE_EFFECT_UNAVAILABLE",
-                        "Native service requires an uninstalled transport",
-                        "unsupported",
-                    )
-                payload = effect["payload"]
-                receipt = await self.broker(
-                    context,
-                    "exec",
-                    {
-                        "argv": [
-                            "sh",
-                            "-c",
-                            'IFS= read -r PGPASSWORD < /postgres-secret/password; export PGPASSWORD; exec "$@"',
-                            "native-pg-restore",
-                            *payload["argv"],
-                        ],
-                        "timeout_seconds": min(payload["timeout_seconds"], self.remaining()),
-                        "deadline_policy": "inherit",
-                        "process_policy": "stop_after_command",
-                    },
-                    resource="postgres",
-                )
+                receipt = await self.native_effect(context, effect)
                 await self.control(
                     context,
                     "resume",
@@ -306,9 +364,11 @@ class MCPMarkConnector(Connector):
             self.config["prepare_timeout_seconds"], self.spec["limits"]["wall_time_seconds"]
         )
         for resource in self._plan()["resources"]:
+            if resource["id"] == "site":
+                continue  # The native WebArena manager starts its registered site.
             result = await self.broker(context, "allocate", {"resource_id": resource["id"]})
             self.handles[resource["id"]] = result["handle"]
-        if self.task.service == "postgres":
+        if self.task.service in {"postgres", "github", "notion"}:
             await self.execute(
                 context,
                 "world_credentials",
@@ -316,7 +376,9 @@ class MCPMarkConnector(Connector):
                 private_refs={"EVALHIVE_SERVICE_CREDENTIALS_FILE": "service_credentials"},
             )
         result = await self.native(context, "prepare", {"case": self.spec["case"]})
-        if result["prompt"] != self._agent()["prompt"]:
+        if self.task.service in {"github", "playwright_webarena"}:
+            self.prepared_prompt = result["prompt"]
+        elif result["prompt"] != self._agent()["prompt"]:
             raise ProtocolError(
                 "NATIVE_PROMPT_CHANGED",
                 "Native task instruction changed after preparation",

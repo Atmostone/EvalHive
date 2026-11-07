@@ -41,13 +41,25 @@ def descriptor(task, root, service, suite, dataset_id, revision, source_digest):
 
 
 def build_receipt(
-    root, revision, worker_image, *, service, suite="standard", dataset_id=None, assets=None
+    root,
+    revision,
+    worker_image,
+    *,
+    service,
+    suite="standard",
+    dataset_id=None,
+    assets=None,
+    service_settings=None,
 ):
     root = directory(root)
     files = inventory(root, service, suite)
     inputs = {"native_revision": REVISION, "files": files}
     if assets:
         inputs["initial_assets"] = deepcopy(assets)
+    if service_settings is not None:
+        from .external_state import validate_settings
+
+        inputs["service_settings"] = validate_settings(service, service_settings)
     source_digest = fingerprint(inputs)
     _, tasks = catalog(root, service, suite)
     if files != inventory(root, service, suite):
@@ -73,6 +85,11 @@ def build_receipt(
                 "suite": suite,
                 "files": files,
                 **({"initial_assets": deepcopy(assets)} if assets else {}),
+                **(
+                    {"service_settings": deepcopy(inputs["service_settings"])}
+                    if service_settings is not None
+                    else {}
+                ),
             },
         }
     )
@@ -97,6 +114,7 @@ class InstalledMCPMark:
             suite=provenance["suite"],
             dataset_id=receipt["dataset_id"],
             assets=provenance.get("initial_assets"),
+            service_settings=provenance.get("service_settings"),
         )
         if current != self.receipt:
             raise NativeConfigurationError("Native catalog differs from its frozen installation")

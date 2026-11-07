@@ -3,10 +3,9 @@ WORKDIR /opt/mcp-clients
 COPY benchmarks/mcpmark/clients/package.json benchmarks/mcpmark/clients/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
 
+FROM ghcr.io/github/github-mcp-server@sha256:8d624b91930eaf245d572f2f6b22b7b44185e899b9cf1eaee4b3ff324f1e6263 AS github
+
 FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
-COPY --from=clients /usr/local/bin/node /usr/local/bin/node
-COPY --from=clients /opt/mcp-clients /opt/mcp-clients
-COPY benchmarks/mcpmark/src/evalhive_mcpmark/task_client.py /opt/environment/task_client.py
 COPY benchmarks/mcpmark/postgres-client-requirements.lock /tmp/postgres-client.lock
 RUN --mount=from=postgres_wheels,target=/wheels,readonly \
     python -m venv /opt/postgres-client \
@@ -14,6 +13,12 @@ RUN --mount=from=postgres_wheels,target=/wheels,readonly \
     && /opt/postgres-client/bin/pip check
 RUN --network=none /opt/postgres-client/bin/python -c "import pglast; assert pglast.parse_sql('SELECT 1')" \
     && /opt/postgres-client/bin/postgres-mcp --help
+COPY --from=clients /usr/local/bin/node /usr/local/bin/node
+COPY --from=clients /opt/mcp-clients /opt/mcp-clients
+COPY --from=github /server/github-mcp-server /opt/github-mcp-server/github-mcp-server
+RUN --network=none echo '2934c02d8fab9be2f4070b38f6b8f67eab88d61aac7a121ee46e8d277806eb32  /opt/github-mcp-server/github-mcp-server' | sha256sum -c - \
+    && /opt/github-mcp-server/github-mcp-server --version
+COPY benchmarks/mcpmark/src/evalhive_mcpmark/task_client.py /opt/environment/task_client.py
 RUN mkdir /workspace && chmod 0777 /workspace
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /workspace

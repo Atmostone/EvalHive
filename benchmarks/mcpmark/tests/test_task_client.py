@@ -2,7 +2,41 @@
 
 import json
 
-from evalhive_mcpmark.task_client import fixed_roots_frame
+import pytest
+from evalhive_mcpmark.task_client import fixed_roots_frame, launch_config
+
+
+@pytest.mark.parametrize(
+    "service,field,environment",
+    [
+        ("github", "github_token", "GITHUB_PERSONAL_ACCESS_TOKEN"),
+        ("notion", "notion_key", "OPENAPI_MCP_HEADERS"),
+    ],
+)
+def test_external_native_client_keeps_credentials_out_of_command_arguments(
+    service, field, environment
+):
+    argv, private = launch_config({"service": service, "config": {field: "fixture-private-token"}})
+    assert "fixture-private-token" not in str(argv)
+    assert "fixture-private-token" in private[environment]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8080/admin",
+        "http://owner-service:80/admin",
+        "http://localhost:80@owner-service/admin",
+    ],
+)
+def test_webarena_client_rejects_endpoints_outside_its_owned_namespace(url):
+    with pytest.raises(ValueError, match="owned namespace"):
+        launch_config(
+            {
+                "service": "playwright_webarena",
+                "config": {"base_url": url, "environment": "webarena-docker", "docker": {}},
+            }
+        )
 
 
 def test_native_filesystem_keeps_explicit_root_without_changing_other_mcp_capabilities():

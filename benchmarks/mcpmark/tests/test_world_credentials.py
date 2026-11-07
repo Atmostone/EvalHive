@@ -6,6 +6,15 @@ import pytest
 from evalhive_mcpmark.world_credentials import configure, main, read
 
 
+def test_external_credentials_never_create_a_shared_postgres_password_file(tmp_path):
+    root, pg = tmp_path / "control", tmp_path / "postgres-secret"
+    value = {"service": "github", "credentials": {"github_token": "dedicated-fixture-token"}}
+    assert configure(json.dumps(value).encode(), root=root, pg_secret=pg) == {"configured": True}
+    assert read(root) == value
+    assert not pg.exists()
+    assert (root / "credentials.json").stat().st_mode & 0o777 == 0o600
+
+
 def test_owned_exec_private_input_is_read_from_its_file(monkeypatch, tmp_path, capsys):
     import evalhive_mcpmark.world_credentials as credentials
 

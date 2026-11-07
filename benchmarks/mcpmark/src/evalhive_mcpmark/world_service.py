@@ -11,9 +11,9 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
-from .assets import filesystem_asset, postgres_asset
+from .assets import filesystem_asset, github_asset, postgres_asset
 from .dataset import InstalledMCPMark
-from .native import NativeConfigurationError, canonical
+from .native import SERVICES, NativeConfigurationError, canonical, fingerprint
 from .postgres_transport import restore_transport
 from .world_credentials import read as read_credentials
 from .world_rpc import MAX_BYTES, WorldError, encoded
@@ -52,6 +52,9 @@ class NativeService:
                 return {"cleaned": True}
             if self.state is not None and not self.state.clean_up(self.task):
                 raise WorldError("Native cleanup was not confirmed")
+            close = getattr(self.state, "close_all", None)
+            if close is not None:
+                close()
             self.closed = True
             return {"cleaned": True}
         if self.closed:
@@ -70,23 +73,30 @@ class NativeService:
         if self.task is not None or set(payload) != {"case"}:
             raise WorldError("Native service preparation is frozen")
         task = self.installed.resolve(payload["case"])
-        if task.service not in {"filesystem", "postgres"}:
+        if task.service not in SERVICES:
             raise NativeConfigurationError("Native service runtime has not been installed")
-        actual = (
-            filesystem_asset(self.initial_root, task.category_id)
-            if task.service == "filesystem"
-            else postgres_asset(Path(os.environ["EVALHIVE_MCPMARK_NATIVE_ROOT"]) / "postgres_state")
-        )
-        expected = self.installed.receipt["provenance"].get("initial_assets", [])
-        if actual not in expected:
-            raise NativeConfigurationError("Initial native state differs from its installation")
+        initial_digest = None
+        if task.service in {"filesystem", "postgres"}:
+            actual = (
+                filesystem_asset(self.initial_root, task.category_id)
+                if task.service == "filesystem"
+                else postgres_asset(
+                    Path(os.environ["EVALHIVE_MCPMARK_NATIVE_ROOT"]) / "postgres_state"
+                )
+            )
+            expected = self.installed.receipt["provenance"].get("initial_assets", [])
+            if actual not in expected:
+                raise NativeConfigurationError("Initial native state differs from its installation")
+            initial_digest = actual["source_digest"]
         self.task = task
         if task.service == "filesystem":
             os.environ["FILESYSTEM_TEST_ROOT"] = str(self.initial_root)
             native = importlib.import_module("src.mcp_services.filesystem.filesystem_state_manager")
             self.state = native.FilesystemStateManager(test_root=self.initial_root)
-        else:
+        elif task.service == "postgres":
             self.state = self.postgres()
+        else:
+            self.state, initial_digest = self.external(task)
         if not self.state.set_up(task):
             raise WorldError("Native state preparation was not confirmed")
         config = self.state.get_service_config_for_agent()
@@ -97,8 +107,63 @@ class NativeService:
         return {
             "prompt": self.installed.manager.get_task_instruction(task),
             "service": task.service,
-            "initial_asset_digest": actual["source_digest"],
+            "initial_asset_digest": initial_digest,
         }
+
+    def external(self, task):
+        from .external_state import create_state
+
+        provenance = self.installed.receipt["provenance"]
+        assets = provenance.get("initial_assets", [])
+        initial_digest = None
+        if task.service == "github":
+            if not assets or any(
+                asset != github_asset(self.initial_root, asset["category"]) for asset in assets
+            ):
+                raise NativeConfigurationError(
+                    "Initial GitHub templates differ from their installation"
+                )
+            initial_digest = fingerprint(assets)
+        private = {}
+        if task.service in {"github", "notion"}:
+            configuration = read_credentials()
+            if configuration.get("service") != task.service:
+                raise NativeConfigurationError(
+                    "Native external credentials belong to another service"
+                )
+            private = configuration["credentials"]
+            self.secret_values = tuple(
+                private[name]
+                for name in ("github_token", "source_key", "evaluation_key")
+                if name in private
+            )
+            if task.service == "notion":
+                browser = private.get("browser_state", {})
+                self.secret_values += tuple(
+                    item["value"]
+                    for item in browser.get("cookies", [])
+                    if isinstance(item, dict)
+                    and isinstance(item.get("value"), str)
+                    and item["value"]
+                )
+                self.secret_values += tuple(
+                    item["value"]
+                    for origin in browser.get("origins", [])
+                    if isinstance(origin, dict)
+                    for item in origin.get("localStorage", [])
+                    if isinstance(item, dict)
+                    and isinstance(item.get("value"), str)
+                    and item["value"]
+                )
+        return create_state(
+            task.service,
+            provenance.get("service_settings"),
+            private,
+            category=task.category_id,
+            initial_root=self.initial_root,
+            private_root=Path("/control/native-state"),
+            effect=self.effect,
+        ), initial_digest
 
     def postgres(self):
         import psycopg2

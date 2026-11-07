@@ -66,3 +66,9 @@ def postgres_asset(root):
         "source_digest": fingerprint(files),
         "files": files,
     }
+
+
+def github_asset(root, template):
+    asset = filesystem_asset(root, template)
+    asset.update(id="github." + template, service="github")
+    return asset
