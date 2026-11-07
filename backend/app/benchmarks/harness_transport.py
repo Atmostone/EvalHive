@@ -76,6 +76,8 @@ class RootlessHarnessTransport:
             raise ManagedRuntimeError("Prepared agent process policy differs from its plan")
         if agent.get("user") != planned.get("user"):
             raise ManagedRuntimeError("Prepared agent user differs from its plan")
+        if agent.get("wall_time_seconds") != planned.get("wall_time_seconds"):
+            raise ManagedRuntimeError("Prepared agent budget differs from its plan")
         if self.process_policy == "retain_until_cleanup":
             resource = next((item for item in plan["resources"] if item["id"] == planned["environment_handle"]), None)
             if resource is None:

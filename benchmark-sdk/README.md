@@ -337,3 +337,10 @@ An in-environment agent can declare a native `user` as a Docker user string
 prepared access cannot change it. Omitting the field preserves the container's
 configured/image user. This per-execution choice is independent of the native
 verifier user, so evaluation does not inherit an agent-only override.
+
+Agent access may declare `wall_time_seconds` as a positive whole-second budget
+up to 86400. The host applies the earlier of this native budget, the selected
+Harness profile budget and the remaining trial deadline. Prepared access cannot
+change the planned budget. Omission preserves the selected profile and parent
+limits; it does not invent a benchmark-specific timeout. The verifier retains
+its own phase budget.

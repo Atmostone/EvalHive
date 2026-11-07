@@ -87,6 +87,12 @@ class HarnessExecution:
         spec["task"] = {**spec["task"], "prompt": agent["prompt"]}
         spec["cwd"] = agent["cwd"]
         spec["instructions"] = [*spec.get("instructions", []), *agent["instructions"]]
+        if "wall_time_seconds" in agent:
+            budget = agent["wall_time_seconds"]
+            spec["limits"] = {
+                **spec.get("limits", {}),
+                "wall_time_seconds": min(spec.get("limits", {}).get("wall_time_seconds", budget), budget),
+            }
         environment = spec.get("environment", {})
         resources = {resource["id"]: resource for resource in environment.get("resources", [])}
         declarations, values = compile_resources(agent["resources"])

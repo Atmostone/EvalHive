@@ -1636,6 +1636,166 @@
         "grading_mode": "snapshot"
       },
       "error": null
+    },
+    {
+      "name": "native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": 17
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "zero-native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": 0
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "fractional-native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": 0.5
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "unknown-native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": true
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
     }
   ],
   "evaluation_spec": {

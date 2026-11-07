@@ -121,7 +121,7 @@ def test_native_target_controls_applied_image_and_actual_resource_provenance(tmp
     assert applied["task"]["prompt"] == "Native public instruction"
 
 
-@pytest.mark.parametrize("change", ["handle", "role", "provider", "policy", "agent_user"])
+@pytest.mark.parametrize("change", ["handle", "role", "provider", "policy", "agent_user", "budget"])
 def test_prepared_target_cannot_select_another_container_or_private_world(tmp_path, change):
     coordinator, store, owner, assets, plan, options = setup(tmp_path)
     controller = coordinator.execution(store, owner, MANIFEST, assets, **options)
@@ -132,6 +132,8 @@ def test_prepared_target_cannot_select_another_container_or_private_world(tmp_pa
         prepared["agent"]["process_policy"] = "retain_until_cleanup"
     elif change == "agent_user":
         prepared["agent"]["user"] = "1000"
+    elif change == "budget":
+        prepared["agent"]["wall_time_seconds"] = 17
     else:
         target = plan["agent"]["environment_handle"]
         provider, lease = controller.host.environment.leases[target]
@@ -144,6 +146,17 @@ def test_prepared_target_cannot_select_another_container_or_private_world(tmp_pa
     with pytest.raises(ManagedRuntimeError):
         controller.host.agent_gateway.configure(prepared)
     assert not controller.agent_control.executor.access_configured
+
+
+@pytest.mark.parametrize("profile,native,expected", [(None,17,17),(30,17,17),(10,17,10)])
+def test_native_agent_budget_only_narrows_the_frozen_harness_budget(tmp_path, profile, native, expected):
+    coordinator, store, owner, assets, plan, options = setup(tmp_path)
+    if profile is not None:
+        options["harness_spec"]["limits"] = {"wall_time_seconds": profile}
+    plan["agent"]["wall_time_seconds"] = native
+    controller = coordinator.execution(store, owner, MANIFEST, assets, **options)
+    controller.host.agent_gateway.configure(prepared_target(controller, plan))
+    assert controller.agent_control.executor.spec["limits"]["wall_time_seconds"] == expected
 
 
 @pytest.mark.parametrize("change", ["bundle", "credential", "spool", "purpose", "runtime"])

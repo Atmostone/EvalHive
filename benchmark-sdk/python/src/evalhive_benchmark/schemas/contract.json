@@ -659,6 +659,11 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 4096
+        },
+        "wall_time_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
         }
       },
       "required": [
