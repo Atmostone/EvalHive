@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { benchmarkSdkApi, harnessesApi } from '@/api/client'
 import { BenchmarkAvailabilityBadges } from '@/components/settings/BenchmarkProfilesSection'
 import type { BenchmarkPreflight } from '@/types/benchmarks'
+import { preflightReason } from '@/lib/benchmarkStatus'
 
 export interface BenchmarkSelection {
   profile_id: string
@@ -76,7 +77,7 @@ export function BenchmarkSelectionFields({ value, onChange, onPreflight }: {
     {complete && preflight.data && <div className="space-y-2" aria-label="Benchmark preflight result">
       <BenchmarkAvailabilityBadges value={preflight.data} />
       {!!preflight.data.missing?.length && <p className="text-sm text-amber-700">Missing configuration: {preflight.data.missing.join(', ')}</p>}
-      {preflight.data.reasons.map((reason, index) => <p key={index} className="text-sm text-amber-700">{reason.code}</p>)}
+      {preflight.data.reasons.map((reason, index) => <p key={index} className="text-sm text-amber-700">{preflightReason(reason)}</p>)}
       <p className="text-xs text-gray-500">Compatibility checks settings and declared requirements. Resources are reserved when execution starts.</p>
     </div>}
     {error && <p role="alert" className="text-sm text-red-600">{error.message}</p>}
