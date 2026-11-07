@@ -36,7 +36,14 @@ def descriptor(task, root, service, suite, dataset_id, revision, source_digest):
             "instruction_path": task.task_instruction_path.relative_to(root).as_posix(),
             "verification_path": task.task_verification_path.relative_to(root).as_posix(),
         },
-        "requirements": {"capabilities": ["host.agent_api_v1"]},
+        "requirements": {
+            "capabilities": ["host.agent_api_v1"]
+            + (
+                ["credential.service_credentials"]
+                if service in {"postgres", "github", "notion"}
+                else []
+            )
+        },
     }
 
 

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from evalhive_benchmark import ProtocolError
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.benchmark_sdk import SafeValidationRoute
 from app.auth.dependencies import get_current_workspace, require_role
 from app.benchmarks.evidence import reference
+from app.benchmarks.launch import queue_execution
 from app.benchmarks.private_store import PrivateStore
 from app.benchmarks.trials import TrialStore
 from app.benchmarks.usage import trial_usage
@@ -33,6 +37,62 @@ def get_trial_store():
     if not secret:
         raise HTTPException(503, "Private benchmark storage is not configured")
     return TrialStore(database.engine, PrivateStore(secret))
+
+
+class TrialLimits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    wall_time_seconds: int = Field(default=1800, ge=1, le=86400)
+    memory_mb: int = Field(default=4096, ge=1, le=1048576)
+    cpu_cores: float = Field(default=2.0, gt=0, le=1024, allow_inf_nan=False)
+    disk_mb: int = Field(default=4096, ge=1, le=2147483647)
+    model_requests: int = Field(default=100, ge=0, le=1000000)
+
+
+class TrialCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    profile_id: uuid.UUID
+    dataset_revision_id: uuid.UUID
+    case_id: uuid.UUID
+    harness_profile_id: uuid.UUID
+    title: str | None = Field(default=None, min_length=1, max_length=500, pattern=r"\S")
+    priority: Literal["low", "medium", "high", "urgent"] = "medium"
+    limits: TrialLimits = Field(default_factory=TrialLimits)
+    agent_max_turns: int = Field(default=100, ge=1, le=1000000)
+
+
+@router.post("", status_code=202, dependencies=[OPERATOR])
+async def create_trial(
+    body: TrialCreate,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    store=Depends(get_trial_store),
+):
+    try:
+        job, trial = await queue_execution(
+            db,
+            store,
+            workspace,
+            body.model_dump(mode="json"),
+            request_document=body.model_dump(mode="json", exclude_unset=True),
+        )
+        await db.commit()
+        return {**trial_dict(trial), "job_id": str(job.id), "job_status": job.status}
+    except ProtocolError as error:
+        await db.rollback()
+        status = (
+            404
+            if error.code == "SELECTION_UNAVAILABLE"
+            else 409
+            if error.code == "LAUNCH_CONFLICT"
+            else 422
+        )
+        raise HTTPException(status, str(error)) from None
+    except (ValueError, IntegrityError):
+        await db.rollback()
+        raise HTTPException(
+            422, "Benchmark launch configuration is invalid or has changed"
+        ) from None
 
 
 async def scoped_trial(db, workspace, trial_id):

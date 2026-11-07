@@ -17,6 +17,15 @@ session and cannot use this API. Model roles and private credential references
 must already appear in `TrialSpec.models`; evaluation workers may use only the
 roles recorded in their checkpoint.
 
+Product profiles resolve case-specific requirements named `model.<role>` to
+workspace model references. For example, `model.user` selects a simulator model,
+while `model.judge` selects a model only for cases whose native checker needs it.
+`credential.<role>` selects a separately stored workspace credential. Required
+secret-schema properties are also selected. Unused profile bindings do not enter
+the worker spec or grant access to their connections. Evaluator requirements and
+checkpoint roles select only the connections needed for cold grading; an agent
+connection is unnecessary for deterministic regrading.
+
 The host resolves connections, restricts each role to authorized phases, checks
 full resource admission and applies `limits.model_requests` (default 128, host
 maximum 10,000). A worker never receives the provider key or chooses the upstream

@@ -33,11 +33,12 @@ def descriptor(task, domain, split, dataset_id, revision, source_digest):
         ),
         "native_ref": {"domain": domain, "split": split, "task_id": task.id},
         "requirements": {
-            "capabilities": ["host.agent_api_v1", "host.model_api_v1"],
+            "capabilities": ["host.agent_api_v1", "host.model_api_v1", "model.user"]
+            + (["model.judge"] if judge else []),
             "resources": {},
         },
         "evaluation_requirements": {
-            "capabilities": ["host.model_api_v1"] if judge else [],
+            "capabilities": ["host.model_api_v1", "model.judge"] if judge else [],
             "resources": {},
         },
     }
