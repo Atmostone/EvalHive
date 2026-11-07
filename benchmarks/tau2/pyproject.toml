@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evalhive-tau2"
+version = "0.1.0"
+description = "Native tau2 half-duplex benchmark integration for EvalHive"
+requires-python = ">=3.12"
+dependencies = ["evalhive-benchmark==0.1.0", "tau2==1.0.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
