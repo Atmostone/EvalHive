@@ -10,6 +10,15 @@ import { fakeMcpHTTP } from '../../shared/fake-mcp-http.mjs';
 
 const entrypoint = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 
+test('official OpenCode uses an owned Unix model channel with an unreachable public endpoint', {timeout: 60000}, async () => {
+  const {result, requests} = await runFixture((_body, index, response, request) => {
+    assert.equal(request.url, '/agent/v1/chat/completions');
+    stream(response, index, {content: 'Completed through the owned model channel'});
+  }, {gateway: true});
+  assert.equal(result.status, 'success', JSON.stringify(result));
+  assert.equal(requests.length, 1);
+});
+
 test('native retry survives a recorded upstream connection failure', {timeout: 45000}, async () => {
   const {result, events, requests} = await runFixture((body, index, res) => {
     if (index === 1) res.destroy();
@@ -46,9 +55,10 @@ test('native nested sessions correlate tools to their parent task call', {timeou
 
 async function runFixture(
   handler,
-  { config = {}, resources = [], control, prepare, privateCredentials = {}, bootstrap, limits = {} } = {},
+  { config = {}, resources = [], control, prepare, privateCredentials = {}, bootstrap, limits = {}, gateway = false } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'evalhive-opencode-test-'));
+  const socketPath = gateway ? join(directory, 'model.sock') : undefined;
   const workspace = join(directory, 'workspace');
   mkdirSync(workspace);
   if (prepare) resources = await prepare(workspace);
@@ -64,7 +74,7 @@ async function runFixture(
       rejectHandler(error);
       throw error;
     }
-  });
+  }, {socketPath});
   const credentials = join(directory, 'private.json');
   writeFileSync(
     credentials,
@@ -92,6 +102,7 @@ async function runFixture(
     cwd: workspace,
     config: { autoCompaction: false, ...config },
     environment: { id: 'fixture', resources },
+    ...(gateway ? {metadata: {model_gateway: {transport: 'unix_http_v1', socket_path: socketPath, role: 'agent'}}} : {}),
     limits,
     instructions: ['This is a local engineering fixture.'],
     model: { name: 'fake-model', endpoint: endpoint.url, credential_ref: 'model_api_key' },

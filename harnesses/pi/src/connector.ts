@@ -5,7 +5,7 @@ import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, VERSION,
   type AgentSession, type AgentSessionEvent, type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
-import { ProtocolError, ExternalToolGate, conversationHistory, type Connector, type JsonObject, type JsonValue, type RunContext, type RunResult, type RunSpec } from '@evalhive/harness-sdk';
+import { ProtocolError, ExternalToolGate, conversationHistory, openModelGateway, type Connector, type JsonObject, type JsonValue, type RunContext, type RunResult, type RunSpec } from '@evalhive/harness-sdk';
 import { ADAPTER_VERSION, connection, effectiveConfig, manifest, object } from './config.js';
 import { observeRequests } from './transport.js';
 import { EventQueue, json, UsageTracker } from './events.js';
@@ -56,6 +56,7 @@ export class PiConnector implements Connector {
     let agentStarted = false;
     let responseStatus: number | undefined;
     let resourceSet: Awaited<ReturnType<typeof connectResources>> | undefined;
+    let modelGateway: Awaited<ReturnType<typeof openModelGateway>>;
     let complete: (() => void) | undefined;
     let settled: Promise<void>;
     let externalFailure: unknown;
@@ -64,12 +65,13 @@ export class PiConnector implements Connector {
     const abort = () => { void session?.abort().catch(() => {}); };
     context.signal.addEventListener('abort', abort);
     try {
+      modelGateway = await openModelGateway(context.spec, context.signal);
       resourceSet = await connectResources(context.spec, this.credentials, context.signal, gate,
         status => context.emit('native', {name: 'mcp.status', payload: status, adapter_version: manifest.version}, {source: 'pi'}));
       const runtime = await ModelRuntime.create({authPath: join(state, 'auth.json'), modelsPath: null,
         modelsStorePath: join(state, 'models.sqlite'), allowModelNetwork: false, refreshOnCreate: false});
       runtime.registerProvider('evalhive', {
-        api: 'openai-completions', baseUrl: model.endpoint,
+        api: 'openai-completions', baseUrl: modelGateway?.endpoint ?? model.endpoint,
         headers: {'User-Agent': 'evalhive/0.1', 'x-opencode-session': context.spec.attempt_id},
         models: [{id: model.name, name: model.name, reasoning: Boolean(config.reasoning), input: ['text'],
           contextWindow: Number(config.contextWindow), maxTokens: Number(config.maxOutputTokens),
@@ -218,6 +220,7 @@ export class PiConnector implements Connector {
       unsubscribe?.();
       session?.dispose();
       await resourceSet?.close();
+      await modelGateway?.close();
       this.session = undefined;
       rmSync(state, {recursive: true, force: true});
     }

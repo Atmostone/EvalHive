@@ -9,9 +9,10 @@ import { fakeOpenAI, stream } from '../../shared/fake-openai.mjs';
 import { fakeMcpHTTP } from '../../shared/fake-mcp-http.mjs';
 
 const entrypoint = fileURLToPath(new URL('../dist/index.js', import.meta.url));
-async function runFixture(handler, {control, config = {}, limits = {}, resources = [], prepare, privateCredentials = {}} = {}) {
-  const endpoint = await fakeOpenAI(handler);
+async function runFixture(handler, {control, config = {}, limits = {}, resources = [], prepare, privateCredentials = {}, gateway = false} = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'evalhive-pi-test-'));
+  const socketPath = gateway ? join(directory, 'model.sock') : undefined;
+  const endpoint = await fakeOpenAI(handler, {socketPath});
   const workspace = join(directory, 'workspace');
   mkdirSync(workspace);
   if (prepare) resources = await prepare(workspace);
@@ -23,6 +24,7 @@ async function runFixture(handler, {control, config = {}, limits = {}, resources
     task: {prompt: 'Create the requested result and finish.'}, cwd: workspace, config,
     instructions: ['This is a local engineering fixture.'], limits,
     environment: {id: 'fixture', resources},
+    ...(gateway ? {metadata: {model_gateway: {transport: 'unix_http_v1', socket_path: socketPath, role: 'agent'}}} : {}),
     model: {name: 'fake-model', endpoint: endpoint.url, credential_ref: 'model_api_key'}};
   const events = [];
   const collect = (async () => {
@@ -50,6 +52,15 @@ async function runFixture(handler, {control, config = {}, limits = {}, resources
     rmSync(directory, {recursive: true, force: true});
   }
 }
+
+test('official Pi SDK uses an owned Unix model channel with an unreachable public endpoint', {timeout: 20000}, async () => {
+  const {result, requests} = await runFixture((_body, index, response, request) => {
+    assert.equal(request.url, '/agent/v1/chat/completions');
+    stream(response, index, {content: 'Completed through the owned model channel'});
+  }, {gateway: true});
+  assert.equal(result.status, 'success', JSON.stringify(result));
+  assert.equal(requests.length, 1);
+});
 
 test('official Pi SDK completes with normalized provider usage', {timeout: 20000}, async () => {
   const {result, events, requests} = await runFixture((body, index, res, req) => {

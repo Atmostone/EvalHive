@@ -134,7 +134,8 @@
     "conversation_history": "native",
     "turn.submit": "native",
     "tool.respond": "native",
-    "session.close": "native"
+    "session.close": "native",
+    "model_gateway": "native"
   },
   "commands": {
     "abort": {

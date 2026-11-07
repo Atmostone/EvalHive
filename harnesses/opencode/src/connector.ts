@@ -8,6 +8,7 @@ import {
   ProtocolError,
   ExternalToolGate,
   conversationHistory,
+  openModelGateway,
   type Connector,
   type JsonObject,
   type JsonValue,
@@ -150,6 +151,7 @@ export class OpenCodeConnector implements Connector {
     this.apiTimeoutMs = Number(config.apiTimeoutSeconds) * 1000;
     this.runSignal = context.signal;
     let resourceSet: Awaited<ReturnType<typeof externalResources>> | undefined;
+    let modelGateway: Awaited<ReturnType<typeof openModelGateway>>;
     let server: Awaited<ReturnType<typeof startServer>> | undefined;
     let events: Promise<void> | undefined;
     let reconnects = 0;
@@ -159,8 +161,9 @@ export class OpenCodeConnector implements Connector {
     };
     context.signal.addEventListener('abort', abort);
     try {
+      modelGateway = await openModelGateway(context.spec, context.signal);
       if (gate) resourceSet = await externalResources(plan.mcp, gate, context.signal);
-      await observer.start();
+      await observer.start(modelGateway?.endpoint);
       const instructions = [
         ...(Array.isArray(context.spec.instructions) ? (context.spec.instructions as string[]) : []),
         ...plan.instructions,
@@ -560,6 +563,7 @@ export class OpenCodeConnector implements Connector {
       if (server) await stopServer(server.proc);
       await observer.close();
       await resourceSet?.close();
+      await modelGateway?.close();
       this.client = undefined;
       this.sessionId = undefined;
       rmSync(state, { recursive: true, force: true });

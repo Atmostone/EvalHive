@@ -43,6 +43,18 @@ def test_configuration_is_connector_owned_and_checked_before_start():
     assert exc.value.code == "UNSUPPORTED_CAPABILITY"
 
 
+def test_owned_model_transport_requires_an_explicit_connector_capability():
+    manifest, run = copy.deepcopy(FIXTURES["manifest"]), copy.deepcopy(FIXTURES["run_spec"])
+    run["metadata"] = {"model_gateway": {
+        "transport": "unix_http_v1", "socket_path": "/evalhive-control/model.sock", "role": "agent",
+    }}
+    with pytest.raises(ProtocolError) as exc:
+        validate_run(manifest, run)
+    assert exc.value.code == "UNSUPPORTED_CAPABILITY"
+    manifest["capabilities"]["model_gateway"] = "native"
+    assert validate_run(manifest, run) == run
+
+
 @pytest.mark.parametrize(
     "schema",
     [

@@ -24,7 +24,8 @@ export class ProviderObserver {
     },
   ) {}
 
-  async start(): Promise<void> {
+  async start(endpoint = this.endpoint): Promise<void> {
+    this.endpoint = endpoint;
     this.server = createServer(async (request, response) => {
       if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
         response.writeHead(404);

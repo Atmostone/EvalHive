@@ -263,3 +263,27 @@ configuration/version rejection, malformed/unterminated frames, out-of-order and
 late replies, bounded buffers, feedback, abort, EOF and sanitized errors. This is
 SDK conformance; Pi/OpenCode integration and end-to-end platform validation are
 tracked separately in SPA-127/SPA-129/SPA-133.
+
+## Owned model transport
+
+A host can select `metadata.model_gateway` with `transport: "unix_http_v1"`, an
+absolute `socket_path`, and a named model `role`. Preflight requires the
+connector's `model_gateway` capability. The optional descriptor is validated by
+the canonical Python/TypeScript schema; the JSONL protocol remains `1.0`.
+
+The TypeScript `openModelGateway(spec, signal)` helper binds a loopback HTTP
+listener inside the task and streams native POST requests for `/v1/chat/completions`
+and `/v1/responses` over the host-owned Unix socket. Pi and OpenCode use this
+endpoint internally, preserving their native agent loops and provider bodies.
+The public model specification retains its resolved model identity and endpoint;
+ephemeral loopback ports are not applied configuration or comparison inputs.
+Omitting the descriptor preserves direct model access.
+
+The host owns and mounts the socket, authorizes each role, replaces temporary
+role credentials with the private provider connection, and enforces current
+ownership and deadlines. Supplying a descriptor alone does not enable a runtime
+capability. The helper does not resolve upstream URLs, provide Internet access,
+or select models. It bounds requests to 2 MiB and responses to 64 MiB, propagates
+stream disconnects, and closes active connections on attempt cancellation. Real
+provider keys must remain on the host; only scoped role tokens belong in task
+credentials. Runtime admission and lifecycle wiring remain host responsibilities.

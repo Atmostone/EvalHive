@@ -264,7 +264,12 @@
           }
         },
         "metadata": {
-          "type": "object"
+          "type": "object",
+          "properties": {
+            "model_gateway": {
+              "$ref": "#/$defs/model_gateway"
+            }
+          }
         },
         "interaction": {
           "$ref": "#/$defs/interaction_config"
@@ -2173,6 +2178,29 @@
         "entrypoint",
         "files",
         "probes"
+      ],
+      "additionalProperties": false
+    },
+    "model_gateway": {
+      "type": "object",
+      "properties": {
+        "transport": {
+          "const": "unix_http_v1"
+        },
+        "socket_path": {
+          "type": "string",
+          "pattern": "^/[^\\u0000]+$",
+          "maxLength": 103
+        },
+        "role": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,63}$"
+        }
+      },
+      "required": [
+        "transport",
+        "socket_path",
+        "role"
       ],
       "additionalProperties": false
     }

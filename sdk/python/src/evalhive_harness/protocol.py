@@ -91,6 +91,8 @@ def validate_run(manifest: dict, run: dict) -> dict:
     from .resources import resources
 
     resources(run)
+    if "model_gateway" in run.get("metadata", {}) and manifest["capabilities"].get("model_gateway") not in ("native", "emulated"):
+        raise ProtocolError("UNSUPPORTED_CAPABILITY", "Owned model transport is unavailable")
     mode = run.get("interaction", {}).get("mode", "single_turn")
     for capability in (["conversation"] if mode != "single_turn" else []) + (["external_tool_execution"] if mode == "external_steps" else []):
         if manifest["capabilities"].get(capability) not in ("native", "emulated"):

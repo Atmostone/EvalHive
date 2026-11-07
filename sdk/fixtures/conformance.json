@@ -1489,6 +1489,217 @@
         }
       },
       "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "owned model gateway",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback"
+        ],
+        "metadata": {
+          "model_gateway": {
+            "transport": "unix_http_v1",
+            "socket_path": "/evalhive-control/model.sock",
+            "role": "grader.v1:judge"
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "model gateway foreign transport",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback"
+        ],
+        "metadata": {
+          "model_gateway": {
+            "transport": "tcp",
+            "socket_path": "/evalhive-control/model.sock",
+            "role": "grader.v1:judge"
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "model gateway relative socket",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback"
+        ],
+        "metadata": {
+          "model_gateway": {
+            "transport": "unix_http_v1",
+            "socket_path": "relative.sock",
+            "role": "grader.v1:judge"
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "model gateway empty role",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback"
+        ],
+        "metadata": {
+          "model_gateway": {
+            "transport": "unix_http_v1",
+            "socket_path": "/evalhive-control/model.sock",
+            "role": ""
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "model gateway unknown field",
+      "kind": "run_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "workspace_id": "workspace-1",
+        "task": {
+          "prompt": "Write a file"
+        },
+        "cwd": "/workspace",
+        "instructions": [
+          "Do the task"
+        ],
+        "config": {
+          "prefix": "Hello world 🌍"
+        },
+        "model": null,
+        "credential_refs": {},
+        "environment": {
+          "id": "plain",
+          "resources": []
+        },
+        "limits": {
+          "wall_time_seconds": 30,
+          "cpu_cores": 1,
+          "memory_mb": 128
+        },
+        "required_capabilities": [
+          "feedback"
+        ],
+        "metadata": {
+          "model_gateway": {
+            "transport": "unix_http_v1",
+            "socket_path": "/evalhive-control/model.sock",
+            "role": "grader.v1:judge",
+            "endpoint": "http://provider.invalid"
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
     }
   ]
 }

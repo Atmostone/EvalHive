@@ -12,7 +12,7 @@ export function stream(res, index, {content = '', tool, tools = tool ? [tool] : 
   res.end('data: [DONE]\n\n');
 }
 
-export async function fakeOpenAI(handler) {
+export async function fakeOpenAI(handler, {socketPath} = {}) {
   const requests = [];
   const waiters = [];
   const server = createServer(async (req, res) => {
@@ -28,9 +28,9 @@ export async function fakeOpenAI(handler) {
       res.end(JSON.stringify({error: {message: 'Fake endpoint fixture failed'}}));
     }
   });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => socketPath ? server.listen(socketPath, resolve) : server.listen(0, '127.0.0.1', resolve));
   return {
-    url: `http://127.0.0.1:${server.address().port}/v1`, requests,
+    url: socketPath ? 'http://unreachable-provider.invalid/v1' : `http://127.0.0.1:${server.address().port}/v1`, requests,
     async waitForRequest() {
       if (requests.length) return;
       await new Promise((resolve) => waiters.push(resolve));

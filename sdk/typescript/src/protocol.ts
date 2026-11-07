@@ -102,6 +102,9 @@ export function validate<T = JsonObject>(kind: string, value: unknown): T {
 export function validateRun(manifest: Manifest, run: RunSpec): RunSpec {
   validate('manifest', manifest); validate('run_spec', run);
   resources(run);
+  if ((run.metadata as JsonObject | undefined)?.model_gateway !== undefined &&
+      !['native', 'emulated'].includes(manifest.capabilities.model_gateway ?? 'unsupported'))
+    throw new ProtocolError('UNSUPPORTED_CAPABILITY', 'Owned model transport is unavailable');
   const mode = (run.interaction as JsonObject | undefined)?.mode ?? 'single_turn';
   for (const capability of [...(mode !== 'single_turn' ? ['conversation'] : []), ...(mode === 'external_steps' ? ['external_tool_execution'] : [])])
     if (!['native', 'emulated'].includes(manifest.capabilities[capability] ?? 'unsupported'))
