@@ -7,12 +7,15 @@ import importlib
 import json
 import os
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 
-from .assets import filesystem_asset
+from .assets import filesystem_asset, postgres_asset
 from .dataset import InstalledMCPMark
 from .native import NativeConfigurationError, canonical
+from .postgres_transport import restore_transport
+from .world_credentials import read as read_credentials
 from .world_rpc import MAX_BYTES, WorldError, encoded
 from .world_stage import read as read_messages
 
@@ -25,6 +28,7 @@ class NativeService:
         initial_root="/initial",
         connection_root="/connection",
         records_root="/records",
+        effect=None,
     ):
         self.installed = installed
         self.initial_root, self.connection_root, self.records_root = map(
@@ -32,6 +36,8 @@ class NativeService:
         )
         self.task, self.state, self.captured, self.verdict = None, None, None, None
         self.closed, self.ready = False, False
+        self.effect = effect
+        self.secret_values = ()
 
     def __call__(self, method, payload):
         if method == "cleanup":
@@ -59,16 +65,23 @@ class NativeService:
         if self.task is not None or set(payload) != {"case"}:
             raise WorldError("Native service preparation is frozen")
         task = self.installed.resolve(payload["case"])
-        if task.service != "filesystem":
+        if task.service not in {"filesystem", "postgres"}:
             raise NativeConfigurationError("Native service runtime has not been installed")
-        actual = filesystem_asset(self.initial_root, task.category_id)
+        actual = (
+            filesystem_asset(self.initial_root, task.category_id)
+            if task.service == "filesystem"
+            else postgres_asset(Path(os.environ["EVALHIVE_MCPMARK_NATIVE_ROOT"]) / "postgres_state")
+        )
         expected = self.installed.receipt["provenance"].get("initial_assets", [])
         if actual not in expected:
-            raise NativeConfigurationError("Initial filesystem state differs from its installation")
-        os.environ["FILESYSTEM_TEST_ROOT"] = str(self.initial_root)
-        native = importlib.import_module("src.mcp_services.filesystem.filesystem_state_manager")
+            raise NativeConfigurationError("Initial native state differs from its installation")
         self.task = task
-        self.state = native.FilesystemStateManager(test_root=self.initial_root)
+        if task.service == "filesystem":
+            os.environ["FILESYSTEM_TEST_ROOT"] = str(self.initial_root)
+            native = importlib.import_module("src.mcp_services.filesystem.filesystem_state_manager")
+            self.state = native.FilesystemStateManager(test_root=self.initial_root)
+        else:
+            self.state = self.postgres()
         if not self.state.set_up(task):
             raise WorldError("Native state preparation was not confirmed")
         config = self.state.get_service_config_for_agent()
@@ -81,6 +94,43 @@ class NativeService:
             "service": task.service,
             "initial_asset_digest": actual["source_digest"],
         }
+
+    def postgres(self):
+        import psycopg2
+
+        private = read_credentials()
+        if private.get("service") != "postgres" or self.effect is None:
+            raise WorldError("Native PostgreSQL credentials or transport are unavailable")
+        self.secret_values = (private["password"],)
+        connection = {
+            "host": "postgres",
+            "port": 5432,
+            "database": "postgres",
+            "username": "postgres",
+            "password": private["password"],
+        }
+        for key, value in connection.items():
+            os.environ["POSTGRES_" + key.upper()] = str(value)
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                client = psycopg2.connect(
+                    host=connection["host"],
+                    port=connection["port"],
+                    dbname="postgres",
+                    user="postgres",
+                    password=connection["password"],
+                    connect_timeout=3,
+                )
+                client.close()
+                break
+            except psycopg2.OperationalError:
+                if time.monotonic() >= deadline:
+                    raise WorldError("Native PostgreSQL did not become ready") from None
+                time.sleep(0.2)
+        native = importlib.import_module("src.mcp_services.postgres.postgres_state_manager")
+        with restore_transport(self.effect):
+            return native.PostgresStateManager(**connection)
 
     def capture(self, payload):
         if (
@@ -99,7 +149,7 @@ class NativeService:
             json.loads(data), list
         ):
             raise WorldError("Native message receipt differs from the confirmed transcript")
-        os.environ["MCP_MESSAGES"] = str(target)
+        self.state.set_verification_environment(str(target))
         self.captured = json.loads(encoded(payload))
         return {"captured": True}
 
@@ -126,7 +176,7 @@ class NativeService:
         # The upstream manager catches verifier exceptions and returns false.
         # Preserve that result while distinguishing a checker failure to run.
         value = {
-            "native_result": asdict(result),
+            "native_result": self.redacted(asdict(result)),
             "native_verdict_complete": len(observed) == 1,
             "verifier_exit_code": observed[0].returncode if observed else None,
             "messages_interface": "normalized_harness_messages",
@@ -137,6 +187,17 @@ class NativeService:
         with (report / "verdict.json").open("xb") as stream:
             stream.write(canonical(value))
         self.verdict = value
+        return value
+
+    def redacted(self, value):
+        if isinstance(value, str):
+            for secret in self.secret_values:
+                value = value.replace(secret, "[redacted]")
+            return value
+        if isinstance(value, dict):
+            return {key: self.redacted(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self.redacted(item) for item in value]
         return value
 
 
@@ -151,7 +212,9 @@ def main():
         raise NativeConfigurationError("Native installation metadata is unavailable")
 
     def factory(effect):
-        return NativeService(InstalledMCPMark(root / "native", json.loads(receipt.read_text())))
+        return NativeService(
+            InstalledMCPMark(root / "native", json.loads(receipt.read_text())), effect=effect
+        )
 
     serve(factory)
 

@@ -35,8 +35,9 @@ control directory or the native source/checker tree.
 
 For Filesystem, the native manager copies an installed category into
 `<native-root>/.mcpmark_backups`. That working volume is shared with the task;
-the initial category is read-only. Installed initial-file digests, modes and
-timestamps contribute to the dataset source digest and are checked before
+the initial category is read-only. Installed file digests and file/directory
+modes and timestamps, including empty directories, contribute to the dataset
+source digest and are checked before
 preparation. Native setup produces a connection file on a separate volume that
 the task mounts read-only. Missing categories are rejected before native code
 can attempt a download during a trial.
@@ -53,6 +54,16 @@ initial category has not been installed. Other service catalogs are available
 for inspection but their executable resource bindings are not advertised as
 accepted yet. The five original PostgreSQL backups are frozen in the asset lock;
 that alone does not establish PostgreSQL lifecycle acceptance.
+
+The PostgreSQL transport keeps the upstream state manager's restore algorithm
+and sends only its CLI transport through a scoped broker effect. A fresh world
+must confirm all five successful template restores; upstream warnings alone
+cannot establish a valid baseline. The private-configuration helper accepts
+credentials through an owned-exec private input, writes the world's private
+configuration and a password file shared only with its PostgreSQL service, and
+returns no credential values. These components are foundations; PostgreSQL
+worker resource bindings, MCP client installation and native lifecycle acceptance
+are still pending.
 
 `Dockerfile` uses the verified `native_wheel` and `runtime_wheels` build contexts.
 It installs the unmodified native wheel with `--no-deps` and only the pinned

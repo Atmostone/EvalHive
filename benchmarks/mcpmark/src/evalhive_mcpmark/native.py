@@ -38,15 +38,15 @@ def directory(root):
     return root
 
 
-def file_record(root, path):
+def file_record(root, path, *, max_bytes=MAX_FILE_BYTES):
     if path.resolve(strict=True) != path:
         raise NativeConfigurationError("Native source cannot traverse links")
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE_BYTES:
+        if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
             raise NativeConfigurationError("Native source exceeds its regular-file budget")
-        data = stream.read(MAX_FILE_BYTES + 1)
+        data = stream.read(max_bytes + 1)
         after = os.fstat(stream.fileno())
     if len(data) != before.st_size or any(
         getattr(before, field) != getattr(after, field)
