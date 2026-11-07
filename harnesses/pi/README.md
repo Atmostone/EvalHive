@@ -44,3 +44,9 @@ docker run --rm --network none --memory 2g --cpus 1 --pids-limit 256 --cap-drop 
 
 Tests use the real pinned SDK, a local fake model endpoint and local MCP fixtures.
 They never need an external model, service account or scientific benchmark run.
+
+Dependency installation prefers the BuildKit npm cache and still verifies the
+committed lockfile integrity. An administrator with a complete cache can add
+`--build-arg NPM_OFFLINE=true` to require a build without package downloads. A
+missing archive fails explicitly with `ENOTCACHED`; this does not change package
+versions or permit unpinned dependencies. The default remains online-capable.
