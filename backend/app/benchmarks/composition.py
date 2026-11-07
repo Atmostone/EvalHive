@@ -16,7 +16,7 @@ from evalhive_harness import validate_run
 from app.benchmarks.agent_calls import AgentCallStore
 from app.benchmarks.agent_gateway import AgentGateway
 from app.benchmarks.deadlines import DeadlineService
-from app.benchmarks.driver import TrialDriver
+from app.benchmarks.driver import DriverLimits, TrialDriver
 from app.benchmarks.harness_execution import HarnessExecution
 from app.benchmarks.harness_transport import RootlessHarnessTransport
 from app.benchmarks.model_channel import AgentModelChannel, model_connection
@@ -60,7 +60,8 @@ class _RegisteredHarness(HarnessExecution):
             or planned.get("mode") != "in_environment"
             or target is None
             or target[0] != self.host.assets.provider_id
-            or agent.get("process_policy", "stop_after_agent") != planned.get("process_policy", "stop_after_agent")
+            or agent.get("process_policy", "stop_after_agent")
+            != planned.get("process_policy", "stop_after_agent")
             or agent.get("user") != planned.get("user")
             or agent.get("wall_time_seconds") != planned.get("wall_time_seconds")
         ):
@@ -101,7 +102,7 @@ class RootlessCoordinator:
             raise ManagedRuntimeError("Coordinator requires an environment provider declaration")
         self.runtime, self.evidence = runtime, evidence
         self.provider = deepcopy(provider_manifest)
-        self.limits, self.runner_policy = limits, runner_policy
+        self.limits, self.runner_policy = limits or DriverLimits(), runner_policy
 
     def _providers(self, store, owner):
         if self.evidence.store is not store:
@@ -154,7 +155,10 @@ class RootlessCoordinator:
         validate_run(harness_manifest, harness_spec)
         if type(model_gateway) is not bool or "model_gateway" in harness_spec.get("metadata", {}):
             raise ManagedRuntimeError("Model transport must be selected by the coordinator")
-        if model_gateway and harness_manifest["capabilities"].get("model_gateway") not in {"native", "emulated"}:
+        if model_gateway and harness_manifest["capabilities"].get("model_gateway") not in {
+            "native",
+            "emulated",
+        }:
             raise ManagedRuntimeError("Harness connector cannot use an owned model channel")
         if (bundle.connector_id, bundle.connector_version) != (
             harness_manifest["id"],
@@ -167,7 +171,9 @@ class RootlessCoordinator:
         ):
             raise ManagedRuntimeError("Harness credentials require a private string map")
         private_values = tuple(value for value in credentials.values() if value)
-        route, private_credentials = model_connection(harness_spec, credentials) if model_gateway else (None, credentials)
+        route, private_credentials = (
+            model_connection(harness_spec, credentials) if model_gateway else (None, credentials)
+        )
         encoded = json.dumps(private_credentials, ensure_ascii=False).encode()
         if len(encoded) > 1024**2:
             raise ManagedRuntimeError("Harness credential input exceeds its byte limit")
@@ -233,13 +239,16 @@ class RootlessCoordinator:
             agent_factory=agent_factory,
             host_private_inputs={"agent.credentials": encoded},
             host_auxiliary_disk_mb=1 if route else 0,
+            startup_seconds=self.limits.phase_seconds,
         )
         return self._driver(host, factories, TrialDriver)
 
     async def evaluation(self, store, owner):
         if owner.control_id is None:
             raise ManagedRuntimeError("Regrading requires an independent evaluation controller")
-        if self.evidence.store is not store or not callable(getattr(self.evidence, "open_verified", None)):
+        if self.evidence.store is not store or not callable(
+            getattr(self.evidence, "open_verified", None)
+        ):
             raise ManagedRuntimeError("Regrading requires its scoped verified evidence reader")
         frozen = await load_retained_installation(store, owner, self.runtime)
         factories = self._providers(store, owner)
@@ -251,5 +260,6 @@ class RootlessCoordinator:
             factories,
             retained_evidence=self.evidence,
             worker_image_pin=frozen.worker_image_id,
+            startup_seconds=self.limits.phase_seconds,
         )
         return self._driver(host, factories, RegradeDriver)

@@ -177,6 +177,12 @@ An unsafe native exec marks recording failure and requests scoped quiescence.
 Persisted exec deadlines are enforced by the coordinator, including attached
 workers; completed processes keep their grading state.
 
+The coordinator supplies its phase budget to the worker's initial `describe`
+handshake. Importing a native framework under its admitted CPU quota must not
+inherit an unrelated fixed command timeout. Controller cancellation, the trial
+deadline and phase supervision still bound startup; native agent/checker budgets
+are independent.
+
 Services can receive validated DNS aliases on an owned private network. Aliases
 cannot select a foreign bridge or be silently ignored in a shared namespace.
 There are no published host ports or host networking in this resource interface.

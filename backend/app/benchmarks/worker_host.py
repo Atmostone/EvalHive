@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import uuid
 from copy import deepcopy
 from dataclasses import replace
@@ -53,6 +54,7 @@ class RootlessWorkerHost:
         host_private_inputs=None,
         agent_factory=None,
         host_auxiliary_disk_mb=0,
+        startup_seconds=30,
     ):
         validate("manifest", manifest)
         if manifest["kind"] != "benchmark" or (manifest["id"], manifest["version"]) != (
@@ -68,6 +70,14 @@ class RootlessWorkerHost:
         if type(host_auxiliary_disk_mb) is not int or not 0 <= host_auxiliary_disk_mb <= 1024:
             raise ManagedRuntimeError("Host auxiliary disk must be a bounded MiB amount")
         self.host_auxiliary_disk_mb = host_auxiliary_disk_mb
+        if (
+            isinstance(startup_seconds, bool)
+            or not isinstance(startup_seconds, (int, float))
+            or not math.isfinite(startup_seconds)
+            or not 0 < startup_seconds <= 86400
+        ):
+            raise ManagedRuntimeError("Worker startup requires a finite bounded host budget")
+        self.startup_seconds = startup_seconds
         if worker_image_pin is not None and self.purpose != "evaluation":
             raise ManagedRuntimeError("A retained worker image requires an evaluation controller")
         self.worker_image_pin = worker_image_pin
@@ -220,7 +230,9 @@ class RootlessWorkerHost:
             agent_replay=None if self.agent_gateway is None else self.agent_gateway.replay,
         )
         self.channel = await WorkerChannel.attach(self.store, self.owner, self.worker_actor, client)
-        description = await self.channel.invoke("describe", request_id="worker.describe")
+        description = await self.channel.invoke(
+            "describe", request_id="worker.describe", timeout=self.startup_seconds
+        )
         # Images cannot contain their own final Docker digest. Those immutable
         # references belong to installation metadata; semantic SDK declarations
         # must still match what the installed worker reports.

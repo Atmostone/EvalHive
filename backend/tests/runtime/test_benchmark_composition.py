@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from app.benchmarks.composition import RootlessCoordinator
+from app.benchmarks.driver import DriverLimits
 from app.harnesses.catalog import get_manifest
 from app.runtime.broker import ResourceLease
 from app.runtime.managed_spec import ContainerSpec, ManagedRuntimeError, PathMapping, Quota
@@ -72,12 +73,21 @@ def test_composition_is_lazy_and_credentials_stay_in_host_only_grants(tmp_path):
     assert executor.spec["credential_refs"] == {"model_api_key": "runtime-injected"}
     assert executor.profile_id == options["profile_id"]
     assert host.host_auxiliary_disk_mb == executor.spool_disk_mb
+    assert host.startup_seconds == controller.limits.phase_seconds
     options["harness_spec"]["task"]["prompt"] = "Changed after construction"
     options["credentials"]["model_api_key"] = "Changed after construction"
     assert "Changed after construction" not in json.dumps(executor.spec)
     assert (
         "Changed after construction" not in host.host_private_inputs["agent.credentials"].decode()
     )
+
+
+def test_worker_startup_uses_the_explicit_controller_phase_budget(tmp_path):
+    coordinator, store, owner, assets, _, options = setup(tmp_path)
+    coordinator.limits = DriverLimits(phase_seconds=120)
+    controller = coordinator.execution(store, owner, MANIFEST, assets, **options)
+    assert controller.host.startup_seconds == 120
+    assert controller.limits.phase_seconds == 120
 
 
 def prepared_target(controller, plan):
