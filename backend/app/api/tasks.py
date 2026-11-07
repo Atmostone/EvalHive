@@ -109,6 +109,7 @@ def task_to_dict(task: Task) -> dict:
         "capability_spec": task.capability_spec,
         "benchmark_case_id": task.benchmark_case_id,
         "benchmark_suite": task.benchmark_suite,
+        "benchmark_trial_id": (task.run_config or {}).get("benchmark_trial_id"),
         "result_files": task.result_files,
         "token_usage": task.token_usage,
         "retry_count": task.retry_count,

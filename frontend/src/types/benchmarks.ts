@@ -78,3 +78,46 @@ export interface BenchmarkPreflight extends BenchmarkAvailability {
   case_id?: string
   harness_profile_id?: string
 }
+
+export interface BenchmarkTrial {
+  id: string
+  task_id: string | null
+  profile_id: string | null
+  dataset_case_id: string | null
+  snapshot: Record<string, unknown>
+  phase: string
+  execution_status: string
+  evaluation_status: string
+  recording_status: string
+  cleanup_status: string
+  cancel_requested_at: string | null
+  created_at: string
+  finished_at: string | null
+  job_id?: string
+  job_status?: string
+}
+
+export interface BenchmarkEvaluation {
+  id: string
+  kind: string
+  status: string
+  verdict: string | null
+  success: boolean | null
+  metrics: { name: string; value: unknown; direction?: string; aggregation?: string }[]
+  error_kind: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface BenchmarkArtifact {
+  id: string
+  artifact: { id: string; visibility: string; size_bytes: number; digest: string; media_type: string }
+  created_at: string
+}
+
+export interface BenchmarkJournalEvent {
+  seq: number
+  event: string
+  data: Record<string, unknown>
+  created_at: string
+}

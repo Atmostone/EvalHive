@@ -25,6 +25,7 @@ export interface Task {
   harness_profile_id?: string | null
   execution_mode?: 'direct' | 'orchestrated' | null
   current_attempt_id?: string | null
+  benchmark_trial_id?: string | null
   results_archived?: boolean
   agent_container_id?: string | null
   result_summary?: string | null

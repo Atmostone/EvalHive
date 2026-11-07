@@ -6,7 +6,8 @@ import type { HarnessManifest, HarnessProfile, HarnessSecret } from '@/types'
 import type { ExecutionAttempt, AttemptEvent, AttemptCommand } from '@/types'
 import type {
   BenchmarkCatalogEntry, BenchmarkProfile, BenchmarkProfileInput, BenchmarkCredential,
-  BenchmarkDataset, BenchmarkCase, BenchmarkPreflight,
+  BenchmarkDataset, BenchmarkCase, BenchmarkPreflight, BenchmarkTrial, BenchmarkEvaluation,
+  BenchmarkArtifact, BenchmarkJournalEvent,
 } from '@/types/benchmarks'
 
 export const benchmarkSdkApi = {
@@ -35,12 +36,24 @@ export const benchmarkSdkApi = {
     `/benchmark-datasets/${encodeURIComponent(id)}/cases?offset=${offset}&limit=${limit}`),
   preflight: (selection: { profile_id: string; dataset_revision_id: string; case_id: string; harness_profile_id: string }) =>
     request<BenchmarkPreflight>('/benchmarks/preflight', { method: 'POST', body: JSON.stringify(selection) }),
+  createTrial: (data: { request_id: string; profile_id: string; dataset_revision_id: string; case_id: string; harness_profile_id: string; title?: string; priority?: string }) =>
+    request<BenchmarkTrial>('/benchmark-trials', { method: 'POST', body: JSON.stringify(data) }),
+  trials: (taskId: string) => request<BenchmarkTrial[]>(`/benchmark-trials?task_id=${encodeURIComponent(taskId)}`),
+  trial: (id: string) => request<BenchmarkTrial>(`/benchmark-trials/${encodeURIComponent(id)}`),
+  evaluations: (id: string, offset = 0) => request<BenchmarkEvaluation[]>(`/benchmark-trials/${encodeURIComponent(id)}/evaluations?offset=${offset}&limit=100`),
+  artifacts: (id: string, offset = 0) => request<BenchmarkArtifact[]>(`/benchmark-trials/${encodeURIComponent(id)}/artifacts?offset=${offset}&limit=100`),
+  journal: (id: string, after = -1) => request<{ events: BenchmarkJournalEvent[]; next_seq: number }>(
+    `/benchmark-trials/${encodeURIComponent(id)}/events?after_seq=${after}&limit=100`),
+  cancel: (id: string) => request<{ requested: boolean }>(`/benchmark-trials/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  download: (id: string, artifactId: string) => downloadBlob(
+    `/benchmark-trials/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}/download`),
 }
 
 export const attemptsApi = {
   list: (taskId: string) => request<ExecutionAttempt[]>(`/tasks/${taskId}/attempts?limit=1`),
   events: (id: string, after: number) => request<AttemptEvent[]>(
     `/attempts/${id}/events?after_seq=${after}&limit=500&event_type=interaction.request&event_type=interaction.resolved`),
+  output: (id: string, after: number) => request<AttemptEvent[]>(`/attempts/${id}/events?after_seq=${after}&limit=100`),
   commands: (id: string) => request<AttemptCommand[]>(`/attempts/${id}/commands`),
   control: (id: string, name: string, payload: Record<string, unknown>, commandId: string) =>
     request<{ id: string; status: string }>(`/attempts/${id}/commands`, {
@@ -115,6 +128,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T
   return res.json()
+}
+
+async function downloadBlob(path: string): Promise<Blob> {
+  const response = await fetch(`${BASE}${path}`, { headers: authHeaders() })
+  if (!response.ok) throw new ApiError(response.status, extractErrorMessage(await response.text(), response.status))
+  return response.blob()
 }
 
 // Auth

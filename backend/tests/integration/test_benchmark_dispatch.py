@@ -153,6 +153,10 @@ async def test_native_task_cannot_enter_ordinary_workflows(queued, auth_client):
         assert task.status == "ready" and task.current_attempt_id is None
         assert await db.scalar(select(Task.id).where(ordinary_tasks())) is None
     base = "/api/tasks/" + str(task_id)
+    public = await auth_client.get(base)
+    assert public.status_code == 200
+    assert public.json()["benchmark_trial_id"] == str(queued[2])
+    assert "run_config" not in public.json()
     for method, suffix, body in (
         ("post", "/start", {}),
         ("post", "/rerun", {}),

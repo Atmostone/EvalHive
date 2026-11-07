@@ -19,7 +19,7 @@ export default function TaskCard({ task, onClick }: TaskCardProps) {
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: task.id, data: { task } })
+  } = useSortable({ id: task.id, data: { task }, disabled: !!task.benchmark_trial_id })
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -32,6 +32,12 @@ export default function TaskCard({ task, onClick }: TaskCardProps) {
       style={style}
       {...attributes}
       {...listeners}
+      aria-disabled={false}
+      onKeyDown={event => {
+        if (task.benchmark_trial_id) {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick(task) }
+        } else listeners?.onKeyDown?.(event)
+      }}
       onClick={() => onClick(task)}
       className={cn(
         'bg-white rounded-lg border p-3 cursor-pointer hover:shadow-md transition-shadow',

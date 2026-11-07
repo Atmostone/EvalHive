@@ -23,6 +23,7 @@ import CalibrationPanel from '@/components/quality/CalibrationPanel'
 import JudgeCalibrationBadge from '@/components/quality/JudgeCalibrationBadge'
 import TaskExecutionFields from './TaskExecutionFields'
 import AttemptControls from './AttemptControls'
+import BenchmarkTrialPanel from './BenchmarkTrialPanel'
 
 interface TaskDetailProps {
   task: Task
@@ -105,12 +106,13 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   })
 
   const t = detail || task
+  const isBenchmark = !!t.benchmark_trial_id
   const isTerminal = ['done', 'failed', 'awaiting_approval'].includes(t.status)
 
   const { data: profileData } = useQuery({
     queryKey: ['quality-profile', task.id],
     queryFn: () => qualityApi.getProfile(task.id),
-    enabled: isTerminal,
+    enabled: isTerminal && !isBenchmark,
     retry: false,
   })
   const profile = profileData?.quality_profile ?? null
@@ -123,7 +125,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
   const { data: feedbackData } = useQuery({
     queryKey: ['human-feedback', task.id],
     queryFn: () => qualityApi.getFeedback(task.id),
-    enabled: isTerminal,
+    enabled: isTerminal && !isBenchmark,
     retry: false,
   })
   const humanFeedback = feedbackData?.human_feedback ?? null
@@ -133,7 +135,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
       <div className="flex items-center justify-between p-4 border-b">
         <h2 className="font-semibold text-lg truncate">{t.title}</h2>
         <div className="flex items-center gap-1 shrink-0">
-          {t.status !== 'in_progress' && (
+          {!isBenchmark && t.status !== 'in_progress' && (
             <button
               onClick={() => { if (confirm(`Delete task "${t.title}"? This cannot be undone.`)) deleteMutation.mutate() }}
               title="Delete task"
@@ -250,7 +252,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         )}
 
         {/* Quality profile (E-02) */}
-        {isTerminal && (
+        {isTerminal && !isBenchmark && (
           <div className="pt-2 border-t">
             {/* Judge trust badge (E-17): is the LLM judge validated against humans? */}
             <div className="mb-2">
@@ -333,14 +335,14 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           </div>
         )}
 
-        {['backlog', 'failed', 'done', 'awaiting_approval'].includes(t.status) && <>
+        {!isBenchmark && ['backlog', 'failed', 'done', 'awaiting_approval'].includes(t.status) && <>
           <TaskExecutionFields value={t} onChange={selection => selectionMutation.mutate(selection)} disabled={selectionMutation.isPending || t.results_archived} />
           {selectionMutation.error && <p role="alert" className="text-sm text-red-600">{selectionMutation.error.message}</p>}
         </>}
-        <AttemptControls taskId={t.id} />
+        {isBenchmark ? <BenchmarkTrialPanel taskId={t.id} /> : <AttemptControls taskId={t.id} />}
 
         {/* Start uses the same preflight for direct and orchestrated work. */}
-        {['backlog', 'failed'].includes(t.status) && !t.results_archived && (
+        {!isBenchmark && ['backlog', 'failed'].includes(t.status) && !t.results_archived && (
           <div className="pt-2 border-t">
             <button
               onClick={() => startMutation.mutate()}
@@ -352,7 +354,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
             {startMutation.error && <p role="alert" className="text-sm text-red-600 mt-2">{startMutation.error.message}</p>}
           </div>
         )}
-        {['done', 'failed', 'awaiting_approval'].includes(t.status) && <div className="space-y-2">
+        {!isBenchmark && ['done', 'failed', 'awaiting_approval'].includes(t.status) && <div className="space-y-2">
           <button type="button" className="text-sm text-blue-600 disabled:opacity-50" disabled={rerunMutation.isPending}
             onClick={() => rerunMutation.mutate()}>Create new run with current settings</button>
           <p className="text-xs text-gray-500">Creates a linked draft. Select its profile and start it separately.</p>
@@ -360,7 +362,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
         </div>}
 
         {/* Approve / Reject buttons */}
-        {t.status === 'awaiting_approval' && (
+        {!isBenchmark && t.status === 'awaiting_approval' && (
           <div className="space-y-2 pt-2 border-t">
             {rejectMutation.error && <p role="alert" className="text-sm text-red-600">{rejectMutation.error.message}</p>}
             <div className="flex gap-2">
@@ -398,9 +400,9 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
           </div>
         )}
 
-        <ReasoningTimeline events={events} />
+        {!isBenchmark && <ReasoningTimeline events={events} />}
 
-        {['in_progress', 'review', 'awaiting_approval', 'done', 'failed'].includes(t.status) && (
+        {!isBenchmark && ['in_progress', 'review', 'awaiting_approval', 'done', 'failed'].includes(t.status) && (
           <AgentLogViewer taskId={t.id} archived={!!t.log_archive_s3_path} />
         )}
 

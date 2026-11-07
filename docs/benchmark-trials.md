@@ -869,9 +869,10 @@ Native rootless checks cover both root and an unprivileged Task UID, a read-only
 control mount, and an isolated host protocol fixture. Native Pi/OpenCode SDK
 checks cover the local HTTP-to-Unix adaptation with an unreachable public model
 endpoint. This option currently supplies the agent role; auxiliary benchmark
-roles and recovery of orphaned control socket files after a host process crash
-remain integration work. Preflight must not advertise `host.model_gateway_v1`
-until that runtime composition and recovery are enabled.
+roles use the separate reverse model channel. Product preflight advertises
+`host.model_gateway_v1` only when the explicit benchmark runtime is enabled.
+Recovery of orphaned control socket files after a host process crash remains
+integration work; resource leases and containers continue through owned recovery.
 
 ## Task-owned services after agent completion
 
@@ -919,3 +920,48 @@ reflect the configured allowlist. Supporting the API does not authorize an
 undeclared package or a configuration supplied by an agent. See the official
 [Docker capability reference](https://docs.docker.com/engine/containers/run/#runtime-privilege-and-linux-capabilities)
 for the native default permissions.
+
+## Product launch queue and Work
+
+`POST /api/benchmark-trials` accepts a workspace profile, registered dataset
+revision and case, harness profile, bounded limits and a client `request_id`.
+It validates static compatibility and all required connections without calling a
+model, then commits the Task, BenchmarkTrial and BenchmarkJob atomically. The
+same request identity and document return the original job. Reusing an identity
+for different parameters fails. The queue contains encrypted launch inputs; the
+public trial snapshot contains connection references and applied settings, not
+credentials, hidden answers or private native paths.
+
+The background dispatcher drains existing ordinary work before starting native
+work and admits one benchmark job at a time. Native tasks never enter ordinary
+template selection, automatic text judging or heartbeat reconciliation. The
+dispatcher renews ownership while preparing the runtime bundle. A cancellation
+before execution finishes without constructing a worker or agent. An expired
+controller is reclaimed for cleanup from persisted resource leases; recovery
+does not load the currently installed benchmark package. Finished native trials
+can repair an interrupted Task/Job projection without starting another agent.
+
+At execution time, workspace connection references are authorized again. Key
+rotation is allowed through the same reference, while changing the selected
+model name or endpoint fails explicitly. Frozen native settings are preserved.
+Cold deterministic evaluation does not require the source agent connection.
+
+Work offers native case selection alongside ordinary tasks. Its trial panel
+shows execution, checker, recording and cleanup states independently, plus
+native metrics, recent agent output and lifecycle events, evaluation history,
+cancellation and retained public files. A completed checker can report an
+incorrect task. Public artifact download verifies the complete stored size and
+digest before sending response bytes; private/evaluator evidence is unavailable
+through this endpoint. Existing task mutation controls reject native tasks
+rather than rewriting their frozen inputs or bypassing the benchmark lifecycle.
+
+Server deployment must explicitly set `BENCHMARK_RUNTIME_ENABLED=true`, map
+`BENCHMARK_MANIFEST_DIR` to its `HOST_BENCHMARK_MANIFEST_DIR`, and provide
+contained `DATA_DIR` / `HOST_DATA_DIR` mappings. Native packages and digest-pinned
+images are installed by the administrator. `BENCHMARK_EVIDENCE_BUCKET` must
+already exist in the configured MinIO; launch checks it before starting workers
+or models. Group admission uses `BENCHMARK_GROUP_MEMORY_MB` (4096 by default) and
+`BENCHMARK_GROUP_CPU_CORES` (2), including the existing host reserves. Per-container
+limits remain independent. `BENCHMARK_RESOURCE_FINALIZERS` and the explicit
+`BENCHMARK_LINUX_CAPABILITIES` allowlist determine advertised host capabilities.
+Disabling new execution still permits recovery of existing owned resources.

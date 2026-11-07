@@ -57,7 +57,7 @@ export default function TaskBoard() {
     if (!KANBAN_COLUMNS.includes(newStatus as TaskStatus)) return
 
     const task = tasks.find(t => t.id === taskId)
-    if (!task || task.status === newStatus) return
+    if (!task || task.status === newStatus || task.benchmark_trial_id) return
 
     // Don't allow dragging in_progress tasks back to backlog
     if (task.status === 'in_progress' && newStatus === 'backlog') return
