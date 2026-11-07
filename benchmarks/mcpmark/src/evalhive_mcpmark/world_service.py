@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -13,6 +14,7 @@ from .assets import filesystem_asset
 from .dataset import InstalledMCPMark
 from .native import NativeConfigurationError, canonical
 from .world_rpc import MAX_BYTES, WorldError, encoded
+from .world_stage import read as read_messages
 
 
 class NativeService:
@@ -82,21 +84,21 @@ class NativeService:
 
     def capture(self, payload):
         if (
-            set(payload) != {"messages", "agent_success"}
+            set(payload) != {"messages_sha256", "agent_success"}
             or type(payload["agent_success"]) is not bool
         ):
             raise WorldError("Native message capture is invalid")
-        if not isinstance(payload["messages"], list):
-            raise WorldError("Native messages must be an ordered list")
         encoded(payload)
         if self.captured is not None:
             if self.captured != payload:
                 raise WorldError("Native message capture is frozen")
             return {"captured": True}
-        self.records_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        target = self.records_root / "messages.json"
-        with target.open("xb") as stream:
-            stream.write(canonical(payload["messages"]))
+        target = self.records_root / "transcript/messages.json"
+        data = read_messages(target.parent)
+        if hashlib.sha256(data).hexdigest() != payload["messages_sha256"] or not isinstance(
+            json.loads(data), list
+        ):
+            raise WorldError("Native message receipt differs from the confirmed transcript")
         os.environ["MCP_MESSAGES"] = str(target)
         self.captured = json.loads(encoded(payload))
         return {"captured": True}
@@ -130,7 +132,9 @@ class NativeService:
             "messages_interface": "normalized_harness_messages",
         }
         encoded(value)
-        with (self.records_root / "verdict.json").open("xb") as stream:
+        report = self.records_root / "report"
+        report.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with (report / "verdict.json").open("xb") as stream:
             stream.write(canonical(value))
         self.verdict = value
         return value

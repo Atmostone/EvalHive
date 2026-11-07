@@ -1,0 +1,11 @@
+{
+  "name": "evalhive-mcpmark-native-clients",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pinned native MCPMark MCP servers for isolated task containers",
+  "dependencies": {
+    "@modelcontextprotocol/server-filesystem": "2025.12.18",
+    "@notionhq/notion-mcp-server": "1.9.1",
+    "@playwright/mcp": "0.0.68"
+  }
+}

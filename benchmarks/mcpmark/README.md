@@ -46,3 +46,34 @@ nonzero checker exit is a complete negative verdict; a checker exception or
 timeout is incomplete grading. The retained native result preserves this
 distinction. `MCP_MESSAGES` receives the documented normalized Harness message
 projection, not a fabricated byte-identical upstream agent transcript.
+
+The current executable runtime supports installed Filesystem categories. The
+catalog still lists the complete upstream suite; validation rejects cases whose
+initial category has not been installed. Other service catalogs are available
+for inspection but their executable resource bindings are not advertised as
+accepted yet. The five original PostgreSQL backups are frozen in the asset lock;
+that alone does not establish PostgreSQL lifecycle acceptance.
+
+`Dockerfile` uses the verified `native_wheel` and `runtime_wheels` build contexts.
+It installs the unmodified native wheel with `--no-deps` and only the pinned
+manager/checker dependency closure. `Dockerfile.task` installs the native MCP
+servers from `clients/package-lock.json`; the image contains neither the native
+task/checker tree nor a Docker client. Its fixed launcher reads only the prepared
+connection and restricts Filesystem access to the native working-copy directory.
+Both containers use rootless Docker; the installed resource declarations choose
+the same container UID for native file ownership to remain consistent.
+
+Administrative installation is performed with `python -m
+evalhive_mcpmark.installation --source <native-task-root> --output <new-directory>
+--initial-root <frozen-category-root> --categories file_context --suite easy
+--revision <installed-revision> --worker-image <immutable-image>
+--task-image <immutable-image>`. Installation never downloads initial state. The
+result includes a manifest, installed dataset receipt, private frozen inputs,
+file registrations and declarative resource assets. Runtime bundles are supplied
+through the ordinary `harness.runtime` binding.
+
+Message pages are read while the agent API's driving phase is still active.
+Capture then transfers the confirmed projection in bounded, idempotent chunks
+and seals its digest before verification. Live Filesystem verification runs in
+the same native world. Independent regrading remains explicitly unavailable
+until a restorable native state checkpoint is implemented.

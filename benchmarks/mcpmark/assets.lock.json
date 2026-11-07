@@ -13,6 +13,56 @@
       "retrieved_at": "2026-11-07T10:18:09Z",
       "members": 44,
       "uncompressed_bytes": 7847
+    },
+    {
+      "id": "postgres.employees",
+      "service": "postgres",
+      "format_version": "1.0",
+      "url": "https://storage.mcpmark.ai/postgres/employees.backup",
+      "sha256": "f67c4ba9bcad3a1bdf930d45d14ab25b339b7fc991dbd4affa9347179ef7fbb6",
+      "size_bytes": 34871980,
+      "category": "employees",
+      "retrieved_at": "2026-11-07T10:58:25.211621Z"
+    },
+    {
+      "id": "postgres.chinook",
+      "service": "postgres",
+      "format_version": "1.0",
+      "url": "https://storage.mcpmark.ai/postgres/chinook.backup",
+      "sha256": "50c7969a9e8f2cc1ce250af58fc46d0abefc196c10a006de979008443f324a14",
+      "size_bytes": 163019,
+      "category": "chinook",
+      "retrieved_at": "2026-11-07T10:58:26.101249Z"
+    },
+    {
+      "id": "postgres.dvdrental",
+      "service": "postgres",
+      "format_version": "1.0",
+      "url": "https://storage.mcpmark.ai/postgres/dvdrental.backup",
+      "sha256": "da5f59c3427fa0daed9412a1f83683c56bce8ba4df0e6b45e64b83c9391b8544",
+      "size_bytes": 662750,
+      "category": "dvdrental",
+      "retrieved_at": "2026-11-07T10:58:26.883870Z"
+    },
+    {
+      "id": "postgres.sports",
+      "service": "postgres",
+      "format_version": "1.0",
+      "url": "https://storage.mcpmark.ai/postgres/sports.backup",
+      "sha256": "aaffa83588763250e1c90fde5b0a0ec0f7e87f72c5be80955f4cda31b3d9acd5",
+      "size_bytes": 712729,
+      "category": "sports",
+      "retrieved_at": "2026-11-07T10:58:27.736811Z"
+    },
+    {
+      "id": "postgres.lego",
+      "service": "postgres",
+      "format_version": "1.0",
+      "url": "https://storage.mcpmark.ai/postgres/lego.backup",
+      "sha256": "0abd1c9671ae9a5f7e11e436365ff6e773fac89895af73d47ebec8f1133166c9",
+      "size_bytes": 3062053,
+      "category": "lego",
+      "retrieved_at": "2026-11-07T10:58:29.341718Z"
     }
   ]
 }
