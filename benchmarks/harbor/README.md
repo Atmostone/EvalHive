@@ -37,6 +37,11 @@ The full coordinator has passed shared/separate verification with real pinned
 Pi/OpenCode and a local fixture model. Pi cold regrade has independently restored
 the recorded files and reproduced the native reward without running an agent.
 These are engineering acceptance checks, not Terminal-Bench performance results.
+The original pinned Terminal-Bench `fix-git` task has also passed engineering
+acceptance through both harnesses with its upstream image, unchanged native
+requirements and checker. A local fixture model only inspects Git; the expected
+reward is zero. Acceptance additionally requires the native CTRF report to prove
+the checker actually ran its tests, complete recording and complete cleanup.
 
 `environment.BrokerEnvironment` supplies the native verifier's command and
 directory-transfer interface using scoped Benchmark SDK broker requests. Native
@@ -107,6 +112,16 @@ from Harbor's resolved verifier environment. Task requirements retain their
 original values. Artifact restoration uses the preparation budget; the native
 verifier timeout begins immediately before `Verifier.verify`, matching Harbor's
 separate-verifier lifecycle.
+
+Native Docker environments retain Docker's ordinary Linux capability set.
+Task and verifier assets declare that exact set; their private worker and
+recorder remain without added capabilities. The server must explicitly permit
+each capability in its runtime policy. Catalog requirements expose
+`host.linux_capabilities_v1` and individual `linux.capability.*` requirements,
+so an unavailable permission is rejected before native execution. Privileged
+mode and host namespaces are not part of this registration. Dropping all native
+permissions can prevent a checker from installing its dependencies; a numeric
+reward alone must not be mistaken for successful engineering acceptance.
 
 `resources.agent_resources` maps native stdio/streamable HTTP MCP servers and
 task-local skills to the common Harness SDK resources. Commands and argument

@@ -866,7 +866,8 @@ Omission keeps the Task's native default. Registered runtime bundles are
 traversable by unprivileged task users and mounted read-only. An older private
 installation root is retained for historical references; new installations use
 a separate `.readable-v1` directory rather than changing that source in place.
-# Registered Linux capabilities
+
+## Registered Linux capabilities
 
 Container assets may declare a `capabilities` list. `RuntimePolicy.allowed_capabilities`
 is an explicit server allowlist and defaults to empty. Registration cannot grant

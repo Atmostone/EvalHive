@@ -27,6 +27,29 @@ from .policies import network_plan, network_requirements
 
 NATIVE_VERSION = "0.25.0"
 NATIVE_REVISION = "fdba28fc411e47e8765420a1a063b4918fce3def"
+NATIVE_CAPABILITIES = (
+    "AUDIT_WRITE",
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "FOWNER",
+    "FSETID",
+    "KILL",
+    "MKNOD",
+    "NET_BIND_SERVICE",
+    "NET_RAW",
+    "SETFCAP",
+    "SETGID",
+    "SETPCAP",
+    "SETUID",
+    "SYS_CHROOT",
+)
+
+
+def permission_requirements():
+    return [
+        "host.linux_capabilities_v1",
+        *("linux.capability." + name.lower() for name in NATIVE_CAPABILITIES),
+    ]
 
 
 class HarborConfigurationError(ValueError):
@@ -137,7 +160,7 @@ class NativeTask:
                 ):
                     raise HarborConfigurationError("Native resource requirement must be positive")
                 resources[target] = value
-        capabilities = ["host.agent_api_v1"]
+        capabilities = ["host.agent_api_v1", *permission_requirements()]
         if environment.gpus or environment.gpu_types:
             capabilities.append("hardware.gpu")
         if environment.tpu is not None:
@@ -195,7 +218,7 @@ class NativeTask:
                         "Native verifier resources must be positive and finite"
                     )
                 resources[target] = value
-        capabilities = []
+        capabilities = permission_requirements()
         if environment.gpus or environment.gpu_types:
             capabilities.append("hardware.gpu")
         if environment.tpu is not None:

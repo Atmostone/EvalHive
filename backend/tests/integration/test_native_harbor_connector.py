@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import tarfile
 import uuid
 from contextlib import suppress
@@ -36,7 +37,7 @@ from app.models.execution_attempt import ExecutionAttempt, ExecutionEvent
 from app.models.task import Task
 from app.runtime.bundles import install_bundle
 from app.runtime.managed_docker import RootlessDockerRuntime
-from app.runtime.managed_spec import PathMapping, RuntimePolicy
+from app.runtime.managed_spec import CONTAINER_CAPABILITIES, PathMapping, RuntimePolicy
 from app.runtime.managed_storage import RootlessVolumeRuntime
 from app.runtime.registered_assets import RegisteredFile
 from app.runtime.registered_files import load_registered_assets
@@ -99,17 +100,22 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
     # Native imports are confined to this engineering controller.
     from evalhive_harbor.images import inspect_image
     from evalhive_harbor.installation import install
+    from evalhive_harbor.native import parse_task
     from evalhive_harbor.worker import MANIFEST
 
     engine = native_engine
     services_enabled = os.getenv("EVALHIVE_NATIVE_HARBOR_SERVICES") == "1"
+    native_case = os.getenv("EVALHIVE_NATIVE_TERMINAL_CASE")
+    if native_case:
+        assert native_case == "fix-git" and mode == "shared" and not services_enabled
+    case_id = native_case or "native-engineering"
     local = Path(os.environ["EVALHIVE_NATIVE_FIXTURE_DIR"]) / (
         "harbor-" + connector_id + "-" + mode
     )
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"] + "/" + local.name
     local.mkdir(parents=True)
     source = local / "source"
-    native = source / "native-engineering"
+    native = source / case_id
     (native / "environment").mkdir(parents=True)
     (native / "tests").mkdir()
     (native / "environment/Dockerfile").write_text(
@@ -174,20 +180,27 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
         checker = checker.replace("os.getuid()==0", "os.getuid()==1000")
         checker += "from urllib.request import urlopen\nassert urlopen('http://127.0.0.1:8767',timeout=2).read()==b'Owned native service'\n"
     if services_enabled:
-        checker += (
-            "assert Path('/workspace/sidecar.txt').read_text()=='Native sidecar artifact\\nAgent changed sidecar\\n'\n"
-        )
+        checker += "assert Path('/workspace/sidecar.txt').read_text()=='Native sidecar artifact\\nAgent changed sidecar\\n'\n"
         if mode == "shared":
             checker += "assert urlopen('http://database:8768/sidecar.txt',timeout=2).read()==b'Native sidecar artifact\\nAgent changed sidecar\\n'\n"
     checker += "Path('/logs/verifier/reward.json').write_text(json.dumps({'quality':0.625}))\n"
     (native / "tests/test.sh").write_text("#!/bin/bash\npython - <<'PY'\n" + checker + "PY\n")
-    client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=20)
+    if native_case:
+        original = Path(os.environ["EVALHIVE_NATIVE_TERMINAL_SOURCE"]) / native_case
+        shutil.rmtree(native)
+        shutil.copytree(original, native)
+    parsed = parse_task(native)
+    client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=60)
     worker_image = client.images.get("evalhive-benchmark-harbor:development")
     worker_id = worker_image.id
     worker_image.tag(
         "evalhive-benchmark-harbor", "retained-" + worker_id.removeprefix("sha256:")[:12]
     )
-    task_image = client.images.get("evalhive-harbor-task:engineering")
+    task_image = client.images.get(
+        parsed.task.config.environment.docker_image
+        if native_case
+        else "evalhive-harbor-task:engineering"
+    )
     task_id = task_image.id
     task_image.tag("evalhive-harbor-task", "retained-" + task_id.removeprefix("sha256:")[:12])
     tools = local / "transfer-tools"
@@ -205,7 +218,13 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
         exported.remove(v=True)
     images = {
         "task": inspect_image(
-            client, task_id, limits={"memory_mb": 512, "cpu_cores": 0.5, "disk_mb": 64}
+            client,
+            task_id,
+            limits=(
+                parsed.requirements()["resources"]
+                if native_case
+                else {"memory_mb": 512, "cpu_cores": 0.5, "disk_mb": 64}
+            ),
         )
     }
     if mode == "separate":
@@ -236,11 +255,23 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
     receipt = install(
         source,
         installed,
-        revision="native-services-3" if services_enabled else "native-engineering-1",
+        revision=(
+            "terminal-bench-2.0-2fd12b88aafdd04a52c298e3940bcb189f9766d6"
+            if native_case
+            else "native-services-3"
+            if services_enabled
+            else "native-engineering-1"
+        ),
         worker_image=worker_id,
-        image_bindings={"native-engineering": images},
+        image_bindings={case_id: images},
         transfer_tools=tools,
-        dataset_id="harbor-services-engineering" if services_enabled else "harbor-engineering",
+        dataset_id=(
+            "terminal-bench-2"
+            if native_case
+            else "harbor-services-engineering"
+            if services_enabled
+            else "harbor-engineering"
+        ),
     )
     installed_host = host_root + "/installed"
     bundle_root = Path(os.environ["EVALHIVE_NATIVE_BUNDLE_DIR"]) / connector_id
@@ -254,6 +285,7 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                 PathMapping(bundle_host, str(bundle_root)),
                 PathMapping(installed_host, str(installed)),
             ),
+            allowed_capabilities=tuple(CONTAINER_CAPABILITIES),
         ),
     )
     harness = get_manifest(connector_id)
@@ -284,11 +316,12 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
         task_ref = task.id
         await db.commit()
     store = TrialStore(engine, PrivateStore("native-harbor-fixture-key"))
+    trial_seconds = 360 if native_case else 240
     trial = await store.create(
         WORKSPACE,
         task_id=task_ref,
         snapshot={"fixture": "native Harbor", "mode": mode},
-        deadline_at=datetime.now(UTC) + timedelta(seconds=240),
+        deadline_at=datetime.now(UTC) + timedelta(seconds=trial_seconds),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())
     objects = Minio(
@@ -348,7 +381,10 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
         provider,
         facade,
         limits=DriverLimits(
-            phase_seconds=120, capture_seconds=60, cleanup_seconds=45, service_seconds=15
+            phase_seconds=180 if native_case else 120,
+            capture_seconds=60,
+            cleanup_seconds=45,
+            service_seconds=15,
         ),
         runner_policy=RunnerPolicy(heartbeat_seconds=0.2, startup_seconds=30, command_seconds=30),
     )
@@ -442,7 +478,14 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                 )
             )
 
-    with NativeModelEndpoint(credential, tool_script=TOOL_SCRIPT) as endpoint:
+    native_tool_script = (
+        "import subprocess\nfrom pathlib import Path\n"
+        "assert not Path('/tests').exists() and not Path('/dataset').exists()\n"
+        "subprocess.run(['git','status','--porcelain'],check=True)\n"
+        if native_case
+        else TOOL_SCRIPT
+    )
+    with NativeModelEndpoint(credential, tool_script=native_tool_script) as endpoint:
         harness_spec = {
             "protocol_version": "1.0",
             "workspace_id": str(WORKSPACE),
@@ -531,10 +574,16 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
             "credential_refs": {},
             "models": {},
             "limits": {
-                "wall_time_seconds": 240,
-                "memory_mb": 2048,
-                "cpu_cores": 1.5,
-                "disk_mb": 2048 if services_enabled and mode == "separate" else 1536,
+                "wall_time_seconds": trial_seconds,
+                "memory_mb": 4096 if native_case else 2048,
+                "cpu_cores": 2 if native_case else 1.5,
+                "disk_mb": (
+                    12288
+                    if native_case
+                    else 2048
+                    if services_enabled and mode == "separate"
+                    else 1536
+                ),
             },
         }
         try:
@@ -567,15 +616,27 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
             ), result
             assert result["cleanup"] == "complete" and result["recording"] == "complete", result
             assert len(endpoint.requests) == 2 and not endpoint.errors
+            if native_case:
+                with tarfile.open(fileobj=io.BytesIO(artifacts.values["native-report"])) as report:
+                    ctrf = json.loads(report.extractfile("native-verifier/ctrf.json").read())
+                    assert ctrf["results"]["summary"]["tests"] > 0
+                    assert ctrf["results"]["summary"]["failed"] > 0
             with tarfile.open(fileobj=io.BytesIO(artifacts.values["native-artifacts"])) as archive:
-                assert (
-                    archive.extractfile("artifacts/workspace/result.txt").read()
-                    == b"Driven through the Benchmark SDK\n"
-                )
-                assert (
-                    archive.extractfile("artifacts/logs/artifacts/answer.txt").read()
-                    == b"Native artifact\n"
-                )
+                if native_case:
+                    assert [member.name for member in archive.getmembers() if member.isfile()] == [
+                        "artifacts/manifest.json"
+                    ]
+                    recorded = json.loads(archive.extractfile("artifacts/manifest.json").read())
+                    assert all(item["status"] == "ok" for item in recorded)
+                else:
+                    assert (
+                        archive.extractfile("artifacts/workspace/result.txt").read()
+                        == b"Driven through the Benchmark SDK\n"
+                    )
+                    assert (
+                        archive.extractfile("artifacts/logs/artifacts/answer.txt").read()
+                        == b"Native artifact\n"
+                    )
                 if services_enabled:
                     assert (
                         archive.extractfile("artifacts/workspace/sidecar.txt").read()
@@ -591,12 +652,21 @@ async def test_harbor_native_verification_and_replay(native_engine, connector_id
                 native_result = store.private.open(
                     "evaluation-result:" + str(evaluation.id), evaluation.private_result
                 )
-                assert native_result["native"]["rewards"] == {"quality": 0.625}
+                assert native_result["native"]["rewards"] == (
+                    {"reward": 0.0} if native_case else {"quality": 0.625}
+                )
                 attempt = await db.get(
                     ExecutionAttempt, controller.host.agent_gateway.calls.session_id
                 )
                 assert attempt.connector_id == connector_id and attempt.status == "success"
-                assert attempt.run_spec["limits"]["wall_time_seconds"] == 60
+                if native_case:
+                    assert 1 <= attempt.run_spec["limits"]["wall_time_seconds"] <= trial_seconds
+                    assert attempt.run_spec["cwd"] == (
+                        parsed.task.config.environment.workdir
+                        or task_image.attrs["Config"]["WorkingDir"]
+                    )
+                else:
+                    assert attempt.run_spec["limits"]["wall_time_seconds"] == 60
                 events = list(
                     await db.scalars(
                         select(ExecutionEvent.payload).where(

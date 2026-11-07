@@ -19,7 +19,7 @@ from harbor.models.task.verifier_mode import resolve_verifier_environment_defini
 from .archive import digest_file
 from .compose import read_compose
 from .dataset import CONNECTOR_ID, CONNECTOR_VERSION, InstalledHarbor, build_receipt
-from .native import HarborConfigurationError
+from .native import NATIVE_CAPABILITIES, HarborConfigurationError
 from .transfers import absolute_path
 
 TRANSFER_TOOLS = json.loads(Path(__file__).with_name("tools.lock.json").read_text())["files"]
@@ -120,6 +120,7 @@ def native_asset(native, selected, *, verifier=False, compose=None):
         limits["disk_mb"],
         command=["sh", "-c", "sleep infinity"],
         workdir=cwd,
+        capabilities=list(NATIVE_CAPABILITIES),
         environment=deepcopy(config.env),
         **({"user": user} if user else {}),
         storage_slots=storage,
@@ -155,6 +156,7 @@ def compose_asset(selected, description, *, original=None):
         limits["cpu_cores"],
         limits["disk_mb"],
         workdir=selected.get("image_workdir") or "/",
+        capabilities=list(NATIVE_CAPABILITIES),
         **({"user": selected["image_user"]} if selected.get("image_user") else {}),
         storage_slots={"stage": {"target": "/evalhive-stage", "read_only": True}},
         mounts=[
