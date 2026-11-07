@@ -18,6 +18,7 @@ from app.api.benchmark_sdk import SafeValidationRoute
 from app.auth.dependencies import get_current_workspace, require_role
 from app.benchmarks.evidence import CHUNK_BYTES, _io, reference
 from app.benchmarks.launch import queue_execution
+from app.benchmarks.launch_schema import TrialLimits
 from app.benchmarks.private_store import PrivateStore
 from app.benchmarks.trials import TrialStore
 from app.benchmarks.usage import trial_usage
@@ -49,15 +50,6 @@ def get_public_evidence(store=Depends(get_trial_store)):
         return evidence_store(store)
     except Exception:
         raise HTTPException(503, "Benchmark evidence storage is unavailable") from None
-
-
-class TrialLimits(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    wall_time_seconds: int = Field(default=1800, ge=1, le=86400)
-    memory_mb: int = Field(default=4096, ge=1, le=1048576)
-    cpu_cores: float = Field(default=2.0, gt=0, le=1024, allow_inf_nan=False)
-    disk_mb: int = Field(default=4096, ge=1, le=2147483647)
-    model_requests: int = Field(default=100, ge=0, le=1000000)
 
 
 class TrialCreate(BaseModel):

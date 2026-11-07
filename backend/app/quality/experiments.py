@@ -527,6 +527,12 @@ async def create_experiment(
     skipping re-normalization. Raises ValueError on any invalid part (the API
     maps it to 400).
     """
+    if (payload.get("dataset") or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import create
+
+        if frozen_cases is not None or exclude_fingerprints:
+            raise ValueError("Native matrix cloning requires its frozen plan lineage")
+        return await create(db, workspace_id, payload, created_by=created_by)
     name = (payload.get("name") or "").strip()
     if not name:
         raise ValueError("experiment name is required")
@@ -636,6 +642,10 @@ async def create_experiment(
 
 async def start_experiment(db: AsyncSession, exp: Experiment) -> None:
     """draft → running: materialize every matrix cell as a pending run row."""
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import start
+
+        return await start(db, exp)
     if exp.status != ExperimentStatus.DRAFT.value:
         raise ValueError(f"cannot run experiment in status '{exp.status}'")
     images = _agent_image_ids()
@@ -691,6 +701,10 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
     leaving them ``running`` would strand them). In-flight agent containers
     are killed best-effort.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import cancel
+
+        return await cancel(db, exp)
     if exp.status in TERMINAL_EXPERIMENT:
         raise ValueError(f"experiment already terminal ('{exp.status}')")
     rows = (
@@ -921,6 +935,8 @@ async def _lock_experiment(db: AsyncSession, exp: Experiment) -> None:
     """
     await db.execute(select(Experiment.id).where(Experiment.id == exp.id).with_for_update())
     await db.refresh(exp)
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        raise ValueError("Native matrix changes require a new frozen plan and explicit lineage")
 
 
 async def _bump_revision(
@@ -2091,6 +2107,10 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
     """One idempotent tick step: advance Toolathlon preprocess/eval phases,
     settle finished runs, claim pending cells under the parallelism/budget
     limits, finalize when everything settled."""
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import advance
+
+        return await advance(db, exp)
     if exp.status != ExperimentStatus.RUNNING.value:
         return
 
@@ -2307,7 +2327,10 @@ async def advance_active_experiments(db: AsyncSession) -> int:
     rows = (
         await db.execute(
             select(Experiment).where(
-                Experiment.status == ExperimentStatus.RUNNING.value
+                (Experiment.status == ExperimentStatus.RUNNING.value)
+                | ((Experiment.dataset["source"].astext == "benchmark_sdk")
+                   & Experiment.status.in_(("paused", "cancelled"))
+                   & Experiment.completed_at.is_(None))
             )
         )
     ).scalars().all()
@@ -2326,6 +2349,10 @@ async def estimate_preview(
     db: AsyncSession, *, workspace_id: uuid.UUID, payload: dict
 ) -> dict:
     """Total runs + cost/time estimate for a (not yet created) experiment."""
+    if (payload.get("dataset") or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiment_inputs import preview
+
+        return await preview(db, workspace_id, payload)
     from sqlalchemy import func as sa_func
 
     configs = expand_matrix(payload.get("configurations"), payload.get("axes"))

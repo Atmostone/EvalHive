@@ -675,7 +675,9 @@ async def experiment_results(
                 "task_status": task.status if task else None,
                 "result_summary": task.result_summary if task else None,
                 "external_verdict": (
-                    ("pass" if verdicts[r.task_id] else "fail")
+                    ("pass" if r.external_verdict else "fail")
+                    if (exp.dataset or {}).get("source") == "benchmark_sdk" and r.external_verdict is not None
+                    else ("pass" if verdicts[r.task_id] else "fail")
                     if r.task_id in verdicts
                     else None
                 ),
