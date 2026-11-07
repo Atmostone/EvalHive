@@ -63,6 +63,7 @@ class Experiment(Base):
 
     __tablename__ = "experiments"
     __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_experiments_scope"),
         UniqueConstraint("workspace_id", "name", name="uq_experiments_workspace_name"),
         Index("idx_experiments_workspace", "workspace_id"),
         Index("idx_experiments_status", "status"),

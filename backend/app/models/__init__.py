@@ -14,6 +14,7 @@ from app.models.benchmark_evaluation_control import (
     BenchmarkEvaluationJournal,
 )
 from app.models.benchmark_evaluation_input import BenchmarkEvaluationInput
+from app.models.benchmark_experiment_plan import BenchmarkExperimentPlan
 from app.models.benchmark_job import BenchmarkJob
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
@@ -52,6 +53,7 @@ from app.models.webhook_delivery import WebhookDelivery
 from app.models.workspace import Workspace, WorkspaceMember
 
 __all__ = [
+    "BenchmarkExperimentPlan",
     "User",
     "BenchmarkProfile",
     "BenchmarkSecret",
