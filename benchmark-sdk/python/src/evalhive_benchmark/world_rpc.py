@@ -2,38 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import queue
 import threading
-import time
 from collections import OrderedDict
 from concurrent.futures import Future
 from copy import deepcopy
 
 from evalhive_benchmark import ProtocolError, validate
 
+from .world_wire import MAX_BYTES as MAX_BYTES
+from .world_wire import WorldError, encoded, monotonic
 
-def monotonic():
-    """Keep host deadlines independent of native simulated clocks."""
-    return time.clock_gettime(time.CLOCK_MONOTONIC)
-
-
-MAX_BYTES = 1024**2
 MAX_OPERATIONS = 128
 MAX_RECEIPTS = 1024
-
-
-class WorldError(ValueError):
-    pass
-
-
-def encoded(value):
-    data = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    ).encode()
-    if len(data) > MAX_BYTES:
-        raise WorldError("Native operation exceeds its byte budget")
-    return data
 
 
 class World:

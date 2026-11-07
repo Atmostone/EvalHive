@@ -32,7 +32,11 @@ class WorldClient:
             self.provider,
             "exec",
             {
-                "argv": ["/opt/venv/bin/python", "-m", "evalhive_benchmark.world_control", encoded],
+                "argv": [
+                    "/opt/venv/bin/python",
+                    "/opt/benchmark-sdk/evalhive_benchmark/world_wire.py",
+                    encoded,
+                ],
                 "cwd": "/tmp",
                 "timeout_seconds": self.remaining(),
                 "deadline_policy": "inherit",
