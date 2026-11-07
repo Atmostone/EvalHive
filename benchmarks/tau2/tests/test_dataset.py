@@ -57,7 +57,14 @@ def test_complete_native_base_split_uses_native_models_without_gold_in_catalog(
     case = receipt["cases"][0]
     native = installed.resolve(case)
     assert native.id == case["native_ref"]["task_id"]
-    assert set(case) == {"ref", "title", "source_digest", "native_ref", "requirements"}
+    assert set(case) == {
+        "ref",
+        "title",
+        "source_digest",
+        "native_ref",
+        "requirements",
+        "evaluation_requirements",
+    }
     assert "user_scenario" not in str(receipt)
     assert "evaluation_criteria" not in str(receipt)
     native.id = "changed local copy"

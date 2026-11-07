@@ -219,6 +219,10 @@ def create_agent(root, domain, tools, domain_policy, exchange):
         return result
 
     class HarnessAgent(HalfDuplexAgent):
+        @staticmethod
+        def public_history(state):
+            return [history_message(item) for item in state]
+
         def get_init_state(self, message_history=None):
             history = deepcopy(message_history or [])
             if not all(is_valid_agent_history_message(message) for message in history):

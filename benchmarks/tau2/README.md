@@ -27,5 +27,51 @@ The upstream project declares version 1.0.1, but its checked-in uv lock still
 lists the editable root as 1.0.0. Build the unmodified source as a native 1.0.1
 wheel and verify its metadata and source bytes. Do not replace distribution
 metadata to conceal the mismatch. Runtime dependencies are frozen separately
-from this native source build. Presence of the catalog package does not yet
-declare worker execution or live benchmark acceptance complete.
+from this native source build. `Dockerfile` installs only verified local wheels;
+the native wheel hash is checked before installation. `Task.Dockerfile` contains
+the common Python/MCP environment, without tau2 or benchmark data.
+
+Install from an isolated native environment with
+`python -m evalhive_tau2.installation --source DATA_ROOT --output INSTALLATION
+--domain airline --revision REVISION --worker-image IMMUTABLE_IMAGE
+--task-image IMMUTABLE_IMAGE`. The installer does not start Docker or discover
+credentials. It snapshots only the selected domain and user guidelines, freezes
+the split receipt and publishes `manifest.json`, `resources.json`, `files.json`
+and dataset metadata. Register the harness runtime binding on the server.
+Worker data is private; the Task receives read-only public policy/tool schemas,
+the common public SDK and a pinned harness runtime bundle. No harness-specific
+Task image is required.
+
+The connector uses native `build_user`, `Orchestrator`, `SimulationRun` and
+`evaluate_simulation(EvaluationType.ALL, strict_replay=True)`. The official native
+orchestrator executes agent and user tools, initializes shared state and chooses
+termination. MCP names and schema hashes are checked before accepting tool
+requests; builtin tools are disabled. This is explicitly recorded as
+`adapted_mcp_external_steps`, rather than claiming a byte-identical native agent
+interface. The default native runner limits are 200 steps, 10 errors and seed
+300. The seed controls the native environment/user; agent sampling parameters
+belong to the selected harness profile, recorded as `agent_seed_policy`.
+
+Execution requires an explicit `user` model binding and additionally `judge`
+when the task's native reward basis includes `NL_ASSERTION`. Unknown model
+parameters and missing bindings fail validation. The official user model client
+uses the scoped host model API; provider credentials remain on the host. Native
+automatic request retries are disabled because an interrupted paid request can
+have an unknown outcome. Auxiliary usage is recorded once by the host, separately
+from harness usage; native usage inside private evidence is not counted again.
+
+An owned private recorder stores the bounded native trace, checkpoint and report.
+The checkpoint contains the native `SimulationRun` plus source and interface
+provenance. Cold regrade starts only a worker/recorder and never an agent or user
+simulator. It uses the original task and strict native environment replay; any
+required judge is bound explicitly. Gold actions remain diagnostic unless the
+native reward basis includes them. Interrupted simulations have no complete
+checkpoint. Aggregation is not advertised until the native aggregate adapter is
+installed.
+
+Engineering tests cover native split membership, schema identity, official user
+generation, grouped external tool calls, native reward/termination, private
+evidence transfer and cold regrade. The rootless Pi/OpenCode acceptance fixture
+is `backend/tests/integration/test_native_tau2_connector.py`; it requires explicit
+opt-in, pinned images and local fake model endpoints. Availability and successful
+live verification must be reported separately.

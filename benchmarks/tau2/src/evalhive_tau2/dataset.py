@@ -22,6 +22,9 @@ MAX_RECEIPT_BYTES = 32 * 1024**2
 
 
 def descriptor(task, domain, split, dataset_id, revision, source_digest):
+    judge = bool(
+        task.evaluation_criteria and "NL_ASSERTION" in task.evaluation_criteria.reward_basis
+    )
     return {
         "ref": {"dataset_id": dataset_id, "revision": revision, "case_id": domain + "/" + task.id},
         "title": domain + "/" + task.id,
@@ -29,7 +32,14 @@ def descriptor(task, domain, split, dataset_id, revision, source_digest):
             {"source": source_digest, "task": task.model_dump(mode="json")}
         ),
         "native_ref": {"domain": domain, "split": split, "task_id": task.id},
-        "requirements": {"capabilities": ["host.agent_api_v1"], "resources": {}},
+        "requirements": {
+            "capabilities": ["host.agent_api_v1", "host.model_api_v1"],
+            "resources": {},
+        },
+        "evaluation_requirements": {
+            "capabilities": ["host.model_api_v1"] if judge else [],
+            "resources": {},
+        },
     }
 
 
