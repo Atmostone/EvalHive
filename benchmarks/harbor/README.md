@@ -45,3 +45,15 @@ A shared verifier runs against the live task environment; it cannot be rerun
 after cleanup merely by copying files. A replacement separate verifier may grade
 an originally shared trial only when its declared inputs were recorded, as
 specified by Harbor's native regrade contract.
+
+`transfers.BrokerTransfers` stages checker uploads in a private service volume
+mounted read-only in the task. Task filesystem operations use an explicitly
+loaded, immutable BusyBox toolchain rather than task-provided utilities. Transfers
+use 24 KiB chunks with archive size and SHA-256 verification. The 64 MiB archive
+limit and temporary copies must be included in the installation's resource plan.
+Downloads validate archive paths, links, entry counts and logical bytes before
+extraction. Log selection uses Harbor's filter rules and preserves protected
+reward files. Unsupported filesystem entries and oversized transfers fail
+explicitly. The engineering fixture exercises the actual pinned native verifier,
+shell commands and toolchain without an external model; separate task/service
+isolation and full runner acceptance are still pending.

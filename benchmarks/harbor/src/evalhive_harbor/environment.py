@@ -9,7 +9,8 @@ from copy import deepcopy
 from pathlib import PurePosixPath
 
 from evalhive_benchmark import ProtocolError
-from harbor.environments.base import ExecResult
+from harbor.constants import MAIN_SERVICE_NAME
+from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.environments.docker.docker_unix import UnixOps
 from harbor.models.task.config import TaskOS
 
@@ -40,6 +41,11 @@ class BrokerEnvironment:
     def is_path_mounted(self, *args):
         # Worker and Task have independent filesystems, including verifier logs.
         return False
+
+    @staticmethod
+    def _service(service):
+        if service not in {None, MAIN_SERVICE_NAME}:
+            raise ProtocolError("NATIVE_SERVICE_UNAVAILABLE", "Native service requires its installed adapter", "unsupported")
 
     async def exec(self, *, command, env=None, user=None, timeout_sec=None):
         if self.os != TaskOS.LINUX:
@@ -79,11 +85,32 @@ class BrokerEnvironment:
     async def upload_dir(self, *, source_dir, target_dir):
         await self.transfers.upload(source_dir=source_dir, target_dir=target_dir)
 
-    async def download_dir(self, *, source_dir, target_dir):
+    async def download_dir(self, *, source_dir, target_dir, service=None):
+        self._service(service)
         await self.transfers.download(source_dir=source_dir, target_dir=target_dir)
 
-    async def download_dir_filtered(self, *, source_dir, target_dir, include=None, exclude=None, protect=None):
+    async def download_dir_filtered(self, *, source_dir, target_dir, include=None, exclude=None, protect=None, service=None):
+        self._service(service)
         await self.transfers.download(
             source_dir=source_dir, target_dir=target_dir, include=include,
             exclude=exclude, protect=protect,
         )
+
+    async def upload_file(self, *, source_path, target_path):
+        await self.transfers.upload_file(source_path=source_path, target_path=target_path)
+
+    async def download_file(self, *, source_path, target_path, service=None):
+        self._service(service)
+        await self.transfers.download_file(source_path=source_path, target_path=target_path)
+
+    async def path_is_dir(self, path, *, service=None, user=None):
+        self._service(service)
+        return await self.transfers.path_is_dir(str(path))
+
+    async def ensure_dirs(self, dirs, *, chmod=True):
+        if dirs:
+            return await self.exec(command=BaseEnvironment._ensure_dirs_command(self, dirs, chmod=chmod), user="root" if chmod else None)
+
+    async def empty_dirs(self, dirs, *, chmod=True):
+        if dirs:
+            return await self.exec(command=BaseEnvironment._empty_dirs_command(self, dirs, chmod=chmod), user="root")
