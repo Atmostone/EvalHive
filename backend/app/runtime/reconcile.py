@@ -22,10 +22,11 @@ STOPPED = frozenset({"created", "exited", "dead"})
 
 
 class RootlessReconciler:
-    def __init__(self, runtime, authority, provider_id):
+    def __init__(self, runtime, authority, provider_id, *, finalizer=None):
         self.runtime, self.authority, self.provider_id = runtime, authority, provider_id
         self.owned = OwnedExecRuntime(runtime)
         self.storage = RootlessVolumeRuntime(runtime)
+        self.finalizer = finalizer
 
     async def handle(self, request):
         validate("broker_request", request)
@@ -142,7 +143,26 @@ class RootlessReconciler:
                 lease = await self._save(call, lease, state="released")
             return self._result(lease)
         state = await asyncio.to_thread(self.runtime.inspect, lease.native)
+        if (
+            operation in {"stop", "release"}
+            and lease.intent.finalizer is not None
+            and not lease.finalized
+        ):
+            if self.finalizer is None:
+                raise ProtocolError(
+                    "RESOURCE_FINALIZER_UNAVAILABLE",
+                    "The installed resource requires a cleanup executor",
+                    "cleanup",
+                )
+            lease = await self.finalizer(call, lease)
+            state = await asyncio.to_thread(self.runtime.inspect, lease.native)
         if state is None:
+            if lease.intent.finalizer is not None and not lease.finalized:
+                raise ProtocolError(
+                    "RESOURCE_FINALIZATION_UNAVAILABLE",
+                    "A missing resource has no confirmed cleanup receipt",
+                    "cleanup",
+                )
             lease = await self._save(call, lease, state="released")
             return self._result(lease, missing=True)
         if operation in {"stop", "release"}:

@@ -495,11 +495,12 @@ class SqlResourceCall:
         self.expected = {}
         self.expected_dependencies = {}
         self.artifact_grant = None
+        self.finalizer_wait = False
 
     @asynccontextmanager
     async def observation(self):
         """Non-mutating native reads only; re-fence and verify before any write."""
-        if self.request["operation"] != "exec":
+        if self.request["operation"] != "exec" and not self.finalizer_wait:
             raise failure(
                 "INVALID_OBSERVATION", "Only native execution waits may suspend the fence"
             )
@@ -654,6 +655,27 @@ class SqlResourceCall:
         seconds = execution_timeout(
             payload, self.policy["max_exec_seconds"], (self.trial.deadline_at - now).total_seconds()
         )
+        return self._execution_grant(container, payload, seconds)
+
+    async def finalizer_execution(self, container, payload):
+        from app.runtime.finalizers import finalizer_payload
+
+        frozen = await self.resource(container.handle)
+        if (
+            self.trial.phase != "cleaning"
+            or container != frozen
+            or payload != finalizer_payload(frozen)
+        ):
+            raise failure(
+                "FINALIZER_FORBIDDEN",
+                "Finalization requires the frozen cleanup declaration",
+                "cleanup",
+            )
+        self.finalizer_wait = True
+        return self._execution_grant(container, payload, container.intent.finalizer.timeout_seconds)
+
+    def _execution_grant(self, container, payload, seconds):
+        refs = payload.get("private_input_refs", {})
         handle = str(uuid.uuid5(self.operation.id, "exec"))
         spec = ExecSpec(
             container.native,

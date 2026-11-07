@@ -27,7 +27,7 @@ from app.benchmarks.retained_inputs import RetainedInputs
 from app.benchmarks.worker_channel import WorkerChannel
 from app.runtime.admission import GroupPolicy, ResourceDemand, host_capacity
 from app.runtime.file_pins import freeze_files
-from app.runtime.managed_spec import ManagedRuntimeError, OwnerScope
+from app.runtime.managed_spec import ContainerSpec, ManagedRuntimeError, OwnerScope
 
 
 class RootlessWorkerHost:
@@ -56,6 +56,7 @@ class RootlessWorkerHost:
         model_factory=None,
         host_auxiliary_disk_mb=0,
         startup_seconds=30,
+        resource_finalizers=False,
     ):
         validate("manifest", manifest)
         if manifest["kind"] != "benchmark" or (manifest["id"], manifest["version"]) != (
@@ -64,6 +65,9 @@ class RootlessWorkerHost:
         ):
             raise ManagedRuntimeError("Worker manifest differs from registered assets")
         self.store, self.owner, self.manifest, self.assets = store, owner, manifest, assets
+        if type(resource_finalizers) is not bool:
+            raise ManagedRuntimeError("Resource finalization must be selected by the host")
+        self.resource_finalizers = resource_finalizers
         self.purpose = "execution" if owner.control_id is None else "evaluation"
         if host_private_inputs and self.purpose != "execution":
             raise ManagedRuntimeError("Host agent inputs require an execution controller")
@@ -304,6 +308,16 @@ class RootlessWorkerHost:
             else spec["case"]["requirements"],
             plan["requirements"],
         )
+        finalizers_required = "host.resource_finalizers_v1" in requirements.get(
+            "capabilities", []
+        ) or any(
+            isinstance(lease.intent, ContainerSpec) and lease.intent.finalizer is not None
+            for _, lease in compiled.leases.values()
+        )
+        if finalizers_required and not self.resource_finalizers:
+            raise ProtocolError(
+                "UNSUPPORTED_CAPABILITY", "Host resource finalization is unavailable", "preparation"
+            )
         demands = (self.worker_demand, *compiled.demands, *extra_demands)
         processes = tuple(item for item in demands if isinstance(item, ResourceDemand))
         totals = {

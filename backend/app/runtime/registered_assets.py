@@ -23,6 +23,7 @@ from app.runtime.admission import ResourceDemand, StorageDemand
 from app.runtime.broker import ExportGrant, ResourceLease
 from app.runtime.managed_spec import (
     ContainerSpec,
+    FinalizerSpec,
     ManagedRuntimeError,
     NetworkRequest,
     Quota,
@@ -93,6 +94,14 @@ CONTAINER = obj(
         },
         "agent_process_policy": {"enum": ["stop_after_agent", "retain_until_cleanup"]},
         "agent_user": TEXT,
+        "finalizer": obj(
+            {
+                "argv": ARGV,
+                "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 600},
+                "replay_safe": {"const": True},
+            },
+            ("argv", "timeout_seconds", "replay_safe"),
+        ),
         "environment": {
             "type": "object",
             "maxProperties": 128,
@@ -291,6 +300,13 @@ class RootlessAssets:
             quota=quota,
             readonly_root=asset.get("readonly_root", False),
             capabilities=tuple(asset.get("capabilities", [])),
+            finalizer=FinalizerSpec(
+                tuple(asset["finalizer"]["argv"]),
+                asset["finalizer"]["timeout_seconds"],
+                asset["finalizer"]["replay_safe"],
+            )
+            if "finalizer" in asset
+            else None,
         )
         if not set(spec.capabilities) <= set(self.runtime.policy.allowed_capabilities):
             raise ManagedRuntimeError("Native Linux capabilities exceed runtime policy")

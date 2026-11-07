@@ -8,6 +8,7 @@ from app.runtime.broker import ResourceLease
 from app.runtime.managed_spec import (
     ContainerSpec,
     ExecSpec,
+    FinalizerSpec,
     ManagedContainer,
     ManagedExec,
     ManagedNetwork,
@@ -44,6 +45,7 @@ def encode_lease(lease: ResourceLease) -> dict:
         "state": lease.state,
         "deadline_at": lease.deadline_at,
         "dependencies": list(lease.dependencies),
+        "finalized": lease.finalized,
     }
     return json.loads(json.dumps(result, allow_nan=False))
 
@@ -86,6 +88,13 @@ def decode_lease(data: dict) -> ResourceLease:
                 "command": None if raw["command"] is None else tuple(raw["command"]),
                 "network_aliases": tuple(raw["network_aliases"]),
                 "capabilities": tuple(raw.get("capabilities", [])),
+                "finalizer": FinalizerSpec(
+                    tuple(raw["finalizer"]["argv"]),
+                    raw["finalizer"]["timeout_seconds"],
+                    raw["finalizer"]["replay_safe"],
+                )
+                if raw.get("finalizer") is not None
+                else None,
                 "network": network(raw["network"]),
                 "namespace": container(raw["namespace"]),
                 "storage": tuple(
@@ -132,4 +141,5 @@ def decode_lease(data: dict) -> ResourceLease:
         data["state"],
         data["deadline_at"],
         tuple(data["dependencies"]),
+        data.get("finalized", False),
     )

@@ -37,8 +37,19 @@ class ResourceLease:
     state: str = "planned"
     deadline_at: str | None = None
     dependencies: tuple[str, ...] = ()
+    finalized: bool = False
 
     def __post_init__(self):
+        if type(self.finalized) is not bool:
+            raise ValueError("Resource finalization proof must be explicit")
+        if (
+            isinstance(self.intent, ContainerSpec)
+            and self.intent.finalizer is not None
+            and self.native is not None
+            and self.state == "released"
+            and not self.finalized
+        ):
+            raise ValueError("An external resource cannot be released without finalization proof")
         native = (
             (self.intent.container,)
             if isinstance(self.intent, ExecSpec)
@@ -81,6 +92,10 @@ class ExportGrant:
 class ResourceCall(Protocol):
     scope: OwnerScope
     replay: dict | None
+
+    async def finalizer_execution(self, container: ResourceLease, payload: dict) -> ExecutionGrant:
+        """Derive a cleanup grant from the frozen declaration, after the trial deadline."""
+        ...
 
     def observation(self) -> AbstractAsyncContextManager[None]:
         """Suspend the native-effect fence for reads; revalidate before returning.

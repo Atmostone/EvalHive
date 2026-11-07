@@ -97,13 +97,25 @@ class RootlessCoordinator:
     driver's admission, ownership fences and journal remain authoritative.
     """
 
-    def __init__(self, runtime, provider_manifest, evidence, *, limits=None, runner_policy=None):
+    def __init__(
+        self,
+        runtime,
+        provider_manifest,
+        evidence,
+        *,
+        limits=None,
+        runner_policy=None,
+        resource_finalizers=False,
+    ):
         validate("manifest", provider_manifest)
         if provider_manifest["kind"] != "environment_provider":
             raise ManagedRuntimeError("Coordinator requires an environment provider declaration")
         self.runtime, self.evidence = runtime, evidence
         self.provider = deepcopy(provider_manifest)
         self.limits, self.runner_policy = limits or DriverLimits(), runner_policy
+        if type(resource_finalizers) is not bool:
+            raise ManagedRuntimeError("Resource finalization requires an explicit host choice")
+        self.resource_finalizers = resource_finalizers
 
     def _providers(self, store, owner):
         if self.evidence.store is not store:
@@ -120,9 +132,22 @@ class RootlessCoordinator:
             or host.assets.provider_id != self.provider["id"]
         ):
             raise ManagedRuntimeError("Installed assets require another runtime provider")
-        reconciler = lambda authority: RootlessReconciler(  # noqa: E731
-            self.runtime, authority, self.provider["id"]
-        )
+
+        def reconciler(authority):
+            async def finalize(call, lease):
+                provider = RootlessDockerProvider(self.runtime, authority, self.provider)
+                try:
+                    return await provider.finalize_resource(call, lease)
+                finally:
+                    await provider.close()
+
+            return RootlessReconciler(
+                self.runtime,
+                authority,
+                self.provider["id"],
+                finalizer=finalize if self.resource_finalizers else None,
+            )
+
         return driver_class(
             host,
             RecoveryService(host.store, host.host_actor, {self.provider["id"]: reconciler}),
@@ -247,6 +272,7 @@ class RootlessCoordinator:
             host_private_inputs={"agent.credentials": encoded},
             host_auxiliary_disk_mb=1 if route else 0,
             startup_seconds=self.limits.phase_seconds,
+            resource_finalizers=self.resource_finalizers,
         )
         return self._driver(host, factories, TrialDriver)
 
@@ -273,5 +299,6 @@ class RootlessCoordinator:
             if auxiliary_models is not None
             else None,
             startup_seconds=self.limits.phase_seconds,
+            resource_finalizers=self.resource_finalizers,
         )
         return self._driver(host, factories, RegradeDriver)

@@ -80,6 +80,19 @@ def invocation(evaluation):
     return host, spec, plan
 
 
+def test_finalizer_capability_is_rejected_before_admission_unless_enabled_by_host():
+    async def scenario():
+        host, spec, plan = invocation(False)
+        plan["requirements"] = {"capabilities": ["host.resource_finalizers_v1"]}
+        with pytest.raises(ProtocolError) as unavailable:
+            await host.install_plan(spec, plan)
+        assert unavailable.value.code == "UNSUPPORTED_CAPABILITY"
+        host.store.reserve.assert_not_awaited()
+        assert host.environment is None
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("evaluation", [False, True])
 def test_controller_rejects_the_other_purpose_before_compilation_or_admission(evaluation):
     async def scenario():

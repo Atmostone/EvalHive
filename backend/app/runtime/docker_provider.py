@@ -13,6 +13,7 @@ from docker.errors import DockerException, NotFound
 from evalhive_benchmark import EnvironmentProvider, ProtocolError, validate
 
 from app.runtime.broker import ExecutionGrant, ResourceLease
+from app.runtime.finalizers import finalizer_payload
 from app.runtime.managed_attach import ManagedDockerProcess
 from app.runtime.managed_exec import OwnedDockerProcess, OwnedExecRuntime
 from app.runtime.managed_spec import (
@@ -296,7 +297,7 @@ class RootlessDockerProvider(EnvironmentProvider):
         # Do not publish raw Docker IDs, argv, environment or private native state.
         return {"handle": lease.handle, "kind": lease.kind, "state": lease.state, "native": native}
 
-    async def _exec(self, call, container, payload):
+    async def _exec(self, call, container, payload, *, finalizer=False):
         _shape(
             payload,
             {"argv"},
@@ -325,7 +326,8 @@ class RootlessDockerProvider(EnvironmentProvider):
         if (
             container.kind != "container"
             or container.native is None
-            or container.state != "allocated"
+            or container.state
+            not in ({"allocated", "stopping", "releasing"} if finalizer else {"allocated"})
         ):
             raise ProtocolError(
                 "RESOURCE_NOT_READY", "Exec requires an allocated task container", "preparation"
@@ -392,7 +394,11 @@ class RootlessDockerProvider(EnvironmentProvider):
                     "Native command deadline is invalid",
                     "configuration",
                 )
-        grant: ExecutionGrant = await call.execution(container, payload)
+        grant: ExecutionGrant = await (
+            call.finalizer_execution(container, payload)
+            if finalizer
+            else call.execution(container, payload)
+        )
         lease = self._lease(grant.lease, call.scope)
         if (
             lease.kind != "exec"
@@ -537,6 +543,57 @@ class RootlessDockerProvider(EnvironmentProvider):
             ),
         }
 
+    async def finalize_resource(self, call, lease):
+        if (
+            not isinstance(lease.intent, ContainerSpec)
+            or lease.intent.finalizer is None
+            or lease.finalized
+            or lease.native is None
+        ):
+            return lease
+        state = await asyncio.to_thread(self.runtime.inspect, lease.native)
+        if state is None or state["status"] != "running" or lease.state == "unsafe":
+            raise ProtocolError(
+                "RESOURCE_FINALIZATION_UNAVAILABLE",
+                "Required cleanup cannot be confirmed in the owned resource",
+                "cleanup",
+            )
+        try:
+            result = await self._exec(call, lease, finalizer_payload(lease), finalizer=True)
+            if result["exit_code"] != 0:
+                raise ProtocolError(
+                    "RESOURCE_FINALIZATION_FAILED",
+                    "Required resource cleanup was not confirmed",
+                    "cleanup",
+                )
+            lease = replace(lease, finalized=True)
+            await call.save(lease)
+            return lease
+        except BaseException as error:
+            if isinstance(error, ProtocolError) and error.code in {
+                "STALE_GENERATION",
+                "OWNER_EXPIRED",
+                "TRIAL_NOT_FOUND",
+                "TRIAL_FINISHED",
+                "ACTOR_FORBIDDEN",
+                "FOREIGN_HANDLE",
+                "FINALIZER_FORBIDDEN",
+            }:
+                raise
+
+            # A timed-out callback must not leave the original service mutating
+            # external state. Keep its filesystem and unconfirmed cleanup proof.
+            async def contain():
+                # Reacquire the current SQL ownership fence before containment;
+                # an expired controller cannot stop a successor's resource.
+                async with call.observation():
+                    pass
+                await asyncio.to_thread(self.runtime.stop, lease.native, remove=False)
+                await call.save(replace(lease, state="unsafe"))
+
+            await asyncio.shield(contain())
+            raise
+
     async def _stop(self, call, lease, *, release):
         if lease.state == "released":
             return {"handle": lease.handle, "released": True}
@@ -548,6 +605,7 @@ class RootlessDockerProvider(EnvironmentProvider):
             if lease.state not in {"planned", "rejected", "unallocated"}:
                 raise UncertainRuntimeError("Unresolved resource intent cannot be released blindly")
         elif lease.kind == "container":
+            lease = await self.finalize_resource(call, lease)
             await asyncio.to_thread(self.runtime.stop, lease.native, remove=release)
         elif lease.kind == "network":
             await asyncio.to_thread(self.runtime.remove_network, lease.native)

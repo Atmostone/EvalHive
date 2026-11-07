@@ -691,6 +691,34 @@ resolution. Product API and queue wiring are B14 work.
 
 ## Recovery and deadlines
 
+Registered containers may declare a `finalizer` with an installed `argv`, a
+bounded `timeout_seconds` (at most 600), and `replay_safe: true`. This is a
+provider-owned declaration; a worker plan cannot add or replace it. The rootless
+coordinator and worker host must explicitly enable `resource_finalizers` before
+admitting such a plan. Packages can also require `host.resource_finalizers_v1`.
+The default remains disabled until the deployment enables the verified path.
+
+Before stopping or releasing such a container, the provider runs its finalizer
+through owned execution. The SQL authority derives this command from the frozen
+container intent, permits it only during cleanup, and supplies the immutable
+resource scope. This specific cleanup grant may run after the trial's execution
+deadline; ordinary exec grants remain subject to that deadline. Waiting may
+release the SQL fence only after the finalizer grant has been validated.
+
+A successful command exit acknowledges the package's cleanup contract. The
+provider saves a durable `finalized` proof before stopping the container. A new
+controller loads that proof and does not repeat successful cleanup. Finalizers
+must therefore use stable native receipts and make reconciliation safe when an
+earlier callback's result was lost. The infrastructure does not infer external
+cleanup from a missing container or interpret a benchmark's native resource IDs.
+
+An unsuccessful callback quiesces its owned container, retains its filesystem
+and leaves finalization unconfirmed. Containment revalidates ownership; a stale
+controller cannot stop a successor's resource. A stopped or missing resource
+without the required proof remains a visible cleanup failure and is not silently
+released. Resources with no finalizer retain their existing lifecycle, and old
+private lease records decode without a finalizer or a finalization proof.
+
 `RecoveryService` dispatches unreleased leases to registered provider factories.
 Dependency handles belong to provider-independent record metadata; the coordinator
 does not decode a provider's private intent or native-state format. A record

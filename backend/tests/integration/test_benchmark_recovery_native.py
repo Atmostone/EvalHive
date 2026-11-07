@@ -28,7 +28,14 @@ from app.runtime.broker import ResourceLease
 from app.runtime.docker_provider import RootlessDockerProvider
 from app.runtime.managed_attach import ManagedDockerProcess
 from app.runtime.managed_docker import RootlessDockerRuntime
-from app.runtime.managed_spec import ContainerSpec, OwnerScope, PathMapping, Quota, RuntimePolicy
+from app.runtime.managed_spec import (
+    ContainerSpec,
+    FinalizerSpec,
+    OwnerScope,
+    PathMapping,
+    Quota,
+    RuntimePolicy,
+)
 from app.runtime.reconcile import RootlessReconciler
 from app.runtime.spec import BindMount
 from evalhive_benchmark import ConnectorClient, ProtocolError
@@ -127,6 +134,23 @@ async def native_trial(_engine, db_session, request):
             "-c",
             "import time;open('/tmp/result.txt','w').write('native-evidence');time.sleep(300)",
         ),
+        finalizer=FinalizerSpec(
+            (
+                "python",
+                "-c",
+                "import os;open('/tmp/finalized.txt','a').write(os.environ['EVALHIVE_RESOURCE_SCOPE']+'\\n')",
+            ),
+            15,
+            True,
+        )
+        if getattr(request, "param", None) == "finalizer"
+        else FinalizerSpec(
+            ("python", "-c", "raise SystemExit(3)"),
+            15,
+            True,
+        )
+        if getattr(request, "param", None) == "finalizer-failure"
+        else None,
     )
     lease = ResourceLease(handle, scope, "container", spec)
     actor = uuid.uuid4()

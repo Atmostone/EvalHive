@@ -193,6 +193,29 @@ class VolumeMount:
 
 
 @dataclass(frozen=True)
+class FinalizerSpec:
+    argv: tuple[str, ...]
+    timeout_seconds: float
+    replay_safe: bool
+
+    def __post_init__(self):
+        if (
+            not isinstance(self.argv, tuple)
+            or not self.argv
+            or len(self.argv) > 64
+            or any(not isinstance(arg, str) or not arg or "\0" in arg for arg in self.argv)
+            or isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not math.isfinite(self.timeout_seconds)
+            or not 0 < self.timeout_seconds <= 600
+            or self.replay_safe is not True
+        ):
+            raise ManagedRuntimeError(
+                "Resource finalizers require bounded replay-safe declarations"
+            )
+
+
+@dataclass(frozen=True)
 class ContainerSpec:
     scope: OwnerScope
     resource_id: str
@@ -212,9 +235,12 @@ class ContainerSpec:
     readonly_root: bool = False
     storage: tuple[VolumeMount, ...] = ()
     capabilities: tuple[str, ...] = ()
+    finalizer: FinalizerSpec | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "capabilities", container_capabilities(self.capabilities))
+        if self.finalizer is not None and not isinstance(self.finalizer, FinalizerSpec):
+            raise ManagedRuntimeError("Container finalizer requires an installed declaration")
 
 
 @dataclass(frozen=True)
