@@ -198,6 +198,17 @@ ledger. Operator-only `POST /{id}/cancel` records a monotonic cancellation reque
 and is safe to repeat. These reads do not themselves authorize a new execution;
 product queue and launch composition remain part of B14.
 
+Migration `bg13` adds durable `BenchmarkJob` launch requests. Workspace/request
+identity is unique, request parameters and encrypted launch inputs are immutable,
+cancellation is monotonic and terminal queue receipts cannot be rewritten.
+`app.benchmarks.jobs.enqueue` joins the caller's transaction so task, trial and
+request creation can commit together. An identical request identity preserves
+the original frozen inputs even if a provider/profile is later edited.
+`JobStore` requires the current trial/evaluation controller before returning
+private inputs or changing execution state. Its terminal receipt requires a
+finished owned lifecycle; queue state never authorizes resource-broker effects.
+These storage primitives are separate from the product launch/dispatch wiring.
+
 The neutral rootless runtime now preserves image startup/workspace semantics and
 checks workspace/trial/session/generation ownership for containers, networks and
 native execs. Its static supervisor and SDK process transport retain task state

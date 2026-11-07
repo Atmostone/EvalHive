@@ -14,6 +14,7 @@ from app.models.benchmark_evaluation_control import (
     BenchmarkEvaluationJournal,
 )
 from app.models.benchmark_evaluation_input import BenchmarkEvaluationInput
+from app.models.benchmark_job import BenchmarkJob
 from app.models.benchmark_trial import (
     BenchmarkEnvironmentSession,
     BenchmarkEventStream,
@@ -57,6 +58,7 @@ __all__ = [
     "BenchmarkDatasetRevision",
     "BenchmarkDatasetCase",
     "BenchmarkTrial",
+    "BenchmarkJob",
     "BenchmarkCommand",
     "BenchmarkAgentCall",
     "BenchmarkArtifact",
