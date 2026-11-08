@@ -28,6 +28,9 @@ download data during acceptance runs. Backend API tests use deterministic fake
 embeddings instead of loading an embedding model.
 It removes only its own services and runner containers on its private network.
 Screenshots, acceptance JSON and service logs remain in the results directory.
+Before publishing the catalog, the script builds both connector runtime bundles
+and their pinned supervisor/tooling images. A clean runner must have these
+required images even when the Work scenario uses connector containers.
 `E2E_SKIP_BUILD=1` reuses already built images for a focused diagnostic rerun.
 
 Native test images use a network-disabled container and a loopback fixture.
