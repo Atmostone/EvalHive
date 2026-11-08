@@ -76,6 +76,13 @@ async def test_native_matrix_uses_a_frozen_serial_queue_and_cancellation(
     runs = list(await db_session.scalars(select(ExperimentRun).order_by(ExperimentRun.run_index)))
     assert [row.status for row in runs] == ["running", "pending"]
     assert len(runs[0].condition_fingerprint) == 32
+    from app.orchestrator.engine import _record_run_condition
+
+    frozen_condition = runs[0].condition_fingerprint
+    await _record_run_condition(db_session, task, "a" * 64, "b" * 64)
+    await db_session.commit()
+    await db_session.refresh(runs[0])
+    assert runs[0].condition_fingerprint == frozen_condition
     await service.pause_experiment(db_session, experiment)
     await service.advance_experiment(db_session, experiment)
     assert await db_session.scalar(select(func.count()).select_from(BenchmarkJob)) == 1
@@ -135,3 +142,49 @@ def test_native_axes_deduplicate_and_reject_unsupported_or_unbounded_inputs():
     ):
         with pytest.raises(ValueError):
             expand([], axes)
+
+
+async def test_ordinary_harness_condition_projection_fits_legacy_matrix_columns(
+    auth_client, db_session
+):
+    from app.orchestrator.engine import _record_run_condition
+
+    workspace_id = uuid.UUID(auth_client.headers["X-Workspace-Id"])
+    experiment = Experiment(
+        workspace_id=workspace_id,
+        name="Ordinary condition projection",
+        dataset={"source": "upload"},
+        dataset_cases=[],
+        matrix_spec={},
+        configurations=[],
+    )
+    db_session.add(experiment)
+    await db_session.flush()
+    task = Task(
+        workspace_id=workspace_id,
+        title="Ordinary fixture",
+        run_config={
+            "experiment": {
+                "id": str(experiment.id),
+                "config_key": "cfg-01",
+                "case_key": "case-01",
+                "run_index": 0,
+            }
+        },
+    )
+    db_session.add(task)
+    await db_session.flush()
+    row = ExperimentRun(
+        experiment_id=experiment.id,
+        config_key="cfg-01",
+        case_key="case-01",
+        run_index=0,
+        task_id=task.id,
+    )
+    db_session.add(row)
+    await db_session.flush()
+    full, core = "1" * 64, "2" * 64
+    await _record_run_condition(db_session, task, full, core)
+    await db_session.commit()
+    await db_session.refresh(row)
+    assert (row.condition_fingerprint, row.core_condition_fingerprint) == (full[:32], core[:32])

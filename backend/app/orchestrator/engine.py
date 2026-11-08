@@ -38,6 +38,8 @@ async def _record_run_condition(
     db: AsyncSession, task: Task, full: str, core: str | None = None
 ) -> None:
     """Stamp the spawn-time condition onto the experiment cell this task belongs to."""
+    if is_benchmark_task(task):
+        return
     ref = ((task.run_config or {}).get("experiment") or {}) if task.run_config else {}
     if not ref.get("id"):
         return
@@ -54,7 +56,7 @@ async def _record_run_condition(
             ExperimentRun.run_index == ref.get("run_index"),
             ExperimentRun.task_id == task.id,
         )
-        .values(condition_fingerprint=full, core_condition_fingerprint=core)
+        .values(condition_fingerprint=full[:32], core_condition_fingerprint=core[:32] if core else None)
     )
 
 
