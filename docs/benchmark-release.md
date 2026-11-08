@@ -1,9 +1,40 @@
 # Benchmark SDK VPS release runbook
 
 Release acceptance is tracked in [SPA-154](https://linear.app/spawnhive/issue/SPA-154).
-The current preparation has not switched the production stand. Record the actual
-source SHA, image IDs, backup and check results in the release directory when
-performing the cutover.
+The Benchmark SDK release was activated on 2026-11-08. Its application source is
+`c0a082ea54ff7784a6263b75026abdfb48d832e4`, schema `bg16`, following the previous
+release `491292180da6c122aaeef4302114382945307fd9` / `ha09`. Operational test and
+documentation follow-ups do not change that deployed application identity.
+
+## Recorded release acceptance
+
+- Backend image: `sha256:235e9313ab0f04e53321ec85ce83554107a9f7ef94292ee5291cd4aba6e35635`.
+- Frontend image: `sha256:21ba491b8d8dcaef143e409a84ae6b208b0f7fa982bc2d761f48d0006c58d509`.
+- The installed catalog contains seven connectors, twelve dataset revisions and
+  1,454 case descriptors; its inventory retains seventeen immutable images.
+  Installation does not imply live acceptance of every variant.
+- The write-paused PostgreSQL/MinIO pair is
+  `/home/evalhive/evalhive-backups/evalhive-backup-20261108T075036Z`; its manifest
+  SHA256 is `e365a804b5f7d4bc791200ed965c534823dce92792952ea1e5ef360d9971ba83`.
+  Scratch restoration and upgrade/downgrade with both release images passed.
+- Before activation, an isolated copy passed four local smoke scenarios and a
+  complete paired rollback to the previous backend. The deployed stand then
+  passed the same four scenarios: direct work and native Benchmark SDK work
+  through each of Pi and OpenCode, including native correctness, downloaded
+  files and cleanup. No external models or scientific experiments were used.
+- Existing profile settings and templates were preserved. Compatible Pi profile
+  pins were upgraded to `0.2.1`; the OpenCode catalog version is `0.2.2`.
+  Scheduler state was restored, health checks passed, and no fixture rows,
+  objects or owned runtime resources remained.
+- The source stand had no native evidence tables or stored task objects. Its
+  backup checks explicitly report `not_installed` / `nothing_to_check`; positive
+  native evidence and corruption detection were tested separately in B16.
+
+Public image inventories, previous configuration, backup references and the
+release report are retained under
+`/home/evalhive/deployment/releases/c0a082ea54ff7784a6263b75026abdfb48d832e4`.
+Detailed checks are retained in the stand
+`results/benchmark-sdk/b17-*` reports.
 
 ## Prepare immutable installations
 
@@ -19,7 +50,10 @@ python3 scripts/engineering-disk-guard.py
 
 The disk guard cleans unused build cache only at 95% usage. Below that threshold,
 insufficient build headroom defers a large build. It does not delete images,
-volumes, retained installations or running containers.
+volumes, retained installations or running containers. Recent unused intermediate
+layers are eligible too: restricting cleanup to old cache can leave a single
+large preparation above the threshold. Root-reserved blocks count as unavailable
+to the rootless user. All `/data` runtime trees are excluded from Git.
 
 Build connector workers, task/service images and both Harness runtime bundles
 from their locked inputs. Keep the previous images addressable by immutable
@@ -95,6 +129,14 @@ versions. See [the architecture decision](benchmark-sdk.md).
 5. Upgrade the isolated copy, check compatible profile conversion and historical
    snapshots, then rehearse restoring the previous paired backup and previous
    image/catalog selection. Record exact schema and source identities.
+
+Run the admin checker through stdin so Python resolves the installed backend
+from its working directory. For a restored fixture known to contain artifacts:
+
+```sh
+docker exec -i "$ISOLATED_API_CONTAINER" python - --expect-min-artifacts 1 \
+  < scripts/check-benchmark-evidence.py
+```
 
 The full MinIO archive includes native evidence even though its locators are not
 ordinary SQL S3-path columns. Legacy path verification alone must not be reported

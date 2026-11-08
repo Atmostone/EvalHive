@@ -61,9 +61,9 @@ hashes detect content changes but are not signatures. Result archives retain
 artifact identities and do not claim to include every environment or artifact
 byte needed for complete execution replay.
 
-## Current release gate
+## Completed release acceptance
 
-The complete clean CI run for `8db2da658097f282db6ca8cb098ae436b44050af`
+The complete clean CI run for `c0a082ea54ff7784a6263b75026abdfb48d832e4`
 passed backend coverage, frontend tests/build, both SDKs, migration round trips,
 all five isolated adapter wheel checks, native Pi/OpenCode conformance and all
 eight Work browser scenarios. Pi passed 34 native checks and OpenCode passed 39.
@@ -84,10 +84,15 @@ installation: the backend resolved 147 cases without native-framework imports.
 Retained catalog policy checks passed eight tests, including neighboring-path
 rejection; profile conversion and the complete migration ratchet passed nine.
 
-B17 still requires the verified paired production backup/restore, prepared
-release activation, deployed smoke, scheduler restoration and rollback rehearsal.
-These deployment steps are separate from the completed engineering conformance.
-See [the release runbook](benchmark-release.md).
+B17 activated the release on the rootless VPS with schema `bg16`. The paired
+write-paused backup passed scratch restoration and migration checks. An isolated
+copy passed four local smoke scenarios and paired rollback; the deployed stand
+passed the same four scenarios with native verdicts, files and complete cleanup.
+The scheduler was restored and all service health checks passed. Thirteen
+deployment-helper tests include six disk-policy checks: cleanup starts at 95%
+and only unused rootless build cache is eligible. The source stand had no native
+evidence or stored task objects; those empty states are recorded explicitly.
+See [the release runbook](benchmark-release.md) for exact identities and rollback.
 
 No owner provider credentials, external model calls, external account setup or
 scientific experiments are part of this acceptance. Unavailable variants retain

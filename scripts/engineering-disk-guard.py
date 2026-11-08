@@ -44,6 +44,7 @@ def main():
     docker = shutil.which("docker")
     if docker is None:
         raise SystemExit("Docker CLI is unavailable")
+    # Recent intermediate layers can also exhaust the disk during one build.
     # Only unused build cache is eligible. Images, containers and volumes are retained.
     with tempfile.TemporaryDirectory(prefix="evalhive-disk-guard-") as config:
         subprocess.run(
@@ -57,10 +58,6 @@ def main():
                 "prune",
                 "--all",
                 "--force",
-                "--filter",
-                "until=2h",
-                "--keep-storage",
-                "2GB",
             ],
             check=True,
             timeout=120,

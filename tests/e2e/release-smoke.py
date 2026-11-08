@@ -90,6 +90,10 @@ async def native_checks(client, workspace_id, profiles, provider_id, dataset_id,
             'execution_status': 'success', 'evaluation_status': 'completed',
             'recording_status': 'complete', 'cleanup_status': 'complete',
         }.items()), 'Native release trial failed; inspect its scoped journal'
+        response = await client.get(f'/api/benchmark-trials/{trial_id}/evaluations')
+        response.raise_for_status()
+        evaluations = response.json()
+        assert len(evaluations) == 1 and evaluations[0]['success'] is True, 'Native checker did not accept the fixture'
         response = await client.get(f'/api/benchmark-trials/{trial_id}/artifacts')
         response.raise_for_status()
         artifact = next(row for row in response.json() if row['artifact']['id'] == 'workspace')
@@ -117,7 +121,7 @@ async def cleanup_native(client, workspace_id, trial_ids):
     deadline = asyncio.get_running_loop().time() + 120
     while asyncio.get_running_loop().time() < deadline:
         async with async_session() as db:
-            leases = list(await db.scalars(select(BenchmarkResourceLease).where(BenchmarkResourceLease.workspace_id == workspace_id, BenchmarkResourceLease.released_at.is_(None))))
+            leases = list(await db.scalars(select(BenchmarkResourceLease).where(BenchmarkResourceLease.workspace_id == workspace_id, BenchmarkResourceLease.state != "released")))
             trials = list(await db.scalars(select(BenchmarkTrial).where(BenchmarkTrial.workspace_id == workspace_id)))
             if not leases and all(row.phase == 'finished' and row.cleanup_status == 'complete' for row in trials):
                 break
@@ -228,6 +232,7 @@ async def main(model_url, native_dataset_id=None):
                 tasks = list(await db.scalars(select(Task).where(Task.workspace_id == workspace_id)))
                 paths = {record.record_s3_path for record in records if record.record_s3_path}
                 paths.update(path for task in tasks for path in task.result_files or [])
+                paths.update(task.log_archive_s3_path for task in tasks if task.log_archive_s3_path)
                 storage = get_minio_client()
                 for path in paths:
                     await asyncio.to_thread(storage.remove_object, BUCKET, path)
