@@ -105,11 +105,7 @@ class Experiment(Base):
         Numeric(10, 6), nullable=True
     )
     max_parallel: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # SPA-69: number of isolated Toolathlon PG lanes to run in parallel. None/0 →
-    # serial (one Toolathlon cell at a time — the safe default, since all cases share
-    # one mock postgres). >1 lets the scheduler claim up to that many Toolathlon cells
-    # at once, each pinned to its own ``toolathlon_pg_lane_<i>`` instance so their
-    # preprocess re-seeding cannot clobber each other.
+    # Historical Toolathlon lane metadata; new executions use SDK resource leases.
     n_toolathlon_lanes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # {trajectory: bool=true, failure_modes: bool=false} — E-02 always runs.
     eval_config: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
@@ -219,10 +215,7 @@ class ExperimentRun(Base):
     preprocess_started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     preprocess_log: Mapped[str | None] = mapped_column(Text, nullable=True)
     eval_log: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # SPA-69: which isolated PG lane (0..n_toolathlon_lanes-1) this Toolathlon run is
-    # pinned to while in flight — its preprocess/eval/agent all target
-    # ``toolathlon_pg_lane_<lane_index>``. None for plain runs and once settled (the
-    # lane is freed for the next claim).
+    # Historical lane identity, retained without reassigning old executions.
     lane_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # --- SPA-84 immutability -----------------------------------------------------

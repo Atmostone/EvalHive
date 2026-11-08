@@ -128,6 +128,15 @@ async def process_ready_task(db: AsyncSession, task: Task):
     """Process a single Ready task: decompose or select template + spawn agent."""
     if is_benchmark_task(task):
         return
+    from app.benchmarks.task_routing import is_legacy_benchmark_task
+
+    if is_legacy_benchmark_task(task):
+        task.status = TaskStatus.FAILED.value
+        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
+        task.result_summary = "Historical benchmark execution requires a new Benchmark SDK run"
+        task.completed_at = datetime.utcnow()
+        await db.commit()
+        return
     logger.info(f"Processing task {task.id}: {task.title}")
 
     from app.harnesses.launch import execution_mode, selected_template

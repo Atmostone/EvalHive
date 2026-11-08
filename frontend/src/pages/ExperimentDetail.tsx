@@ -320,7 +320,7 @@ function ProgressTab({ detail, onCell }: { detail: ExperimentDetailType; onCell:
   const liveConfigs = detail.configurations.filter((c) => !c.retired_at)
   const retiredConfigs = detail.configurations.filter((c) => c.retired_at)
   // The backend refuses to retire while running, and refuses the last live one.
-  const canRetire = detail.status !== 'running' && detail.status !== 'draft' && liveConfigs.length > 1
+  const canRetire = !detail.legacy_execution_retired && detail.status !== 'running' && detail.status !== 'draft' && liveConfigs.length > 1
   if (detail.matrix.length === 0) {
     return (
       <div className="text-sm text-gray-500 p-4 max-w-2xl space-y-1">
@@ -2299,35 +2299,35 @@ function LegacyExperimentDetail() {
           </p>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
-          {detail.status === 'draft' && (
+          {!detail.legacy_execution_retired && detail.status === 'draft' && (
             <button onClick={() => runMutation.mutate()} disabled={runMutation.isPending}
               className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
               <Play className="h-4 w-4" /> Run
             </button>
           )}
-          {detail.status === 'running' && (
+          {!detail.legacy_execution_retired && detail.status === 'running' && (
             <button onClick={() => pauseMutation.mutate()}
               className="flex items-center gap-1.5 px-3 py-2 border rounded-lg hover:bg-gray-50 text-sm">
               <Pause className="h-4 w-4" /> Pause
             </button>
           )}
-          {detail.status === 'paused' && (
+          {!detail.legacy_execution_retired && detail.status === 'paused' && (
             <button onClick={() => resumeMutation.mutate()}
               className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
               <Play className="h-4 w-4" /> Resume
             </button>
           )}
-          {!isTerminal && detail.status !== 'draft' && (
+          {!detail.legacy_execution_retired && !isTerminal && detail.status !== 'draft' && (
             <button onClick={() => { if (confirm('Cancel this experiment? Partial results are kept.')) cancelMutation.mutate() }}
               className="flex items-center gap-1.5 px-3 py-2 border border-red-200 text-red-600 rounded-lg hover:bg-red-50 text-sm">
               <Square className="h-4 w-4" /> Cancel
             </button>
           )}
-          <button onClick={() => setShowClone(true)} title="Clone as a new draft, optionally tweaking name / runs / budget"
+          {!detail.legacy_execution_retired && <button onClick={() => setShowClone(true)} title="Clone as a new draft, optionally tweaking name / runs / budget"
             className="flex items-center gap-1.5 px-3 py-2 border rounded-lg hover:bg-gray-50 text-sm">
             <Copy className="h-4 w-4" /> Clone…
-          </button>
-          {isTerminal && failedCount > 0 && (
+          </button>}
+          {!detail.legacy_execution_retired && isTerminal && failedCount > 0 && (
             <button onClick={() => { if (confirm(`Re-run ${failedCount} failed cell(s) (rate-limit / API / infra errors)? Their current state is kept in the attempt ledger — nothing is overwritten. Valid cells and their scores are untouched.`)) retryFailedMutation.mutate() }}
               disabled={retryFailedMutation.isPending}
               title="Archive each failed cell's current state as an attempt, then reset it to pending and re-run it in THIS experiment — no clone, valid cells untouched. Bumps the experiment revision. Repeatable across provider quota windows."
@@ -2335,7 +2335,7 @@ function LegacyExperimentDetail() {
               <RotateCcw className="h-4 w-4" /> Retry failed ({failedCount})
             </button>
           )}
-          {isTerminal && (
+          {!detail.legacy_execution_retired && isTerminal && (
             <button onClick={() => cloneMutation.mutate({ alsoRun: true })} title="Full reproduction: clone + run"
               className="flex items-center gap-1.5 px-3 py-2 border rounded-lg hover:bg-gray-50 text-sm">
               <RotateCcw className="h-4 w-4" /> Re-run
@@ -2374,6 +2374,11 @@ function LegacyExperimentDetail() {
           )}
         </div>
       </div>
+      {detail.legacy_execution_retired && <p role="status" className="text-sm text-amber-800 bg-amber-50 border rounded p-3 my-3">
+        Historical benchmark execution is retired. Results, logs and exports remain available.
+        Create a native benchmark matrix with an installed dataset and explicit benchmark/harness profiles.
+        Its conditions will differ from this historical run.
+      </p>}
       {detail.error && <div className="text-xs text-red-600 mb-2">{detail.error}</div>}
 
       <div className="flex gap-1 border-b mb-4 mt-4">

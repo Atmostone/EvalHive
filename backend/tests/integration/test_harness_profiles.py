@@ -365,5 +365,5 @@ async def test_legacy_execution_overrides_require_explicit_migration(
     )
     db_session.add(task)
     await db_session.flush()
-    with pytest.raises(ProfileError, match="conversion of its legacy execution options"):
+    with pytest.raises(ProfileError, match="conversion of its legacy execution options|Historical benchmark execution"):
         await resolve_launch(db_session, task)

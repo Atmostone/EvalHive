@@ -131,6 +131,8 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(f"http://127.0.0.1:{server.server_port}/experiments")
             page.get_by_role("button", name="New Experiment", exact=True).click()
+            expect(page.get_by_role("button", name="Benchmark suite", exact=True)).to_have_count(0)
+            expect(page.get_by_label("Toolathlon lanes", exact=True)).to_have_count(0)
             page.get_by_label("Experiment type", exact=True).select_option("benchmark_sdk")
             page.get_by_label("Native matrix name", exact=True).fill("Browser native matrix")
             page.get_by_label("Run benchmark profile", exact=True).select_option(work.PROFILE)
@@ -170,10 +172,22 @@ def main():
             ).to_be_visible()
             assert fixture.controls == ["run", "pause", "resume", "cancel"]
             assert len(fixture.created) == 1 and not errors, errors
+            fixture.experiment.update(
+                dataset={"source": "benchmark_suite", "suite": "toolathlon"},
+                dataset_cases=[], status="completed", legacy_execution_retired=True,
+                n_toolathlon_lanes=3,
+            )
+            page.reload()
+            expect(page.get_by_role("status")).to_contain_text("Historical benchmark execution is retired")
+            expect(page.get_by_role("button", name="Clone…", exact=True)).to_have_count(0)
+            expect(page.get_by_role("button", name="Re-run", exact=True)).to_have_count(0)
+            expect(page.get_by_role("button", name="CSV", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="JSON", exact=True)).to_be_visible()
+            assert fixture.controls == ["run", "pause", "resume", "cancel"] and not errors, errors
             owner.close()
             browser.close()
         print(
-            "Native matrix browser acceptance passed: source selection, compatibility, unknown estimates, frozen draft, native result view, pause/resume/cancel and no ordinary statistical report."
+            "Native matrix browser acceptance passed: SDK selection, frozen draft, controls, native results and historical export access without retired execution controls."
         )
     finally:
         server.shutdown()

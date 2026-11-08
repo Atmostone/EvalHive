@@ -75,9 +75,10 @@ pins. File grants use installation-relative paths and a host-supplied
 `harness.runtime` binding. Publish only after building and checking the native
 environment. The packaged manifest is not an enabled server installation.
 
-Lifecycle and real JSONL subprocess contract tests are implemented. Complete
-native image acceptance and migration of new legacy launches to the coordinator
-remain tracked in SPA-145. These tests do not establish benchmark scores.
+Lifecycle and real JSONL subprocess contract tests are implemented. New product launches use the common coordinator through registered SDK profiles
+and datasets. The legacy core Toolathlon executor and pilot writes are retired;
+historical readers remain available. Native acceptance evidence is tracked in
+SPA-145. Engineering fixtures do not establish benchmark scores.
 
 Public native system instructions are retained with Task-local workspace/time
 bindings. Native local agent-loop helpers belong to the replaced baseline agent;

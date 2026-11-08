@@ -60,10 +60,9 @@ class ExperimentCreate(BaseModel):
     n_runs_per_cell: int = Field(default=1, ge=1, le=service.MAX_N_RUNS)
     budget_limit_usd: float | None = Field(default=None, gt=0)
     max_parallel: int | None = Field(default=None, ge=1, le=10)
-    # SPA-69: isolated Toolathlon PG lanes for parallel runs (None → serial on the
-    # shared toolathlon_pg). Capped at the number of provisioned lane containers.
+    # Retained for an explicit migration error from older clients.
     n_toolathlon_lanes: int | None = Field(
-        default=None, ge=1, le=service.MAX_TOOLATHLON_LANES
+        default=None, deprecated=True,
     )
     eval_config: dict = Field(default_factory=dict)
 
@@ -98,6 +97,10 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
         "name": exp.name,
         "description": exp.description,
         "status": exp.status,
+        "legacy_execution_retired": (
+            (exp.dataset or {}).get("source") != "benchmark_sdk"
+            and service.requires_benchmark_sdk(exp.dataset, exp.dataset_cases, exp.n_toolathlon_lanes)
+        ),
         "dataset": exp.dataset,
         "n_cases": len(exp.dataset_cases or []),
         "n_configs": len(live),

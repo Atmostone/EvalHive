@@ -112,17 +112,13 @@ names with canonical aliases, and closes clients with the session. Native tests
 cover both transports, private authorization, explicit skills, disabled memory
 and an empty toolset.
 
-When a rootless `toolathlon-pack:latest` image is installed, build the registered
-environment variant using the same worker and lockfile:
-
-```bash
-docker build --target runtime --build-arg BASE_IMAGE=toolathlon-pack:latest -f harnesses/pi/Dockerfile -t evalhive-pi-toolathlon:1.5.0 .
-```
-
-The base supplies its Python/MCP/benchmark dependencies; the connector pins its
-own Node runtime. This does not run a benchmark. The task environment must pass
-its MCP environment references (including per-lane database coordinates) and
-prepared inputs. Portal tasks retain their owned environment network namespace.
+Benchmark task environments are independent of harness images. Build and install
+the [Toolathlon-GYM package](../benchmarks/toolathlon-gym/README.md) with immutable
+native environment pins, then use a read-only harness runtime bundle through the
+Benchmark SDK coordinator. Do not build or select a floating Toolathlon-derived
+harness image for new runs. The benchmark package owns database preparation, MCP
+bindings and portal readiness; the generic harness launcher no longer injects
+PG lane coordinates.
 
 The [OpenCode connector](../harnesses/opencode/README.md) uses the same SDK and
 resource declarations. Its CLI and official TypeScript SDK are pinned to 1.19.5.

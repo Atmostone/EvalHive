@@ -1604,6 +1604,7 @@ export interface Experiment {
   budget_limit_usd?: number | null
   max_parallel?: number | null
   n_toolathlon_lanes?: number | null
+  legacy_execution_retired?: boolean
   eval_config: Record<string, unknown>
   accumulated_cost_usd: number
   has_report: boolean

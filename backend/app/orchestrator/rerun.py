@@ -58,6 +58,10 @@ async def clone_task_for_rerun(
     ``max_retries`` defaults to 0 — a re-run is a single deliberate execution;
     auto-retries would distort variance distributions and replay comparisons.
     """
+    from app.benchmarks.task_routing import is_benchmark_task, is_legacy_benchmark_task
+
+    if is_benchmark_task(source) or is_legacy_benchmark_task(source):
+        raise ValueError("Benchmark reruns require a new SDK run with explicit condition lineage")
     rc = deepcopy(source.run_config or {})
     # A manual rerun is not another execution of its source experiment cell.
     rc.pop("experiment", None)

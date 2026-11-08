@@ -4,7 +4,18 @@ from app.models.task import Task
 
 
 def is_benchmark_task(task):
-    return bool((task.run_config or {}).get("benchmark_job_id"))
+    return bool((getattr(task, "run_config", None) or {}).get("benchmark_job_id"))
+
+
+def is_legacy_benchmark_task(task):
+    config = getattr(task, "run_config", None) or {}
+    suite = getattr(task, "benchmark_suite", None) or ""
+    return bool(
+        config.get("toolathlon_pilot")
+        or config.get("environment_id") == "toolathlon"
+        or config.get("pg_host")
+        or (getattr(task, "benchmark_case_id", None) and suite and not suite.startswith("exp:"))
+    )
 
 
 def ordinary_tasks():

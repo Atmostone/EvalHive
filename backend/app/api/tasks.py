@@ -360,6 +360,10 @@ async def start_task(
     task = await _get_scoped_task(task_id, workspace, db, lock=True)
     await _require_inactive(db, task)
     await _require_unarchived(db, task)
+    from app.benchmarks.task_routing import is_legacy_benchmark_task
+
+    if is_legacy_benchmark_task(task):
+        raise HTTPException(409, "Historical benchmark execution requires a new Benchmark SDK run")
     if task.status not in {"backlog", "ready", "failed", "done", "awaiting_approval"}:
         raise HTTPException(409, "Task cannot be started in its current state")
     try:

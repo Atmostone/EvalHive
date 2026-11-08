@@ -83,6 +83,10 @@ def memory_mb(value):
 
 
 async def resolve_launch(db, task, template=None):
+    from app.benchmarks.task_routing import is_legacy_benchmark_task
+
+    if is_legacy_benchmark_task(task):
+        raise ProfileError("Historical benchmark execution requires a new Benchmark SDK run")
     template = template if template is not None else await selected_template(db, task)
     if template is not None and template.workspace_id != task.workspace_id:
         raise ProfileError("Role template is unavailable in this workspace")

@@ -88,7 +88,7 @@ capability. Multi-tool grouping and deadlock freedom are early acceptance gates.
   base repository/problem, evaluation owns gold/test patches. Native evaluation
   run IDs are unique to prevent cached-verdict reuse.
 
-Existing YAML cases are served by `evalhive-cases`. Toolathlon-GYM becomes a
+Existing YAML cases are served by `evalhive-cases`. Toolathlon-GYM uses a
 separate adapter retaining reset, launch time, portal readiness and native checks.
 The official Toolathlon and its GYM derivative keep distinct identities. Historical
 records remain readable; old floating images do not imply exact replay.
@@ -105,8 +105,11 @@ production datasets. `RootlessCoordinator` composes a registered benchmark,
 provider, evidence store and selected Harness SDK runtime without native adapter
 imports. It also creates fresh evaluation-only controllers from retained source
 installations. The recorded Harness limits and image come from the admitted Task,
-and private credentials use a separate host-only grant. Product scheduling and
-legacy launch migration remain separate delivery work.
+and private credentials use a separate host-only grant. Product Work and native matrices share this coordinator. New file-store and
+Toolathlon launches require registered SDK selections; legacy core execution is
+retired while historical schemas, checker logs and result readers remain
+available. See [Case Store compatibility](benchmarks.md) for migration errors
+and explicit CLI profile selections.
 
 ## Delivery and operational constraints
 

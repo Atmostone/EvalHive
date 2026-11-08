@@ -1,15 +1,14 @@
-# Benchmark Case Store (pre-E-23)
+# Case Store compatibility and native execution
 
-A **file-first** store of reusable *task definitions* (with optional gold signals),
-the mirror image of the result slots on `quality_records` (E-01). It lets us curate
-benchmark suites now — without waiting for the full public benchmark (E-23) — and
-aggregate results by suite × case × model.
+Existing YAML/JSON suites and historical results remain readable. New benchmark
+execution uses installed Benchmark SDK packages, registered dataset revisions
+and explicit workspace benchmark/harness profiles. The historical core
+Toolathlon executor and direct task materialization have been retired.
 
-> Scope: this is **layers 1 (format) + 2 (loader + linkage)** plus a thin
-> **read-only catalogue API** (SPA-54, see below) that the experiment dataset
-> picker browses. The registry table, case-store CRUD and public publication are
-> still **E-23**. The same case files are what E-23 will index and publish, so
-> there is no rework.
+Use `evalhive-cases` for supported file-store cases and `toolathlon-gym` for
+native GYM tasks. Package installation, private gold isolation and evaluation
+policies are documented in the [Cases package](../benchmarks/evalhive-cases/README.md),
+[GYM package](../benchmarks/toolathlon-gym/README.md) and [SDK architecture](benchmark-sdk.md).
 
 ## Where cases live
 
@@ -44,7 +43,7 @@ gold:                               # pluggable gold envelope — each key feeds
   rubric: null                      # E-02 rubric ref or inline (optional)
   canonical_trajectory: null        # E-09 (optional)
 environment:                        # optional — services/tools the case needs to run
-  required_services: [toolathlon_pg]  # backing services the orchestrator must provision
+  required_services: [toolathlon_pg]  # historical declaration; native adapter provisions services
   mcp_servers: [filesystem, terminal] # MCP servers to expose to the agent
 repro:                              # optional pins (reproducibility; E-20 seam)
   template_id: null
@@ -62,37 +61,42 @@ Only `id`, `suite` and `input.title` are required. The `gold` keys are all optio
 `capability_spec` / `reference_answer` / `canonical_trajectory` onto the task; new
 keys are added as new eval engines arrive, with no schema migration).
 
-## Running a suite (CLI)
+## Running an installed suite
+
+First install immutable packages/images and register the dataset revision, then
+configure workspace benchmark and harness profiles. In Experiments choose a
+native benchmark matrix; Work also supports a single installed case. Both use
+the shared durable coordinator and expose grading separately from execution.
+
+The CLI starts the same native matrix:
 
 ```bash
-# list suites
-docker compose exec api python -m app.cli.benchmark suites
-
-# materialize a suite into runnable READY task instances (the orchestrator drains them).
-# pin a template for determinism; --model overrides the agent model (run_config.model_id);
-# --repeat creates K samples per case.
-docker compose exec api python -m app.cli.benchmark load \
-  --suite capability-isolation --template <template_uuid> [--model <model_uuid>] [--repeat 1]
-
-# watch progress
-docker compose exec api python -m app.cli.benchmark status --suite capability-isolation
-
-# run the capability harness (E-13) on terminal instances
-docker compose exec api python -m app.cli.benchmark evaluate --suite capability-isolation
-
-# capability_score by model / category for the suite
-docker compose exec api python -m app.cli.benchmark aggregate --suite capability-isolation
+python -m app.cli.benchmark load --suite capability-isolation \
+  --workspace-id <workspace_uuid> \
+  --benchmark-profile <benchmark_profile_uuid> \
+  --dataset-revision <registered_revision_uuid> \
+  --harness-profile <harness_profile_uuid> --repeat 1
 ```
 
-To **compare models**, load the same suite once per model (`--model A`, then
-`--model B`) and read `aggregate` — the `by_model` breakdown is the comparison.
-Also exposed over HTTP: `GET /api/quality/capability/aggregate?suite=<suite>`.
+`--suite` must match the registered dataset identity or its recorded suite.
+The command freezes the selection and queues serial cells; it does not install
+code, materialize ordinary READY tasks or select a model through old overrides.
+`--template`, `--model`, legacy `benchmark_suite` experiment creation and
+`n_toolathlon_lanes` launch controls fail with migration errors. Choose new
+profiles/settings explicitly; an old floating image cannot be replayed exactly.
+
+Historical `suites`, `status`, `evaluate` and `aggregate` CLI commands remain
+available for the original case/result format. The Toolathlon pilot `status`
+reader remains available; its `create`, `ready` and `verdict` writes are retired.
+Historical experiments preserve frozen cases, checker logs, verdicts and lane
+metadata. An old running matrix is paused with a migration reason before it can
+claim work; its historical cells are not rewritten or automatically restarted.
+Retire or drain any historical in-flight resources under the release procedure
+before cutover; the SDK does not adopt containers from the removed executor.
 
 ## Catalogue API (read-only)
 
-`backend/app/api/benchmarks.py` (SPA-54) exposes the file store over HTTP so the
-experiment dataset picker (`frontend/src/pages/Experiments.tsx`) can browse suites
-and inspect each case's gold signals instead of blind-typing a suite name. Both
+`backend/app/api/benchmarks.py` (SPA-54) exposes the file store over HTTP for historical browsing and compatibility tooling. Both
 endpoints are workspace-scoped and read-only — case authoring stays file-based.
 
 - `GET /api/benchmarks/suites` — list every suite with its case count:
@@ -106,7 +110,7 @@ endpoints are workspace-scoped and read-only — case authoring stays file-based
 
 ## Linkage
 
-Each materialized task carries `benchmark_case_id` / `benchmark_suite`; these are
+Each historical materialized task carries `benchmark_case_id` / `benchmark_suite`; these are
 denormalized onto its `quality_record` (so aggregation survives task deletion).
 Migration `e6f7a8b9c0d1`.
 
