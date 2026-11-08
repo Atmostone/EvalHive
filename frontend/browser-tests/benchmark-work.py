@@ -38,6 +38,8 @@ class Fixture(settings.Fixture):
         super().__init__()
         self.tasks, self.requests, self.cancelled = [], [], 0
         self.compatible, self.first_reply_lost = False, True
+        self.evaluation_jobs, self.regrade_requests, self.regrade_results = [], [], []
+        self.regrade_reply_lost, self.regrade_cancelled = False, 0
         self.trial = {
             "id": TRIAL,
             "task_id": TASK,
@@ -149,6 +151,41 @@ class Fixture(settings.Fixture):
             result = [self.trial]
         elif path == "/benchmark-trials/" + TRIAL:
             result = self.trial
+        elif path == f"/benchmark-trials/{TRIAL}/evaluation-jobs":
+            result = self.evaluation_jobs
+        elif path == f"/benchmark-trials/{TRIAL}/regrade":
+            self.regrade_requests.append(deepcopy(body))
+            job = next(
+                (row for row in self.evaluation_jobs if row["request_id"] == body["request_id"]),
+                None,
+            )
+            if job is None:
+                job = {
+                    "id": str(uuid.UUID(int=20 + len(self.evaluation_jobs))),
+                    "request_id": body["request_id"],
+                    "trial_id": TRIAL,
+                    "source_evaluation_id": body["source_evaluation_id"],
+                    "status": "queued",
+                    "phase": "queued",
+                    "error_code": None,
+                    "cancel_requested_at": None,
+                    "evaluation_id": None,
+                    "recording_status": None,
+                    "cleanup_status": None,
+                }
+                self.evaluation_jobs.append(job)
+            if self.regrade_reply_lost:
+                self.regrade_reply_lost = False
+                route.fulfill(status=503, json={"detail": "Synthetic lost regrade response"})
+                return
+            result = job
+        elif path.startswith(f"/benchmark-trials/{TRIAL}/evaluation-jobs/") and path.endswith(
+            "/cancel"
+        ):
+            job = next(row for row in self.evaluation_jobs if row["id"] == path.split("/")[-2])
+            job["cancel_requested_at"] = "2026-01-01T00:02:00Z"
+            self.regrade_cancelled += 1
+            result = {"requested": True}
         elif path.endswith("/cancel") and path.startswith("/benchmark-trials/"):
             self.cancelled += 1
             self.trial["cancel_requested_at"] = "2026-01-01T00:00:30Z"
@@ -169,6 +206,7 @@ class Fixture(settings.Fixture):
                     }
                 ]
             )
+            result += self.regrade_results
         elif path == f"/benchmark-trials/{TRIAL}/artifacts":
             result = [
                 {
@@ -264,6 +302,69 @@ def main():
                 panel.get_by_text("Task correctness: incorrect · incorrect", exact=True)
             ).to_be_visible()
             expect(panel.get_by_text("native.reward: 0 · native", exact=True)).to_be_visible()
+            fixture.regrade_reply_lost = True
+            panel.get_by_role("button", name="Regrade saved state", exact=True).click()
+            expect(panel.get_by_text("Regrade · queued · queued", exact=True)).to_be_visible()
+            expect(
+                panel.get_by_role("button", name="Regrade saved state", exact=True)
+            ).to_be_disabled()
+            expect(panel.get_by_text("Synthetic lost regrade response", exact=True)).to_have_count(
+                0
+            )
+            assert len(fixture.evaluation_jobs) == 1 and len(fixture.regrade_requests) == 1
+            first_regrade = fixture.evaluation_jobs[0]
+            first_regrade.update(
+                status="completed",
+                phase="finished",
+                cleanup_status="complete",
+                recording_status="complete",
+                evaluation_id=first_regrade["id"],
+            )
+            fixture.regrade_results = [
+                {
+                    "id": first_regrade["id"],
+                    "kind": "regrade",
+                    "status": "completed",
+                    "verdict": "correct",
+                    "success": True,
+                    "error_kind": None,
+                    "metrics": [{"name": "native.reward", "value": 1, "aggregation": "native"}],
+                }
+            ]
+            expect(panel.get_by_text("regrade · checker: completed", exact=True)).to_be_visible(
+                timeout=10000
+            )
+            expect(panel.get_by_text("initial · checker: completed", exact=True)).to_be_visible()
+            expect(
+                panel.get_by_text("Task correctness: incorrect · incorrect", exact=True)
+            ).to_be_visible()
+            expect(
+                panel.get_by_text("Task correctness: correct · correct", exact=True)
+            ).to_be_visible()
+            panel.get_by_label("Source native evaluation", exact=True).select_option(
+                str(uuid.UUID(int=15))
+            )
+            panel.get_by_role("button", name="Regrade saved state", exact=True).click()
+            expect(panel.get_by_text("Regrade · queued · queued", exact=True)).to_be_visible()
+            second_regrade = fixture.evaluation_jobs[1]
+            panel.get_by_role(
+                "button", name=f"Cancel regrade {second_regrade['id']}", exact=True
+            ).click()
+            expect(
+                panel.get_by_role(
+                    "button", name=f"Cancel regrade {second_regrade['id']}", exact=True
+                )
+            ).to_be_disabled()
+            assert fixture.regrade_cancelled == 1 and fixture.cancelled == 0
+            assert (
+                fixture.regrade_requests[0]["request_id"]
+                != fixture.regrade_requests[1]["request_id"]
+            )
+            assert (
+                fixture.trial["phase"] == "finished"
+                and fixture.trial["cancel_requested_at"] is None
+            )
+            second_regrade.update(status="cancelled", phase="cancelled")
             expect(page.get_by_role("button", name="Evaluate quality", exact=True)).to_have_count(0)
             with page.expect_download() as download:
                 panel.get_by_role("button", name="native-output.tar", exact=False).click()
@@ -294,10 +395,13 @@ def main():
             expect(
                 readonly.get_by_role("button", name="Cancel benchmark run", exact=True)
             ).to_have_count(0)
+            expect(
+                readonly.get_by_role("button", name="Regrade saved state", exact=True)
+            ).to_have_count(0)
             viewer.close()
             browser.close()
         print(
-            "Benchmark Work browser acceptance passed: compatibility, idempotent queue retry, live output, native verdicts, verified file download, reconnection, cancellation and read-only role."
+            "Benchmark Work browser acceptance passed: queued runs, output, native verdicts/files, independent regrade with lost-response recovery, preserved initial verdict, cancellation and read-only role."
         )
     finally:
         server.shutdown()

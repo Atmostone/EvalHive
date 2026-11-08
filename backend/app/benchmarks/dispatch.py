@@ -186,7 +186,6 @@ async def benchmark_tick(*, store=None, runtime_factory=None):
         job = await db.scalar(
             select(BenchmarkJob)
             .where(
-                BenchmarkJob.kind == "execution",
                 BenchmarkJob.status.in_(("queued", "running")),
             )
             .order_by(
@@ -197,9 +196,14 @@ async def benchmark_tick(*, store=None, runtime_factory=None):
         reserved = await db.scalar(select(BenchmarkHostReservation.host_id).limit(1))
         if job is None:
             return reserved is not None
-        job_id, running = job.id, job.status == "running"
+        job_id, kind, running = job.id, job.kind, job.status == "running"
     if not running and await asyncio.to_thread(get_process_runtime().list_active):
         return True
     store = store or product_store()
-    await run_execution_job(store, job_id, runtime_factory=runtime_factory)
+    if kind == "regrade":
+        from app.benchmarks.regrade_dispatch import run_regrade_job
+
+        await run_regrade_job(store, job_id, runtime_factory=runtime_factory)
+    else:
+        await run_execution_job(store, job_id, runtime_factory=runtime_factory)
     return True

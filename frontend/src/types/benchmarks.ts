@@ -109,6 +109,20 @@ export interface BenchmarkEvaluation {
   finished_at: string | null
 }
 
+export interface BenchmarkEvaluationJob {
+  id: string
+  request_id: string
+  trial_id: string
+  source_evaluation_id: string
+  status: 'queued' | 'running' | 'completed' | 'error' | 'cancelled'
+  error_code: string | null
+  cancel_requested_at: string | null
+  evaluation_id: string | null
+  phase: string
+  recording_status: string | null
+  cleanup_status: string | null
+}
+
 export interface BenchmarkArtifact {
   id: string
   artifact: { id: string; visibility: string; size_bytes: number; digest: string; media_type: string }

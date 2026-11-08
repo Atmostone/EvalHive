@@ -326,6 +326,13 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
                     observed("execution", error)
                     raise
 
+            async def evaluation(self, *args, **kwargs):
+                try:
+                    return await super().evaluation(*args, **kwargs)
+                except Exception as error:
+                    observed("evaluation", error)
+                    raise
+
         from evalhive_harness.client import ConnectorClient
 
         original_request = ConnectorClient.request
@@ -464,6 +471,83 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
                 and run.external_verdict is True
             )
             assert run.weighted_score is None
+        from app.benchmarks.regrade_dispatch import run_regrade_job
+        from app.models.execution_attempt import ExecutionAttempt
+
+        original_verdicts, original_sequence = verdicts.json(), data["next_seq"]
+        original_attempt = task.current_attempt_id
+        removed = await auth_client.delete(f"/api/providers/{provider.id}")
+        assert removed.status_code == 204, removed.text
+        request = {
+            "request_id": str(uuid.uuid4()),
+            "source_evaluation_id": original_verdicts[0]["id"],
+        }
+        queued = await auth_client.post(f"/api/benchmark-trials/{trial_id}/regrade", json=request)
+        assert queued.status_code == 202, queued.text
+        evaluation_job_id = uuid.UUID(queued.json()["id"])
+        assert await asyncio.wait_for(
+            run_regrade_job(store, evaluation_job_id, runtime_factory=factory), 180
+        )
+        evaluation_jobs = await auth_client.get(f"/api/benchmark-trials/{trial_id}/evaluation-jobs")
+        if evaluation_jobs.json()[0]["status"] != "completed":
+            from app.models.benchmark_evaluation_control import BenchmarkEvaluationJournal
+
+            events = list(
+                await db_session.execute(
+                    select(
+                        BenchmarkEvaluationJournal.event, BenchmarkEvaluationJournal.public_data
+                    ).where(
+                        BenchmarkEvaluationJournal.control_id == evaluation_job_id,
+                        BenchmarkEvaluationJournal.event.in_(
+                            [
+                                "controller.failed",
+                                "cleanup.failed",
+                                "capture.failed",
+                                "evaluation.finished",
+                            ]
+                        ),
+                    )
+                )
+            )
+            print(
+                json.dumps(
+                    {
+                        "regrade_diagnostics": diagnostics,
+                        "regrade_events": [
+                            {"event": event, "data": payload} for event, payload in events
+                        ],
+                    }
+                ),
+                flush=True,
+            )
+        assert evaluation_jobs.json()[0]["status"] == "completed", evaluation_jobs.text
+        assert evaluation_jobs.json()[0]["cleanup_status"] == "complete", evaluation_jobs.text
+        graded = (await auth_client.get(f"/api/benchmark-trials/{trial_id}/evaluations")).json()
+        assert len(graded) == 2 and graded[0] == original_verdicts[0], graded
+        assert (
+            graded[1]["kind"] == "regrade"
+            and graded[1]["source_evaluation_id"] == original_verdicts[0]["id"]
+        )
+        assert graded[1]["status"] == "completed" and graded[1]["success"] is True, graded
+        unchanged = (await auth_client.get(f"/api/benchmark-trials/{trial_id}")).json()
+        assert unchanged == data and unchanged["next_seq"] == original_sequence
+        await db_session.refresh(task)
+        assert task.current_attempt_id == original_attempt and task.status == "done"
+        attempts = list(
+            await db_session.scalars(
+                select(ExecutionAttempt.id).where(ExecutionAttempt.task_id == task.id)
+            )
+        )
+        assert attempts == [original_attempt]
+        assert len(endpoint.requests) == 2 and not endpoint.errors
+        cold_leases = list(
+            await db_session.scalars(
+                select(BenchmarkResourceLease)
+                .where(BenchmarkResourceLease.trial_id == trial_id)
+                .execution_options(populate_existing=True)
+            )
+        )
+        assert cold_leases and all(row.state == "released" for row in cold_leases)
         assert credential not in json.dumps(data) and credential not in verdicts.text
         print(
             json.dumps(
@@ -475,6 +559,8 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
                     "status": job.status,
                     "model_requests": len(endpoint.requests),
                     "cleanup": data["cleanup_status"],
+                    "regrade_job": str(evaluation_job_id),
+                    "regrade_without_agent_connection": True,
                 }
             )
         )

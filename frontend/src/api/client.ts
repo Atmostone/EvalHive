@@ -7,7 +7,7 @@ import type { ExecutionAttempt, AttemptEvent, AttemptCommand } from '@/types'
 import type {
   BenchmarkCatalogEntry, BenchmarkProfile, BenchmarkProfileInput, BenchmarkCredential,
   BenchmarkDataset, BenchmarkCase, BenchmarkPreflight, BenchmarkTrial, BenchmarkEvaluation,
-  BenchmarkArtifact, BenchmarkJournalEvent,
+  BenchmarkArtifact, BenchmarkJournalEvent, BenchmarkEvaluationJob,
 } from '@/types/benchmarks'
 
 export const benchmarkSdkApi = {
@@ -41,6 +41,12 @@ export const benchmarkSdkApi = {
   trials: (taskId: string) => request<BenchmarkTrial[]>(`/benchmark-trials?task_id=${encodeURIComponent(taskId)}`),
   trial: (id: string) => request<BenchmarkTrial>(`/benchmark-trials/${encodeURIComponent(id)}`),
   evaluations: (id: string, offset = 0) => request<BenchmarkEvaluation[]>(`/benchmark-trials/${encodeURIComponent(id)}/evaluations?offset=${offset}&limit=100`),
+  regrade: (id: string, source: string, requestId: string) => request<BenchmarkEvaluationJob>(
+    `/benchmark-trials/${encodeURIComponent(id)}/regrade`, { method: 'POST', body: JSON.stringify({ request_id: requestId, source_evaluation_id: source }) }),
+  evaluationJobs: (id: string, offset = 0) => request<BenchmarkEvaluationJob[]>(
+    `/benchmark-trials/${encodeURIComponent(id)}/evaluation-jobs?offset=${offset}&limit=100`),
+  cancelEvaluationJob: (id: string, job: string) => request<{ requested: boolean }>(
+    `/benchmark-trials/${encodeURIComponent(id)}/evaluation-jobs/${encodeURIComponent(job)}/cancel`, { method: 'POST' }),
   artifacts: (id: string, offset = 0) => request<BenchmarkArtifact[]>(`/benchmark-trials/${encodeURIComponent(id)}/artifacts?offset=${offset}&limit=100`),
   journal: (id: string, after = -1) => request<{ events: BenchmarkJournalEvent[]; next_seq: number }>(
     `/benchmark-trials/${encodeURIComponent(id)}/events?after_seq=${after}&limit=100`),

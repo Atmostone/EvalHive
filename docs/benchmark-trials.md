@@ -1019,3 +1019,39 @@ configuration axes. Limits are 24 configurations, 300 cases, 20 repetitions and
 1000 total runs. Existing task-dataset experiment forms and historical result
 views remain available. Editing, retiring or cloning native conditions requires
 an explicit frozen-plan lineage; ordinary mutation helpers cannot rewrite them.
+
+## Product reevaluation requests
+
+`POST /api/benchmark-trials/{trial_id}/regrade` accepts a `request_id`, an explicit
+`source_evaluation_id` from that trial, and optional `wall_time_seconds` (default
+300, at most 86400). The source execution must be finished, with a complete
+connector-declared native replay checkpoint and retained evidence references.
+Missing evidence, unsupported replay or conflicting request identity produces an
+explicit error. HTTP retries with the same request reuse the durable job before
+rechecking external availability; a changed body under that ID is rejected.
+
+Queueing creates neither an agent task nor an evaluation controller. Its private
+payload contains only the retained evaluator model routes and authorized keys.
+Agent keys, harness settings and agent model authorization are not required.
+Deterministic checkers need no model connection. Changed evaluator endpoints or
+model identities are rejected; rotating an authorized key preserves conditions.
+
+The shared serial dispatcher creates an independent `EvaluationAttempt` and
+`EvaluationControl` when it selects the job. Its ID equals the job ID. Competing
+dispatchers cannot start another owner; expired ownership enters cleanup rather
+than resuming native execution. A finished evaluator can repair a missing queue
+completion receipt after its lease expires. Neither path rewrites the source
+trial, execution attempt, task, journal or original verdict.
+
+`GET /api/benchmark-trials/{trial_id}/evaluation-jobs` returns bounded pages of
+public request status, source lineage and independent lifecycle/cleanup state.
+`POST /api/benchmark-trials/{trial_id}/evaluation-jobs/{job_id}/cancel` cancels
+only that reevaluation. A queued cancellation or expired deadline is settled
+without creating resources. Viewers can read history; writes require member,
+admin or owner. Tenant boundaries are enforced for every source and request.
+
+The native Work/matrix panel lets an operator select a recorded evaluation,
+request a separate verdict and cancel it independently. It preserves initial and
+subsequent verdicts together. If an HTTP response is lost, the panel correlates
+the request ID with the queue instead of submitting a duplicate. Unsupported
+checkpoints remain visible as errors rather than triggering another agent run.

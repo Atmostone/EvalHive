@@ -4,6 +4,7 @@ import { attemptsApi, benchmarkSdkApi } from '@/api/client'
 import { useAuth } from '@/stores/auth'
 import type { AttemptEvent } from '@/types'
 import type { BenchmarkJournalEvent, BenchmarkTrial } from '@/types/benchmarks'
+import BenchmarkRegrades from './BenchmarkRegrades'
 
 function AgentOutput({ taskId, active }: { taskId: string; active: boolean }) {
   const attempts = useQuery({ queryKey: ['task-attempts', taskId], queryFn: () => attemptsApi.list(taskId), refetchInterval: active ? 2000 : false })
@@ -92,6 +93,7 @@ function TrialDetails({ initial }: { initial: BenchmarkTrial }) {
         {evaluations.data?.length === 100 && <button onClick={() => setEvaluationOffset(value => value + 100)}>Next evaluations</button>}
       </div>
     </div>
+    <BenchmarkRegrades trial={trial} evaluations={evaluations.data ?? []} writable={writable} />
     <div className="space-y-2">
       <h4 className="font-medium text-sm">Files</h4>
       {artifacts.data?.map(row => <button key={row.id} type="button" disabled={download.isPending} onClick={() => download.mutate(row.id)}

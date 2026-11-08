@@ -339,3 +339,168 @@ async def cancel_trial(
     await scoped_trial(db, workspace, trial_id)
     requested = await store.request_cancel(workspace.id, trial_id)
     return {"requested": requested}
+
+
+class RegradeCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    source_evaluation_id: uuid.UUID
+    wall_time_seconds: int = Field(default=300, ge=1, le=86400)
+
+
+def evaluation_job_dict(job, control=None):
+    return {
+        "id": str(job.id),
+        "request_id": str(job.request_id),
+        "trial_id": str(job.trial_id),
+        "source_evaluation_id": str(job.source_evaluation_id),
+        "status": job.status,
+        "error_code": job.error_code,
+        "cancel_requested_at": job.cancel_requested_at,
+        "created_at": job.created_at,
+        "deadline_at": job.deadline_at,
+        "finished_at": job.finished_at,
+        "evaluation_id": str(control.id) if control is not None else None,
+        "phase": control.phase
+        if control is not None
+        else job.status
+        if job.status in {"completed", "error", "cancelled"}
+        else "queued",
+        "recording_status": control.recording_status if control is not None else None,
+        "cleanup_status": control.cleanup_status if control is not None else None,
+    }
+
+
+@router.post("/{trial_id}/regrade", status_code=202, dependencies=[OPERATOR])
+async def regrade_trial(
+    trial_id: uuid.UUID,
+    body: RegradeCreate,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    store=Depends(get_trial_store),
+    evidence=Depends(get_public_evidence),
+):
+    from app.benchmarks.regrade_launch import queue_regrade
+
+    try:
+        job = await queue_regrade(
+            db,
+            store,
+            evidence,
+            workspace,
+            trial_id,
+            body.model_dump(mode="json"),
+            request_document=body.model_dump(mode="json", exclude_unset=True),
+        )
+        from app.models.benchmark_evaluation_control import BenchmarkEvaluationControl
+
+        control = await db.get(BenchmarkEvaluationControl, job.id)
+        await db.commit()
+        return evaluation_job_dict(job, control)
+    except ProtocolError as error:
+        await db.rollback()
+        status = (
+            404
+            if error.code in {"SELECTION_UNAVAILABLE", "EVALUATION_NOT_FOUND"}
+            else 409
+            if error.code in {"LAUNCH_CONFLICT", "SOURCE_ACTIVE"}
+            else 422
+        )
+        raise HTTPException(status, str(error)) from None
+    except (ValueError, IntegrityError):
+        await db.rollback()
+        raise HTTPException(422, "Retained benchmark evaluation inputs are unavailable") from None
+
+
+async def scoped_evaluation_job(db, workspace, trial_id, job_id):
+    from app.models.benchmark_job import BenchmarkJob
+
+    job = await db.scalar(
+        select(BenchmarkJob).where(
+            BenchmarkJob.id == job_id,
+            BenchmarkJob.trial_id == trial_id,
+            BenchmarkJob.workspace_id == workspace.id,
+            BenchmarkJob.kind == "regrade",
+        )
+    )
+    if job is None:
+        raise HTTPException(404, "Benchmark evaluation request not found")
+    return job
+
+
+@router.get("/{trial_id}/evaluation-jobs")
+async def list_evaluation_jobs(
+    trial_id: uuid.UUID,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+):
+    from app.models.benchmark_evaluation_control import BenchmarkEvaluationControl
+    from app.models.benchmark_job import BenchmarkJob
+
+    await scoped_trial(db, workspace, trial_id)
+    rows = await db.execute(
+        select(BenchmarkJob, BenchmarkEvaluationControl)
+        .outerjoin(
+            BenchmarkEvaluationControl,
+            BenchmarkEvaluationControl.id == BenchmarkJob.id,
+        )
+        .where(
+            BenchmarkJob.trial_id == trial_id,
+            BenchmarkJob.workspace_id == workspace.id,
+            BenchmarkJob.kind == "regrade",
+        )
+        .order_by(BenchmarkJob.created_at, BenchmarkJob.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    return [evaluation_job_dict(job, control) for job, control in rows]
+
+
+@router.post("/{trial_id}/evaluation-jobs/{job_id}/cancel", dependencies=[OPERATOR])
+async def cancel_evaluation_job(
+    trial_id: uuid.UUID,
+    job_id: uuid.UUID,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+):
+    from sqlalchemy import func, update
+
+    from app.models.benchmark_evaluation_control import BenchmarkEvaluationControl
+    from app.models.benchmark_job import BenchmarkJob
+
+    job = await scoped_evaluation_job(db, workspace, trial_id, job_id)
+    if job.status in {"completed", "error", "cancelled"}:
+        return {"requested": False}
+    # Match the controller -> queue lock order used by dispatch. A queued job
+    # has no control yet; dispatch propagates its durable cancellation flag.
+    await db.execute(
+        update(BenchmarkEvaluationControl)
+        .where(
+            BenchmarkEvaluationControl.id == job_id,
+            BenchmarkEvaluationControl.workspace_id == workspace.id,
+            BenchmarkEvaluationControl.source_trial_id == trial_id,
+            BenchmarkEvaluationControl.phase != "finished",
+        )
+        .values(
+            cancel_requested_at=func.coalesce(
+                BenchmarkEvaluationControl.cancel_requested_at, func.clock_timestamp()
+            )
+        )
+    )
+    changed = await db.execute(
+        update(BenchmarkJob)
+        .where(
+            BenchmarkJob.id == job_id,
+            BenchmarkJob.workspace_id == workspace.id,
+            BenchmarkJob.status.in_(("queued", "running")),
+        )
+        .values(
+            cancel_requested_at=func.coalesce(
+                BenchmarkJob.cancel_requested_at, func.clock_timestamp()
+            )
+        )
+    )
+    await db.commit()
+    return {"requested": changed.rowcount == 1}
