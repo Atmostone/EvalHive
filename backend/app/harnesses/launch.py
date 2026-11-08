@@ -112,7 +112,7 @@ async def resolve_launch(db, task, template=None):
             raise ProfileError("Model endpoint must be an HTTP URL without inline credentials")
     # Old executable overrides must not silently change the installed image or
     # discard a scientific treatment while moving to the SDK path.
-    if overrides.get("agent_image") or overrides.get("tool_injection"):
+    if overrides.get("agent_image") or overrides.get("tool_injection") or overrides.get("pg_host"):
         raise ProfileError("This run requires conversion of its legacy execution options")
     attempt_id = uuid.uuid4()
     mode = execution_mode(task, template)
@@ -127,13 +127,6 @@ async def resolve_launch(db, task, template=None):
     tools, servers = (None, []) if template is None else await resolve_template_tools(
         db, template, run_config=overrides
     )
-    if pg_host := overrides.get("pg_host"):
-        if overrides.get("environment_id") != "toolathlon" or not re.fullmatch(r"toolathlon_pg(?:_lane_[0-7])?", str(pg_host)):
-            raise ProfileError("Database lane is not registered for this task environment")
-        servers = deepcopy(servers)
-        for server in servers:
-            if not server.get("url"):
-                server.setdefault("env", {}).update(PGHOST=str(pg_host), PG_HOST=str(pg_host))
     declarations, credentials = assemble_resources(
         tools=tools, mcp_servers=servers, memory_mode=memory_mode, memory_context=memory,
         rules=rules, attempt_id=attempt_id,
