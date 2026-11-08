@@ -14,8 +14,8 @@ import json
 import statistics
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -60,10 +60,9 @@ class ExperimentCreate(BaseModel):
     n_runs_per_cell: int = Field(default=1, ge=1, le=service.MAX_N_RUNS)
     budget_limit_usd: float | None = Field(default=None, gt=0)
     max_parallel: int | None = Field(default=None, ge=1, le=10)
-    # SPA-69: isolated Toolathlon PG lanes for parallel runs (None → serial on the
-    # shared toolathlon_pg). Capped at the number of provisioned lane containers.
+    # Retained for an explicit migration error from older clients.
     n_toolathlon_lanes: int | None = Field(
-        default=None, ge=1, le=service.MAX_TOOLATHLON_LANES
+        default=None, deprecated=True,
     )
     eval_config: dict = Field(default_factory=dict)
 
@@ -98,6 +97,13 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
         "name": exp.name,
         "description": exp.description,
         "status": exp.status,
+        "cloned_from_id": str(exp.cloned_from_id) if exp.cloned_from_id else None,
+        "cloned_from_revision": exp.cloned_from_revision,
+        "clone_mode": exp.clone_mode,
+        "legacy_execution_retired": (
+            (exp.dataset or {}).get("source") != "benchmark_sdk"
+            and service.requires_benchmark_sdk(exp.dataset, exp.dataset_cases, exp.n_toolathlon_lanes)
+        ),
         "dataset": exp.dataset,
         "n_cases": len(exp.dataset_cases or []),
         "n_configs": len(live),
@@ -411,8 +417,12 @@ async def delete_experiment(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "cancel the experiment before deleting it"
         )
-    await db.delete(exp)
-    await db.commit()
+    try:
+        await db.delete(exp)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Experiment is referenced by immutable benchmark history") from None
 
 
 @router.post("/{experiment_id}/run", status_code=status.HTTP_202_ACCEPTED)
@@ -555,6 +565,8 @@ async def experiment_report(
     are analysis views, not the experiment's headline numbers.
     """
     exp = await _get_scoped(experiment_id, workspace, db)
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        raise HTTPException(409, "Native benchmarks expose native aggregate receipts and result archives")
     terminal = exp.status in service.TERMINAL_EXPERIMENT
     cached = exp.report
     cacheable = selection == REPORT_SELECTION_DEFAULT
@@ -656,6 +668,7 @@ async def experiment_results(
         rec = records.get(r.task_id)
         out.append(
             {
+                "id": str(r.id),
                 "config_key": r.config_key,
                 "case_key": r.case_key,
                 "run_index": r.run_index,
@@ -675,7 +688,9 @@ async def experiment_results(
                 "task_status": task.status if task else None,
                 "result_summary": task.result_summary if task else None,
                 "external_verdict": (
-                    ("pass" if verdicts[r.task_id] else "fail")
+                    ("pass" if r.external_verdict else "fail")
+                    if (exp.dataset or {}).get("source") == "benchmark_sdk" and r.external_verdict is not None
+                    else ("pass" if verdicts[r.task_id] else "fail")
                     if r.task_id in verdicts
                     else None
                 ),
@@ -725,6 +740,8 @@ async def clone_experiment(
 @router.get("/{experiment_id}/bundle")
 async def export_bundle(
     experiment_id: str,
+    request: Request,
+    include_native_inputs: bool = False,
     selection: str = Query(REPORT_SELECTION_DEFAULT),
     method: str = Query("bt", pattern="^(bt|elo)$"),
     workspace: Workspace = Depends(get_current_workspace),
@@ -745,6 +762,25 @@ async def export_bundle(
     if selection not in SELECTION_POLICIES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown selection: {selection}")
     exp = await _get_scoped(experiment_id, workspace, db)
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from evalhive_benchmark import ProtocolError
+        from evalhive_benchmark.archive import canonical
+
+        from app.api.benchmark_trials import get_trial_store
+        from app.benchmarks.archives import matrix_archive
+
+        if include_native_inputs and request.state.role not in {"owner", "admin"}:
+            raise HTTPException(403, "Native checker outputs require an owner or administrator")
+        if selection != REPORT_SELECTION_DEFAULT:
+            raise HTTPException(400, "Native archives retain explicit cell and attempt history")
+        try:
+            document = await matrix_archive(db, get_trial_store(), workspace.id, exp.id,
+                                            include_native_inputs=include_native_inputs)
+            return Response(canonical(document), media_type="application/json", headers={
+                "Content-Disposition": f'attachment; filename="native-matrix-{exp.id}.json"'
+            })
+        except (ProtocolError, ValueError):
+            raise HTTPException(409, "Native matrix archive is active, incomplete or exceeds its export limit") from None
     try:
         files, _manifest = await build_bundle(db, exp, selection=selection, method=method)
     except BundleMismatch as e:
@@ -864,3 +900,62 @@ async def export_experiment(
             "Content-Disposition": f'attachment; filename="experiment-{exp.id}.csv"'
         },
     )
+
+
+@router.get("/{experiment_id}/cells/{cell_id}/attempts")
+async def read_cell_attempts(
+    experiment_id: str,
+    cell_id: uuid.UUID,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.experiment import ExperimentAttempt
+
+    experiment = await _get_scoped(experiment_id, workspace, db)
+    cell = await db.scalar(
+        select(ExperimentRun).where(
+            ExperimentRun.id == cell_id,
+            ExperimentRun.experiment_id == experiment.id,
+        )
+    )
+    if cell is None:
+        raise HTTPException(404, "Experiment cell not found")
+    rows = list(
+        await db.scalars(
+            select(ExperimentAttempt)
+            .where(
+                ExperimentAttempt.experiment_run_id == cell.id,
+            )
+            .order_by(ExperimentAttempt.attempt_index.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    task_ids = {row.task_id for row in rows if row.task_id}
+    visible = (
+        set(
+            await db.scalars(
+                select(Task.id).where(Task.id.in_(task_ids), Task.workspace_id == workspace.id)
+            )
+        )
+        if task_ids
+        else set()
+    )
+    return [
+        {
+            "id": str(row.id),
+            "attempt_index": row.attempt_index,
+            "task_id": str(row.task_id) if row.task_id in visible else None,
+            "task_available": row.task_id in visible,
+            "status": row.status,
+            "external_verdict": row.external_verdict,
+            "failure_type": row.failure_type,
+            "cost_usd": float(row.cost_usd) if row.cost_usd is not None else None,
+            "condition_fingerprint": row.condition_fingerprint,
+            "retired_reason": row.retired_reason,
+            "completed_at": row.completed_at,
+        }
+        for row in rows
+    ]

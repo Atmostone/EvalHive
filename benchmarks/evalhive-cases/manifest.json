@@ -1,0 +1,102 @@
+{
+  "protocol_version": "1.0",
+  "kind": "benchmark",
+  "id": "evalhive-cases",
+  "version": "0.1.0",
+  "display_name": "EvalHive Cases",
+  "entrypoint": [
+    "python",
+    "-m",
+    "evalhive_cases.worker"
+  ],
+  "image": "evalhive-benchmark-cases:0.1.0",
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "evaluation_mode": {
+        "enum": [
+          "deferred",
+          "reference_exact",
+          "reference_fuzzy"
+        ],
+        "default": "deferred"
+      },
+      "similarity_threshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.9
+      },
+      "max_answer_chars": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 524288,
+        "default": 262144
+      },
+      "resources": {
+        "type": "array",
+        "maxItems": 256,
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$"
+            },
+            "kind": {
+              "enum": [
+                "tools",
+                "mcp",
+                "skill",
+                "memory",
+                "instructions"
+              ]
+            },
+            "config": {
+              "type": "object"
+            },
+            "credential_refs": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "config"
+          ],
+          "additionalProperties": false
+        },
+        "default": []
+      }
+    }
+  },
+  "secret_schema": {
+    "type": "object",
+    "additionalProperties": {
+      "type": "string"
+    }
+  },
+  "capabilities": {
+    "prepare": "native",
+    "drive": "native",
+    "capture": "native",
+    "evaluate": "native",
+    "aggregate": "native",
+    "cleanup": "native",
+    "regrade": "native"
+  },
+  "requirements": {
+    "capabilities": [
+      "host.agent_api_v1"
+    ],
+    "platform": {
+      "os": "linux",
+      "architecture": "amd64",
+      "libc": "glibc"
+    }
+  }
+}

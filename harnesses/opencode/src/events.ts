@@ -1,4 +1,4 @@
-import { ProtocolError, type JsonObject, type RunContext } from '@evalhive/harness-sdk';
+import { ProtocolError, nativePayload, type JsonObject, type RunContext } from '@evalhive/harness-sdk';
 import { ADAPTER_VERSION, object } from './config.js';
 import { createHash } from 'node:crypto';
 
@@ -36,7 +36,7 @@ export class EventWriter {
     try {
       this.emit(
         'native',
-        { name, payload: JSON.parse(JSON.stringify(value)), adapter_version: ADAPTER_VERSION },
+        { name, payload: nativePayload(value), adapter_version: ADAPTER_VERSION },
         session,
         parent,
       );
@@ -56,6 +56,7 @@ export class EventWriter {
 
 /** Native durable IDs fence SSE replay; normalized records use native call IDs. */
 export class EventTranslator {
+  readonly imported = new Set<string>();
   readonly seen = new Set<string>();
   readonly parents = new Map<string, string>();
   readonly final = new Map<string, { finish?: string; error?: unknown }>();
@@ -75,11 +76,13 @@ export class EventTranslator {
     for (const entry of entries) {
       const value = object(entry),
         info = object(value.info);
+      if (this.imported.has(String(info.id))) continue;
       this.messages.set(`${info.sessionID}/${info.id}`, info);
     }
     for (const entry of entries) {
       const value = object(entry),
         info = object(value.info);
+      if (this.imported.has(String(info.id))) continue;
       const fingerprint = createHash('sha256').update(JSON.stringify(value)).digest('hex');
       const key = `snapshot/${info.sessionID}/${info.id}`;
       if (this.hashes.get(key) !== fingerprint) {
@@ -95,6 +98,7 @@ export class EventTranslator {
     }
   }
   private part(part: Record<string, unknown>): void {
+    if (this.imported.has(String(part.messageID))) return;
     const info = this.messages.get(`${part.sessionID}/${part.messageID}`);
     this.parts.set(`${part.sessionID}/${part.id}`, part);
     if (!info) return;
@@ -157,6 +161,8 @@ export class EventTranslator {
       }
       if (state.status === 'pending') return;
       if (!this.started.has(identity)) {
+        const args = {...object(state.input)} as JsonObject;
+        delete args.__evalhive_native_call_id;
         this.started.add(identity);
         this.output.emit(
           'tool.start',
@@ -164,7 +170,7 @@ export class EventTranslator {
             call_id: String(part.callID),
             ...lineage,
             name: String(part.tool),
-            arguments: object(state.input) as JsonObject,
+            arguments: args,
             message_id: String(part.messageID),
             ...(this.aliases[String(part.tool)]?.length ? { aliases: this.aliases[String(part.tool)] } : {}),
           },

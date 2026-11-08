@@ -109,6 +109,7 @@ def task_to_dict(task: Task) -> dict:
         "capability_spec": task.capability_spec,
         "benchmark_case_id": task.benchmark_case_id,
         "benchmark_suite": task.benchmark_suite,
+        "benchmark_trial_id": (task.run_config or {}).get("benchmark_trial_id"),
         "result_files": task.result_files,
         "token_usage": task.token_usage,
         "retry_count": task.retry_count,
@@ -152,6 +153,9 @@ async def _selection(db, workspace, values):
 
 
 async def _require_inactive(db, task):
+    from app.benchmarks.task_routing import require_ordinary_task
+
+    require_ordinary_task(task)
     from app.harnesses.attempts import TERMINAL
     from app.models.execution_attempt import ExecutionAttempt
 
@@ -256,6 +260,9 @@ async def update_task(
     task = await _get_scoped_task(task_id, workspace, db, lock=True)
 
     selected = body.model_dump(exclude_unset=True)
+    from app.benchmarks.task_routing import require_ordinary_task
+
+    require_ordinary_task(task)
     if any(key in selected for key in ("title", "description",
                                       "template_id", "harness_profile_id", "execution_mode")) or body.status in _REQUEUE_STATUSES:
         await _require_unarchived(db, task)
@@ -353,6 +360,10 @@ async def start_task(
     task = await _get_scoped_task(task_id, workspace, db, lock=True)
     await _require_inactive(db, task)
     await _require_unarchived(db, task)
+    from app.benchmarks.task_routing import is_legacy_benchmark_task
+
+    if is_legacy_benchmark_task(task):
+        raise HTTPException(409, "Historical benchmark execution requires a new Benchmark SDK run")
     if task.status not in {"backlog", "ready", "failed", "done", "awaiting_approval"}:
         raise HTTPException(409, "Task cannot be started in its current state")
     try:
@@ -422,6 +433,9 @@ async def approve_task(
     db: AsyncSession = Depends(get_db),
 ):
     task = await _get_scoped_task(task_id, workspace, db)
+    from app.benchmarks.task_routing import require_ordinary_task
+
+    require_ordinary_task(task)
     if task.status != TaskStatus.AWAITING_APPROVAL.value:
         raise HTTPException(status_code=400, detail="Task not in awaiting_approval status")
 
@@ -441,6 +455,9 @@ async def reject_task(
     db: AsyncSession = Depends(get_db),
 ):
     task = await _get_scoped_task(task_id, workspace, db, lock=True)
+    from app.benchmarks.task_routing import require_ordinary_task
+
+    require_ordinary_task(task)
     if task.status != TaskStatus.AWAITING_APPROVAL.value:
         raise HTTPException(status_code=400, detail="Task not in awaiting_approval status")
 
@@ -484,6 +501,9 @@ async def delete_task(
     db: AsyncSession = Depends(get_db),
 ):
     task = await _get_scoped_task(task_id, workspace, db)
+    from app.benchmarks.task_routing import require_ordinary_task
+
+    require_ordinary_task(task)
     if task.status != TaskStatus.BACKLOG.value:
         raise HTTPException(status_code=400, detail="Can only delete tasks in backlog")
     # Delete related events and chat messages first (FK constraints)

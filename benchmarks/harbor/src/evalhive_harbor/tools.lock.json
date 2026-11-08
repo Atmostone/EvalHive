@@ -1,0 +1,8 @@
+{
+  "image": "alpine@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a",
+  "platform": {"os": "linux", "architecture": "amd64"},
+  "files": {
+    "busybox": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+    "ld-musl-x86_64.so.1": "095b047c631447e4fa50401fa7ffce01f678587040d65ba18c574981dc630de5"
+  }
+}

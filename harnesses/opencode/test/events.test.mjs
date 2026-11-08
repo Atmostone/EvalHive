@@ -9,6 +9,10 @@ test('common sampling is translated and unsupported settings fail before executi
     task: {prompt: 'Fixture'}, cwd: '/workspace', config: {temperature: 1},
     model: {sampling: {temperature: 0}}};
   assert.equal(effectiveConfig(spec).temperature, 0);
+  assert.equal(effectiveConfig(spec).apiTimeoutSeconds, 30);
+  assert.equal(effectiveConfig({...spec, config: {apiTimeoutSeconds: 60}}).apiTimeoutSeconds, 60);
+  for (const apiTimeoutSeconds of [0, 121, 0.5])
+    assert.throws(() => effectiveConfig({...spec, config: {apiTimeoutSeconds}}));
   for (const sampling of [null, [], {seed: 42}, {temperature: 3}])
     assert.throws(() => effectiveConfig({...spec, model: {sampling}}));
 });

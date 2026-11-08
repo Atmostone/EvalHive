@@ -10,7 +10,7 @@ import {
 export const manifest = JSON.parse(
   readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'),
 ) as Manifest;
-export const ADAPTER_VERSION = '0.1.0';
+export const ADAPTER_VERSION = '0.2.2';
 export function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -31,6 +31,7 @@ export function effectiveConfig(spec: RunSpec): JsonObject {
     autoCompaction: true,
     reasoning: false,
     permissionMode: 'allow',
+    apiTimeoutSeconds: 30,
     ...config,
   };
 }

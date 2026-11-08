@@ -1,0 +1,51 @@
+{
+  "12306-mcp/package.json": {
+    "source_sha256": "410287a83ac7e1412efe8e5c3b0da72c1df57a6033cee725d616af0f3ad685f6",
+    "merge": {
+      "devDependencies": {
+        "@types/pg": "8.11.10"
+      }
+    }
+  },
+  "mcp-canvas-lms/package.json": {
+    "source_sha256": "3951a5b2d5df82085741c297806908a173d437630b855c80f860d431b6b2243f",
+    "merge": {
+      "dependencies": {
+        "pg": "8.13.1"
+      },
+      "devDependencies": {
+        "@types/pg": "8.11.10"
+      }
+    }
+  },
+  "notion-mcp-server/package.json": {
+    "source_sha256": "2cc63f153bb16e9cbc0d952f098a61a1e08ff468358972d456367adf1450ce55",
+    "merge": {
+      "dependencies": {
+        "pg": "8.13.1"
+      },
+      "devDependencies": {
+        "@types/pg": "8.11.10"
+      }
+    }
+  },
+  "woocommerce-mcp/package.json": {
+    "source_sha256": "b5af3fbbb5aaf297dff4d879c321bbb93ed661c3aa3b12ac42a4c30e2b341a27",
+    "merge": {
+      "dependencies": {
+        "pg": "8.13.1"
+      },
+      "devDependencies": {
+        "@types/pg": "8.11.10"
+      }
+    }
+  },
+  "youtube-mcp-server/package.json": {
+    "source_sha256": "ec952cb77aabf2c729ab879a7099eeb2bf7f043ca393f3ed212f214b076b97ed",
+    "merge": {
+      "devDependencies": {
+        "@types/pg": "8.11.10"
+      }
+    }
+  }
+}

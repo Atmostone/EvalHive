@@ -1,22 +1,12 @@
-"""Benchmark Case Store (pre-E-23): file-first store of reusable task definitions.
+"""Historical YAML/JSON Case Store readers and result linkage.
 
-A **benchmark case** is a versioned task *definition* with optional gold signals —
-the mirror image of the result slots on ``quality_records`` (E-01). Cases live as
-YAML/JSON files under ``backend/benchmarks/<suite>/`` (git is the store and its
-history; the same files are what E-23 will later index in a table and publish). A
-case is *materialized* into one or more runnable task instances (via the normal
-task pipeline + the engine's pinned-template fast path), each tagged with
-``benchmark_case_id`` / ``benchmark_suite`` so results can be aggregated by
-suite × case × model.
-
-Layers 1 (format) + 2 (loader + linkage) only. The registry table, the API/UI and
-public publication are E-23 — deliberately out of scope here (KISS).
+New runs use installed Benchmark SDK datasets. Historical schemas remain readable
+without converting their original gold, environment or reproduction fields.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from pathlib import Path
 from typing import Any
@@ -25,9 +15,7 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.task import Task, TaskStatus
-
-logger = logging.getLogger(__name__)
+from app.models.task import Task
 
 # backend/app/quality/benchmark.py → parents[2] == backend/
 BENCHMARKS_DIR = Path(__file__).resolve().parents[2] / "benchmarks"
@@ -163,48 +151,7 @@ async def materialize(
     model_id: uuid.UUID | None = None,
     commit: bool = True,
 ) -> list[Task]:
-    """Create ``repeat`` runnable READY task instances from ``case``.
+    """Reject retired task materialization before touching the database."""
+    from app.quality.experiments import LEGACY_BENCHMARK_ERROR
 
-    Gold signals become the task's `reference_answer` / `canonical_trajectory` /
-    `capability_spec`; the case is recorded via `benchmark_case_id` / `benchmark_suite`.
-    A pinned template (CLI arg or `repro.template_id`) sets `task.template_id` so the
-    engine takes its fast path (no decomposition); an optional model override goes
-    through `run_config.model_id`. The orchestrator loop drains the READY instances.
-    """
-    eff_template = template_id or (
-        uuid.UUID(case.repro.template_id) if case.repro.template_id else None
-    )
-    eff_model = model_id or (
-        uuid.UUID(case.repro.model_id) if case.repro.model_id else None
-    )
-    run_config = {}
-    if eff_template is not None:
-        run_config["template_id"] = str(eff_template)
-    if eff_model is not None:
-        run_config["model_id"] = str(eff_model)
-    if case.repro.seed is not None:
-        run_config["seed"] = case.repro.seed
-
-    tasks: list[Task] = []
-    for _ in range(max(1, repeat)):
-        t = Task(
-            title=case.input.title,
-            description=case.input.description,
-            status=TaskStatus.READY.value,
-            workspace_id=workspace_id,
-            template_id=eff_template,
-            run_config=run_config or None,
-            reference_answer=case.gold.reference_answer,
-            canonical_trajectory=case.gold.canonical_trajectory,
-            capability_spec=_capability_spec_for(case),
-            benchmark_case_id=case.id,
-            benchmark_suite=case.suite,
-        )
-        db.add(t)
-        tasks.append(t)
-    if commit:
-        await db.commit()
-        for t in tasks:
-            await db.refresh(t)
-    logger.info(f"materialized case {case.id} ({case.suite}) × {len(tasks)}")
-    return tasks
+    raise ValueError(LEGACY_BENCHMARK_ERROR)

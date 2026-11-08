@@ -112,17 +112,13 @@ names with canonical aliases, and closes clients with the session. Native tests
 cover both transports, private authorization, explicit skills, disabled memory
 and an empty toolset.
 
-When a rootless `toolathlon-pack:latest` image is installed, build the registered
-environment variant using the same worker and lockfile:
-
-```bash
-docker build --target runtime --build-arg BASE_IMAGE=toolathlon-pack:latest -f harnesses/pi/Dockerfile -t evalhive-pi-toolathlon:1.5.0 .
-```
-
-The base supplies its Python/MCP/benchmark dependencies; the connector pins its
-own Node runtime. This does not run a benchmark. The task environment must pass
-its MCP environment references (including per-lane database coordinates) and
-prepared inputs. Portal tasks retain their owned environment network namespace.
+Benchmark task environments are independent of harness images. Build and install
+the [Toolathlon-GYM package](../benchmarks/toolathlon-gym/README.md) with immutable
+native environment pins, then use a read-only harness runtime bundle through the
+Benchmark SDK coordinator. Do not build or select a floating Toolathlon-derived
+harness image for new runs. The benchmark package owns database preparation, MCP
+bindings and portal readiness; the generic harness launcher no longer injects
+PG lane coordinates.
 
 The [OpenCode connector](../harnesses/opencode/README.md) uses the same SDK and
 resource declarations. Its CLI and official TypeScript SDK are pinned to 1.19.5.
@@ -353,3 +349,12 @@ the paired database/object-store backup into isolated resources, upgrades and
 downgrades the schema, and compares template contents before release. The backup
 manifest names the deployed image's SHA, not the potentially newer checkout that
 runs the backup helper. Use `--source-sha` when quiescing the API before backup.
+
+Before large VPS image builds, run `python3 scripts/engineering-disk-guard.py`.
+The guard starts cleanup at 95% disk usage. It removes only unused build cache older than two hours
+from the current user's rootless Docker daemon, retaining a 2 GB cache budget.
+It never prunes images, containers or volumes. Build admission separately requires
+at least 8 GiB free; insufficient headroom below 95% defers the build without
+triggering cleanup. If headroom remains insufficient after cleanup, defer the
+build and review obsolete engineering images explicitly; preserve the
+deployed release, rollback images and paired database/object-store backups.

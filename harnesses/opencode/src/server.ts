@@ -82,7 +82,7 @@ export async function startServer(state: string, cwd: string, config: Config) {
     if (error instanceof Error) Object.assign(error, {nativeStderr: diagnostics});
     throw error;
   });
-  return { proc, url, diagnostics: () => diagnostics };
+  return { proc, url, env, diagnostics: () => diagnostics };
 }
 
 export async function stopServer(proc: ChildProcessWithoutNullStreams): Promise<void> {

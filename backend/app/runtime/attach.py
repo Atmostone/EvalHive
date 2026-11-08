@@ -10,7 +10,7 @@ import asyncio
 import socket
 from contextlib import suppress
 
-from evalhive_harness.protocol import MAX_LINE_BYTES
+from app.runtime.managed_exec import MAX_RECORD as MAX_LINE_BYTES
 
 
 class DockerAttachedProcess:
@@ -110,10 +110,12 @@ class DockerAttachedProcess:
         # A stopped consumer can leave a full queue; don't wait on a final EOF put.
         if self.stdout.queue.full():
             self.stdout.queue.get_nowait()
-        with suppress(TimeoutError):
-            await asyncio.wait_for(
-                asyncio.gather(self._pump, *self._stop_tasks, return_exceptions=True), 1
-            )
+        tasks = [self._pump, *self._stop_tasks]
+        _, pending = await asyncio.wait(tasks, timeout=1)
+        for task in tasks:
+            if task in pending:
+                task.cancel()
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
         with suppress(Exception):
             self.connection.close()
 

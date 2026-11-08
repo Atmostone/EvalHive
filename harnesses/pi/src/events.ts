@@ -1,4 +1,4 @@
-import { ProtocolError, type JsonObject, type JsonValue, type RunContext } from '@evalhive/harness-sdk';
+import { ProtocolError, nativePayload, type JsonObject, type JsonValue, type RunContext } from '@evalhive/harness-sdk';
 import { ADAPTER_VERSION, object } from './config.js';
 
 export function json(value: unknown): JsonValue {
@@ -39,7 +39,7 @@ export class EventQueue {
       .finally(() => { this.bytes -= size; });
   }
   native(name: string, payload: unknown): void {
-    try { this.emit('native', {name, payload: json(payload), adapter_version: ADAPTER_VERSION}); }
+    try { this.emit('native', {name, payload: nativePayload(payload), adapter_version: ADAPTER_VERSION}); }
     catch { this.fail(new ProtocolError('NATIVE_EVENT_INVALID', 'Pi event is not JSON compatible')); }
   }
   private fail(error: ProtocolError): void { this.error ??= error; this.abort(); }

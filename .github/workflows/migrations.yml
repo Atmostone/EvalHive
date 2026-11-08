@@ -51,10 +51,12 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-dev.txt
           pip install -e sdk/python
+          pip install -e benchmark-sdk/python
           pip install -e runner
 
       - name: Run migration round-trip tests
         working-directory: backend
         env:
           PYTHONPATH: ${{ github.workspace }}/backend
+          DATA_DIR: ${{ runner.temp }}/evalhive-migrations-data
         run: pytest tests/integration/test_migrations.py -v

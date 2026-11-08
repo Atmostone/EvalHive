@@ -4,11 +4,66 @@ const BASE = '/api'
 
 import type { HarnessManifest, HarnessProfile, HarnessSecret } from '@/types'
 import type { ExecutionAttempt, AttemptEvent, AttemptCommand } from '@/types'
+import type {
+  BenchmarkCatalogEntry, BenchmarkProfile, BenchmarkProfileInput, BenchmarkCredential,
+  BenchmarkDataset, BenchmarkCase, BenchmarkPreflight, BenchmarkTrial, BenchmarkEvaluation,
+  BenchmarkArtifact, BenchmarkJournalEvent, BenchmarkEvaluationJob, BenchmarkAggregate,
+} from '@/types/benchmarks'
+
+export const benchmarkSdkApi = {
+  catalog: () => request<BenchmarkCatalogEntry[]>('/benchmarks'),
+  profiles: () => request<BenchmarkProfile[]>('/benchmark-profiles'),
+  createProfile: (data: BenchmarkProfileInput) => request<BenchmarkProfile>('/benchmark-profiles', {
+    method: 'POST', body: JSON.stringify(data),
+  }),
+  updateProfile: (id: string, data: Partial<Omit<BenchmarkProfileInput, 'connector_id'>>) =>
+    request<BenchmarkProfile>(`/benchmark-profiles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteProfile: (id: string) => request<void>(`/benchmark-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  validateProfile: (id: string) => request<{ valid: boolean; configured: boolean; missing: string[]; live_verified: boolean }>(
+    `/benchmark-profiles/${encodeURIComponent(id)}/validate`, { method: 'POST' }),
+  credentials: () => request<BenchmarkCredential[]>('/benchmark-secrets'),
+  createCredential: (name: string, value: string) => request<BenchmarkCredential>('/benchmark-secrets', {
+    method: 'POST', body: JSON.stringify({ name, value }),
+  }),
+  replaceCredential: (id: string, name: string, value: string) => request<BenchmarkCredential>(
+    `/benchmark-secrets/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ name, value }) }),
+  deleteCredential: (id: string) => request<void>(`/benchmark-secrets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  datasets: () => request<BenchmarkDataset[]>('/benchmark-datasets'),
+  registerDataset: (profileId: string, datasetId: string, revision: string) => request<BenchmarkDataset>('/benchmark-datasets', {
+    method: 'POST', body: JSON.stringify({ profile_id: profileId, dataset_id: datasetId, revision }),
+  }),
+  cases: (id: string, offset = 0, limit = 100) => request<{ total: number; offset: number; cases: BenchmarkCase[] }>(
+    `/benchmark-datasets/${encodeURIComponent(id)}/cases?offset=${offset}&limit=${limit}`),
+  preflight: (selection: { profile_id: string; dataset_revision_id: string; case_id: string; harness_profile_id: string }) =>
+    request<BenchmarkPreflight>('/benchmarks/preflight', { method: 'POST', body: JSON.stringify(selection) }),
+  createTrial: (data: { request_id: string; profile_id: string; dataset_revision_id: string; case_id: string; harness_profile_id: string; title?: string; priority?: string }) =>
+    request<BenchmarkTrial>('/benchmark-trials', { method: 'POST', body: JSON.stringify(data) }),
+  trials: (taskId: string) => request<BenchmarkTrial[]>(`/benchmark-trials?task_id=${encodeURIComponent(taskId)}`),
+  trial: (id: string) => request<BenchmarkTrial>(`/benchmark-trials/${encodeURIComponent(id)}`),
+  retryTrial: (id: string, requestId: string) => request<BenchmarkTrial>(
+    `/benchmark-trials/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify({ request_id: requestId }) }),
+  evaluations: (id: string, offset = 0) => request<BenchmarkEvaluation[]>(`/benchmark-trials/${encodeURIComponent(id)}/evaluations?offset=${offset}&limit=100`),
+  aggregates: (id: string, offset = 0) => request<BenchmarkAggregate[]>(`/benchmark-trials/${encodeURIComponent(id)}/aggregates?offset=${offset}&limit=20`),
+  archive: (id: string, nativeInputs = false) => downloadBlob(`/benchmark-trials/${encodeURIComponent(id)}/archive?include_native_inputs=${nativeInputs}`),
+  regrade: (id: string, source: string, requestId: string) => request<BenchmarkEvaluationJob>(
+    `/benchmark-trials/${encodeURIComponent(id)}/regrade`, { method: 'POST', body: JSON.stringify({ request_id: requestId, source_evaluation_id: source }) }),
+  evaluationJobs: (id: string, offset = 0) => request<BenchmarkEvaluationJob[]>(
+    `/benchmark-trials/${encodeURIComponent(id)}/evaluation-jobs?offset=${offset}&limit=100`),
+  cancelEvaluationJob: (id: string, job: string) => request<{ requested: boolean }>(
+    `/benchmark-trials/${encodeURIComponent(id)}/evaluation-jobs/${encodeURIComponent(job)}/cancel`, { method: 'POST' }),
+  artifacts: (id: string, offset = 0) => request<BenchmarkArtifact[]>(`/benchmark-trials/${encodeURIComponent(id)}/artifacts?offset=${offset}&limit=100`),
+  journal: (id: string, after = -1) => request<{ events: BenchmarkJournalEvent[]; next_seq: number }>(
+    `/benchmark-trials/${encodeURIComponent(id)}/events?after_seq=${after}&limit=100`),
+  cancel: (id: string) => request<{ requested: boolean }>(`/benchmark-trials/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
+  download: (id: string, artifactId: string) => downloadBlob(
+    `/benchmark-trials/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}/download`),
+}
 
 export const attemptsApi = {
   list: (taskId: string) => request<ExecutionAttempt[]>(`/tasks/${taskId}/attempts?limit=1`),
   events: (id: string, after: number) => request<AttemptEvent[]>(
     `/attempts/${id}/events?after_seq=${after}&limit=500&event_type=interaction.request&event_type=interaction.resolved`),
+  output: (id: string, after: number) => request<AttemptEvent[]>(`/attempts/${id}/events?after_seq=${after}&limit=100`),
   commands: (id: string) => request<AttemptCommand[]>(`/attempts/${id}/commands`),
   control: (id: string, name: string, payload: Record<string, unknown>, commandId: string) =>
     request<{ id: string; status: string }>(`/attempts/${id}/commands`, {
@@ -83,6 +138,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T
   return res.json()
+}
+
+async function downloadBlob(path: string): Promise<Blob> {
+  const response = await fetch(`${BASE}${path}`, { headers: authHeaders() })
+  if (!response.ok) throw new ApiError(response.status, extractErrorMessage(await response.text(), response.status))
+  return response.blob()
 }
 
 // Auth
@@ -835,6 +896,7 @@ import type {
   ExperimentPreview,
   ExperimentReport,
   ExperimentRunResult,
+  ExperimentCellAttempt,
 } from '../types'
 
 export interface ExperimentCreateBody {
@@ -871,6 +933,8 @@ export const experimentsApi = {
   cancel: (id: string) => request<Experiment>(`/experiments/${id}/cancel`, { method: 'POST' }),
   retryFailed: (id: string) =>
     request<Experiment & { retried: number }>(`/experiments/${id}/retry-failed`, { method: 'POST' }),
+  cellAttempts: (id: string, cell: string, offset = 0) => request<ExperimentCellAttempt[]>(
+    `/experiments/${encodeURIComponent(id)}/cells/${encodeURIComponent(cell)}/attempts?offset=${offset}&limit=100`),
   report: (
     id: string,
     params?: {
@@ -905,6 +969,10 @@ export const experimentsApi = {
       `/experiments/${id}/configs/${configKey}`,
       { method: 'DELETE' },
     ),
+  addConfig: (id: string, configuration: Record<string, unknown>) =>
+    request<Experiment & { config_key: string; runs_created: number }>(`/experiments/${id}/add-config`, {
+      method: 'POST', body: JSON.stringify(configuration),
+    }),
   clone: (id: string, data: { name?: string; changes?: Record<string, unknown> }) =>
     request<Experiment>(`/experiments/${id}/clone`, {
       method: 'POST',
@@ -926,6 +994,7 @@ export const experimentsApi = {
     if (!res.ok) throw new ApiError(res.status, await res.text())
     return res.blob()
   },
+  nativeBundle: (id: string, nativeInputs = false) => downloadBlob(`/experiments/${encodeURIComponent(id)}/bundle?include_native_inputs=${nativeInputs}`),
 }
 
 // E-01 Data Lake — immutable execution-record corpus

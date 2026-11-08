@@ -1,0 +1,36 @@
+{
+  "repository": "https://github.com/StonyBrookNLP/appworld",
+  "revision": "42b5bcf3cd334fee33f0c37c02070a9f5807add5",
+  "package_version": "0.2.0.dev0",
+  "data_version": "0.2.0",
+  "wheel": {
+    "file": "appworld-0.2.0.dev0-py3-none-any.whl",
+    "size_bytes": 743102,
+    "sha256": "de5203e32a9d0147b2bb49bcbb4740fea688f8b9b1844af17a5491e25543c31c"
+  },
+  "build_backend": {
+    "package": "uv-build",
+    "version": "0.9.30",
+    "sha256": "7bd3d425ac8bf41917789106a6ff475821db920542d2b7188e378fc7250a31f6"
+  },
+  "assets": [
+    {
+      "file": "data-0.2.0.bundle",
+      "url": "https://s3.us-west-2.amazonaws.com/appworld.dev/data-0.2.0.bundle",
+      "size_bytes": 34908601,
+      "sha256": "c9299e6cafe92bce4592a3c117c047c973d1554a667c21dd81537e78ab2f532e"
+    },
+    {
+      "file": "apps.bundle",
+      "url": "https://media.githubusercontent.com/media/StonyBrookNLP/appworld/42b5bcf3cd334fee33f0c37c02070a9f5807add5/src/appworld/.source/apps.bundle",
+      "size_bytes": 193950,
+      "sha256": "88d21fc526c1655bb3eee4adfca78ccac793921e4506f28f734ecdb19af77a62"
+    },
+    {
+      "file": "tests.bundle",
+      "url": "https://media.githubusercontent.com/media/StonyBrookNLP/appworld/42b5bcf3cd334fee33f0c37c02070a9f5807add5/src/appworld/.source/tests.bundle",
+      "size_bytes": 204701,
+      "sha256": "7b93343db5efd81b542e68e68150dd5ea5d59d8dcd64137d41bde4027b235dc9"
+    }
+  ]
+}

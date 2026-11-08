@@ -340,3 +340,30 @@ async def test_external_connector_without_model_requirement_resolves_without_cor
     assert resolved.spec["model"] is None and resolved.model is None
     assert resolved.spec["config"] == {"native_prefix": "hello"}
     assert "model_api_key" not in resolved.credentials
+
+
+@pytest.mark.parametrize("override", ["pg_host", "agent_image", "tool_injection"])
+async def test_legacy_execution_overrides_require_explicit_migration(
+    auth_client, db_session, installed_fake, override,
+):
+    import uuid
+
+    from app.harnesses.launch import resolve_launch
+    from app.models.task import Task
+
+    declaration = installed_fake / "external/manifest.json"
+    manifest = json.loads(declaration.read_text())
+    manifest.pop("requirements", None)
+    declaration.write_text(json.dumps(manifest))
+    profile = await create_fake(auth_client)
+    task = Task(
+        title="Historical execution options",
+        workspace_id=uuid.UUID(auth_client.headers["X-Workspace-Id"]),
+        harness_profile_id=uuid.UUID(profile["id"]),
+        execution_mode="direct",
+        run_config={override: "historical-value"},
+    )
+    db_session.add(task)
+    await db_session.flush()
+    with pytest.raises(ProfileError, match="conversion of its legacy execution options|Historical benchmark execution"):
+        await resolve_launch(db_session, task)

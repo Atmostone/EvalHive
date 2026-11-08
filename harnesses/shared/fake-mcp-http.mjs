@@ -1,7 +1,8 @@
 // Stateless Streamable HTTP MCP fixture, compatible with the backend endpoint.
 import { createServer } from 'node:http';
 
-export async function fakeMcpHTTP(authorize = () => {}) {
+export async function fakeMcpHTTP(authorize = () => {}, tools = [{name: 'search_knowledge_base',
+  description: 'Search fixture data', inputSchema: {type: 'object', properties: {query: {type: 'string'}}, required: ['query']}}]) {
   const requests = [];
   const server = createServer(async (req, res) => {
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
@@ -15,8 +16,7 @@ export async function fakeMcpHTTP(authorize = () => {}) {
       let result;
       if (body.method === 'initialize') result = {protocolVersion: body.params.protocolVersion,
         capabilities: {tools: {}}, serverInfo: {name: 'evalhive-knowledge-fixture', version: '1'}};
-      else if (body.method === 'tools/list') result = {tools: [{name: 'search_knowledge_base',
-        description: 'Search fixture data', inputSchema: {type: 'object', properties: {query: {type: 'string'}}, required: ['query']}}]};
+      else if (body.method === 'tools/list') result = {tools};
       else if (body.method === 'tools/call') result = {content: [{type: 'text', text: 'Knowledge fixture result'}]};
       else throw new Error('Unsupported fixture method');
       res.writeHead(200, {'Content-Type': 'application/json'});

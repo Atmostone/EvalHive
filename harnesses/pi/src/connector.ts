@@ -5,12 +5,13 @@ import {
   createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, VERSION,
   type AgentSession, type AgentSessionEvent, type ExtensionFactory,
 } from '@earendil-works/pi-coding-agent';
-import { ProtocolError, type Connector, type JsonObject, type JsonValue, type RunContext, type RunResult, type RunSpec } from '@evalhive/harness-sdk';
+import { ProtocolError, ExternalToolGate, conversationHistory, openModelGateway, type Connector, type JsonObject, type JsonValue, type RunContext, type RunResult, type RunSpec } from '@evalhive/harness-sdk';
 import { ADAPTER_VERSION, connection, effectiveConfig, manifest, object } from './config.js';
 import { observeRequests } from './transport.js';
 import { EventQueue, json, UsageTracker } from './events.js';
 import { failureFacts } from './errors.js';
 import { connectResources, resourcePlan } from './resources.js';
+import {nativeHistory} from './history.js';
 
 function text(content: unknown, kind: string): string {
   return Array.isArray(content) ? content.map(object).filter((part) => part.type === kind)
@@ -30,6 +31,7 @@ export class PiConnector implements Connector {
     const config = effectiveConfig(spec);
     connection(spec, this.credentials);
     resourcePlan(spec, this.credentials);
+    conversationHistory(spec);
     if (Number(config.maxOutputTokens) > Number(config.contextWindow))
       throw new ProtocolError('INVALID_LIMITS', 'Output limit cannot exceed the context window');
     if (config.thinkingLevel !== 'off' && !config.reasoning)
@@ -54,16 +56,22 @@ export class PiConnector implements Connector {
     let agentStarted = false;
     let responseStatus: number | undefined;
     let resourceSet: Awaited<ReturnType<typeof connectResources>> | undefined;
+    let modelGateway: Awaited<ReturnType<typeof openModelGateway>>;
     let complete: (() => void) | undefined;
-    const settled = new Promise<void>((resolve) => { complete = resolve; });
+    let settled: Promise<void>;
+    let externalFailure: unknown;
+    let batch: Promise<unknown> = Promise.resolve();
+    const gate = context.conversation?.mode === 'external_steps' ? new ExternalToolGate(context.conversation, context.signal) : undefined;
     const abort = () => { void session?.abort().catch(() => {}); };
     context.signal.addEventListener('abort', abort);
     try {
-      resourceSet = await connectResources(context.spec, this.credentials, context.signal);
+      modelGateway = await openModelGateway(context.spec, context.signal);
+      resourceSet = await connectResources(context.spec, this.credentials, context.signal, gate,
+        status => context.emit('native', {name: 'mcp.status', payload: status, adapter_version: manifest.version}, {source: 'pi'}));
       const runtime = await ModelRuntime.create({authPath: join(state, 'auth.json'), modelsPath: null,
         modelsStorePath: join(state, 'models.sqlite'), allowModelNetwork: false, refreshOnCreate: false});
       runtime.registerProvider('evalhive', {
-        api: 'openai-completions', baseUrl: model.endpoint,
+        api: 'openai-completions', baseUrl: modelGateway?.endpoint ?? model.endpoint,
         headers: {'User-Agent': 'evalhive/0.1', 'x-opencode-session': context.spec.attempt_id},
         models: [{id: model.name, name: model.name, reasoning: Boolean(config.reasoning), input: ['text'],
           contextWindow: Number(config.contextWindow), maxTokens: Number(config.maxOutputTokens),
@@ -81,7 +89,9 @@ export class PiConnector implements Connector {
       const finishObservation = observeRequests(runtime, usage, output,
         () => compactionActive ? 'compaction' : 'agent', value => { responseStatus = value; });
       const bridge: ExtensionFactory = (api) => {
-        api.on('before_provider_request', (event) => {
+        api.on('before_provider_request', async (event) => {
+          await batch;
+          if (externalFailure) throw externalFailure;
           const payload = object(event.payload);
           return {...payload,
             ...(config.temperature !== undefined ? {temperature: config.temperature} : {}),
@@ -104,6 +114,10 @@ export class PiConnector implements Connector {
         settingsManager: settings, resourceLoader: loader, tools: resourceSet.tools, customTools: resourceSet.customTools}));
       this.session = session;
       const current = session;
+      const seed = nativeHistory(context.spec, model.name, resourceSet.mapping);
+      for (const message of seed) sessions.appendMessage(message);
+      current.agent.state.messages = [...current.agent.state.messages, ...seed];
+      if (gate) output.native('external_tools.mapping', {tools: resourceSet.mapping, interface: 'adapted_mcp', history_messages: seed.length});
       if (current.thinkingLevel !== config.thinkingLevel)
         throw new ProtocolError('UNSUPPORTED_THINKING', 'The configured model does not support this thinking level');
       unsubscribe = current.subscribe((event: AgentSessionEvent) => {
@@ -126,6 +140,15 @@ export class PiConnector implements Connector {
               channel: update.type === 'thinking_delta' ? 'reasoning' : 'text', delta: String(update.delta ?? '')});
         } else if (event.type === 'message_end') {
           const message = object(event.message);
+          if (gate && message.role === 'assistant' && message.stopReason === 'toolUse') {
+            const calls = (Array.isArray(message.content) ? message.content : []).map(object).filter(part => part.type === 'toolCall')
+              .map(part => ({call_id: String(part.id), name: String(part.name), arguments: json(part.arguments) as JsonObject}));
+            if (calls.length) {
+              try {batch = gate.announce(assistantId, assistantId, calls, text(message.content, 'text'));}
+              catch (error) {externalFailure = error; abort();}
+              batch = batch.catch(error => {externalFailure = error; abort();});
+            }
+          }
           if (message.role === 'assistant' || message.role === 'user') {
             const id = message.role === 'assistant' ? assistantId : userId;
             output.emit('message.end', {message_id: id || `message-${++messageIndex}`, role: message.role,
@@ -151,15 +174,29 @@ export class PiConnector implements Connector {
         } else if (event.type === 'compaction_end') {
           compactionActive = false;
         } else if (event.type === 'agent_settled') {
-          this.settled = true; complete?.();
+          this.settled = !context.conversation; complete?.();
         }
       });
       await current.bindExtensions({});
       if (context.signal.aborted) return {status: 'cancelled', summary: 'Run cancelled'};
-      await current.prompt(context.spec.task.prompt, {expandPromptTemplates: false, source: 'rpc'});
-      if (!agentStarted && !context.signal.aborted)
-        throw new ProtocolError('PROMPT_NOT_EXECUTED', 'Pi did not start an agent run');
-      if (agentStarted) await settled;
+      for (;;) {
+        const input = context.conversation ? await context.conversation.nextInput() : undefined;
+        if (input === null) break;
+        const prompt = input ? (input.messages as JsonObject[]).map(item => String(item.content)).join('\n\n') : context.spec.task.prompt;
+        agentStarted = false;
+        settled = new Promise<void>(resolve => {complete = resolve;});
+        await current.prompt(prompt, {expandPromptTemplates: false, source: 'rpc'});
+        if (!agentStarted && !context.signal.aborted)
+          throw new ProtocolError('PROMPT_NOT_EXECUTED', 'Pi did not start an agent run');
+        if (agentStarted) await settled;
+        await batch;
+        if (externalFailure) throw externalFailure;
+        await output.drain();
+        if (context.signal.aborted || budgetHit || !context.conversation) break;
+        const last = [...current.messages].reverse().map(object).find(message => message.role === 'assistant');
+        if (!last || last.stopReason !== 'stop') break;
+        await context.conversation.completeTurn(assistantId, text(last.content, 'text'));
+      }
       await finishObservation();
       await output.drain();
       if (context.signal.aborted) return {status: 'cancelled', summary: 'Run cancelled'};
@@ -167,11 +204,12 @@ export class PiConnector implements Connector {
         error: {code: 'TURN_LIMIT', message: 'Pi reached the configured turn limit', details: {normalized_failure: {kind: 'limit'}}}};
       const last = [...current.messages].reverse().map(object).find((message) => message.role === 'assistant');
       const metadata = {harness_version: VERSION, adapter_version: ADAPTER_VERSION, session_id: sessions.getSessionId(),
-        effective_config: config, recording: {native_events: 'observed_with_bounded_request_snapshots', usage: 'reported_or_unknown'}};
-      if (!last || last.stopReason !== 'stop') return {status: 'failed', summary: 'Pi did not finish successfully',
+        effective_config: config, recording: {native_events: 'observed_with_bounded_request_snapshots', usage: 'reported_or_unknown',
+          seeded_history_messages: seed.length}};
+      if ((!last && !context.conversation) || (last && last.stopReason !== 'stop')) return {status: 'failed', summary: 'Pi did not finish successfully',
         error: {code: 'PI_INCOMPLETE', message: typeof last?.errorMessage === 'string' ? last.errorMessage : 'Pi ended without a successful final answer',
           details: {normalized_failure: last ? failureFacts(last.stopReason, last.errorMessage, responseStatus) : {kind: 'harness_error'}}}, metadata};
-      return {status: 'success', summary: text(last.content, 'text') || 'Pi completed', metadata};
+      return {status: 'success', summary: text(last?.content, 'text') || 'Pi completed', metadata};
     } catch (error) {
       if (context.signal.aborted) return {status: 'cancelled', summary: 'Run cancelled'};
       if (error instanceof ProtocolError) return {status: 'failed', summary: error.message,
@@ -182,6 +220,7 @@ export class PiConnector implements Connector {
       unsubscribe?.();
       session?.dispose();
       await resourceSet?.close();
+      await modelGateway?.close();
       this.session = undefined;
       rmSync(state, {recursive: true, force: true});
     }
@@ -195,6 +234,7 @@ export class PiConnector implements Connector {
       return {accepted: true};
     }
     if (name === 'feedback') {
+      if (context.conversation) throw new ProtocolError('UNSUPPORTED_CAPABILITY', 'Conversation input requires turn.submit');
       if (typeof payload.text !== 'string' || !payload.text.trim()) throw new ProtocolError('INVALID_FEEDBACK', 'Feedback must contain text');
       if (!this.session) {
         if (this.pendingFeedback.length >= 32) throw new ProtocolError('FEEDBACK_QUEUE_FULL', 'Pi feedback queue is full');

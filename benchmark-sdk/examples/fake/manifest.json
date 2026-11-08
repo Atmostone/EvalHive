@@ -1,0 +1,48 @@
+{
+  "protocol_version": "1.0",
+  "kind": "benchmark",
+  "id": "example.benchmark",
+  "version": "0.1.0",
+  "display_name": "Example benchmark",
+  "entrypoint": [
+    "python",
+    "/opt/benchmark/connector.py"
+  ],
+  "image": "example/benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "prefix": {
+        "type": "string",
+        "maxLength": 32
+      },
+      "wait": {
+        "type": "boolean"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "secret_schema": {
+    "type": "object",
+    "properties": {
+      "token": {
+        "type": "string"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  },
+  "capabilities": {
+    "prepare": "native",
+    "evaluate": "native",
+    "aggregate": "native",
+    "cleanup": "native",
+    "capture": "native",
+    "drive": "native",
+    "regrade": "native"
+  },
+  "requirements": {
+    "capabilities": []
+  }
+}

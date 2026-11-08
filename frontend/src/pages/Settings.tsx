@@ -7,6 +7,9 @@ import { ProvidersSection } from '@/components/settings/ProvidersSection'
 import { SystemModelsSection } from '@/components/settings/SystemModelsSection'
 import { RegistrySection } from '@/components/settings/RegistrySection'
 import { HarnessProfilesSection } from '@/components/settings/HarnessProfilesSection'
+import { BenchmarkProfilesSection } from '@/components/settings/BenchmarkProfilesSection'
+import { BenchmarkDatasetsSection } from '@/components/settings/BenchmarkDatasetsSection'
+import { BenchmarkPreflightSection } from '@/components/tasks/BenchmarkSelectionFields'
 
 const ORCHESTRATOR_FIELDS = [
   { key: 'max_concurrent_agents', label: 'Max Concurrent Agents', type: 'number' },
@@ -110,6 +113,9 @@ export default function Settings() {
       <SystemModelsSection canEdit={isAdminRole} />
 
       <HarnessProfilesSection canEdit={isAdminRole} />
+      <BenchmarkProfilesSection canEdit={isAdminRole} />
+      <BenchmarkDatasetsSection canEdit={isAdminRole} />
+      <BenchmarkPreflightSection />
 
       {/* Tool & MCP Registry (SPA-41) */}
       <RegistrySection canEdit={isAdminRole} />

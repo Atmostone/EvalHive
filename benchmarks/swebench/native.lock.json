@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/SWE-bench/SWE-bench",
+  "revision": "02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
+  "package_version": "5.0.2",
+  "wheel_sha256": "b7f0416a1e686eca22c2f749b5f816685a202835032f6683080e2b53545bbb62",
+  "task_repository": "https://github.com/SWE-bench/swe-bench-tasks",
+  "task_revision": "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d"
+}

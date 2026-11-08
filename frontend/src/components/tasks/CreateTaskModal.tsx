@@ -4,6 +4,7 @@ import { tasksApi } from '@/api/client'
 import { X } from 'lucide-react'
 import type { Task } from '@/types'
 import TaskExecutionFields from './TaskExecutionFields'
+import CreateBenchmarkForm from './CreateBenchmarkForm'
 
 interface CreateTaskModalProps {
   onClose: () => void
@@ -11,6 +12,7 @@ interface CreateTaskModalProps {
 
 export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
   const queryClient = useQueryClient()
+  const [benchmarkMode, setBenchmarkMode] = useState(false)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [priority, setPriority] = useState('medium')
@@ -44,7 +46,14 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
           </button>
         </div>
 
-        <div className="space-y-3">
+        <label className="block text-sm mb-4">Task type
+          <select aria-label="Task type" className="w-full border rounded px-2 py-1.5 mt-1" value={benchmarkMode ? 'benchmark' : 'task'}
+            onChange={event => setBenchmarkMode(event.target.value === 'benchmark')}>
+            <option value="task">Task</option>
+            <option value="benchmark">Benchmark case</option>
+          </select>
+        </label>
+        {benchmarkMode ? <CreateBenchmarkForm onClose={onClose} /> : <div className="space-y-3">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
             <input
@@ -102,7 +111,7 @@ export default function CreateTaskModal({ onClose }: CreateTaskModalProps) {
           >
             {createMutation.isPending ? 'Creating...' : 'Create Task'}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   )

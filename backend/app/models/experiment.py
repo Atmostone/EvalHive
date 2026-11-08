@@ -4,8 +4,10 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -63,7 +65,19 @@ class Experiment(Base):
 
     __tablename__ = "experiments"
     __table_args__ = (
+        UniqueConstraint("id", "workspace_id", name="uq_experiments_scope"),
         UniqueConstraint("workspace_id", "name", name="uq_experiments_workspace_name"),
+        ForeignKeyConstraint(
+            ["cloned_from_id", "workspace_id"],
+            ["experiments.id", "experiments.workspace_id"],
+            name="fk_experiment_clone_scope",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "(cloned_from_id IS NULL AND cloned_from_revision IS NULL AND clone_mode IS NULL) OR (cloned_from_id IS NOT NULL AND cloned_from_id <> id AND cloned_from_revision IS NOT NULL AND clone_mode IS NOT NULL AND cloned_from_revision > 0 AND clone_mode IN ('frozen','new_conditions'))",
+            name="ck_experiment_clone_origin",
+        ),
         Index("idx_experiments_workspace", "workspace_id"),
         Index("idx_experiments_status", "status"),
     )
@@ -77,6 +91,9 @@ class Experiment(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    cloned_from_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    cloned_from_revision: Mapped[int | None] = mapped_column(Integer)
+    clone_mode: Mapped[str | None] = mapped_column(String(20))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20),
@@ -104,11 +121,7 @@ class Experiment(Base):
         Numeric(10, 6), nullable=True
     )
     max_parallel: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # SPA-69: number of isolated Toolathlon PG lanes to run in parallel. None/0 →
-    # serial (one Toolathlon cell at a time — the safe default, since all cases share
-    # one mock postgres). >1 lets the scheduler claim up to that many Toolathlon cells
-    # at once, each pinned to its own ``toolathlon_pg_lane_<i>`` instance so their
-    # preprocess re-seeding cannot clobber each other.
+    # Historical Toolathlon lane metadata; new executions use SDK resource leases.
     n_toolathlon_lanes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # {trajectory: bool=true, failure_modes: bool=false} — E-02 always runs.
     eval_config: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
@@ -218,10 +231,7 @@ class ExperimentRun(Base):
     preprocess_started_at: Mapped[datetime | None] = mapped_column(nullable=True)
     preprocess_log: Mapped[str | None] = mapped_column(Text, nullable=True)
     eval_log: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # SPA-69: which isolated PG lane (0..n_toolathlon_lanes-1) this Toolathlon run is
-    # pinned to while in flight — its preprocess/eval/agent all target
-    # ``toolathlon_pg_lane_<lane_index>``. None for plain runs and once settled (the
-    # lane is freed for the next claim).
+    # Historical lane identity, retained without reassigning old executions.
     lane_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # --- SPA-84 immutability -----------------------------------------------------

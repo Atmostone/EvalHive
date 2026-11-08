@@ -13,14 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.harnesses import SafeValidationRoute
 from app.auth.dependencies import get_current_workspace, require_role
-from app.auth.tokens import _utcnow_naive, verify_runner_token
+from app.auth.tokens import verify_runner_token
 from app.database import get_db
 from app.harnesses.attempts import (
-    TERMINAL,
     AttemptError,
     acknowledge_command,
+    heartbeat_attempt,
     ingest_events,
-    locked_attempt,
     prepare_configuration,
     queue_command,
 )
@@ -229,7 +228,13 @@ async def enqueue_command(
     db: AsyncSession = Depends(get_db),
     _role=Depends(require_role("owner", "admin", "member")),
 ):
-    await scoped_attempt(db, workspace, attempt_id)
+    from app.benchmarks.task_routing import require_ordinary_task
+    from app.models.task import Task
+
+    attempt = await scoped_attempt(db, workspace, attempt_id)
+    task = await db.get(Task, attempt.task_id)
+    if task is not None:
+        require_ordinary_task(task)
     body = await bounded_json(request)
     try:
         if (
@@ -287,27 +292,9 @@ async def runner_heartbeat(
 ):
     await require_runner(request, db, attempt_id)
     try:
-        attempt = await locked_attempt(db, attempt_id)
-        attempt.last_heartbeat_at = _utcnow_naive()
-        pending = []
-        if attempt.status not in TERMINAL:
-            commands = await db.scalars(
-                select(ExecutionCommand)
-                .where(
-                    ExecutionCommand.attempt_id == attempt_id,
-                    ExecutionCommand.status.in_(["queued", "delivered"]),
-                )
-                .order_by(ExecutionCommand.created_at)
-                .limit(32)
-            )
-            for command in commands:
-                command.status = "delivered"
-                pending.append(
-                    {"id": str(command.id), "name": command.name, "payload": command.payload}
-                )
-        status = attempt.status
+        result = await heartbeat_attempt(db, attempt_id)
         await db.commit()
-        return {"status": status, "commands": pending}
+        return result
     except AttemptError as error:
         await db.rollback()
         raise attempt_error(error) from None

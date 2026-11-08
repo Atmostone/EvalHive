@@ -1,0 +1,1945 @@
+{
+  "manifest": {
+    "protocol_version": "1.0",
+    "kind": "benchmark",
+    "id": "example.benchmark",
+    "version": "0.1.0",
+    "display_name": "Example benchmark",
+    "entrypoint": [
+      "python",
+      "/opt/benchmark/connector.py"
+    ],
+    "image": "example/benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "config_schema": {
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "wait": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "secret_schema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "capabilities": {
+      "prepare": "native",
+      "evaluate": "native",
+      "aggregate": "native",
+      "cleanup": "native",
+      "capture": "native",
+      "drive": "native",
+      "regrade": "native"
+    },
+    "requirements": {
+      "capabilities": []
+    }
+  },
+  "spec": {
+    "protocol_version": "1.0",
+    "scope": {
+      "workspace_id": "workspace-example",
+      "trial_id": "trial-example",
+      "generation": 1
+    },
+    "case": {
+      "ref": {
+        "dataset_id": "example",
+        "revision": "1",
+        "case_id": "echo"
+      },
+      "title": "Echo and verify",
+      "description": "Create an example artifact",
+      "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "native_ref": {
+        "case": "echo"
+      },
+      "requirements": {
+        "capabilities": []
+      }
+    },
+    "config": {
+      "prefix": "SDK "
+    },
+    "credential_refs": {},
+    "models": {},
+    "limits": {
+      "wall_time_seconds": 60,
+      "memory_mb": 128,
+      "cpu_cores": 1,
+      "disk_mb": 64
+    }
+  },
+  "case": {
+    "ref": {
+      "dataset_id": "example",
+      "revision": "1",
+      "case_id": "echo"
+    },
+    "title": "Echo and verify",
+    "description": "Create an example artifact",
+    "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "native_ref": {
+      "case": "echo"
+    },
+    "requirements": {
+      "capabilities": []
+    }
+  },
+  "plan": {
+    "resources": [
+      {
+        "id": "workspace",
+        "kind": "container",
+        "provider": "docker",
+        "config": {
+          "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      }
+    ],
+    "agent": {
+      "mode": "in_environment",
+      "interaction": "autonomous",
+      "environment_handle": "workspace",
+      "cwd": "/workspace",
+      "prompt": "Create result.txt",
+      "instructions": [],
+      "resources": []
+    },
+    "outputs": [
+      {
+        "id": "result",
+        "resource_id": "workspace",
+        "path": "/workspace/result.txt",
+        "visibility": "user",
+        "required": true
+      }
+    ],
+    "requirements": {
+      "capabilities": []
+    },
+    "grading_mode": "snapshot"
+  },
+  "evaluation": {
+    "status": "completed",
+    "success": true,
+    "metrics": [
+      {
+        "name": "success",
+        "value": 1
+      }
+    ],
+    "primary_metric": "success",
+    "native": {
+      "passed": true
+    },
+    "artifacts": [],
+    "completeness": {
+      "state": "captured"
+    }
+  },
+  "cases": [
+    {
+      "name": "manifest",
+      "kind": "manifest",
+      "value": {
+        "protocol_version": "1.0",
+        "kind": "benchmark",
+        "id": "example.benchmark",
+        "version": "0.1.0",
+        "display_name": "Example benchmark",
+        "entrypoint": [
+          "python",
+          "/opt/benchmark/connector.py"
+        ],
+        "image": "example/benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "wait": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "secret_schema": {
+          "type": "object",
+          "properties": {
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "prepare": "native",
+          "evaluate": "native",
+          "aggregate": "native",
+          "cleanup": "native",
+          "capture": "native",
+          "drive": "native"
+        },
+        "requirements": {
+          "capabilities": []
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "trial_spec",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "case_descriptor",
+      "kind": "case_descriptor",
+      "value": {
+        "ref": {
+          "dataset_id": "example",
+          "revision": "1",
+          "case_id": "echo"
+        },
+        "title": "Echo and verify",
+        "description": "Create an example artifact",
+        "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "native_ref": {
+          "case": "echo"
+        },
+        "requirements": {
+          "capabilities": []
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "environment_plan",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "evaluation_result",
+      "kind": "evaluation_result",
+      "value": {
+        "status": "completed",
+        "success": true,
+        "metrics": [
+          {
+            "name": "success",
+            "value": 1
+          }
+        ],
+        "primary_metric": "success",
+        "native": {
+          "passed": true
+        },
+        "artifacts": [],
+        "completeness": {
+          "state": "captured"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "unknown protocol",
+      "kind": "manifest",
+      "value": {
+        "protocol_version": "9.0",
+        "kind": "benchmark",
+        "id": "example.benchmark",
+        "version": "0.1.0",
+        "display_name": "Example benchmark",
+        "entrypoint": [
+          "python",
+          "/opt/benchmark/connector.py"
+        ],
+        "image": "example/benchmark@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "prefix": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "wait": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "secret_schema": {
+          "type": "object",
+          "properties": {
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "prepare": "native",
+          "evaluate": "native",
+          "aggregate": "native",
+          "cleanup": "native",
+          "capture": "native",
+          "drive": "native"
+        },
+        "requirements": {
+          "capabilities": []
+        }
+      },
+      "error": "UNSUPPORTED_PROTOCOL"
+    },
+    {
+      "name": "missing scope",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "zero generation",
+      "kind": "scope",
+      "value": {
+        "workspace_id": "workspace-example",
+        "trial_id": "trial-example",
+        "generation": 0
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "error is not incorrect",
+      "kind": "evaluation_result",
+      "value": {
+        "status": "error",
+        "success": true,
+        "metrics": [
+          {
+            "name": "success",
+            "value": 1
+          }
+        ],
+        "primary_metric": "success",
+        "native": {
+          "passed": true
+        },
+        "artifacts": [],
+        "completeness": {
+          "state": "captured"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "cancelled has no verdict",
+      "kind": "evaluation_result",
+      "value": {
+        "status": "cancelled",
+        "success": true,
+        "metrics": [
+          {
+            "name": "success",
+            "value": 1
+          }
+        ],
+        "primary_metric": "success",
+        "native": {
+          "passed": true
+        },
+        "artifacts": [],
+        "completeness": {
+          "state": "captured"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "negative artifact size",
+      "kind": "artifact",
+      "value": {
+        "id": "x",
+        "uri": "object:x",
+        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "size_bytes": -1,
+        "visibility": "user"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "unknown method",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "x",
+        "method": "run_any_shell",
+        "params": {}
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "scoped cleanup",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "cleanup-1",
+        "method": "cleanup",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "payload": {}
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "broker allocate",
+      "kind": "wire_message",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "broker_request",
+        "id": "allocate-1",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "provider": "docker",
+        "operation": "allocate",
+        "payload": {
+          "resource": {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "unknown broker operation",
+      "kind": "broker_request",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "broker_request",
+        "id": "x",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "provider": "docker",
+        "operation": "host_shell",
+        "payload": {}
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "configuration receipt",
+      "kind": "validation_result",
+      "value": {
+        "accepted": true,
+        "effective_config": {}
+      },
+      "error": null
+    },
+    {
+      "name": "false configuration receipt",
+      "kind": "validation_result",
+      "value": {
+        "accepted": false,
+        "effective_config": {}
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "immutable installed dataset metadata",
+      "kind": "dataset_installation",
+      "value": {
+        "format_version": "1.0",
+        "connector_id": "example.benchmark",
+        "connector_version": "0.1.0",
+        "dataset_id": "example",
+        "revision": "1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worker_image": "example@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cases": [
+          {
+            "ref": {
+              "dataset_id": "example",
+              "revision": "1",
+              "case_id": "echo"
+            },
+            "title": "Echo and verify",
+            "description": "Create an example artifact",
+            "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "native_ref": {
+              "case": "echo"
+            },
+            "requirements": {
+              "capabilities": []
+            }
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "name": "reject floating dataset worker image",
+      "kind": "dataset_installation",
+      "value": {
+        "format_version": "1.0",
+        "connector_id": "example.benchmark",
+        "connector_version": "0.1.0",
+        "dataset_id": "example",
+        "revision": "1",
+        "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "worker_image": "example:latest",
+        "cases": [
+          {
+            "ref": {
+              "dataset_id": "example",
+              "revision": "1",
+              "case_id": "echo"
+            },
+            "title": "Echo and verify",
+            "description": "Create an example artifact",
+            "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "native_ref": {
+              "case": "echo"
+            },
+            "requirements": {
+              "capabilities": []
+            }
+          }
+        ]
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "output stage evaluation",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true,
+            "stage": "evaluation"
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "output stage after_cleanup",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true,
+            "stage": "after_cleanup"
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "typed regrade checkpoint",
+      "kind": "regrade_checkpoint",
+      "value": {
+        "format_version": "1.0",
+        "connector": {
+          "id": "example.benchmark",
+          "version": "0.1.0"
+        },
+        "case": {
+          "dataset_id": "example",
+          "revision": "1",
+          "case_id": "echo"
+        },
+        "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "state_schema": "fixture.saved-world.v1",
+        "complete": true,
+        "artifacts": [],
+        "evaluator_roles": [],
+        "state": {
+          "saved": true
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "regrade cannot request agent model role",
+      "kind": "regrade_checkpoint",
+      "value": {
+        "format_version": "1.0",
+        "connector": {
+          "id": "example.benchmark",
+          "version": "0.1.0"
+        },
+        "case": {
+          "dataset_id": "example",
+          "revision": "1",
+          "case_id": "echo"
+        },
+        "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "state_schema": "fixture.saved-world.v1",
+        "complete": true,
+        "artifacts": [],
+        "evaluator_roles": [
+          "agent"
+        ],
+        "state": {
+          "saved": true
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation spec with retained checkpoint",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation",
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "evaluation plan without agent",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot",
+        "purpose": "evaluation"
+      },
+      "error": null
+    },
+    {
+      "name": "evaluation readiness without agent",
+      "kind": "prepared",
+      "value": {
+        "ready": true,
+        "session_handle": "evaluation-environment",
+        "purpose": "evaluation",
+        "native_state": {
+          "saved": true
+        },
+        "artifacts": []
+      },
+      "error": null
+    },
+    {
+      "name": "environment_plan evaluation cannot grant an agent",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot",
+        "purpose": "evaluation",
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "environment_plan legacy execution requires an agent",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "prepared evaluation cannot grant an agent",
+      "kind": "prepared",
+      "value": {
+        "ready": true,
+        "session_handle": "evaluation-environment",
+        "purpose": "evaluation",
+        "native_state": {
+          "saved": true
+        },
+        "artifacts": [],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": []
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "prepared legacy execution requires an agent",
+      "kind": "prepared",
+      "value": {
+        "ready": true,
+        "session_handle": "evaluation-environment",
+        "native_state": {
+          "saved": true
+        },
+        "artifacts": []
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation requires typed checkpoint",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation forbids agent model",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {
+          "agent": {
+            "name": "fixture",
+            "endpoint": "https://example.invalid",
+            "credential_ref": "owner-key"
+          }
+        },
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation",
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "evaluation forbids orchestrator model",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {
+          "orchestrator": {
+            "name": "fixture",
+            "endpoint": "https://example.invalid",
+            "credential_ref": "owner-key"
+          }
+        },
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "purpose": "evaluation",
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "execution cannot carry evaluator checkpoint",
+      "kind": "trial_spec",
+      "value": {
+        "protocol_version": "1.0",
+        "scope": {
+          "workspace_id": "workspace-example",
+          "trial_id": "trial-example",
+          "generation": 1
+        },
+        "case": {
+          "ref": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "title": "Echo and verify",
+          "description": "Create an example artifact",
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "native_ref": {
+            "case": "echo"
+          },
+          "requirements": {
+            "capabilities": []
+          }
+        },
+        "config": {
+          "prefix": "SDK "
+        },
+        "credential_refs": {},
+        "models": {},
+        "limits": {
+          "wall_time_seconds": 60,
+          "memory_mb": 128,
+          "cpu_cores": 1,
+          "disk_mb": 64
+        },
+        "checkpoint": {
+          "format_version": "1.0",
+          "connector": {
+            "id": "example.benchmark",
+            "version": "0.1.0"
+          },
+          "case": {
+            "dataset_id": "example",
+            "revision": "1",
+            "case_id": "echo"
+          },
+          "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "state_schema": "fixture.saved-world.v1",
+          "complete": true,
+          "artifacts": [],
+          "evaluator_roles": [],
+          "state": {
+            "saved": true
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent run control envelope",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {}
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent scoped control envelope",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "control",
+          "payload": {
+            "name": "turn.submit",
+            "payload": {
+              "text": "Fixture"
+            }
+          },
+          "session_id": "session-1"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent controls require a session",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "control",
+          "payload": {}
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent run cannot choose a session",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {},
+          "session_id": "session-1"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent operations are explicit",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "invented",
+          "payload": {}
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent context cannot choose the harness",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-call",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {},
+          "harness_id": "other"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent completion refers to committed outcome",
+      "kind": "agent_completion",
+      "value": {
+        "session_id": "s1",
+        "status": "failed",
+        "outcome": {
+          "attempt_id": "a1",
+          "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent completion requires evidence",
+      "kind": "agent_completion",
+      "value": {
+        "session_id": "s1",
+        "status": "success"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent completion has a terminal status",
+      "kind": "agent_completion",
+      "value": {
+        "session_id": "s1",
+        "status": "running",
+        "outcome": {
+          "attempt_id": "a1",
+          "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "agent session returns its attempt",
+      "kind": "agent_session",
+      "value": {
+        "session_id": "s1",
+        "attempt_id": "a1"
+      },
+      "error": null
+    },
+    {
+      "name": "agent command returns native confirmation",
+      "kind": "agent_control_result",
+      "value": {
+        "session_id": "s1",
+        "command_id": "c1",
+        "result": {
+          "accepted": true
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "agent event page carries a cursor",
+      "kind": "agent_events",
+      "value": {
+        "session_id": "s1",
+        "events": [],
+        "cursor": 0,
+        "closed": false
+      },
+      "error": null
+    },
+    {
+      "name": "agent run settings belong to the host",
+      "kind": "command",
+      "value": {
+        "protocol_version": "1.0",
+        "type": "command",
+        "id": "agent-params",
+        "method": "agent.call",
+        "params": {
+          "scope": {
+            "workspace_id": "workspace-example",
+            "trial_id": "trial-example",
+            "generation": 1
+          },
+          "operation": "run",
+          "payload": {
+            "harness_id": "other"
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "known native OS without inferred architecture",
+      "kind": "requirements",
+      "value": {
+        "platform": {
+          "os": "linux"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "known native architecture without inferred OS",
+      "kind": "requirements",
+      "value": {
+        "platform": {
+          "architecture": "x86_64"
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "empty native platform requirement",
+      "kind": "requirements",
+      "value": {
+        "platform": {}
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "unknown native platform field",
+      "kind": "requirements",
+      "value": {
+        "platform": {
+          "accelerator": "imagined"
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "declared environment service retention",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "process_policy": "retain_until_cleanup"
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": [
+            "host.retained_agent_processes_v1"
+          ]
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "service retention requires capability",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "process_policy": "retain_until_cleanup"
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "service retention requires native environment",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "connector_container",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "process_policy": "retain_until_cleanup"
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": [
+            "host.retained_agent_processes_v1"
+          ]
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "explicit native agent user",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "user": "1000:1000"
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": 17
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": null
+    },
+    {
+      "name": "zero-native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": 0
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "fractional-native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": 0.5
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "unknown-native-agent-budget",
+      "kind": "environment_plan",
+      "value": {
+        "resources": [
+          {
+            "id": "workspace",
+            "kind": "container",
+            "provider": "docker",
+            "config": {
+              "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            }
+          }
+        ],
+        "agent": {
+          "mode": "in_environment",
+          "interaction": "autonomous",
+          "environment_handle": "workspace",
+          "cwd": "/workspace",
+          "prompt": "Create result.txt",
+          "instructions": [],
+          "resources": [],
+          "wall_time_seconds": true
+        },
+        "outputs": [
+          {
+            "id": "result",
+            "resource_id": "workspace",
+            "path": "/workspace/result.txt",
+            "visibility": "user",
+            "required": true
+          }
+        ],
+        "requirements": {
+          "capabilities": []
+        },
+        "grading_mode": "snapshot"
+      },
+      "error": "INVALID_MESSAGE"
+    },
+    {
+      "name": "native-evaluator-requirements",
+      "kind": "case_descriptor",
+      "value": {
+        "ref": {
+          "dataset_id": "example",
+          "revision": "1",
+          "case_id": "echo"
+        },
+        "title": "Echo and verify",
+        "description": "Create an example artifact",
+        "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "native_ref": {
+          "case": "echo"
+        },
+        "requirements": {
+          "capabilities": []
+        },
+        "evaluation_requirements": {
+          "resources": {
+            "cpu_cores": 0.25,
+            "memory_mb": 128
+          }
+        }
+      },
+      "error": null
+    },
+    {
+      "name": "invalid-evaluator-requirements",
+      "kind": "case_descriptor",
+      "value": {
+        "ref": {
+          "dataset_id": "example",
+          "revision": "1",
+          "case_id": "echo"
+        },
+        "title": "Echo and verify",
+        "description": "Create an example artifact",
+        "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "native_ref": {
+          "case": "echo"
+        },
+        "requirements": {
+          "capabilities": []
+        },
+        "evaluation_requirements": {
+          "resources": {
+            "cpu_cores": 0
+          }
+        }
+      },
+      "error": "INVALID_MESSAGE"
+    }
+  ],
+  "evaluation_spec": {
+    "protocol_version": "1.0",
+    "scope": {
+      "workspace_id": "workspace-example",
+      "trial_id": "trial-example",
+      "generation": 1
+    },
+    "case": {
+      "ref": {
+        "dataset_id": "example",
+        "revision": "1",
+        "case_id": "echo"
+      },
+      "title": "Echo and verify",
+      "description": "Create an example artifact",
+      "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "native_ref": {
+        "case": "echo"
+      },
+      "requirements": {
+        "capabilities": []
+      }
+    },
+    "config": {
+      "prefix": "SDK "
+    },
+    "credential_refs": {},
+    "models": {},
+    "limits": {
+      "wall_time_seconds": 60,
+      "memory_mb": 128,
+      "cpu_cores": 1,
+      "disk_mb": 64
+    },
+    "purpose": "evaluation",
+    "checkpoint": {
+      "format_version": "1.0",
+      "connector": {
+        "id": "example.benchmark",
+        "version": "0.1.0"
+      },
+      "case": {
+        "dataset_id": "example",
+        "revision": "1",
+        "case_id": "echo"
+      },
+      "source_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "state_schema": "fixture.saved-world.v1",
+      "complete": true,
+      "artifacts": [],
+      "evaluator_roles": [],
+      "state": {
+        "saved": true
+      }
+    }
+  },
+  "evaluation_plan": {
+    "resources": [
+      {
+        "id": "workspace",
+        "kind": "container",
+        "provider": "docker",
+        "config": {
+          "image": "example/task@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "id": "result",
+        "resource_id": "workspace",
+        "path": "/workspace/result.txt",
+        "visibility": "user",
+        "required": true
+      }
+    ],
+    "requirements": {
+      "capabilities": []
+    },
+    "grading_mode": "snapshot",
+    "purpose": "evaluation"
+  },
+  "evaluation_prepared": {
+    "ready": true,
+    "session_handle": "evaluation-environment",
+    "purpose": "evaluation",
+    "native_state": {
+      "saved": true
+    },
+    "artifacts": []
+  }
+}

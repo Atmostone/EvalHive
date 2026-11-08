@@ -29,8 +29,7 @@ dist/
 .keys
 
 # Data (persistent volumes — runtime artifacts, never committed)
-data/workspaces/
-data/shared/
+/data/
 
 # IDE
 .vscode/

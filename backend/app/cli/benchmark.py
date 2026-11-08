@@ -1,16 +1,8 @@
-"""CLI for the Benchmark Case Store (pre-E-23).
+"""Run installed native datasets and inspect historical file-store results.
 
-Materialize versioned case files into runnable task instances, watch them, evaluate
-them, and aggregate by suite × model. Run inside the api container:
-
-    docker compose exec api python -m app.cli.benchmark suites
-    docker compose exec api python -m app.cli.benchmark load --suite capability-isolation --template <uuid> [--model <uuid>] [--repeat 1]
-    docker compose exec api python -m app.cli.benchmark status --suite capability-isolation
-    docker compose exec api python -m app.cli.benchmark evaluate --suite capability-isolation
-    docker compose exec api python -m app.cli.benchmark aggregate --suite capability-isolation [--model <name>] [--category <c>]
-
-`load` creates READY tasks (the orchestrator loop drains them); `evaluate` runs the
-capability harness (E-13) on terminal instances; `aggregate` prints capability_score.
+``load`` requires explicit workspace benchmark, dataset and harness references.
+It freezes and starts a native matrix through the shared Benchmark SDK service.
+``suites``, ``status``, ``evaluate`` and ``aggregate`` retain historical readers.
 """
 
 from __future__ import annotations
@@ -24,9 +16,10 @@ from collections import Counter
 from sqlalchemy import select
 
 from app.database import async_session
+from app.models.benchmark import BenchmarkDatasetRevision
 from app.models.task import Task
 from app.models.workspace import DEFAULT_WORKSPACE_ID
-from app.quality.benchmark import list_suites, load_cases, materialize
+from app.quality.benchmark import list_suites
 from app.quality.capability import aggregate_capability, evaluate_task_capability
 
 _TERMINAL = ("done", "awaiting_approval", "failed")
@@ -38,21 +31,30 @@ async def _suites(_args) -> None:
 
 
 async def _load(args) -> None:
+    from app.quality.experiments import create_experiment, start_experiment
+
+    if args.template or args.model:
+        raise ValueError("Choose a harness profile; legacy template/model execution overrides are retired")
+    if not all(getattr(args, name, None) for name in ("benchmark_profile", "dataset_revision", "harness_profile")):
+        raise ValueError("Native loading requires --benchmark-profile, --dataset-revision and --harness-profile")
     workspace_id = uuid.UUID(args.workspace_id) if args.workspace_id else DEFAULT_WORKSPACE_ID
-    template_id = uuid.UUID(args.template) if args.template else None
-    model_id = uuid.UUID(args.model) if args.model else None
-    cases = load_cases(args.suite)
-    total = 0
     async with async_session() as db:
-        for case in cases:
-            tasks = await materialize(
-                db, case, workspace_id=workspace_id, repeat=args.repeat,
-                template_id=template_id, model_id=model_id,
-            )
-            total += len(tasks)
-            print(f"  {case.id}: {len(tasks)} task(s) → {[str(t.id) for t in tasks]}")
-    print(f"materialized {len(cases)} case(s) × {args.repeat} = {total} task instance(s) "
-          f"in suite '{args.suite}' (READY; the orchestrator will run them)")
+        dataset = await db.scalar(select(BenchmarkDatasetRevision).where(
+            BenchmarkDatasetRevision.id == uuid.UUID(str(args.dataset_revision)),
+            BenchmarkDatasetRevision.workspace_id == workspace_id,
+        ))
+        if dataset is None or args.suite not in {dataset.dataset_id, dataset.provenance.get("suite")}:
+            raise ValueError("Suite must identify the selected registered workspace dataset")
+        experiment = await create_experiment(db, workspace_id=workspace_id, payload={
+            "name": getattr(args, "name", None) or f"Native {args.suite} {uuid.uuid4().hex[:8]}",
+            "dataset": {"source": "benchmark_sdk", "profile_id": str(args.benchmark_profile), "dataset_revision_id": str(args.dataset_revision)},
+            "configurations": [{"harness_profile_id": str(args.harness_profile)}],
+            "n_runs_per_cell": args.repeat, "max_parallel": 1,
+        }, created_by="benchmark-cli")
+        await start_experiment(db, experiment)
+        print(json.dumps({"experiment_id": str(experiment.id), "status": experiment.status,
+                          "dataset_id": dataset.dataset_id, "cases": len(experiment.dataset_cases),
+                          "repetitions": experiment.n_runs_per_cell}))
 
 
 async def _status(args) -> None:
@@ -97,16 +99,20 @@ async def _aggregate(args) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Benchmark Case Store (pre-E-23)")
+    p = argparse.ArgumentParser(description="Native Benchmark SDK and historical Case Store")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("suites", help="list available suites").set_defaults(func=_suites)
 
-    ld = sub.add_parser("load", help="materialize a suite into READY task instances")
+    ld = sub.add_parser("load", help="freeze and start an installed native dataset matrix")
     ld.add_argument("--suite", required=True)
     ld.add_argument("--repeat", type=int, default=1, help="instances per case (samples)")
-    ld.add_argument("--template", default=None, help="pin a template (recommended for determinism)")
-    ld.add_argument("--model", default=None, help="override the agent model (run_config.model_id)")
+    ld.add_argument("--template", default=None, help="retired; use a harness profile")
+    ld.add_argument("--model", default=None, help="retired; configure the harness profile model")
+    ld.add_argument("--benchmark-profile", type=uuid.UUID, required=True)
+    ld.add_argument("--dataset-revision", type=uuid.UUID, required=True)
+    ld.add_argument("--harness-profile", type=uuid.UUID, required=True)
+    ld.add_argument("--name", default=None, help="matrix name")
     ld.add_argument("--workspace-id", default=None)
     ld.set_defaults(func=_load)
 

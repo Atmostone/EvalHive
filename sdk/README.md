@@ -66,6 +66,15 @@ connector-neutral facts: `kind` (`model_error`, `limit`, `timeout`, `harness_err
 The canonical schema validates these facts. Core consumers classify the facts;
 native error-message parsing stays in the connector. Missing facts remain unknown.
 
+TypeScript connectors use `nativePayload` for raw native observations. Ordinary
+payloads retain their historical shape. Numbers outside the protocol's safe
+numeric range are represented as strings inside an explicit
+`{encoding: "evalhive.native-numbers.v1", value, number_paths}` envelope.
+`number_paths` contains RFC 6901 pointers identifying only converted values;
+strings remain ordinary fields so credential redaction still applies. This
+records the native JavaScript values without modifying model/tool schemas or
+relaxing numeric validation for normalized events and protocol counters.
+
 `failure.observed` records a failed provider request even when the native harness
 recovers and ultimately succeeds. It carries `request_id`, `purpose` and the same
 typed failure `facts`. Core consumers preserve infrastructure contamination
@@ -74,6 +83,66 @@ separately from the successful result. Retries remain native harness decisions.
 Cancellation cannot turn into success merely because a connector returned successfully during
 shutdown. A broken pipe can prevent a terminal event: the runner must record an
 explicit transport failure. Late emits after a terminal record are rejected.
+
+## Persistent conversations (SDK 0.2, interaction protocol 1.0)
+
+The wire protocol remains `1.0`. A run can explicitly select
+`interaction: {version: "1.0", mode: "conversation"}` or `external_steps`.
+Omitting the field, or selecting `single_turn`, preserves the original behavior.
+Preflight requires the manifest's `conversation` capability; external steps also
+require `external_tool_execution`. Unknown interaction versions fail explicitly.
+Installed connectors advertise support; adding an SDK capability alone does not
+make an older connector conversational.
+
+A conversation is one execution attempt. The connector keeps its native session
+alive and calls `context.conversation.next_input()` (TypeScript `nextInput`).
+Finishing an assistant response uses `complete_turn(message_id, content)` /
+`completeTurn`: it emits correlated output/completion and returns to
+`session.waiting_input`, without a terminal `run.finished`. The connector exits
+after an explicit idle `session.close` or cancellation.
+
+| Control | Input | Meaning |
+| --- | --- | --- |
+| `turn.submit` | Stable input/turn IDs, expected revision and typed user messages | Admit one input without waiting for generation |
+| `tool.respond` | Stable input ID, active turn/batch, expected revision and call results | Resolve named pending external tools |
+| `session.close` | Stable input ID, expected revision and reason | Close an idle session |
+
+The manifest must declare these controls and their canonical input schemas.
+They are handled by the SDK. Ordinary single-turn feedback keeps its original
+semantics; a native conversation connector may require typed input instead.
+`turn.submit` increments the session revision. Tool results use that revision and
+can arrive individually or in a batch, in any order. Duplicate input IDs return
+the previous receipt, while conflicting content fails. A command is validated
+in full before any tool future resolves. Completed results cannot be replaced.
+Only one user turn and one tool batch can be active at a time. Close while busy
+fails; abort stops generation, pending tools and waiting input.
+
+For `external_steps`, a native connector calls
+`request_tools(message_id, batch_id, calls)` / `requestTools`. The SDK publishes
+one structured assistant step and a `tool.request`, then awaits the driver's
+results in original call order. The connector must correlate the complete native
+assistant tool batch before invoking this boundary; the SDK does not discover
+batches, register native tools or execute a model loop. Harness-native tools that
+bypass an externally controlled environment must be disabled by that profile.
+
+Optional typed `initial_history` is agent-visible seed history, never private
+simulator context. Applying it to the native session is the connector's
+responsibility and requires a declared `conversation_history` capability.
+Single-turn runs reject conversation-only options instead of ignoring them.
+The input ledger defaults to 1,024 controls, and tool calls to
+4,096; explicit `max_inputs` and `max_tool_calls` adjust those bounded limits.
+They are separate from native model-step and benchmark conversation budgets.
+An idle session retains a reserved close receipt even when its input ledger is full.
+
+Input receipts and native state are process-local. The runner/coordinator must
+persist commands and outputs and classify interrupted admission as uncertain.
+Transport recovery does not imply transparent continuation after a native worker
+dies. A resumed worker requires a separately proven native capability; otherwise
+the trial ends explicitly and a new attempt resets its environment.
+
+The conversation conformance suite exercises both host libraries against both
+worker languages, multiple inputs, deduplication, external tools and cancellation.
+Native Pi/OpenCode integration is a separate acceptance gate.
 
 ## Manifest, RunSpec and evidence
 
@@ -142,6 +211,12 @@ singletons. Both SDKs expose resource validation and private credential resoluti
 | `memory` | `mode: off/flat/structured`; `off` forbids content, other modes carry the resolved context |
 | `instructions` | Environment/workspace rules as explicit content |
 
+MCP resource `timeout_seconds` preserves native request timeouts from 1 through
+3600 seconds. The execution attempt's independent wall deadline still bounds the
+whole run and cancellation. Installations must rebuild their connector bundles
+with the matching SDK schema before using settings beyond an older schema's
+range.
+
 MCP `credential_refs` map `env.NAME` or `headers.NAME` to private worker credential
 IDs. The backend persists references, not environment/header values. Native
 configuration is constructed inside the connector. Credentials never belong in
@@ -197,3 +272,27 @@ configuration/version rejection, malformed/unterminated frames, out-of-order and
 late replies, bounded buffers, feedback, abort, EOF and sanitized errors. This is
 SDK conformance; Pi/OpenCode integration and end-to-end platform validation are
 tracked separately in SPA-127/SPA-129/SPA-133.
+
+## Owned model transport
+
+A host can select `metadata.model_gateway` with `transport: "unix_http_v1"`, an
+absolute `socket_path`, and a named model `role`. Preflight requires the
+connector's `model_gateway` capability. The optional descriptor is validated by
+the canonical Python/TypeScript schema; the JSONL protocol remains `1.0`.
+
+The TypeScript `openModelGateway(spec, signal)` helper binds a loopback HTTP
+listener inside the task and streams native POST requests for `/v1/chat/completions`
+and `/v1/responses` over the host-owned Unix socket. Pi and OpenCode use this
+endpoint internally, preserving their native agent loops and provider bodies.
+The public model specification retains its resolved model identity and endpoint;
+ephemeral loopback ports are not applied configuration or comparison inputs.
+Omitting the descriptor preserves direct model access.
+
+The host owns and mounts the socket, authorizes each role, replaces temporary
+role credentials with the private provider connection, and enforces current
+ownership and deadlines. Supplying a descriptor alone does not enable a runtime
+capability. The helper does not resolve upstream URLs, provide Internet access,
+or select models. It bounds requests to 2 MiB and responses to 64 MiB, propagates
+stream disconnects, and closes active connections on attempt cancellation. Real
+provider keys must remain on the host; only scoped role tokens belong in task
+credentials. Runtime admission and lifecycle wiring remain host responsibilities.

@@ -1,0 +1,7 @@
+{
+  "image": "ghcr.io/github/github-mcp-server@sha256:8d624b91930eaf245d572f2f6b22b7b44185e899b9cf1eaee4b3ff324f1e6263",
+  "binary_path": "/server/github-mcp-server",
+  "binary_sha256": "2934c02d8fab9be2f4070b38f6b8f67eab88d61aac7a121ee46e8d277806eb32",
+  "binary_size_bytes": 13435064,
+  "version_output": "GitHub MCP Server\nVersion: v0.15.0\nCommit: 010cf9b33a23d531194da91f54818b7c052b93d0\nBuild Date: 2025-09-12T14:13:22Z"
+}

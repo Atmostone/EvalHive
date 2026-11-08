@@ -5,6 +5,14 @@ environment next to our stack: the mock PostgreSQL as a compose profile and a de
 agent image that combines their MCP toolchain with our agent loop. Background and the
 adoption verdict: [research-toolathlon-gym.md](research-toolathlon-gym.md).
 
+## Historical infrastructure only
+
+The recipes below document the retired deployment for historical context. New
+Toolathlon runs use the [native Benchmark SDK package](../benchmarks/toolathlon-gym/README.md)
+and [registered SDK selections](benchmarks.md). The core preprocess/eval runner,
+PG lane overrides and pilot write commands are unavailable. Do not use these
+recipes to launch new product runs or claim an exact replay of a floating image.
+
 ## Prerequisites
 
 A local clone of the dataset repo (it is an **external dependency** — we do not vendor

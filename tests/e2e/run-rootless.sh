@@ -28,6 +28,8 @@ if [[ "${E2E_SKIP_BUILD:-0}" != 1 ]]; then
   docker run --rm --network none --memory 512m --cpus 1 --pids-limit 128 --cap-drop ALL \
     --security-opt no-new-privileges --init evalhive-environment-tests:e2e
   docker build --target runtime -f environments/workspace/Dockerfile -t evalhive-environment-workspace:0.1.0 .
+  docker build --target artifact -f environments/runtime/Dockerfile -t evalhive-supervisor:development .
+  docker build --target bundle-tools -f environments/runtime/Dockerfile -t evalhive-runtime-tools:development .
   # Native tests and execution are deliberately serial.
   for harness in pi opencode; do
     docker build --target test -f "harnesses/$harness/Dockerfile" -t "evalhive-$harness-tests:e2e" .
@@ -36,6 +38,7 @@ if [[ "${E2E_SKIP_BUILD:-0}" != 1 ]]; then
     version=1.5.0
     if [[ "$harness" == opencode ]]; then version=1.19.5; fi
     docker build -f "harnesses/$harness/Dockerfile" -t "evalhive-$harness:$version" .
+    docker build --target bundle -f "harnesses/$harness/Dockerfile" -t "evalhive-$harness-bundle:$version" .
   done
 fi
 export E2E_HARNESS_DIR="$E2E_RESULTS_DIR/catalog-$(date -u +%Y%m%dT%H%M%S)-$$"

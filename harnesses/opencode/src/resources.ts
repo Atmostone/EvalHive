@@ -96,6 +96,8 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
   }
   const selection: Record<string, boolean> | undefined = names ? { '*': false } : undefined;
   for (const name of names ?? []) {
+    if (object(spec.interaction).mode === 'external_steps' && builtin.includes(name))
+      throw new ProtocolError('UNSUPPORTED_TOOL', 'External steps permit only driver-owned MCP tools');
     const server = Object.keys(mcp).find((id) => name.startsWith(`mcp__${id}__`));
     const native = server
       ? name.replace(`mcp__${server}__`, `${server}_`)
@@ -103,6 +105,10 @@ export function resourcePlan(spec: RunSpec, credentials: Record<string, string>)
     if (!builtin.includes(native) && !server && !(native in aliases))
       throw new ProtocolError('UNSUPPORTED_TOOL', 'A requested tool is unavailable in OpenCode');
     selection![native] = true;
+  }
+  if (object(spec.interaction).mode === 'external_steps' && !selection) {
+    return {mcp, aliases, aliasPrefixes, instructions, skills,
+      selection: {'*': false, ...Object.fromEntries(Object.keys(mcp).map(id => [`${id}_*`, true]))}};
   }
   return { mcp, aliases, aliasPrefixes, selection, instructions, skills };
 }

@@ -1,0 +1,247 @@
+{
+  "$defs": {
+    "CaseEnvironment": {
+      "description": "Externally provisioned context the case needs at run time.\n\n``required_services``: infra the runner must provide (e.g. ``toolathlon_pg`` —\nthe Toolathlon PostgreSQL; eval/preprocess and most MCP servers query it).\n``mcp_servers``: MCP server names the agent needs (Registry entries, SPA-41).",
+      "properties": {
+        "required_services": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Services",
+          "type": "array"
+        },
+        "mcp_servers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Mcp Servers",
+          "type": "array"
+        }
+      },
+      "title": "CaseEnvironment",
+      "type": "object"
+    },
+    "CaseExternalEval": {
+      "description": "Gold as an *executable external checker* (Toolathlon-style, pre-E-23).\n\nCommands are templates resolved by the runner at execution time; the committed\nYAML stays machine-independent via placeholders: ``${TOOLATHLON_GYM_PATH}``\n(dataset clone root), ``${AGENT_WORKSPACE}``, ``${GROUNDTRUTH_WORKSPACE}``,\n``${LAUNCH_TIME}``, ``${RES_LOG_FILE}``. ``eval_command`` MUST receive the same\n``--launch_time`` value as ``preprocess_command`` (date-relative checks).\n``groundtruth_path`` is relative to the dataset root (absent for DB-only evals).",
+      "properties": {
+        "preprocess_command": {
+          "title": "Preprocess Command",
+          "type": "string"
+        },
+        "eval_command": {
+          "title": "Eval Command",
+          "type": "string"
+        },
+        "groundtruth_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Groundtruth Path"
+        }
+      },
+      "required": [
+        "preprocess_command",
+        "eval_command"
+      ],
+      "title": "CaseExternalEval",
+      "type": "object"
+    },
+    "CaseGold": {
+      "description": "The pluggable gold envelope — each key feeds one eval engine.",
+      "properties": {
+        "capability_spec": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability Spec"
+        },
+        "reference_answer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Answer"
+        },
+        "rubric": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rubric"
+        },
+        "canonical_trajectory": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonical Trajectory"
+        },
+        "external_eval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CaseExternalEval"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "CaseGold",
+      "type": "object"
+    },
+    "CaseInput": {
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "context": {
+          "items": {},
+          "title": "Context",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "title": "CaseInput",
+      "type": "object"
+    },
+    "CaseRepro": {
+      "properties": {
+        "template_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Template Id"
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Id"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        }
+      },
+      "title": "CaseRepro",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "suite": {
+      "title": "Suite",
+      "type": "string"
+    },
+    "category": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Category"
+    },
+    "input": {
+      "$ref": "#/$defs/CaseInput"
+    },
+    "gold": {
+      "$ref": "#/$defs/CaseGold"
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CaseEnvironment"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "repro": {
+      "$ref": "#/$defs/CaseRepro"
+    },
+    "meta": {
+      "additionalProperties": true,
+      "title": "Meta",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "suite",
+    "input"
+  ],
+  "title": "BenchmarkCase",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://evalhive.dev/cases/format/1.0/schema.json"
+}

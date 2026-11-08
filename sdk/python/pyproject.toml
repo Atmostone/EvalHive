@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evalhive-harness"
-version = "0.1.0"
+version = "0.2.0"
 description = "Language-independent connector protocol for EvalHive harnesses"
 requires-python = ">=3.12"
 readme = "README.md"

@@ -212,29 +212,6 @@ def test_attempt_layout_rejects_managed_symlinks(setup_runtime):
         prepare_layout(spec.task_id, attempt_id)
 
 
-def test_environment_helpers_label_the_workspace_for_namespace_validation(
-    setup_runtime, monkeypatch
-):
-    from app.quality import external_eval
-
-    _, client, spec, _ = setup_runtime
-    monkeypatch.setattr(external_eval, "_client", lambda: client)
-    monkeypatch.setattr(external_eval, "ensure_workspace_dir", lambda _: None)
-    monkeypatch.setattr(external_eval, "gym_host_path", lambda: "/registered/gym")
-    external_eval.start_preprocess(
-        spec.task_id,
-        "case",
-        "python preprocess.py",
-        "test-time",
-        keep_alive=True,
-        workspace_id=spec.workspace_id,
-    )
-    labels = client.containers.run.call_args.kwargs["labels"]
-    assert labels["evalhive.role"] == "environment"
-    assert labels["evalhive.task_id"] == spec.task_id
-    assert labels["evalhive.workspace_id"] == spec.workspace_id
-
-
 def test_attempt_seed_isolated_from_previous_attempts(setup_runtime):
     from app.runtime.workspace import seed_workspace
 

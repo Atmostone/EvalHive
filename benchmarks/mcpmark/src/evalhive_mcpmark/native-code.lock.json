@@ -1,0 +1,306 @@
+{
+  "format_version": "1.0",
+  "revision": "cd45b7f57923b9b3985467f5139927575f83141c",
+  "files": [
+    {
+      "path": "src/agents/__init__.py",
+      "size_bytes": 375,
+      "sha256": "5cee128eaa6f67afad7dca098329526c380bc91c24770f8bf9d614c0bb1ef24e"
+    },
+    {
+      "path": "src/agents/base_agent.py",
+      "size_bytes": 21276,
+      "sha256": "6a4865f253269265ae9608fe1123470e0daed1c88277273307ff7529590c31df"
+    },
+    {
+      "path": "src/agents/mcp/__init__.py",
+      "size_bytes": 265,
+      "sha256": "028d511949d2e3e83e9540cb64d14d3a76066b0c4fcc2ba15140ee13b8736420"
+    },
+    {
+      "path": "src/agents/mcp/http_server.py",
+      "size_bytes": 2595,
+      "sha256": "3110beed15e5c9e5e767c5b0b687ab95ca23163aa06360896382ef02bb6f1f95"
+    },
+    {
+      "path": "src/agents/mcp/stdio_server.py",
+      "size_bytes": 1833,
+      "sha256": "4d8ad9969a310ac067e64950d541c31e7d28a98cf0879b32bc2e72c96506e370"
+    },
+    {
+      "path": "src/agents/mcpmark_agent.py",
+      "size_bytes": 49021,
+      "sha256": "b9b8a92568f598c1105429ea19a2d5385e3989bea6fb67292940bbc256419062"
+    },
+    {
+      "path": "src/agents/react_agent.py",
+      "size_bytes": 21747,
+      "sha256": "e11e8d92fb2fe2128cb58746161baafe315011559533bf8a9085e70d9dfd360a"
+    },
+    {
+      "path": "src/agents/utils/__init__.py",
+      "size_bytes": 157,
+      "sha256": "41bdb87739d6782876aa7c5ccc84f6016d81b0bca8b17ee431835e1b5fa4172f"
+    },
+    {
+      "path": "src/agents/utils/token_usage.py",
+      "size_bytes": 2818,
+      "sha256": "e2e0a2142fee251d7df9b6d2720c00531672ef21acc766f1d939eaa32164d2e9"
+    },
+    {
+      "path": "src/aggregators/aggregate_results.py",
+      "size_bytes": 42664,
+      "sha256": "fd59110c5f0114a9f8e1229f2352e6416bfb893f922a14ca36e4a0d1bc3b3cd0"
+    },
+    {
+      "path": "src/aggregators/aggregate_specific_results.py",
+      "size_bytes": 8872,
+      "sha256": "4fda63f41f9312f281b45bf94ad44cc28cad22c34114a3a53c3ae9c44ea72cf3"
+    },
+    {
+      "path": "src/aggregators/aggregate_task_meta.py",
+      "size_bytes": 9529,
+      "sha256": "c1b08d9a6124a229e1aa03e0e02f0f2c50f4ea34b2598c819d32848f52e1fda1"
+    },
+    {
+      "path": "src/aggregators/pricing.py",
+      "size_bytes": 3267,
+      "sha256": "4766cbd32f51e4af20826f3aaaca3fa33a0dca1564b40ad60c5b154b167ea722"
+    },
+    {
+      "path": "src/base/__init__.py",
+      "size_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "src/base/login_helper.py",
+      "size_bytes": 218,
+      "sha256": "a03718c821cdbef718d02918493d85fa020c1712f335f69e97949503999ef33a"
+    },
+    {
+      "path": "src/base/state_manager.py",
+      "size_bytes": 7150,
+      "sha256": "2606584a57a48afbae583ececea816c97c4f746a58760ec9e26cada42d7ff3fc"
+    },
+    {
+      "path": "src/base/task_manager.py",
+      "size_bytes": 15702,
+      "sha256": "861445187543ddf9b611815b144d8207af5f372753f05b5e1eb4a30e7d18ce91"
+    },
+    {
+      "path": "src/config/__init__.py",
+      "size_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "src/config/config_schema.py",
+      "size_bytes": 8352,
+      "sha256": "65a0bea57ce3d52f9b1c7426de663651c5f38baa761116f98d03a4131556a65a"
+    },
+    {
+      "path": "src/errors.py",
+      "size_bytes": 2067,
+      "sha256": "db69c569eb2d308179f939be34c60b8910847efab6350b0fe210a8a14bf561ff"
+    },
+    {
+      "path": "src/evaluator.py",
+      "size_bytes": 18895,
+      "sha256": "51a97d52280f364cb1b2d106663efee6fea350f0d3fd77a029259d6e0842161e"
+    },
+    {
+      "path": "src/factory.py",
+      "size_bytes": 7385,
+      "sha256": "005c248e5f2e07b029f4a57b3a5790c52b52e693a07351f347051f3e0c84ccff"
+    },
+    {
+      "path": "src/logger.py",
+      "size_bytes": 484,
+      "sha256": "45c5aa8ef7491c1a8d3a720f2e3925515686cdba9ce630ac375fd9d15ae8185e"
+    },
+    {
+      "path": "src/mcp_services/filesystem/__init__.py",
+      "size_bytes": 556,
+      "sha256": "2de7b21b7234f83e9d1911e5c88353e048ce58b169f934fadb0ae8467c1b5220"
+    },
+    {
+      "path": "src/mcp_services/filesystem/filesystem_login_helper.py",
+      "size_bytes": 1885,
+      "sha256": "f7bb56c83906a840bb94bc74ee2894ad7683409558ee51f3a90af4f00c5fa840"
+    },
+    {
+      "path": "src/mcp_services/filesystem/filesystem_state_manager.py",
+      "size_bytes": 22173,
+      "sha256": "e4faf9c0e6c8da22ff5aa52dcbf053a7e7aaedc7a26841ff2dd647e6b1292fb4"
+    },
+    {
+      "path": "src/mcp_services/filesystem/filesystem_task_manager.py",
+      "size_bytes": 4969,
+      "sha256": "369cc2155d4d426d99a57fe57a29eb7bca5b8391dac51d5ef83b2c984d9571f1"
+    },
+    {
+      "path": "src/mcp_services/github/__init__.py",
+      "size_bytes": 569,
+      "sha256": "671fb370b79d6366de9545a0958362f2fd6d36e97e77932ee342ef8d1ba80d67"
+    },
+    {
+      "path": "src/mcp_services/github/github_login_helper.py",
+      "size_bytes": 7668,
+      "sha256": "6a949f3af45f0f258ad42a7bd7cf2bb4e1369fb079d52bfde37f9da5e77a3f9d"
+    },
+    {
+      "path": "src/mcp_services/github/github_state_manager.py",
+      "size_bytes": 40405,
+      "sha256": "b67a8e05ea85cd538f81649cccda9c433fb10b294b612856990437ab8fae5dc2"
+    },
+    {
+      "path": "src/mcp_services/github/github_task_manager.py",
+      "size_bytes": 5239,
+      "sha256": "49731faef07ff1523d00a3d8064ca64041f3e0e8475f9c0f4f247cc4411ef4a5"
+    },
+    {
+      "path": "src/mcp_services/github/repo_exporter.py",
+      "size_bytes": 16592,
+      "sha256": "ede91b3650e3c4b7c2739cac8105f5b2fda80cca7a6c605c59b624438ccd4490"
+    },
+    {
+      "path": "src/mcp_services/github/repo_importer.py",
+      "size_bytes": 17267,
+      "sha256": "8427ec12198deb7372d2bf5d0a275afc1266b98866e4cf8a243f6e623fd4cdf3"
+    },
+    {
+      "path": "src/mcp_services/github/token_pool.py",
+      "size_bytes": 1502,
+      "sha256": "94186a19784beb3b098141a5f03eb3d451c93545914d2b991039b4c1a3155842"
+    },
+    {
+      "path": "src/mcp_services/insforge/__init__.py",
+      "size_bytes": 55,
+      "sha256": "fb448d5665a2e4a467ac656757db9018450fbd5217fa89abbda341cb88699f9a"
+    },
+    {
+      "path": "src/mcp_services/insforge/insforge_login_helper.py",
+      "size_bytes": 6192,
+      "sha256": "2821ef97ae1e6e3e3c483cd5b0d8d6a1f0b58f72a05e831e4b9352aedc19d89a"
+    },
+    {
+      "path": "src/mcp_services/insforge/insforge_state_manager.py",
+      "size_bytes": 19268,
+      "sha256": "9db02edb0ce61867ab6f1e5bb8cb0b1719695a93fc6c0aff4815f3b886d2b745"
+    },
+    {
+      "path": "src/mcp_services/insforge/insforge_task_manager.py",
+      "size_bytes": 3611,
+      "sha256": "b3c165d32a21d121f677be1ef131c0965e46b956e522181f8b6550a436bbca76"
+    },
+    {
+      "path": "src/mcp_services/notion/__init__.py",
+      "size_bytes": 231,
+      "sha256": "0a5dd4254b943afab17bc7099efa8db1d5566022a7ae3b7dd9394161e4976886"
+    },
+    {
+      "path": "src/mcp_services/notion/notion_login_helper.py",
+      "size_bytes": 6898,
+      "sha256": "750a56e3436bdb4f7d274fa118947e07ae823fa827e46c775df698f6df777c54"
+    },
+    {
+      "path": "src/mcp_services/notion/notion_state_manager.py",
+      "size_bytes": 49485,
+      "sha256": "09303834e0b1eb706c65f71791aebd474d771119a076c1a1ea2b17a20b230c09"
+    },
+    {
+      "path": "src/mcp_services/notion/notion_task_manager.py",
+      "size_bytes": 4753,
+      "sha256": "de4d88354c3b0f773862a66546af339f3c7eeadaed5aa00cd6f0107f23a9f97a"
+    },
+    {
+      "path": "src/mcp_services/playwright/__init__.py",
+      "size_bytes": 177,
+      "sha256": "9c82ddaa6d427b918ab1f8c24906e39f77a343f09284f2de3ec827b0b2c0f466"
+    },
+    {
+      "path": "src/mcp_services/playwright/playwright_login_helper.py",
+      "size_bytes": 5610,
+      "sha256": "951c73e6e221613e1e4c47880013affb22f34287209d622058d3244f6ac88b6e"
+    },
+    {
+      "path": "src/mcp_services/playwright/playwright_state_manager.py",
+      "size_bytes": 12612,
+      "sha256": "6a49272466f8ddbf17ea1b1e1331e8b9cdddd72699c090a63ef6a49ed19e444d"
+    },
+    {
+      "path": "src/mcp_services/playwright/playwright_task_manager.py",
+      "size_bytes": 3639,
+      "sha256": "06f949fbe9b9792fc5566244c9ee13765a70ed95eb7832d57207dc86553103e9"
+    },
+    {
+      "path": "src/mcp_services/playwright_webarena/playwright_login_helper.py",
+      "size_bytes": 2068,
+      "sha256": "9d593b3497709f449522ad656bb1b36cc50c199507e90154ad886ddcd643dca2"
+    },
+    {
+      "path": "src/mcp_services/playwright_webarena/playwright_state_manager.py",
+      "size_bytes": 20737,
+      "sha256": "6e15b0f315be3041f8a219a33e3e39155652e6f3a9310d23746a4c326624c9b2"
+    },
+    {
+      "path": "src/mcp_services/playwright_webarena/playwright_task_manager.py",
+      "size_bytes": 3586,
+      "sha256": "ebe5fb1a1651f9f22905959f90b9445b3c7e51dc7d245e61b208b1e700b5220e"
+    },
+    {
+      "path": "src/mcp_services/postgres/__init__.py",
+      "size_bytes": 456,
+      "sha256": "df53b16c59d4ecb03c4ee6e67059254a670204989d1c38c954e2547d0f6421f5"
+    },
+    {
+      "path": "src/mcp_services/postgres/postgres_login_helper.py",
+      "size_bytes": 4465,
+      "sha256": "e750fd88fe603fc9c0d72bfe5e5a8f96b03b2fb9fc3907ced8f95ef4c88a8575"
+    },
+    {
+      "path": "src/mcp_services/postgres/postgres_state_manager.py",
+      "size_bytes": 19336,
+      "sha256": "f5af013a8c02c23f9c162ac5dcebdba49e75d408a33074602781aec68c454827"
+    },
+    {
+      "path": "src/mcp_services/postgres/postgres_task_manager.py",
+      "size_bytes": 4022,
+      "sha256": "a0e60c2ff6c25cc5daf80360bf2c0c5901444f926e6991ea2d3c30787e82f02e"
+    },
+    {
+      "path": "src/mcp_services/supabase/__init__.py",
+      "size_bytes": 317,
+      "sha256": "e069baebb4f47d3fe147b19b1f93e5e5a72a1c5679a1602497e4e9002d2c4635"
+    },
+    {
+      "path": "src/mcp_services/supabase/supabase_login_helper.py",
+      "size_bytes": 5995,
+      "sha256": "1dd33d3bfd3f046ed71c6501862cff7debaf42f36a2ed5952e5f1176bd786253"
+    },
+    {
+      "path": "src/mcp_services/supabase/supabase_state_manager.py",
+      "size_bytes": 20109,
+      "sha256": "b01e6ec197fb50b58abe7c93e06667fc9cf8d0260ca38bee5ac52dabc7c7115c"
+    },
+    {
+      "path": "src/mcp_services/supabase/supabase_task_manager.py",
+      "size_bytes": 3783,
+      "sha256": "78d0595f991b404e499914369f57051a6d89ad72c3f6476ecad2f6c8012d813d"
+    },
+    {
+      "path": "src/model_config.py",
+      "size_bytes": 9004,
+      "sha256": "c7afa5ab7b2e18e5bad886ead518733f46435e3adc3a831854fe57f54663d728"
+    },
+    {
+      "path": "src/results_reporter.py",
+      "size_bytes": 14566,
+      "sha256": "a2aab94788cfe6f651677fa09eb1f7ddaa0fb04e0e04495645c1d953785a6a57"
+    },
+    {
+      "path": "src/services.py",
+      "size_bytes": 18107,
+      "sha256": "d761efc45b7153dbee321c594dd6b496874eafb13221b086c40393cb6b796187"
+    }
+  ]
+}

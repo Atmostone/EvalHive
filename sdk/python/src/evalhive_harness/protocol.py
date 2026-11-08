@@ -63,6 +63,13 @@ def _json_value(value: Any, seen: set[int] | None = None, depth: int = 0) -> Non
 
 def validate(kind: str, value: Any) -> Any:
     _json_value(value)
+    spec = value
+    if isinstance(value, dict) and value.get("type") == "command":
+        params = value.get("params")
+        spec = params.get("run") if isinstance(params, dict) else None
+    if isinstance(spec, dict) and isinstance(spec.get("interaction"), dict):
+        if spec["interaction"].get("version") != "1.0":
+            raise ProtocolError("UNSUPPORTED_INTERACTION_VERSION", "Unsupported interaction protocol version")
     if isinstance(value, dict) and "protocol_version" in value:
         if value["protocol_version"] != PROTOCOL_VERSION:
             raise ProtocolError("UNSUPPORTED_PROTOCOL", "Unsupported protocol version")
@@ -84,6 +91,14 @@ def validate_run(manifest: dict, run: dict) -> dict:
     from .resources import resources
 
     resources(run)
+    if "model_gateway" in run.get("metadata", {}) and manifest["capabilities"].get("model_gateway") not in ("native", "emulated"):
+        raise ProtocolError("UNSUPPORTED_CAPABILITY", "Owned model transport is unavailable")
+    mode = run.get("interaction", {}).get("mode", "single_turn")
+    for capability in (["conversation"] if mode != "single_turn" else []) + (["external_tool_execution"] if mode == "external_steps" else []):
+        if manifest["capabilities"].get(capability) not in ("native", "emulated"):
+            raise ProtocolError("UNSUPPORTED_CAPABILITY", "Requested interaction mode is unavailable")
+    if run.get("interaction", {}).get("initial_history") and manifest["capabilities"].get("conversation_history") not in ("native", "emulated"):
+        raise ProtocolError("UNSUPPORTED_CAPABILITY", "Native history initialization is unavailable")
     schema = manifest["config_schema"]
     try:
         if (

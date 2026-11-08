@@ -46,6 +46,7 @@ jobs:
           ruff check sdk/python sdk/fixtures/peer.py sdk/examples/fake/connector.py
           python -m pytest -c sdk/python/pyproject.toml sdk/python/tests
           python -m pytest -c runner/pyproject.toml runner/tests
+          python -m pytest -c /dev/null scripts/tests
           EH_TEST_PYTHON="$(command -v python)" npm test --prefix sdk/typescript
       - name: Build distributable SDK packages
         run: |
@@ -53,6 +54,86 @@ jobs:
           python -m build sdk/python --outdir /tmp/evalhive-sdk-packages
           cd sdk/typescript
           npm pack --pack-destination /tmp/evalhive-sdk-packages
+
+  benchmark-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.1"
+          cache: npm
+          cache-dependency-path: benchmark-sdk/typescript/package-lock.json
+      - name: Install benchmark SDK dependencies
+        run: |
+          python -m pip install -e benchmark-sdk/python pytest==8.4.2 ruff==0.14.3 build==1.3.0
+          python -m pip install -e benchmarks/evalhive-cases
+          python -m pip install -e benchmarks/toolathlon-gym
+          npm ci --prefix benchmark-sdk/typescript
+          npm run build --prefix benchmark-sdk/typescript
+          npm ci --prefix benchmark-sdk/examples/fake
+      - name: Benchmark SDK conformance and source lock
+        run: |
+          ruff check benchmark-sdk/python benchmark-sdk/examples/fake/connector.py benchmark-sdk/scripts
+          python benchmark-sdk/scripts/verify-sources.py
+          python -m pytest -c /dev/null benchmark-sdk/python/tests
+          EH_TEST_PYTHON="$(command -v python)" npm test --prefix benchmark-sdk/typescript
+      - name: Native case compatibility and SDK worker
+        env:
+          CASE_CORPUS_PATH: ${{ github.workspace }}/backend/benchmarks
+        run: |
+          ruff check benchmarks/evalhive-cases benchmarks/toolathlon-gym
+          python -m pytest -c /dev/null --confcutdir=benchmarks benchmarks/evalhive-cases/tests benchmarks/toolathlon-gym/tests
+          python -m build benchmarks/evalhive-cases --outdir /tmp/evalhive-benchmark-packages
+          python -m build benchmarks/toolathlon-gym --outdir /tmp/evalhive-benchmark-packages
+      - name: Build benchmark SDK distributions
+        run: |
+          mkdir -p /tmp/evalhive-benchmark-packages
+          python -m build benchmark-sdk/python --outdir /tmp/evalhive-benchmark-packages
+          npm pack ./benchmark-sdk/typescript --pack-destination /tmp/evalhive-benchmark-packages
+
+  benchmark-adapters:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        connector: [harbor, tau2, mcpmark, appworld, swebench]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            benchmark-sdk/python/pyproject.toml
+            benchmarks/${{ matrix.connector }}/pyproject.toml
+      - name: Install isolated adapter test tools
+        run: python -m pip install pytest==9.2.0 pytest-asyncio==1.4.1.post1 ruff==0.14.3 build==1.3.0 setuptools==80.9.0 wheel==0.48.0
+      - name: Install the native Harbor parser and verifier subset
+        if: matrix.connector == 'harbor'
+        run: python -m pip install --no-deps --require-hashes -r benchmarks/harbor/requirements.lock
+      - name: Install SDK and adapter packages without EvalHive backend
+        run: |
+          python -m pip install --no-build-isolation -e benchmark-sdk/python httpx==0.28.1 docker==7.1.0 PyYAML==6.0.3
+          python -m pip install --no-build-isolation --no-deps -e benchmarks/${{ matrix.connector }}
+      - name: Check adapter contracts and build the distribution
+        env:
+          LLM_API_KEY: ""
+          LLM_BASE_URL: ""
+          LLM_MODEL: ""
+        run: |
+          ruff check benchmarks/${{ matrix.connector }}
+          python -m build --no-isolation benchmarks/${{ matrix.connector }} --outdir /tmp/evalhive-adapter-packages
+          python -m pip install --no-deps --force-reinstall /tmp/evalhive-adapter-packages/*.whl
+      - name: Verify the installed wheel without the backend
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -c 'import importlib.util; assert importlib.util.find_spec("app") is None'
+          python -m pytest -c /dev/null --asyncio-mode=auto --confcutdir="${{ github.workspace }}/benchmarks" "${{ github.workspace }}/benchmarks/${{ matrix.connector }}/tests"
 
   test:
     runs-on: ubuntu-latest
@@ -121,6 +202,7 @@ jobs:
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-dev.txt
           pip install -e sdk/python
+          pip install -e benchmark-sdk/python
           pip install -e runner
           pip install ruff
 

@@ -1,0 +1,258 @@
+import asyncio
+import json
+
+import pytest
+from evalhive_benchmark import ProtocolError, command, decode_line, encode_line
+from evalhive_benchmark.peer import Peer
+
+
+def test_timeout_replay_does_not_repeat_native_side_effect():
+    async def scenario():
+        inbound, outbound = asyncio.Queue(), asyncio.Queue()
+        calls = 0
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def write(frame):
+            outbound.put_nowait(frame)
+
+        async def handle(value):
+            nonlocal calls
+            calls += 1
+            entered.set()
+            await gate.wait()
+            return {"applied": calls}
+
+        async def frames():
+            while frame := await inbound.get():
+                yield frame
+
+        peer = Peer(write, handler=handle)
+        running = asyncio.create_task(peer.read(frames()))
+        frame = encode_line(command("same-operation", "describe"))
+        inbound.put_nowait(frame)
+        inbound.put_nowait(frame)
+        await asyncio.wait_for(entered.wait(), 2)
+        assert calls == 1
+        gate.set()
+        assert decode_line(await outbound.get())["result"] == {"applied": 1}
+        assert decode_line(await outbound.get())["result"] == {"applied": 1}
+        inbound.put_nowait(b"")
+        await running
+
+    asyncio.run(scenario())
+
+
+def test_receipt_capacity_does_not_evict_and_reexecute():
+    async def scenario():
+        sent = []
+
+        async def write(frame):
+            sent.append(decode_line(frame))
+
+        async def handle(value):
+            return {"applied": True}
+
+        async def frames():
+            for identity in ("first", "second", "first"):
+                yield encode_line(command(identity, "describe"))
+                await asyncio.sleep(0.01)
+
+        await Peer(write, handler=handle, receipt_limit=1).read(frames())
+        assert sent[0]["ok"] and sent[2] == sent[0]
+        assert sent[1]["error"]["code"] == "LEDGER_FULL"
+
+    asyncio.run(scenario())
+
+
+def test_uncertain_request_is_explicit():
+    async def scenario():
+        async def write(frame):
+            pass
+
+        peer = Peer(write)
+        with pytest.raises(ProtocolError) as caught:
+            await peer.request(command("request", "describe"), timeout=0.01)
+        assert caught.value.code == "COMMAND_UNCERTAIN"
+        assert not peer.pending
+
+    asyncio.run(scenario())
+
+
+def test_unknown_protocol_returns_an_explicit_error():
+    async def scenario():
+        sent = []
+
+        async def write(frame):
+            sent.append(decode_line(frame))
+
+        async def handle(value):
+            raise AssertionError("Invalid input must not reach the connector")
+
+        async def frames():
+            value = command("request", "describe")
+            value["protocol_version"] = "9.0"
+            yield (json.dumps(value) + "\n").encode()
+
+        with pytest.raises(ProtocolError) as caught:
+            await Peer(write, handler=handle).read(frames())
+        assert caught.value.code == "UNSUPPORTED_PROTOCOL"
+        assert sent[0]["error"]["code"] == "UNSUPPORTED_PROTOCOL"
+
+    asyncio.run(scenario())
+
+
+def test_handler_exception_does_not_expose_private_details():
+    async def scenario():
+        sent = []
+
+        async def write(frame):
+            sent.append(decode_line(frame))
+
+        async def handle(value):
+            raise RuntimeError("private-example-value")
+
+        async def frames():
+            yield encode_line(command("first", "describe"))
+            await asyncio.sleep(0.01)
+
+        await Peer(write, handler=handle).read(frames())
+        assert sent[0]["error"]["code"] == "CONNECTOR_ERROR"
+        assert "private-example-value" not in json.dumps(sent)
+
+    asyncio.run(scenario())
+
+
+def test_acknowledgement_reclaims_receipt_without_repeating_the_operation():
+    async def scenario():
+        sent = []
+        calls = 0
+
+        async def write(frame):
+            sent.append(decode_line(frame))
+
+        async def handle(value):
+            nonlocal calls
+            calls += 1
+            return {"applied": calls}
+
+        async def frames():
+            yield encode_line(command("first", "describe"))
+            await asyncio.sleep(0.01)
+            ack = {
+                "protocol_version": "1.0",
+                "type": "receipt_ack",
+                "id": "first",
+                "request_type": "command",
+            }
+            yield encode_line(ack)
+            yield encode_line(ack)
+            yield encode_line(command("second", "describe"))
+            await asyncio.sleep(0.01)
+            yield encode_line(command("first", "describe"))
+            await asyncio.sleep(0.01)
+
+        peer = Peer(write, handler=handle, receipt_limit=1)
+        await peer.read(frames())
+        assert calls == 2
+        assert sent[1]["result"] == {"applied": 2}
+        assert sent[2]["error"]["code"] == "RECEIPT_RETIRED"
+        assert peer.receipts[("command", "first")][1] is None
+
+    asyncio.run(scenario())
+
+
+def test_os_transport_failure_is_normalized_and_fails_pending_requests():
+    async def scenario():
+        writing = asyncio.Event()
+
+        async def write(frame):
+            writing.set()
+
+        async def frames():
+            await writing.wait()
+            raise OSError("private transport diagnostic")
+            yield b""  # pragma: no cover -- make this an async iterator
+
+        peer = Peer(write)
+        pending = asyncio.create_task(peer.request(command("request", "describe")))
+        with pytest.raises(ProtocolError) as caught:
+            await peer.read(frames())
+        assert caught.value.code == "INVALID_FRAME"
+        with pytest.raises(ProtocolError) as caught:
+            await pending
+        assert caught.value.code == "INVALID_FRAME" and "private" not in str(caught.value)
+        assert peer.closed and not peer.pending
+
+    asyncio.run(scenario())
+
+
+def test_durable_host_broker_ack_keeps_payload_ledger_bounded():
+    from evalhive_benchmark import Context
+
+    async def scenario():
+        host_input, worker_input = asyncio.Queue(), asyncio.Queue()
+        committed = {}
+        lookups = []
+
+        async def to_host(frame):
+            await host_input.put(frame)
+
+        async def to_worker(frame):
+            await worker_input.put(frame)
+
+        async def host_handler(request):
+            committed[request["id"]] = {"handle": request["id"]}
+            return committed[request["id"]]
+
+        async def read_receipt(request):
+            lookups.append(request["id"])
+            return committed[request["id"]]
+
+        async def frames(queue):
+            while item := await queue.get():
+                yield item
+
+        host = Peer(
+            to_worker,
+            handler=host_handler,
+            replay_handler=read_receipt,
+            request_type="broker_request",
+            receipt_limit=1,
+        )
+        worker = Peer(to_host)
+        jobs = [
+            asyncio.create_task(host.read(frames(host_input))),
+            asyncio.create_task(worker.read(frames(worker_input))),
+        ]
+        try:
+            context = Context(worker)
+            for index in range(300):
+                result = await context.broker(
+                    {"workspace_id": "workspace", "trial_id": "trial", "generation": 1},
+                    "fixture",
+                    "inspect",
+                    {},
+                    request_id=f"resource-{index}",
+                    durable_host=True,
+                )
+                assert result == committed[f"resource-{index}"]
+            assert (
+                await context.broker(
+                    {"workspace_id": "workspace", "trial_id": "trial", "generation": 1},
+                    "fixture",
+                    "inspect",
+                    {},
+                    request_id="resource-299",
+                    durable_host=True,
+                )
+                == committed["resource-299"]
+            )
+        finally:
+            await host_input.put(b"")
+            await worker_input.put(b"")
+            await asyncio.gather(*jobs)
+        assert len(committed) == 300 and host.unacknowledged == 0
+        assert lookups == ["resource-299"]
+
+    asyncio.run(scenario())

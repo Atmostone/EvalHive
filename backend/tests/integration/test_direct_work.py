@@ -44,8 +44,8 @@ async def test_direct_start_requires_a_model_before_queueing(auth_client, db_ses
 
 async def test_profile_precedence_and_explicit_empty_role_tools(auth_client, db_session):
     default = await configured_profile(auth_client, db_session)
-    role_profile = HarnessProfile(workspace_id=default.workspace_id, name="Role", connector_id="pi", connector_version="0.1.0", model_id=default.model_id)
-    explicit = HarnessProfile(workspace_id=default.workspace_id, name="Explicit", connector_id="opencode", connector_version="0.1.0", model_id=default.model_id)
+    role_profile = HarnessProfile(workspace_id=default.workspace_id, name="Role", connector_id="pi", connector_version=get_manifest("pi")["version"], model_id=default.model_id)
+    explicit = HarnessProfile(workspace_id=default.workspace_id, name="Explicit", connector_id="opencode", connector_version=get_manifest("opencode")["version"], model_id=default.model_id)
     db_session.add_all([role_profile, explicit])
     await db_session.flush()
     role = Template(workspace_id=default.workspace_id, name="Optional role", description="Fixture", soul_md="Fixture role", harness_profile_id=role_profile.id, execution_mode="direct", tool_ids=[])

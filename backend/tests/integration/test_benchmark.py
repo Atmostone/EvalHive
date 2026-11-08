@@ -1,20 +1,15 @@
-"""Integration tests for the Benchmark Case Store (pre-E-23).
-
-materialize() turns a case into runnable READY task instances tagged with
-benchmark_case_id/benchmark_suite; build_quality_record denormalizes those onto the
-record; aggregate_capability (+ the API) can scope by suite.
-"""
+"""Historical Case Store records remain readable after SDK launch migration."""
 
 import uuid
 
-from httpx import AsyncClient
-
+import pytest
 from app import database
 from app.models.quality_record import QualityRecord
 from app.models.task import Task, TaskStatus
 from app.models.workspace import DEFAULT_WORKSPACE_ID
 from app.quality.benchmark import BenchmarkCase, materialize
 from app.quality.data_lake import build_quality_record
+from httpx import AsyncClient
 
 
 def _case(cid="cap-1", **over):
@@ -33,39 +28,32 @@ def _case(cid="cap-1", **over):
     return BenchmarkCase(**base)
 
 
-async def test_materialize_links_and_gold(db_session):
-    model_id = uuid.uuid4()
-    tasks = await materialize(
-        db_session, _case(), workspace_id=DEFAULT_WORKSPACE_ID,
-        repeat=2, model_id=model_id,
-    )
-    assert len(tasks) == 2
-    t = tasks[0]
-    assert t.status == TaskStatus.READY.value
-    assert t.benchmark_case_id == "cap-1"
-    assert t.benchmark_suite == "capability-isolation"
-    assert t.reference_answer == "sunny"
-    assert t.canonical_trajectory == ["web_search"]
-    # category carried into the capability_spec the E-13 harness reads
-    assert t.capability_spec == {"required_tools": ["web_search"], "category": "fresh_data"}
-    # model override threaded through run_config (no FK), no template pinned
-    assert t.run_config == {"model_id": str(model_id)}
-    assert t.template_id is None
+async def test_legacy_materialization_rejected_before_database_access():
+    with pytest.raises(ValueError, match="Legacy benchmark execution"):
+        await materialize(None, _case(), workspace_id=DEFAULT_WORKSPACE_ID, repeat=2)
 
 
-async def test_build_quality_record_denormalizes_benchmark(db_session):
-    tasks = await materialize(
-        db_session, _case("cap-2"), workspace_id=DEFAULT_WORKSPACE_ID,
+async def test_build_quality_record_denormalizes_historical_benchmark(db_session):
+    case = _case("cap-2")
+    task = Task(
+        title=case.input.title,
+        status=TaskStatus.DONE.value,
+        workspace_id=DEFAULT_WORKSPACE_ID,
+        benchmark_case_id=case.id,
+        benchmark_suite=case.suite,
+        reference_answer=case.gold.reference_answer,
+        canonical_trajectory=case.gold.canonical_trajectory,
+        capability_spec=case.gold.capability_spec,
+        result_summary="sunny",
     )
-    t = tasks[0]
-    t.status = TaskStatus.DONE.value
-    t.result_summary = "sunny"
+    db_session.add(task)
     await db_session.commit()
-
-    rec = await build_quality_record(db_session, t)
+    rec = await build_quality_record(db_session, task)
     assert rec is not None
     assert rec.benchmark_case_id == "cap-2"
     assert rec.benchmark_suite == "capability-isolation"
+    assert task.reference_answer == "sunny"
+    assert task.canonical_trajectory == ["web_search"]
 
 
 def _scored(cls):

@@ -29,6 +29,9 @@ class RunContext:
         self._seq = 0
         self._lock = asyncio.Lock()
         self._finished = False
+        from .conversation import Conversation
+
+        self.conversation = Conversation(self) if spec.get("interaction", {}).get("mode", "single_turn") != "single_turn" else None
 
     async def emit(
         self,
@@ -39,7 +42,9 @@ class RunContext:
         session_id: str | None = None,
         parent_session_id: str | None = None,
     ) -> None:
-        if event in ("run.started", "run.finished"):
+        from .conversation import EVENTS
+
+        if event in {"run.started", "run.finished", *EVENTS}:
             raise ProtocolError("RESERVED_EVENT", "Run lifecycle is owned by the SDK")
         await self._emit(
             event, data, source=source, session_id=session_id, parent_session_id=parent_session_id
@@ -97,8 +102,12 @@ async def serve(
     async def execute(ctx):
         await ctx._emit("run.started", {})
         try:
+            if ctx.conversation:
+                await ctx.conversation.ready()
             result = await connector.run(ctx)
             validate("result", result)
+            if ctx.conversation and not ctx.cancelled.is_set() and result["status"] == "success" and ctx.conversation.state != "closed":
+                raise ProtocolError("CONVERSATION_NOT_CLOSED", "Connector returned before explicit conversation close")
             if ctx.cancelled.is_set():
                 result = {"status": "cancelled", "summary": "Run cancelled"}
         except asyncio.CancelledError:
@@ -165,7 +174,16 @@ async def serve(
                             {**connector.manifest, "config_schema": command_schema["input_schema"]},
                             {**context.spec, "config": payload, "required_capabilities": []},
                         )
-                    result = await connector.control(context, name, payload)
+                    from .conversation import COMMANDS
+
+                    if name in COMMANDS:
+                        if context.conversation is None:
+                            raise ProtocolError("UNSUPPORTED_INTERACTION", "Persistent conversation was not selected")
+                        result = await context.conversation.control(name, payload)
+                    else:
+                        if name == "abort":
+                            context.cancelled.set()
+                        result = await connector.control(context, name, payload)
                 else:  # shutdown
                     await stop()
                     await send(response(request_id, {"stopped": True}))

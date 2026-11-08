@@ -27,7 +27,12 @@
   "capabilities": {
     "feedback": "native",
     "abort": "native",
-    "approval": "unsupported"
+    "approval": "unsupported",
+    "conversation": "native",
+    "external_tool_execution": "emulated",
+    "turn.submit": "native",
+    "tool.respond": "native",
+    "session.close": "native"
   },
   "commands": {
     "feedback": {
@@ -48,6 +53,149 @@
     "abort": {
       "input_schema": {
         "type": "object",
+        "additionalProperties": false
+      }
+    },
+    "turn.submit": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "turn_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "const": "user"
+                },
+                "content": {
+                  "type": "string",
+                  "maxLength": 262144
+                }
+              },
+              "required": [
+                "role",
+                "content"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "input_id",
+          "turn_id",
+          "expected_revision",
+          "messages"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "tool.respond": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "turn_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "batch_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "results": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/$defs/conversation_tool_result"
+            }
+          }
+        },
+        "required": [
+          "input_id",
+          "turn_id",
+          "batch_id",
+          "expected_revision",
+          "results"
+        ],
+        "additionalProperties": false,
+        "$defs": {
+          "conversation_tool_result": {
+            "type": "object",
+            "properties": {
+              "call_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "content": {},
+              "is_error": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "call_id",
+              "content",
+              "is_error"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "session.close": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 262144
+          }
+        },
+        "required": [
+          "input_id",
+          "expected_revision",
+          "reason"
+        ],
         "additionalProperties": false
       }
     }

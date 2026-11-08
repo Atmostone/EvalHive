@@ -20,7 +20,6 @@ import hashlib
 import itertools
 import json
 import logging
-import re
 import time
 import uuid
 from datetime import datetime
@@ -43,7 +42,6 @@ from app.models.quality_record import QualityRecord
 from app.models.registry_entry import RegistryEntry
 from app.models.task import Task, TaskStatus
 from app.models.template import Template
-from app.quality import external_eval as ext_eval
 from app.quality.benchmark import _capability_spec_for, load_cases
 from app.quality.runs_common import (
     SUCCESS_TASK as _SUCCESS_TASK,
@@ -71,10 +69,7 @@ LIVE_CELL = ExperimentRun.retired_at.is_(None)
 def live_configs(exp: Experiment) -> list[dict]:
     """Configurations still in the matrix — retired entries kept but excluded."""
     return [c for c in (exp.configurations or []) if not c.get("retired_at")]
-TOOLATHLON_MAX_ITERATIONS = 150
-# A preprocess still running after this many seconds is a kept-alive mock server
-# (the agent runs against it); we proceed and remove it at the eval settle.
-PREPROCESS_MOCK_GRACE_S = 180
+
 
 TERMINAL_EXPERIMENT = {
     ExperimentStatus.COMPLETED.value,
@@ -108,13 +103,6 @@ MAX_CONFIGS = 24
 MAX_CASES = 300
 MAX_N_RUNS = 20
 MAX_TOTAL_RUNS = 1000
-# SPA-69: upper bound on parallel Toolathlon PG lanes — matches the number of
-# ``toolathlon_pg_lane_<i>`` containers provisioned in docker-compose (profile
-# "toolathlon-lanes"). Asking for more lanes than containers would pin a run to a
-# non-existent host, so reject it at create time. Raise the two together: this
-# number and the lane services in docker-compose.yml are one fact in two places,
-# and the compose side is the one that actually has to exist.
-MAX_TOOLATHLON_LANES = 8
 
 
 # --- configuration matrix ---------------------------------------------------
@@ -372,10 +360,7 @@ def cases_from_suite(suite: str, case_ids: list[str] | None = None) -> list[dict
             canonical_trajectory=c.gold.canonical_trajectory,
             capability_spec=_capability_spec_for(c),
             rubric=c.gold.rubric,
-            # Toolathlon executable eval: the runner needs the commands, the
-            # required services (drives sequential execution + the eval image)
-            # and meta.task_path (the gym dir for preprocess/eval). Plain suites
-            # leave these None, so _frozen_case drops them.
+            # Preserve historical native metadata without making it executable.
             external_eval=c.gold.external_eval.model_dump() if c.gold.external_eval else None,
             environment=c.environment.model_dump() if c.environment else None,
             meta=dict(c.meta) if c.meta else None,
@@ -395,6 +380,10 @@ def cases_from_tasks(tasks: list) -> list[dict]:
     frozen: list[dict] = []
     seen: set[str] = set()
     for t in tasks:
+        from app.benchmarks.task_routing import is_benchmark_task, is_legacy_benchmark_task
+
+        if is_benchmark_task(t) or is_legacy_benchmark_task(t):
+            raise ValueError("Benchmark task sources require a new SDK run with explicit condition lineage")
         key = f"task-{t.id.hex[:8]}"
         if key in seen:
             key = f"task-{t.id.hex[:16]}"
@@ -510,6 +499,27 @@ async def _validate_config_refs(
         raise ValueError("; ".join(errors))
 
 
+LEGACY_BENCHMARK_ERROR = (
+    "Legacy benchmark execution is unavailable. Select an installed benchmark profile, "
+    "dataset revision and harness profile to create a new SDK run; historical results "
+    "remain readable and are not an exact replay of the new conditions."
+)
+
+
+def requires_benchmark_sdk(dataset: dict | None, cases: list[dict] | None, lanes=None) -> bool:
+    """Recognize historical execution inputs without importing a benchmark package."""
+    return (
+        (dataset or {}).get("source") == "benchmark_suite"
+        or lanes is not None
+        or any(case.get("external_eval") or case.get("environment") for case in cases or [])
+    )
+
+
+def _require_ordinary_dataset(exp: Experiment) -> None:
+    if requires_benchmark_sdk(exp.dataset, exp.dataset_cases, exp.n_toolathlon_lanes):
+        raise ValueError(LEGACY_BENCHMARK_ERROR)
+
+
 async def create_experiment(
     db: AsyncSession,
     *,
@@ -527,6 +537,14 @@ async def create_experiment(
     skipping re-normalization. Raises ValueError on any invalid part (the API
     maps it to 400).
     """
+    if (payload.get("dataset") or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import create
+
+        if frozen_cases is not None or exclude_fingerprints:
+            raise ValueError("Native matrix cloning requires its frozen plan lineage")
+        return await create(db, workspace_id, payload, created_by=created_by)
+    if requires_benchmark_sdk(payload.get("dataset"), frozen_cases, payload.get("n_toolathlon_lanes")):
+        raise ValueError(LEGACY_BENCHMARK_ERROR)
     name = (payload.get("name") or "").strip()
     if not name:
         raise ValueError("experiment name is required")
@@ -576,6 +594,8 @@ async def create_experiment(
     )
     if not cases:
         raise ValueError("dataset is empty")
+    if requires_benchmark_sdk(dataset_spec, cases):
+        raise ValueError(LEGACY_BENCHMARK_ERROR)
 
     n_runs = int(payload.get("n_runs_per_cell") or 1)
     if not (1 <= n_runs <= MAX_N_RUNS):
@@ -590,14 +610,6 @@ async def create_experiment(
     max_parallel = payload.get("max_parallel")
     if max_parallel is not None and int(max_parallel) < 1:
         raise ValueError("max_parallel must be >= 1")
-    n_lanes = payload.get("n_toolathlon_lanes")
-    if n_lanes is not None and int(n_lanes) < 1:
-        raise ValueError("n_toolathlon_lanes must be >= 1")
-    if n_lanes is not None and int(n_lanes) > MAX_TOOLATHLON_LANES:
-        raise ValueError(
-            f"n_toolathlon_lanes must be <= {MAX_TOOLATHLON_LANES} "
-            f"(only {MAX_TOOLATHLON_LANES} lane containers are provisioned)"
-        )
     budget = payload.get("budget_limit_usd")
     if budget is not None and Decimal(str(budget)) <= 0:
         raise ValueError("budget_limit_usd must be positive")
@@ -621,7 +633,6 @@ async def create_experiment(
         n_runs_per_cell=n_runs,
         budget_limit_usd=Decimal(str(budget)) if budget is not None else None,
         max_parallel=int(max_parallel) if max_parallel is not None else None,
-        n_toolathlon_lanes=int(n_lanes) if n_lanes is not None else None,
         eval_config=eval_config,
         created_by=created_by,
     )
@@ -636,6 +647,11 @@ async def create_experiment(
 
 async def start_experiment(db: AsyncSession, exp: Experiment) -> None:
     """draft → running: materialize every matrix cell as a pending run row."""
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import start
+
+        return await start(db, exp)
+    _require_ordinary_dataset(exp)
     if exp.status != ExperimentStatus.DRAFT.value:
         raise ValueError(f"cannot run experiment in status '{exp.status}'")
     images = _agent_image_ids()
@@ -677,6 +693,8 @@ async def pause_experiment(db: AsyncSession, exp: Experiment) -> None:
 
 
 async def resume_experiment(db: AsyncSession, exp: Experiment) -> None:
+    if (exp.dataset or {}).get("source") != "benchmark_sdk":
+        _require_ordinary_dataset(exp)
     if exp.status != ExperimentStatus.PAUSED.value:
         raise ValueError(f"cannot resume experiment in status '{exp.status}'")
     exp.status = ExperimentStatus.RUNNING.value
@@ -691,6 +709,11 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
     leaving them ``running`` would strand them). In-flight agent containers
     are killed best-effort.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import cancel
+
+        return await cancel(db, exp)
+    _require_ordinary_dataset(exp)
     if exp.status in TERMINAL_EXPERIMENT:
         raise ValueError(f"experiment already terminal ('{exp.status}')")
     rows = (
@@ -721,9 +744,6 @@ async def cancel_experiment(db: AsyncSession, exp: Experiment) -> None:
             ExperimentRunStatus.RUNNING.value,
             ExperimentRunStatus.EVALUATING.value,
         ):
-            # Best-effort cleanup of any Toolathlon preprocess/eval containers.
-            ext_eval.remove(r.preprocess_container_id)
-            ext_eval.remove(r.eval_container_id)
             r.preprocess_container_id = None
             r.eval_container_id = None
             r.status = ExperimentRunStatus.SKIPPED.value
@@ -921,6 +941,10 @@ async def _lock_experiment(db: AsyncSession, exp: Experiment) -> None:
     """
     await db.execute(select(Experiment.id).where(Experiment.id == exp.id).with_for_update())
     await db.refresh(exp)
+    if (exp.dataset or {}).get("source") != "benchmark_sdk":
+        _require_ordinary_dataset(exp)
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        raise ValueError("Native matrix changes require a new frozen plan and explicit lineage")
 
 
 async def _bump_revision(
@@ -1017,6 +1041,10 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
     The superseded state of every retried cell is written to the attempt ledger
     first, so "re-run in place" no longer means the previous result is lost.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_mutations import retry_failed
+
+        return await retry_failed(db, exp)
     await _lock_experiment(db, exp)
     if exp.status not in TERMINAL_EXPERIMENT and exp.status != ExperimentStatus.PAUSED.value:
         raise ValueError(
@@ -1037,9 +1065,6 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
     for r in rows:
         if r.status != ExperimentRunStatus.FAILED.value:
             continue
-        # Best-effort cleanup of any lingering Toolathlon preprocess/eval containers.
-        ext_eval.remove(r.preprocess_container_id)
-        ext_eval.remove(r.eval_container_id)
         await _snapshot_attempt(db, r, "retry")
         # The ledger keeps the pointer; the task itself leaves the live
         # population so tag-based aggregation matches the report.
@@ -1060,8 +1085,6 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
         r.preprocess_log = None
         r.eval_log = None
         r.completed_at = None
-        # Stale pin: the row claimed a lane it no longer holds. _first_free_lane
-        # reassigns at claim time, but until then the row misreports occupancy.
         r.lane_index = None
         retried += 1
     if retried:
@@ -1079,6 +1102,10 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     re-opening the experiment so the tick runs them. Lets you add a model in
     place instead of starting a fresh experiment. Frozen dataset is reused as-is.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_mutations import add_config
+
+        return await add_config(db, exp, cfg_input)
     await _lock_experiment(db, exp)
     if exp.status == ExperimentStatus.DRAFT.value:
         raise ValueError("add the configuration at creation, or run the experiment first")
@@ -1195,6 +1222,10 @@ async def remove_config_from_experiment(
     tell what had been measured before. Refuses to retire the last live
     configuration — delete the experiment instead.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_mutations import retire_config
+
+        return await retire_config(db, exp, config_key)
     await _lock_experiment(db, exp)
     if exp.status == ExperimentStatus.RUNNING.value:
         raise ValueError("pause or cancel the experiment before retiring a configuration")
@@ -1227,9 +1258,6 @@ async def remove_config_from_experiment(
     ]
     retired_at = datetime.utcnow()
     for r in rows:
-        # Best-effort teardown of any Toolathlon preprocess/eval containers.
-        ext_eval.remove(r.preprocess_container_id)
-        ext_eval.remove(r.eval_container_id)
         # Settle anything still in flight BEFORE archiving, so the ledger records
         # how the execution actually ended. The tick skips retired rows, so a
         # cell left mid-flight here would stay that way forever.
@@ -1532,101 +1560,6 @@ def _trace_settings(eval_config: dict | None) -> tuple[object, int | None]:
     return config, max_input_tokens
 
 
-def _requires_toolathlon_pg(case: dict | None) -> bool:
-    env = (case or {}).get("environment") or {}
-    return "toolathlon_pg" in (env.get("required_services") or [])
-
-
-def _lanes_enabled(exp: Experiment) -> int | None:
-    """SPA-69: the number of isolated Toolathlon PG lanes this experiment runs on,
-    or None for the legacy serial path (shared ``toolathlon_pg``). Lanes are opt-in:
-    only an explicit ``n_toolathlon_lanes >= 1`` switches a run onto a per-lane
-    ``toolathlon_pg_lane_<i>`` instance — so existing experiments (NULL) keep using
-    the single shared container untouched."""
-    n = exp.n_toolathlon_lanes
-    return n if (n and n >= 1) else None
-
-
-def _pg_host_for_lane(lane_index: int | None) -> str | None:
-    """Per-lane PG hostname override, or None to use the default ``toolathlon_pg``
-    (legacy serial). Only the host varies per lane — the database name, user and
-    password stay identical, so the gym preprocess/eval scripts need no changes."""
-    if lane_index is None:
-        return None
-    return f"toolathlon_pg_lane_{lane_index}"
-
-
-def _first_free_lane(used: set[int], n_lanes: int) -> int | None:
-    """Smallest lane index in ``[0, n_lanes)`` not currently occupied, or None."""
-    for i in range(n_lanes):
-        if i not in used:
-            return i
-    return None
-
-
-_PORTAL_RE = re.compile(r"localhost:\d+|127\.0\.0\.1:\d+")
-
-
-def _requires_portal(case: dict | None) -> bool:
-    """A case whose task references a mock service at ``localhost:PORT`` — the
-    preprocess container serves it, so the agent must share that container's
-    network namespace to reach it."""
-    return bool(case and _PORTAL_RE.search(case.get("description") or ""))
-
-
-def _case_task_path(case: dict) -> str:
-    path = (case.get("meta") or {}).get("task_path")
-    if not path:
-        raise ValueError(f"toolathlon case {case.get('case_key')!r} is missing meta.task_path")
-    return path
-
-
-async def _resolve_toolathlon_tools(
-    db: AsyncSession, workspace_id, case: dict
-) -> list[str]:
-    """Registry ids of the ``toolathlon-<server>`` MCP entries the case needs
-    (force-enabled on the agent via tools_override). Raises if any are missing —
-    the import (``app.cli.toolathlon_import``) must run first."""
-    servers = list(((case.get("environment") or {}).get("mcp_servers")) or [])
-    if not servers:
-        return []
-    names = [f"toolathlon-{s}" for s in servers]
-    rows = (
-        await db.execute(
-            select(RegistryEntry).where(
-                RegistryEntry.workspace_id == workspace_id,
-                RegistryEntry.name.in_(names),
-            )
-        )
-    ).scalars().all()
-    found = {r.name: r for r in rows}
-    missing = [n for n in names if n not in found]
-    if missing:
-        raise ValueError(
-            f"toolathlon registry entries missing (run toolathlon_import first): {missing}"
-        )
-    return [str(found[n].id) for n in names]
-
-
-async def _apply_toolathlon_run_config(
-    db: AsyncSession, exp: Experiment, case: dict, rc: dict, run_row: ExperimentRun
-) -> None:
-    """Patch a child run_config for a Toolathlon case: the dedicated agent image,
-    the case's MCP servers force-enabled, and the higher iteration ceiling
-    (mirrors app.cli.toolathlon_pilot.create). SPA-69: when the run is pinned to a
-    PG lane, carry the lane host in ``rc["pg_host"]`` so the orchestrator points the
-    agent's MCP servers at ``toolathlon_pg_lane_<i>`` (otherwise the shared default)."""
-    tool_ids = await _resolve_toolathlon_tools(db, exp.workspace_id, case)
-    rc["environment_id"] = "toolathlon"
-    rc["max_iterations"] = TOOLATHLON_MAX_ITERATIONS
-    pg_host = _pg_host_for_lane(run_row.lane_index)
-    if pg_host:
-        rc["pg_host"] = pg_host
-    override = rc.get("tools_override") or {}
-    enable = list(dict.fromkeys(list(override.get("enable") or []) + tool_ids))
-    rc["tools_override"] = {"enable": enable, "disable": list(override.get("disable") or [])}
-
-
 async def _make_child(
     db: AsyncSession,
     exp: Experiment,
@@ -1640,9 +1573,8 @@ async def _make_child(
 
     The task input is EXACTLY the frozen case (no suffixes — a per-config
     marker in the prompt would confound the A/B); identification lives in
-    run_config.experiment and the benchmark_* tags. Toolathlon cases are created
-    in BACKLOG (``initial_status``) so the orchestrator cannot spawn the agent
-    before preprocess seeds the workspace — the runner flips them READY itself.
+    run_config.experiment and the benchmark_* tags. Installed benchmark datasets
+    use the separate SDK coordinator rather than this ordinary task path.
     """
     pinned = (
         uuid.UUID(str(cfg["template_id"]))
@@ -1652,8 +1584,6 @@ async def _make_child(
     rc = child_run_config(
         exp, cfg, case_key=run_row.case_key, run_index=run_row.run_index
     )
-    if _external_eval(case):
-        await _apply_toolathlon_run_config(db, exp, case, rc, run_row)
     child = Task(
         title=case["title"][:500],
         description=case.get("description"),
@@ -1822,15 +1752,6 @@ def _run_duration(task: Task, rec: QualityRecord | None) -> int | None:
     return None
 
 
-# --- Toolathlon executable-eval lifecycle (gold.external_eval) --------------
-# A Toolathlon run threads through two states the plain path never enters:
-#   PENDING → (claim: BACKLOG task + seed/preprocess) → PREPROCESSING
-#   PREPROCESSING → (preprocess done: flip task READY) → RUNNING
-#   RUNNING → (agent terminal: start eval)             → EVALUATING
-#   EVALUATING → (eval done: verdict + E-02/E-07)      → SUCCESS/FAILED
-# Each transition is at most one step per tick; preprocess/eval containers are
-# detached and polled, so the tick never blocks.
-
 _INFLIGHT_RUN = {
     ExperimentRunStatus.PREPROCESSING.value,
     ExperimentRunStatus.RUNNING.value,
@@ -1838,259 +1759,18 @@ _INFLIGHT_RUN = {
 }
 
 
-async def _start_toolathlon_run(
-    db: AsyncSession, exp: Experiment, run: ExperimentRun, cfg: dict, case: dict
-) -> None:
-    """Claim a Toolathlon cell: create the BACKLOG task, capture launch_time,
-    seed + start preprocess detached. Any setup error fails the run."""
-    try:
-        child = await _make_child(
-            db, exp, run, cfg, case, initial_status=TaskStatus.BACKLOG.value
-        )
-        run.task_id = child.id
-        portal = _requires_portal(case)
-        long_lt, _short = ext_eval.launch_time_pair()
-        run.launch_time = long_lt
-        run.preprocess_started_at = datetime.utcnow()
-        run.preprocess_retried = False
-        run.preprocess_container_id = ext_eval.start_preprocess(
-            child.id,
-            _case_task_path(case),
-            case["external_eval"]["preprocess_command"],
-            long_lt,
-            keep_alive=portal,
-            pg_host=_pg_host_for_lane(run.lane_index),
-            workspace_id=exp.workspace_id,
-        )
-        # Portal case: the agent shares the (kept-alive) preprocess container's
-        # netns so it can reach the mock localhost:PORT server.
-        if portal:
-            rc = dict(child.run_config or {})
-            rc["network_mode"] = f"container:{ext_eval.preprocess_container_name(child.id)}"
-            child.run_config = rc
-        run.status = ExperimentRunStatus.PREPROCESSING.value
-    except Exception as e:
-        logger.warning(f"experiment: preprocess start failed for {run.case_key}: {e}")
-        run.preprocess_log = f"preprocess start failed: {e}"[:4000]
-        run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
-        run.completed_at = datetime.utcnow()
-        await _fail_orphan_task(db, run)
-
-
-async def _flip_preprocessed_ready(db: AsyncSession, run: ExperimentRun) -> None:
-    """Preprocess done → flip the BACKLOG task READY (the orchestrator then
-    spawns the agent); the run becomes RUNNING."""
-    task = (
-        await db.execute(select(Task).where(Task.id == run.task_id))
-    ).scalar_one_or_none()
-    if task is None:
-        run.status = ExperimentRunStatus.FAILED.value
-        run.completed_at = datetime.utcnow()
-        return
-    if task.status == TaskStatus.BACKLOG.value:
-        task.status = TaskStatus.READY.value
-    run.status = ExperimentRunStatus.RUNNING.value
-
-
-async def _fail_orphan_task(db: AsyncSession, run: ExperimentRun) -> None:
-    """Mark a still-BACKLOG task FAILED when its preprocess failed, so it does
-    not linger un-spawnable."""
-    if not run.task_id:
-        return
-    task = (
-        await db.execute(select(Task).where(Task.id == run.task_id))
-    ).scalar_one_or_none()
-    if task is not None and task.status == TaskStatus.BACKLOG.value:
-        task.status = TaskStatus.FAILED.value
-        task.failure_type = merge_failure_type(task.failure_type, FAILURE_INFRA)
-        task.completed_at = datetime.utcnow()
-
-
-async def _advance_preprocessing(
-    db: AsyncSession, exp: Experiment, run: ExperimentRun, case: dict | None
-) -> None:
-    """Poll a PREPROCESSING run: flip its task READY on success, retry once on
-    the gym ``%A`` quirk, fail on a terminal non-zero exit, proceed on a
-    long-running mock server."""
-    if case is None:
-        run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
-        run.completed_at = datetime.utcnow()
-        return
-    try:
-        code, logs = ext_eval.poll_exit(run.preprocess_container_id)
-    except Exception as e:
-        logger.warning(f"experiment: preprocess lost for {run.case_key}: {e}")
-        run.preprocess_log = f"preprocess container lost: {e}"[:4000]
-        run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
-        run.completed_at = datetime.utcnow()
-        await _fail_orphan_task(db, run)
-        return
-
-    if code is None:  # still running
-        started = run.preprocess_started_at or datetime.utcnow()
-        if (datetime.utcnow() - started).total_seconds() >= PREPROCESS_MOCK_GRACE_S:
-            # kept-alive mock server: proceed, leave it running (removed at settle)
-            await _flip_preprocessed_ready(db, run)
-        return
-
-    if code == 0:
-        ext_eval.remove(run.preprocess_container_id)
-        run.preprocess_container_id = None
-        await _flip_preprocessed_ready(db, run)
-        return
-
-    # non-zero exit: one retry with the short launch_time on the gym date quirk
-    if ext_eval.has_unconverted_data_error(logs) and not run.preprocess_retried:
-        ext_eval.remove(run.preprocess_container_id)
-        _long, short_lt = ext_eval.launch_time_pair()
-        run.launch_time = short_lt
-        run.preprocess_retried = True
-        run.preprocess_started_at = datetime.utcnow()
-        try:
-            run.preprocess_container_id = ext_eval.start_preprocess(
-                run.task_id,
-                _case_task_path(case),
-                case["external_eval"]["preprocess_command"],
-                short_lt,
-                keep_alive=_requires_portal(case),
-                pg_host=_pg_host_for_lane(run.lane_index),
-                workspace_id=exp.workspace_id,
-            )
-        except Exception as e:
-            run.preprocess_log = f"preprocess retry failed: {e}"[:4000]
-            run.status = ExperimentRunStatus.FAILED.value
-            run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
-            run.completed_at = datetime.utcnow()
-            await _fail_orphan_task(db, run)
-        return
-
-    ext_eval.remove(run.preprocess_container_id)
-    run.preprocess_container_id = None
-    run.preprocess_log = (logs or "")[-4000:]
-    run.status = ExperimentRunStatus.FAILED.value
-    run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
-    run.completed_at = datetime.utcnow()
-    await _fail_orphan_task(db, run)
-
-
-async def _start_eval(
-    db: AsyncSession, exp: Experiment, run: ExperimentRun, case: dict
-) -> None:
-    """Agent settled → start the eval container detached (run → EVALUATING). If
-    the eval cannot even launch, settle now with verdict=None."""
-    try:
-        task = await db.get(Task, run.task_id)
-        workspace_scope = {"attempt_id": task.current_attempt_id} if task and task.current_attempt_id else {}
-        run.eval_container_id = ext_eval.start_eval(
-            run.task_id,
-            _case_task_path(case),
-            case["external_eval"]["eval_command"],
-            case["external_eval"].get("groundtruth_path"),
-            run.launch_time,
-            pg_host=_pg_host_for_lane(run.lane_index),
-            workspace_id=exp.workspace_id,
-            **workspace_scope,
-        )
-        run.status = ExperimentRunStatus.EVALUATING.value
-    except Exception as e:
-        logger.warning(f"experiment: eval start failed for {run.case_key}: {e}")
-        await _settle_toolathlon(
-            db, exp, run, case, verdict=None, eval_log=f"eval start failed: {e}"
-        )
-
-
-async def _advance_evaluating(
-    db: AsyncSession, exp: Experiment, run: ExperimentRun, case: dict | None
-) -> None:
-    """Poll an EVALUATING run: on exit, verdict = (exit==0); on infra error,
-    verdict=None. Either way settle (E-02/E-07 still run)."""
-    try:
-        code, logs = ext_eval.poll_exit(run.eval_container_id)
-    except Exception as e:
-        await _settle_toolathlon(
-            db, exp, run, case, verdict=None, eval_log=f"eval container lost: {e}"
-        )
-        return
-    if code is None:
-        return  # still running
-    await _settle_toolathlon(db, exp, run, case, verdict=(code == 0), eval_log=logs)
-
-
-async def _settle_toolathlon(
-    db: AsyncSession,
-    exp: Experiment,
-    run: ExperimentRun,
-    case: dict | None,
-    *,
-    verdict: bool | None,
-    eval_log: str,
-) -> None:
-    """Terminal settle for a Toolathlon run: record the verdict (column + event),
-    clean up containers, run E-02/E-07 + denormalize. ``status`` reflects the
-    AGENT task (SUCCESS/FAILED); ``external_verdict`` is the checker's pass/fail
-    (None = could not evaluate) — kept separate (RQ2)."""
-    task = (
-        await db.execute(select(Task).where(Task.id == run.task_id))
-    ).scalar_one_or_none()
-    # Container cleanup first (no DB state); the verdict + event are set AFTER
-    # _evaluate_child, which commits/rolls back internally — so a failing E-02
-    # can never discard the verdict (mirrors the plain settle order).
-    ext_eval.remove(run.preprocess_container_id)
-    ext_eval.remove(run.eval_container_id)
-    run.preprocess_container_id = None
-    run.eval_container_id = None
-    if task is None:
-        run.external_verdict = verdict
-        run.eval_log = (eval_log or "")[-4000:]
-        run.status = ExperimentRunStatus.FAILED.value
-        run.failure_type = merge_failure_type(run.failure_type, FAILURE_INFRA)
-        run.completed_at = datetime.utcnow()
-        return
-    await _evaluate_child(db, task, exp.eval_config or {}, case=case)
-    rec = (
-        await db.execute(select(QualityRecord).where(QualityRecord.task_id == task.id))
-    ).scalar_one_or_none()
-    run.external_verdict = verdict
-    run.eval_log = (eval_log or "")[-4000:]
-    run.status = (
-        ExperimentRunStatus.SUCCESS.value
-        if task.status in _SUCCESS_TASK
-        else ExperimentRunStatus.FAILED.value
-    )
-    run.failure_type = merge_failure_type(run.failure_type, task.failure_type)
-    run.cost_usd = _run_cost(task, rec)
-    run.duration_seconds = _run_duration(task, rec)
-    if rec is not None:
-        run.weighted_score = (rec.quality_profile or {}).get("weighted_score")
-        run.trajectory_score = (rec.trajectory_profile or {}).get("overall_score")
-    run.completed_at = datetime.utcnow()
-    # Durable verdict event (host-script parity + /results), only when the
-    # checker actually produced one.
-    if verdict is not None:
-        await log_event(
-            db,
-            "external_eval_verdict",
-            "system",
-            {
-                "passed": bool(verdict),
-                "benchmark_case_id": run.case_key,
-                "benchmark_suite": f"exp:{exp.id}",
-                "launch_time": run.launch_time,
-                "log_tail": (eval_log or "")[-2000:],
-            },
-            task_id=task.id,
-            workspace_id=exp.workspace_id,
-            commit=False,
-        )
-
-
 async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
-    """One idempotent tick step: advance Toolathlon preprocess/eval phases,
-    settle finished runs, claim pending cells under the parallelism/budget
-    limits, finalize when everything settled."""
+    """Settle ordinary runs and claim pending cells; SDK datasets use their coordinator."""
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiments import advance
+
+        return await advance(db, exp)
+    if requires_benchmark_sdk(exp.dataset, exp.dataset_cases, exp.n_toolathlon_lanes):
+        if exp.status == ExperimentStatus.RUNNING.value:
+            exp.status = ExperimentStatus.PAUSED.value
+            exp.error = LEGACY_BENCHMARK_ERROR
+            await db.commit()
+        return
     if exp.status != ExperimentStatus.RUNNING.value:
         return
 
@@ -2112,18 +1792,6 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
     ).scalars().all()
     configs = {c["config_key"]: c for c in exp.configurations}
     cases = {c["case_key"]: c for c in exp.dataset_cases}
-    # Toolathlon shares one Postgres → at most one cell in flight at a time.
-    requires_pg = any(_requires_toolathlon_pg(c) for c in exp.dataset_cases)
-    lanes = _lanes_enabled(exp)
-    # Toolathlon cases share a mutable mock postgres → run serially UNLESS the
-    # experiment provisions isolated lanes (SPA-69). serial == legacy single-container.
-    serial = requires_pg and lanes is None
-
-    # Snapshot the states at tick start so a transition this tick (e.g.
-    # PREPROCESSING → RUNNING) is not also processed by a later phase.
-    preprocessing_ids = {
-        r.id for r in rows if r.status == ExperimentRunStatus.PREPROCESSING.value
-    }
     running_ids = {r.id for r in rows if r.status == ExperimentRunStatus.RUNNING.value}
     evaluating_ids = {
         r.id for r in rows if r.status == ExperimentRunStatus.EVALUATING.value
@@ -2140,13 +1808,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
 
     now = datetime.utcnow()
 
-    # 1a) Advance PREPROCESSING runs (Toolathlon).
-    for r in rows:
-        if r.id in preprocessing_ids:
-            await _advance_preprocessing(db, exp, r, cases.get(r.case_key))
-
-    # 1b) Settle RUNNING runs whose agent task is terminal. A Toolathlon run
-    # starts its eval here (→ EVALUATING) instead of settling.
+    # Settle ordinary tasks after their harness attempt becomes terminal.
     for r in rows:
         if r.id not in running_ids:
             continue
@@ -2159,9 +1821,6 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
         if task.status not in _TERMINAL_TASK:
             continue
         case = cases.get(r.case_key)
-        if _run_checker(case, exp.eval_config):
-            await _start_eval(db, exp, r, case)
-            continue
         await _evaluate_child(db, task, exp.eval_config or {}, case=case)
         rec = (
             await db.execute(
@@ -2180,11 +1839,6 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
             r.weighted_score = (rec.quality_profile or {}).get("weighted_score")
             r.trajectory_score = (rec.trajectory_profile or {}).get("overall_score")
         r.completed_at = datetime.utcnow()
-
-    # 1c) Advance EVALUATING runs (Toolathlon).
-    for r in rows:
-        if r.id in evaluating_ids:
-            await _advance_evaluating(db, exp, r, cases.get(r.case_key))
 
     # 2) Accumulated cost: settled rows (denormalized) + in-flight agent spend.
     total = Decimal("0")
@@ -2211,15 +1865,7 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
         target = await inflight_target(db, parallel=True)
         if exp.max_parallel:
             target = min(target, exp.max_parallel)
-        if serial:
-            target = 1
-        elif lanes:
-            target = min(target, lanes)
         slots = max(0, target - len(in_flight))
-        # SPA-69: lanes already busy with in-flight Toolathlon runs; a newly claimed
-        # Toolathlon cell takes the first free one (its preprocess/eval/agent are then
-        # pinned to toolathlon_pg_lane_<lane_index>).
-        used_lanes = {r.lane_index for r in in_flight if r.lane_index is not None}
         # Spread the claimed slots across configs (models) instead of taking
         # pending in raw order — cells are materialized config-by-config, so the
         # naive prefix would pile N runs of ONE model onto a single provider while
@@ -2258,18 +1904,9 @@ async def advance_experiment(db: AsyncSession, exp: Experiment) -> None:
                 r.status = ExperimentRunStatus.SKIPPED.value
                 r.completed_at = datetime.utcnow()
                 continue
-            if _external_eval(case):
-                if lanes:
-                    lane = _first_free_lane(used_lanes, lanes)
-                    if lane is None:
-                        continue  # all lanes busy this tick; claim on a later tick
-                    r.lane_index = lane
-                    used_lanes.add(lane)
-                await _start_toolathlon_run(db, exp, r, cfg, case)
-            else:
-                child = await _make_child(db, exp, r, cfg, case)
-                r.task_id = child.id
-                r.status = ExperimentRunStatus.RUNNING.value
+            child = await _make_child(db, exp, r, cfg, case)
+            r.task_id = child.id
+            r.status = ExperimentRunStatus.RUNNING.value
             # This execution is attempt N of the cell; a retry snapshots the
             # state under this number before clearing it (SPA-84).
             r.attempt_count = (r.attempt_count or 0) + 1
@@ -2307,7 +1944,10 @@ async def advance_active_experiments(db: AsyncSession) -> int:
     rows = (
         await db.execute(
             select(Experiment).where(
-                Experiment.status == ExperimentStatus.RUNNING.value
+                (Experiment.status == ExperimentStatus.RUNNING.value)
+                | ((Experiment.dataset["source"].astext == "benchmark_sdk")
+                   & Experiment.status.in_(("paused", "cancelled"))
+                   & Experiment.completed_at.is_(None))
             )
         )
     ).scalars().all()
@@ -2326,6 +1966,12 @@ async def estimate_preview(
     db: AsyncSession, *, workspace_id: uuid.UUID, payload: dict
 ) -> dict:
     """Total runs + cost/time estimate for a (not yet created) experiment."""
+    if (payload.get("dataset") or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.experiment_inputs import preview
+
+        return await preview(db, workspace_id, payload)
+    if requires_benchmark_sdk(payload.get("dataset"), None, payload.get("n_toolathlon_lanes")):
+        raise ValueError(LEGACY_BENCHMARK_ERROR)
     from sqlalchemy import func as sa_func
 
     configs = expand_matrix(payload.get("configurations"), payload.get("axes"))
@@ -2415,6 +2061,10 @@ async def clone_experiment(
     ``changes`` is a partial create payload; untouched parts (including the
     frozen dataset) are copied from the source. Re-run = clone + run.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_clones import clone
+
+        return await clone(db, exp, name=name, changes=changes, created_by=created_by)
     changes = dict(changes or {})
     # Must be read before the pops below empty the dict.
     caller_respecified_matrix = "configurations" in changes or "axes" in changes

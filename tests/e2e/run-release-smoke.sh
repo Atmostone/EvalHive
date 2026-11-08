@@ -22,4 +22,8 @@ fixture_id="$(docker run -d --name "$fixture_name" --network "$smoke_network" \
   --mount "type=bind,src=$PWD/harnesses/shared/fake-openai.mjs,dst=/fixture/fake-openai.mjs,readonly" \
   node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 \
   node /fixture/release-model.mjs)"
-docker exec -i "$api_container" python - --model-url "http://$fixture_name:4100/v1" < tests/e2e/release-smoke.py
+native_args=()
+if [[ -n "${EVALHIVE_SMOKE_NATIVE_DATASET_ID:-}" ]]; then
+  native_args+=(--native-dataset-id "$EVALHIVE_SMOKE_NATIVE_DATASET_ID")
+fi
+docker exec -i "$api_container" python - --model-url "http://$fixture_name:4100/v1" "${native_args[@]}" < tests/e2e/release-smoke.py

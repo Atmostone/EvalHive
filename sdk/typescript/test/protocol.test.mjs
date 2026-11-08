@@ -21,6 +21,14 @@ test('configuration remains connector owned and is checked before start', () => 
   run.required_capabilities = ['approval'];
   assert.throws(() => validateRun(manifest, run), {code: 'UNSUPPORTED_CAPABILITY'});
 });
+
+test('owned model transport requires an explicit connector capability', () => {
+  const manifest = structuredClone(fixtures.manifest), run = structuredClone(fixtures.run_spec);
+  run.metadata = {model_gateway: {transport: 'unix_http_v1', socket_path: '/evalhive-control/model.sock', role: 'agent'}};
+  assert.throws(() => validateRun(manifest, run), {code: 'UNSUPPORTED_CAPABILITY'});
+  manifest.capabilities.model_gateway = 'native';
+  assert.equal(validateRun(manifest, run), run);
+});
 for (const schema of [{$ref: 'https://invalid.example.test/schema'}, {type: 'invented'}, {$schema: 'http://json-schema.org/draft-07/schema#'}])
   test(`invalid configuration schema ${JSON.stringify(schema)}`, () => {
     assert.throws(() => validateRun({...fixtures.manifest, config_schema: schema}, fixtures.run_spec), {code: 'INVALID_CONFIG'});

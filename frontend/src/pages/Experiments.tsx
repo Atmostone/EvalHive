@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { benchmarksApi, experimentsApi, harnessesApi, providersApi, registryApi, templatesApi } from '@/api/client'
+import { experimentsApi, harnessesApi, providersApi, registryApi, templatesApi } from '@/api/client'
 import type { ExperimentCreateBody } from '@/api/client'
 import type { Experiment, ExperimentStatus, LLMModel, RegistryEntry } from '@/types'
 import { FlaskConical, Plus, Trash2, X } from 'lucide-react'
+import NativeBenchmarkExperimentForm from '@/components/experiments/NativeBenchmarkExperimentForm'
 
 export const STATUS_COLORS: Record<ExperimentStatus, string> = {
   draft: 'bg-gray-100 text-gray-600',
@@ -24,7 +25,7 @@ export function StatusPill({ status }: { status: ExperimentStatus }) {
   )
 }
 
-type DatasetSource = 'upload' | 'benchmark_suite' | 'tasks'
+type DatasetSource = 'upload' | 'tasks'
 
 interface ConfigDraft {
   label: string
@@ -84,6 +85,7 @@ function parseJsonl(text: string): { cases: Record<string, unknown>[]; errors: s
 }
 
 function ExperimentForm({ onClose }: { onClose: () => void }) {
+  const [nativeMode, setNativeMode] = useState(false)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
 
@@ -91,7 +93,6 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
   const [description, setDescription] = useState('')
   const [source, setSource] = useState<DatasetSource>('upload')
   const [jsonl, setJsonl] = useState('')
-  const [suite, setSuite] = useState('')
   const [taskIds, setTaskIds] = useState('')
   const [configs, setConfigs] = useState<ConfigDraft[]>([emptyConfig(), emptyConfig()])
   const [configMode, setConfigMode] = useState<'manual' | 'axes'>('manual')
@@ -102,11 +103,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
   const [nRuns, setNRuns] = useState(3)
   const [budget, setBudget] = useState('')
   const [maxParallel, setMaxParallel] = useState('')
-  const [lanes, setLanes] = useState('')
-  // Evaluation mode: 'checker' = run the executable checker where a case has one
-  // (Toolathlon ground truth). 'judge' = skip the checker and let the E-02 outcome
-  // judge be the evaluator — turns a verifiable bench into an open-result one so
-  // the outcome×trajectory view works where there is no oracle. (SPA-56/E-25)
+  // Native benchmark evaluation is configured in its installed profile.
   const [evalMode, setEvalMode] = useState<'checker' | 'judge'>('checker')
   // Untrimmed process-judge input (SPA-86). Opt-in, not the default: at 200+
   // runs an untrimmed trace is a real bill, so the caller has to ask for it.
@@ -128,23 +125,15 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
     },
   })
   const { data: tools = [] } = useQuery({ queryKey: ['registry-tools'], queryFn: () => registryApi.list() })
-  const { data: suites = [] } = useQuery({ queryKey: ['benchmark-suites'], queryFn: () => benchmarksApi.listSuites() })
-  const { data: suiteDetail } = useQuery({
-    queryKey: ['benchmark-suite', suite],
-    queryFn: () => benchmarksApi.getSuite(suite),
-    enabled: source === 'benchmark_suite' && suite.trim() !== '',
-  })
-
   const { cases: uploadCases, errors: uploadErrors } = useMemo(() => parseJsonl(jsonl), [jsonl])
 
   const dataset = useMemo(() => {
     if (source === 'upload') return { source, cases: uploadCases }
-    if (source === 'benchmark_suite') return { source, suite: suite.trim() }
     return {
       source,
       task_ids: taskIds.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
     }
-  }, [source, uploadCases, suite, taskIds])
+  }, [source, uploadCases, taskIds])
 
   const axes = useMemo(() => {
     const a: Record<string, unknown[]> = {}
@@ -166,7 +155,6 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
       n_runs_per_cell: nRuns,
       budget_limit_usd: budget !== '' ? Number(budget) : null,
       max_parallel: maxParallel !== '' ? Number(maxParallel) : null,
-      n_toolathlon_lanes: lanes !== '' ? Number(lanes) : null,
       eval_config: {
         eval_mode: evalMode,
         ...(judgeThreshold !== '' ? { judge_threshold: Number(judgeThreshold) } : {}),
@@ -182,12 +170,11 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
           : {}),
       },
     }),
-    [name, description, dataset, configMode, configs, axes, nRuns, budget, maxParallel, lanes, evalMode, fullTrace, judgeThreshold],
+    [name, description, dataset, configMode, configs, axes, nRuns, budget, maxParallel, evalMode, fullTrace, judgeThreshold],
   )
 
   const datasetReady =
     (source === 'upload' && uploadCases.length > 0 && uploadErrors.length === 0) ||
-    (source === 'benchmark_suite' && suite.trim() !== '') ||
     (source === 'tasks' && (dataset as { task_ids?: string[] }).task_ids!.length > 0)
   const configsReady =
     configMode === 'axes'
@@ -200,8 +187,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
   if (!datasetReady) {
     if (source === 'upload') {
       blockers.push(uploadErrors.length ? 'a valid JSONL dataset (fix the errors above)' : 'at least one dataset case')
-    } else if (source === 'benchmark_suite') {
-      blockers.push('a benchmark suite')
+
     } else {
       blockers.push('at least one task ID')
     }
@@ -243,7 +229,13 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="p-1 rounded hover:bg-gray-100"><X className="h-5 w-5" /></button>
         </div>
 
-        <div className="space-y-4">
+        <label className="block text-sm mb-4">Experiment type
+          <select aria-label="Experiment type" value={nativeMode ? 'benchmark_sdk' : 'tasks'} onChange={event => setNativeMode(event.target.value === 'benchmark_sdk')}
+            className="block w-full border rounded px-2 py-1.5 mt-1">
+            <option value="tasks">Task dataset</option><option value="benchmark_sdk">Installed native benchmark</option>
+          </select>
+        </label>
+        {nativeMode ? <NativeBenchmarkExperimentForm onClose={onClose} /> : <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label htmlFor="exp-name" className="block text-sm font-medium text-gray-700 mb-1">
@@ -267,10 +259,10 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
               Dataset <span className="text-red-500" title="required">*</span>
             </label>
             <div className="flex gap-2 mb-2" role="group" aria-label="Dataset source">
-              {(['upload', 'benchmark_suite', 'tasks'] as DatasetSource[]).map((s) => (
+              {(['upload', 'tasks'] as DatasetSource[]).map((s) => (
                 <button key={s} type="button" onClick={() => setSource(s)}
                   className={`px-3 py-1.5 rounded-lg text-sm border ${source === s ? 'bg-blue-600 text-white border-blue-600' : 'hover:bg-gray-50'}`}>
-                  {s === 'upload' ? 'Upload JSONL' : s === 'benchmark_suite' ? 'Benchmark suite' : 'Existing tasks'}
+                  {s === 'upload' ? 'Upload JSONL' : 'Existing tasks'}
                 </button>
               ))}
             </div>
@@ -285,40 +277,6 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
                     <div key={err} className="text-red-500">{err}</div>
                   ))}
                 </div>
-              </div>
-            )}
-            {source === 'benchmark_suite' && (
-              <div className="space-y-2">
-                <select value={suite} onChange={(e) => setSuite(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-lg text-sm bg-white">
-                  <option value="">select a suite…</option>
-                  {suites.map((s) => (
-                    <option key={s.name} value={s.name}>{s.name} ({s.n_cases} cases)</option>
-                  ))}
-                </select>
-                {suiteDetail && suiteDetail.cases.length > 0 && (
-                  <details className="text-xs border rounded-lg bg-gray-50">
-                    <summary className="cursor-pointer select-none px-3 py-2 text-gray-600">
-                      {suiteDetail.n_cases} cases — inspect gold signals
-                    </summary>
-                    <div className="max-h-48 overflow-y-auto px-3 pb-2 space-y-1">
-                      {suiteDetail.cases.map((c) => (
-                        <div key={c.id} className="flex items-center justify-between gap-2 bg-white rounded border px-2 py-1">
-                          <span className="truncate text-gray-700" title={c.title}>
-                            {c.id} <span className="text-gray-400">{c.family || c.category}</span>
-                          </span>
-                          <span className="flex gap-1 shrink-0 text-[10px]">
-                            {c.gold.reference_answer && <span className="px-1 rounded bg-blue-100 text-blue-700" title="reference_answer">ref</span>}
-                            {c.gold.rubric && <span className="px-1 rounded bg-purple-100 text-purple-700" title="rubric">rub</span>}
-                            {c.gold.canonical_trajectory && <span className="px-1 rounded bg-green-100 text-green-700" title="canonical_trajectory">traj</span>}
-                            {c.gold.capability_spec && <span className="px-1 rounded bg-amber-100 text-amber-700" title="capability_spec">cap</span>}
-                            {c.gold.external_eval && <span className="px-1 rounded bg-rose-100 text-rose-700" title="external_eval (executable checker)">exec</span>}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                )}
               </div>
             )}
             {source === 'tasks' && (
@@ -534,13 +492,6 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
                 onChange={(e) => setMaxParallel(e.target.value)}
                 className="w-full px-3 py-2 border rounded-lg text-sm" />
             </div>
-            <div>
-              <label htmlFor="exp-lanes" className="block text-sm font-medium text-gray-700 mb-1">Toolathlon lanes</label>
-              <input id="exp-lanes" type="number" min={1} max={4} value={lanes} placeholder="serial"
-                title="Isolated Postgres lanes for PARALLEL Toolathlon runs (max 4). Each lane is its own DB so concurrent cases can't clobber each other's seed. Blank = serial on the shared toolathlon_pg. No effect on non-Toolathlon datasets."
-                onChange={(e) => setLanes(e.target.value)}
-                className="w-full px-3 py-2 border rounded-lg text-sm" />
-            </div>
           </div>
 
           <div>
@@ -601,7 +552,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
             <div className="border rounded-lg p-3 bg-blue-50 text-sm">
               <span className="font-medium">{preview.total_runs} runs</span>
               <span className="text-gray-600"> = {preview.n_configs} configs × {preview.n_cases} cases × {preview.n_runs_per_cell} · </span>
-              <span className="text-gray-700">est. ${preview.est_cost_usd.toFixed(2)} · ~{preview.est_duration_minutes} min</span>
+              <span className="text-gray-700">est. {preview.est_cost_usd == null ? 'unknown cost' : `$${preview.est_cost_usd.toFixed(2)}`} · {preview.est_duration_minutes == null ? 'unknown duration' : `~${preview.est_duration_minutes} min`}</span>
               {preview.warnings.map((w) => (
                 <div key={w} className="text-amber-700 text-xs mt-1">⚠ {w}</div>
               ))}
@@ -625,7 +576,7 @@ function ExperimentForm({ onClose }: { onClose: () => void }) {
             className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium">
             {createMutation.isPending ? 'Creating…' : 'Create Experiment (draft)'}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   )

@@ -14,6 +14,7 @@ from evalhive_runner.spool import EventSpool
 
 ROOT = Path(__file__).parents[2]
 FIXTURES = json.loads((ROOT / "sdk/fixtures/conformance.json").read_text())
+FIXTURES["manifest"] = json.loads((ROOT / "sdk/examples/fake/manifest.json").read_text())
 POLICY = RunnerPolicy(
     heartbeat_seconds=0.02,
     retry_seconds=0.01,

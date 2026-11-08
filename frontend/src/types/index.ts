@@ -25,6 +25,7 @@ export interface Task {
   harness_profile_id?: string | null
   execution_mode?: 'direct' | 'orchestrated' | null
   current_attempt_id?: string | null
+  benchmark_trial_id?: string | null
   results_archived?: boolean
   agent_container_id?: string | null
   result_summary?: string | null
@@ -1591,6 +1592,9 @@ export interface Experiment {
   name: string
   description?: string | null
   status: ExperimentStatus
+  cloned_from_id?: string | null
+  cloned_from_revision?: number | null
+  clone_mode?: 'frozen' | 'new_conditions' | null
   dataset: Record<string, unknown>
   n_cases: number
   n_configs: number
@@ -1603,6 +1607,7 @@ export interface Experiment {
   budget_limit_usd?: number | null
   max_parallel?: number | null
   n_toolathlon_lanes?: number | null
+  legacy_execution_retired?: boolean
   eval_config: Record<string, unknown>
   accumulated_cost_usd: number
   has_report: boolean
@@ -1656,12 +1661,13 @@ export interface ExperimentPreview {
   n_cases: number
   n_runs_per_cell: number
   total_runs: number
-  est_cost_usd: number
-  est_duration_minutes: number
+  est_cost_usd: number | null
+  est_duration_minutes: number | null
   warnings: string[]
 }
 
 export interface ExperimentRunResult {
+  id?: string
   config_key: string
   case_key: string
   run_index: number
@@ -1687,6 +1693,18 @@ export interface ExperimentRunResult {
   trajectory_profile?: TrajectoryProfile | null
   repro_fingerprint?: string | null
   completed_at?: string | null
+}
+
+export interface ExperimentCellAttempt {
+  id: string
+  attempt_index: number
+  task_id: string | null
+  task_available: boolean
+  status: string
+  external_verdict: boolean | null
+  failure_type: string | null
+  cost_usd: number | null
+  retired_reason: string | null
 }
 
 export interface ExperimentConfigSummary {

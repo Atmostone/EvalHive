@@ -1,0 +1,5 @@
+# Refresh connector code without rebuilding the independently locked browser layer.
+ARG MCPMARK_WORLD_IMAGE
+FROM ${MCPMARK_WORLD_IMAGE}
+COPY benchmarks/mcpmark/src /opt/native-package
+COPY benchmark-sdk/python/src /opt/benchmark-sdk

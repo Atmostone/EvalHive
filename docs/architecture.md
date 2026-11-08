@@ -42,12 +42,13 @@ WS fan-out across api replicas goes through Redis pub/sub (`evalhive.events`); w
 
 api containers still mount `docker.sock` — they use the in-process `DockerRuntime`. This is the transitional workaround #13 until a `RemoteAgentRuntime` (RPC to orchestrator) lands; the call-site migration onto the `AgentRuntime` ABC is already done, what remains is the process split.
 
-Two **optional** profiles add Postgres sandboxes for the Toolathlon-GYM benchmark (SPA-69; neither starts by default — see [`toolathlon.md`](toolathlon.md)):
-
-- `toolathlon_pg` (profile `toolathlon`) — a single shared mock Postgres (the benchmark's "Google" stand-in) used by serial/legacy runs.
-- `toolathlon_pg_lane_0..7` (profile `toolathlon-lanes`) — eight static per-run PG-isolation lanes for **parallel** Toolathlon runs; the scheduler pins each run to a lane via `Experiment.n_toolathlon_lanes`.
-
-With both profiles the compose stack defines 18 services (the 9 core services above + `toolathlon_pg` + 8 lanes).
+Native benchmarks use the [Benchmark SDK coordinator](benchmark-sdk.md): each
+trial owns its resources and releases them through recorded leases. Toolathlon
+preprocessing, fixture databases, portals and checker execution live in its
+installed package. New runs do not select the former static PostgreSQL lanes.
+The optional legacy compose profiles remain deployment compatibility definitions
+until cutover; they do not enable the retired core executor. Historical lane and
+checker fields remain readable without resuming the old pipeline.
 
 ## Main flows
 

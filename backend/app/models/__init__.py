@@ -1,4 +1,30 @@
 from app.models.annotation import Annotation, AnnotationSession
+from app.models.benchmark import (
+    BenchmarkDatasetCase,
+    BenchmarkDatasetRevision,
+    BenchmarkProfile,
+    BenchmarkSecret,
+)
+from app.models.benchmark_agent_call import BenchmarkAgentCall
+from app.models.benchmark_artifact import BenchmarkArtifact
+from app.models.benchmark_command import BenchmarkCommand
+from app.models.benchmark_evaluation import BenchmarkEvaluationAttempt
+from app.models.benchmark_evaluation_control import (
+    BenchmarkEvaluationControl,
+    BenchmarkEvaluationJournal,
+)
+from app.models.benchmark_evaluation_input import BenchmarkEvaluationInput
+from app.models.benchmark_experiment_plan import BenchmarkExperimentPlan
+from app.models.benchmark_job import BenchmarkJob
+from app.models.benchmark_trial import (
+    BenchmarkEnvironmentSession,
+    BenchmarkEventStream,
+    BenchmarkHostReservation,
+    BenchmarkJournalEntry,
+    BenchmarkOperation,
+    BenchmarkResourceLease,
+    BenchmarkTrial,
+)
 from app.models.bias_report import BiasReport
 from app.models.chat_message import ChatMessage
 from app.models.event import AgentEvent
@@ -27,7 +53,27 @@ from app.models.webhook_delivery import WebhookDelivery
 from app.models.workspace import Workspace, WorkspaceMember
 
 __all__ = [
+    "BenchmarkExperimentPlan",
     "User",
+    "BenchmarkProfile",
+    "BenchmarkSecret",
+    "BenchmarkDatasetRevision",
+    "BenchmarkDatasetCase",
+    "BenchmarkTrial",
+    "BenchmarkJob",
+    "BenchmarkCommand",
+    "BenchmarkAgentCall",
+    "BenchmarkArtifact",
+    "BenchmarkEvaluationAttempt",
+    "BenchmarkEvaluationInput",
+    "BenchmarkEvaluationControl",
+    "BenchmarkEvaluationJournal",
+    "BenchmarkEnvironmentSession",
+    "BenchmarkResourceLease",
+    "BenchmarkOperation",
+    "BenchmarkEventStream",
+    "BenchmarkJournalEntry",
+    "BenchmarkHostReservation",
     "Workspace",
     "WorkspaceMember",
     "ServiceToken",
