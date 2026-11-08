@@ -73,6 +73,9 @@ def test_factory_preserves_host_policy_and_refuses_incomplete_deployment(tmp_pat
         get_settings().benchmark_linux_capabilities
     )
     assert runtime.evidence.bucket == get_settings().benchmark_evidence_bucket
+    readonly = [item.local for item in runtime.runtime.policy.readonly]
+    assert str(tmp_path / "data/benchmark-runtime-bundles") in readonly
+    assert str(tmp_path / "data") not in readonly
     assert (
         runtime.coordinator.group_policy.max_memory_mb == get_settings().benchmark_group_memory_mb
     )

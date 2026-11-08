@@ -13,6 +13,7 @@ import urllib3
 from minio import Minio
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.benchmarks.catalog import CatalogError
 from app.benchmarks.composition import RootlessCoordinator
 from app.benchmarks.evidence import EvidenceStore
 from app.benchmarks.host_contract import group_policy, provider_manifest
@@ -25,7 +26,7 @@ from app.models.benchmark import BenchmarkDatasetRevision
 from app.models.benchmark_trial import BenchmarkTrial
 from app.runtime.bundles import install_bundle
 from app.runtime.managed_docker import RootlessDockerRuntime
-from app.runtime.managed_spec import PathMapping, RuntimePolicy
+from app.runtime.managed_spec import ManagedRuntimeError, PathMapping, RuntimePolicy
 from app.runtime.model_gateway import ModelRoute
 from app.runtime.registered_assets import RegisteredFile
 from app.runtime.registered_files import load_registered_assets
@@ -100,6 +101,17 @@ class ProductRuntime:
             raise failure(
                 "RUNTIME_UNAVAILABLE", "Installed benchmark host paths are not configured"
             )
+        data = private_directory(settings.data_dir)
+        bundle_cache = private_directory(data / "benchmark-runtime-bundles")
+        # Runtime bundles are installed code, separate from mutable attempt data.
+        # Only this cache subtree may supply retained read-only runtime grants.
+        readonly = (
+            *readonly,
+            PathMapping(
+                str(PurePosixPath(settings.host_data_dir) / "benchmark-runtime-bundles"),
+                str(bundle_cache),
+            ),
+        )
         policy = RuntimePolicy(
             PathMapping(settings.host_data_dir, settings.data_dir),
             readonly,
@@ -141,9 +153,14 @@ class ProductRuntime:
                 raise failure(
                     "INSTALLATION_UNAVAILABLE", "Registered native installation is unavailable"
                 )
-            package = await asyncio.to_thread(
-                resolve_package, dataset, directory=self.settings.benchmark_manifest_dir
-            )
+            try:
+                package = await asyncio.to_thread(
+                    resolve_package, dataset, directory=self.settings.benchmark_manifest_dir
+                )
+            except CatalogError:
+                raise failure(
+                    "INSTALLATION_UNAVAILABLE", "Registered benchmark package is unavailable"
+                ) from None
         if (
             package.metadata_digest != payload["installation_metadata_digest"]
             or package.manifest != payload["benchmark_manifest"]
@@ -173,17 +190,25 @@ class ProductRuntime:
             str(PurePosixPath(self.runtime.policy.data.host) / "benchmark-runtime-bundles"),
             str(bundle_local),
         )
-        bundle = await asyncio.to_thread(
-            install_bundle, self.runtime, payload["harness_manifest"], bundle_mapping
-        )
-        assets = load_registered_assets(
-            package_mapping,
-            self.runtime,
-            package.manifest,
-            bindings={
-                "harness.runtime": RegisteredFile(bundle.host_path, "sha256:" + bundle.fingerprint)
-            },
-        )
+        try:
+            bundle = await asyncio.to_thread(
+                install_bundle, self.runtime, payload["harness_manifest"], bundle_mapping
+            )
+            assets = load_registered_assets(
+                package_mapping,
+                self.runtime,
+                package.manifest,
+                bindings={
+                    "harness.runtime": RegisteredFile(
+                        bundle.host_path, "sha256:" + bundle.fingerprint
+                    )
+                },
+            )
+        except ManagedRuntimeError:
+            raise failure(
+                "INSTALLATION_UNAVAILABLE",
+                "Registered runtime assets are unavailable or incompatible",
+            ) from None
         spool = private_directory(
             Path(self.runtime.policy.data.local)
             / "benchmark-jobs"

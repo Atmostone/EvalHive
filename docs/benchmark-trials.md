@@ -966,6 +966,14 @@ limits remain independent. `BENCHMARK_RESOURCE_FINALIZERS` and the explicit
 `BENCHMARK_LINUX_CAPABILITIES` allowlist determine advertised host capabilities.
 Disabling new execution still permits recovery of existing owned resources.
 
+Use `scripts/install-harness-manifests.py` to publish a new release catalog. It
+pins connector, available environment and required runtime-bundle images to local
+immutable image IDs. Missing required bundles abort publication, and earlier
+release catalogs remain unchanged. The product runtime installs validated bundles
+under `DATA_DIR/benchmark-runtime-bundles`; only that subtree is registered as a
+read-only code root, separately from mutable attempt data. Retained file grants
+still require their content proofs and cannot access neighboring attempt inputs.
+
 ## Native experiment matrices
 
 The existing experiment API accepts `dataset.source: "benchmark_sdk"`, a
