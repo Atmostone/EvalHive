@@ -96,14 +96,14 @@ class Host:
 
 
 @pytest_asyncio.fixture
-async def driver(_engine, db_session):
+async def driver(_engine, db_session, request):
     # Real runners reuse connections. NullPool's repeated SCRAM handshakes on
     # every heartbeat/poll otherwise dominate this one-CPU fixture controller.
     pooled = create_async_engine(_engine.url, pool_size=5, max_overflow=5)
     store = TrialStore(pooled, PrivateStore("driver-integration-fixture"), lease_seconds=10)
     trial = await store.create(
         WORKSPACE,
-        snapshot={"original": True},
+        snapshot=getattr(request, "param", {}).get("snapshot", {"original": True}),
         deadline_at=datetime.now(UTC) + timedelta(seconds=45),
     )
     owner = await store.claim(WORKSPACE, trial.id, uuid.uuid4())

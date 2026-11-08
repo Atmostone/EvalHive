@@ -42,6 +42,7 @@ class Fixture(settings.Fixture):
         self.evaluation_jobs, self.regrade_requests, self.regrade_results = [], [], []
         self.regrade_reply_lost, self.regrade_cancelled = False, 0
         self.retry_requests, self.retry_trial, self.retry_reply_lost = [], None, True
+        self.archives = []
         self.trial = {
             "id": TRIAL,
             "task_id": TASK,
@@ -197,10 +198,24 @@ class Fixture(settings.Fixture):
             f"/benchmark-trials/{RETRY_TRIAL}/evaluations",
             f"/benchmark-trials/{RETRY_TRIAL}/artifacts",
             f"/benchmark-trials/{RETRY_TRIAL}/evaluation-jobs",
+            f"/benchmark-trials/{RETRY_TRIAL}/aggregates",
         }:
             result = []
         elif path == "/benchmark-trials/" + TRIAL:
             result = self.trial
+        elif path == f"/benchmark-trials/{TRIAL}/archive":
+            private = parse_qs(parsed.query).get("include_native_inputs") == ["true"]
+            self.archives.append(private)
+            result = {"kind": "evalhive.native-benchmark-archive", "private_checker_outputs": private}
+        elif path == f"/benchmark-trials/{TRIAL}/aggregates":
+            result = [] if self.trial["evaluation_status"] != "completed" else [{
+                "id": "aggregate-fixture", "evaluation_id": str(uuid.UUID(int=15)),
+                "status": "completed", "origin": {"kind": "trial"},
+                "conditions_digest": "a" * 64, "population_digest": "b" * 64,
+                "result_digest": "c" * 64, "observed": 1, "expected": 3,
+                "complete": False, "reason": None,
+                "metrics": [{"name": "scenario_goal_completion", "value": None}],
+            }]
         elif path == f"/benchmark-trials/{TRIAL}/evaluation-jobs":
             result = self.evaluation_jobs
         elif path == f"/benchmark-trials/{TRIAL}/regrade":
@@ -352,6 +367,15 @@ def main():
                 panel.get_by_text("Task correctness: incorrect · incorrect", exact=True)
             ).to_be_visible()
             expect(panel.get_by_text("native.reward: 0 · native", exact=True)).to_be_visible()
+            expect(panel.get_by_text("Coverage: 1 / 3 · incomplete population", exact=True)).to_be_visible()
+            expect(panel.get_by_text("scenario_goal_completion: unknown", exact=True)).to_be_visible()
+            with page.expect_download() as download:
+                panel.get_by_role("button", name="Export native record", exact=True).click()
+            assert download.value.suggested_filename == f"native-trial-{TRIAL}.json"
+            panel.get_by_label("Include private checker outputs for offline aggregation", exact=True).check()
+            with page.expect_download():
+                panel.get_by_role("button", name="Export native record", exact=True).click()
+            assert fixture.archives == [False, True]
             fixture.regrade_reply_lost = True
             panel.get_by_role("button", name="Regrade saved state", exact=True).click()
             expect(panel.get_by_text("Regrade · queued · queued", exact=True)).to_be_visible()

@@ -585,6 +585,34 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
         )
         assert cold_leases and all(row.state == "released" for row in cold_leases)
         assert credential not in json.dumps(data) and credential not in verdicts.text
+        from evalhive_benchmark.archive import verify_archive
+
+        aggregates = await auth_client.get(f"/api/benchmark-trials/{trial_id}/aggregates")
+        assert aggregates.status_code == 200, aggregates.text
+        assert len(aggregates.json()) == 2 and all(row["complete"] for row in aggregates.json()), (
+            aggregates.text
+        )
+        exported = await auth_client.get(
+            f"/api/benchmark-trials/{trial_id}/archive?include_native_inputs=true"
+        )
+        assert exported.status_code == 200, exported.text
+        native_archive = exported.json()
+        assert verify_archive(native_archive)["native_aggregate_count"] == 2
+        assert credential not in exported.text and "never-send-to-agent" not in exported.text
+        write(base / f"native-archive-{connector_id}.json", native_archive)
+        public_archive = await auth_client.get(f"/api/benchmark-trials/{trial_id}/archive")
+        assert public_archive.status_code == 200
+        assert not verify_archive(public_archive.json())["native_recompute_inputs"]
+        if experiment is not None:
+            bundled = await auth_client.get(
+                f"/api/experiments/{experiment.id}/bundle?include_native_inputs=true"
+            )
+            assert bundled.status_code == 200, bundled.text
+            assert verify_archive(bundled.json())["valid"]
+            assert (
+                bundled.json()["sections"]["trials"][0]["sections"]["evaluations"]
+                == native_archive["sections"]["evaluations"]
+            )
         print(
             json.dumps(
                 {
@@ -598,6 +626,8 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
                     "regrade_job": str(evaluation_job_id),
                     "regrade_without_agent_connection": True,
                     "retry_trial": retried["id"],
+                    "native_aggregate_receipts": len(aggregates.json()),
+                    "native_archive_verified": True,
                 }
             )
         )

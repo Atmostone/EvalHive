@@ -14,8 +14,8 @@ import json
 import statistics
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -565,6 +565,8 @@ async def experiment_report(
     are analysis views, not the experiment's headline numbers.
     """
     exp = await _get_scoped(experiment_id, workspace, db)
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        raise HTTPException(409, "Native benchmarks expose native aggregate receipts and result archives")
     terminal = exp.status in service.TERMINAL_EXPERIMENT
     cached = exp.report
     cacheable = selection == REPORT_SELECTION_DEFAULT
@@ -738,6 +740,8 @@ async def clone_experiment(
 @router.get("/{experiment_id}/bundle")
 async def export_bundle(
     experiment_id: str,
+    request: Request,
+    include_native_inputs: bool = False,
     selection: str = Query(REPORT_SELECTION_DEFAULT),
     method: str = Query("bt", pattern="^(bt|elo)$"),
     workspace: Workspace = Depends(get_current_workspace),
@@ -758,6 +762,25 @@ async def export_bundle(
     if selection not in SELECTION_POLICIES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown selection: {selection}")
     exp = await _get_scoped(experiment_id, workspace, db)
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from evalhive_benchmark import ProtocolError
+        from evalhive_benchmark.archive import canonical
+
+        from app.api.benchmark_trials import get_trial_store
+        from app.benchmarks.archives import matrix_archive
+
+        if include_native_inputs and request.state.role not in {"owner", "admin"}:
+            raise HTTPException(403, "Native checker outputs require an owner or administrator")
+        if selection != REPORT_SELECTION_DEFAULT:
+            raise HTTPException(400, "Native archives retain explicit cell and attempt history")
+        try:
+            document = await matrix_archive(db, get_trial_store(), workspace.id, exp.id,
+                                            include_native_inputs=include_native_inputs)
+            return Response(canonical(document), media_type="application/json", headers={
+                "Content-Disposition": f'attachment; filename="native-matrix-{exp.id}.json"'
+            })
+        except (ProtocolError, ValueError):
+            raise HTTPException(409, "Native matrix archive is active, incomplete or exceeds its export limit") from None
     try:
         files, _manifest = await build_bundle(db, exp, selection=selection, method=method)
     except BundleMismatch as e:

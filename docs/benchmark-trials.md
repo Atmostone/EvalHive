@@ -1123,3 +1123,63 @@ Retired plans, cells, trial results and attempt history remain readable through
 `results?include_retired=true`. The native matrix interface exposes both copy
 modes, profile addition, retirement and historical results to workspace owners and
 admins; read-only members can inspect lineage and retained history.
+
+## Native aggregate receipts and archives
+
+After a confirmed native evaluation, the product controller asks the same owned
+worker to aggregate its recorded population. A matrix population consists of one
+configuration and one repetition across its frozen cases. Standalone executions
+and independent regrades use separate populations. Missing cases remain in the
+expected count. Dataset revisions, connector versions, worker images, model
+routes and applied settings must agree; a mismatch produces an unavailable
+aggregate rather than mixing conditions. Credentials do not enter these hashes.
+The controller never implements a benchmark's scoring formula.
+
+Aggregation inputs are authenticated evaluation results, including their exact
+trial/evaluation IDs and result digests. The JSONL command, its acknowledgement
+and the resulting population/output hashes are retained in the controller's
+immutable encrypted journal. Errors, unsupported capabilities and inputs beyond
+the bounded transport budget produce an explicit unavailable receipt. They do
+not overwrite a completed checker verdict. Regrade receipts live in the separate
+evaluator journal and do not append to the sealed source execution.
+
+`GET /api/benchmark-trials/{id}/aggregates` reads both execution and regrade
+receipts in bounded pages. Completed results must match their exact durable
+worker command response. Public projections contain metrics, coverage and
+population identities; opaque native data and result inputs remain private.
+
+AppWorld uses its pinned official `Metric.compute_metrics` and retained,
+hash-checked `TestTracker` outputs. TGC and SGC retain their native definitions.
+Missing scenarios and incomplete scenario membership are explicit; the public SGC
+metric is unknown until the installed scenario population is complete. Other
+connectors may explicitly report unsupported aggregation while preserving their
+per-case native verdicts.
+
+`GET /api/benchmark-trials/{id}/archive` exports a versioned JSON native record.
+For native matrices, the existing `GET /api/experiments/{id}/bundle` endpoint
+exports this format with frozen plans, source ancestry, retired configurations,
+cell/attempt history and member trial records. Ordinary historical bundles keep
+their original tar format and report verifier. Active executions/evaluators must
+settle before export; configured export limits fail explicitly.
+
+By default native checker outputs are omitted. Owners/admins may explicitly
+request `include_native_inputs=true` to include the recorded aggregate inputs for
+offline recomputation. Neither mode exports provider connections, credentials,
+private launch payloads or secret configuration. Artifact manifests retain
+content hashes and explicitly mark their bytes as retained outside this archive;
+this is a result/aggregation archive, not an environment or full agent replay.
+Unknown costs stay unknown.
+
+The SDK verifier is independent of the database and object store:
+
+```sh
+python -m evalhive_benchmark.archive native-trial.json
+```
+
+It checks manifest/section hashes and native receipt integrity without running
+code. `recompute_archive(document, adapters)` separately invokes adapters supplied
+by the trusted caller, keyed by connector ID/version, pinned worker image and
+dataset source digest. Archives cannot supply executable commands or import
+paths. A missing adapter or omitted native inputs refuses recomputation; a
+changed native output fails its recorded result digest. Hash integrity alone is
+not a signature or proof of an archive's origin.

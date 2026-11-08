@@ -1,10 +1,15 @@
 """Official scenario aggregation cannot treat a partial scenario as complete."""
 
+import hashlib
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from evalhive_appworld.aggregate import aggregate
-from evalhive_appworld.native import NativeConfigurationError, load
+from evalhive_appworld.native import NativeConfigurationError, canonical, load
+from evalhive_appworld.worker import AppWorldConnector
+from evalhive_benchmark import ProtocolError, validate
 
 pytestmark = pytest.mark.skipif(
     os.getenv("EVALHIVE_NATIVE_APPWORLD_CATALOG") != "1",
@@ -61,3 +66,40 @@ def test_partial_scenario_and_missing_scenarios_are_explicit():
     assert aggregate(receipt(), {})["native"]["aggregate"] is None
     with pytest.raises(NativeConfigurationError, match="uninstalled"):
         aggregate(receipt(), {"aaaaaaa_1": tracker(True)})
+
+
+def test_worker_uses_authenticated_trackers_and_hides_incomplete_scenario_metric():
+    catalog = receipt()
+    dataset = SimpleNamespace(
+        root=Path(os.environ["APPWORLD_ROOT"]),
+        receipt=catalog,
+        cases={case["native_ref"]["task_id"]: case for case in catalog["cases"]},
+    )
+    worker = AppWorldConnector(dataset=dataset)
+    value = tracker(True)
+    result = {
+        "status": "completed",
+        "success": True,
+        "metrics": [],
+        "artifacts": [],
+        "completeness": {},
+        "native": {
+            "task_id": "abcdef0_1",
+            "scenario_id": "abcdef0",
+            "test_tracker": value,
+            "tracker_sha256": hashlib.sha256(canonical(value)).hexdigest(),
+        },
+    }
+    output = worker.aggregate({"results": [result], "expected": 1})
+    validate("aggregate_result", output)
+    assert output["expected"] == 3 and output["observed"] == 1
+    assert (
+        next(
+            metric for metric in output["metrics"] if metric["name"] == "scenario_goal_completion"
+        )["value"]
+        is None
+    )
+    assert output["native"]["incomplete_scenarios"] == ["abcdef0"]
+    result["native"]["test_tracker"]["difficulty"] = 2
+    with pytest.raises(ProtocolError, match="trackers"):
+        worker.aggregate({"results": [result], "expected": 1})

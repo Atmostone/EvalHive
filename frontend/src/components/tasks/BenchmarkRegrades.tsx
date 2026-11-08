@@ -34,6 +34,7 @@ export default function BenchmarkRegrades({ trial, evaluations, writable }: {
   useEffect(() => {
     if (!jobs.data) return
     queries.invalidateQueries({ queryKey: ['benchmark-evaluations', trial.id] })
+    queries.invalidateQueries({ queryKey: ['benchmark-aggregates', trial.id] })
     const acknowledged = jobs.data.filter(job => requests[job.source_evaluation_id] === job.request_id)
     if (acknowledged.length) {
       setRequests(previous => {

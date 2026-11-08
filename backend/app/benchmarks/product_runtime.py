@@ -20,6 +20,7 @@ from app.benchmarks.host_contract import group_policy, provider_manifest
 from app.benchmarks.installations import resolve_package
 from app.benchmarks.launch_inputs import refresh_authorization
 from app.benchmarks.model_calls import ModelBinding
+from app.benchmarks.native_aggregation import NativeAggregation, behavior_digest
 from app.benchmarks.trials import failure
 from app.config import get_settings
 from app.models.benchmark import BenchmarkDatasetRevision
@@ -241,6 +242,9 @@ class ProductRuntime:
             "trial_id": str(owner.trial_id),
             "generation": owner.generation,
         }
+        controller.aggregation = NativeAggregation(
+            self.store, owner, package.manifest, behavior=behavior_digest(payload)
+        )
         return controller, spec, {name: value.encode() for name, value in native_values.items()}
 
     async def evaluation(self, owner, payload):
@@ -257,7 +261,9 @@ class ProductRuntime:
                 evaluation_roles=inputs["spec"]["models"],
             )
         bindings = auxiliary_bindings(payload["auxiliary_models"], roles=inputs["spec"]["models"])
-        return await self.coordinator.evaluation(self.store, owner, auxiliary_models=bindings)
+        controller = await self.coordinator.evaluation(self.store, owner, auxiliary_models=bindings)
+        controller.aggregation = NativeAggregation(self.store, owner, controller.host.manifest)
+        return controller
 
     def recovery(self, owner):
         return self.coordinator.recovery(self.store, owner)

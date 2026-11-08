@@ -7,8 +7,8 @@ from contextlib import AsyncExitStack
 from typing import Literal
 
 from evalhive_benchmark import ProtocolError
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -546,4 +546,56 @@ async def retry_trial(
         await db.rollback()
         raise HTTPException(
             409, "Frozen conditions are unavailable; select new SDK conditions explicitly"
+        ) from None
+
+
+@router.get("/{trial_id}/aggregates")
+async def read_aggregates(
+    trial_id: uuid.UUID,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=20),
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    store=Depends(get_trial_store),
+):
+    from app.benchmarks.aggregate_read import project, read_records
+
+    await scoped_trial(db, workspace, trial_id)
+    try:
+        rows = await read_records(db, store, workspace.id, trial_id, offset=offset, limit=limit)
+        return [project(*row) for row in rows]
+    except (ProtocolError, ValueError):
+        raise HTTPException(
+            409, "Native aggregation receipts are incomplete or unavailable"
+        ) from None
+
+
+@router.get("/{trial_id}/archive")
+async def export_native_archive(
+    trial_id: uuid.UUID,
+    request: Request,
+    include_native_inputs: bool = False,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    store=Depends(get_trial_store),
+):
+    from evalhive_benchmark.archive import canonical
+
+    from app.benchmarks.archives import trial_archive
+
+    await scoped_trial(db, workspace, trial_id)
+    if include_native_inputs and request.state.role not in {"owner", "admin"}:
+        raise HTTPException(403, "Native checker outputs require an owner or administrator")
+    try:
+        document = await trial_archive(
+            db, store, workspace.id, trial_id, include_native_inputs=include_native_inputs
+        )
+        return Response(
+            canonical(document),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="native-trial-{trial_id}.json"'},
+        )
+    except (ProtocolError, ValueError):
+        raise HTTPException(
+            409, "Native archive is active, incomplete or exceeds its export limit"
         ) from None

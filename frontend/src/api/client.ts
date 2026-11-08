@@ -7,7 +7,7 @@ import type { ExecutionAttempt, AttemptEvent, AttemptCommand } from '@/types'
 import type {
   BenchmarkCatalogEntry, BenchmarkProfile, BenchmarkProfileInput, BenchmarkCredential,
   BenchmarkDataset, BenchmarkCase, BenchmarkPreflight, BenchmarkTrial, BenchmarkEvaluation,
-  BenchmarkArtifact, BenchmarkJournalEvent, BenchmarkEvaluationJob,
+  BenchmarkArtifact, BenchmarkJournalEvent, BenchmarkEvaluationJob, BenchmarkAggregate,
 } from '@/types/benchmarks'
 
 export const benchmarkSdkApi = {
@@ -43,6 +43,8 @@ export const benchmarkSdkApi = {
   retryTrial: (id: string, requestId: string) => request<BenchmarkTrial>(
     `/benchmark-trials/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify({ request_id: requestId }) }),
   evaluations: (id: string, offset = 0) => request<BenchmarkEvaluation[]>(`/benchmark-trials/${encodeURIComponent(id)}/evaluations?offset=${offset}&limit=100`),
+  aggregates: (id: string, offset = 0) => request<BenchmarkAggregate[]>(`/benchmark-trials/${encodeURIComponent(id)}/aggregates?offset=${offset}&limit=20`),
+  archive: (id: string, nativeInputs = false) => downloadBlob(`/benchmark-trials/${encodeURIComponent(id)}/archive?include_native_inputs=${nativeInputs}`),
   regrade: (id: string, source: string, requestId: string) => request<BenchmarkEvaluationJob>(
     `/benchmark-trials/${encodeURIComponent(id)}/regrade`, { method: 'POST', body: JSON.stringify({ request_id: requestId, source_evaluation_id: source }) }),
   evaluationJobs: (id: string, offset = 0) => request<BenchmarkEvaluationJob[]>(
@@ -992,6 +994,7 @@ export const experimentsApi = {
     if (!res.ok) throw new ApiError(res.status, await res.text())
     return res.blob()
   },
+  nativeBundle: (id: string, nativeInputs = false) => downloadBlob(`/experiments/${encodeURIComponent(id)}/bundle?include_native_inputs=${nativeInputs}`),
 }
 
 // E-01 Data Lake — immutable execution-record corpus

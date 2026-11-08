@@ -118,6 +118,7 @@ class NativeService:
             "task_id": self.world.task_id,
             "scenario_id": self.world.task.generator_id,
             "tracker_sha256": hashlib.sha256(canonical(native)).hexdigest(),
+            "test_tracker": native,
             "saved_before_evaluation": True,
         }
         (report / "verdict.json").write_bytes(canonical(self.verdict))

@@ -84,10 +84,17 @@ export default function NativeBenchmarkExperiment({ detail }: { detail: Experime
   const control = useMutation({ mutationFn: (action: 'run' | 'pause' | 'resume' | 'cancel') => experimentsApi[action](detail.id), onSuccess: refresh })
   const retryFailed = useMutation({ mutationFn: () => experimentsApi.retryFailed(detail.id), onSuccess: refresh })
   const [includeRetired, setIncludeRetired] = useState(false)
+  const [nativeInputs, setNativeInputs] = useState(false)
+  const archive = useMutation({ mutationFn: async () => {
+    const blob = await experimentsApi.nativeBundle(detail.id, nativeInputs)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a'); link.href = url; link.download = `native-matrix-${detail.id}.json`; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } })
   const active = ['running', 'paused'].includes(detail.status) || (detail.status === 'cancelled' && !detail.completed_at)
   const results = useQuery({ queryKey: ['native-experiment-results', detail.id, includeRetired], queryFn: () => experimentsApi.results(detail.id, { includeRetired }), refetchInterval: active ? 2000 : false })
   const labels = Object.fromEntries(detail.configurations.map(config => [config.config_key, config.label]))
-  const error = control.error ?? retryFailed.error ?? results.error
+  const error = control.error ?? retryFailed.error ?? results.error ?? archive.error
   return <div className="p-6 space-y-4">
     <Link to="/experiments" className="text-sm text-blue-600">← Experiments</Link>
     <div><h1 className="text-2xl font-semibold">{detail.name}</h1><p className="text-sm text-gray-500">Native benchmark matrix · {detail.status}</p></div>
@@ -101,6 +108,10 @@ export default function NativeBenchmarkExperiment({ detail }: { detail: Experime
       {['completed', 'failed', 'capped', 'cancelled', 'paused'].includes(detail.status) && results.data?.some(row => row.status === 'failed') && <button disabled={retryFailed.isPending} onClick={() => retryFailed.mutate()} className="text-blue-600">Retry failed cells</button>}
     </div>}
     {writable && <MatrixChanges key={detail.id} detail={detail} refresh={refresh} />}
+    {!active && <div className="space-y-2 text-sm">
+      {writable && <label className="block"><input type="checkbox" checked={nativeInputs} onChange={event => setNativeInputs(event.target.checked)} /> Include private checker outputs for offline aggregation</label>}
+      <button disabled={archive.isPending} onClick={() => archive.mutate()} className="text-blue-600 disabled:opacity-50">Export native matrix archive</button>
+    </div>}
     {error && <p role="alert" className="text-sm text-red-600">{error.message}</p>}
     {detail.error && <p className="text-sm text-amber-700">{detail.error}</p>}
     <p className="text-xs text-gray-500">Each cell retains its native evaluation and metrics. Execution completion and task correctness are shown separately. Unknown measurements remain unknown.</p>

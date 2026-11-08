@@ -33,3 +33,15 @@ frameworks or the SDK dependency graph. The service uses OS monotonic deadlines
 and a fixed selector interval so native simulated clocks cannot break control
 when they are frozen or restored. These helpers do not replace host resource
 ownership, admission, cancellation or finalization authority.
+
+Native aggregate receipts can be checked with
+`evalhive_benchmark.aggregation.verify_record` and recomputed with an explicitly
+supplied native adapter using `recompute`. The adapter receives a copy of the
+recorded inputs; returning a different native result is an error.
+
+`python -m evalhive_benchmark.archive FILE.json` verifies a native archive without
+a database, object store or model calls. `recompute_archive(document, adapters)`
+requires explicitly installed adapters keyed by connector ID, connector version,
+worker image and dataset source digest. The archive never selects executable
+code. Public archives omit opaque checker outputs and cannot be used for native
+recomputation. Artifact bytes are explicitly outside this result archive.

@@ -25,7 +25,7 @@ MANIFEST = {
     "requirements": {},
     "capabilities": {
         method: "native"
-        for method in ["prepare", "drive", "capture", "evaluate", "cleanup", "regrade"]
+        for method in ["prepare", "drive", "capture", "evaluate", "aggregate", "cleanup", "regrade"]
     },
 }
 
@@ -140,6 +140,20 @@ class Worker(Connector):
             }
         if method == "cancel":
             return {"cancelled": True}
+        if method == "aggregate":
+            results = params["payload"]["results"]
+            return {
+                "expected": params["payload"]["expected"],
+                "observed": len(results),
+                "metrics": [
+                    {
+                        "name": "fixture_native_total",
+                        "value": sum(item["success"] is True for item in results),
+                        "aggregation": "fixture_total",
+                    }
+                ],
+                "native": {"private_marker": "aggregate-private-native"},
+            }
         if method == "cleanup":
             return {"cleaned": True}
         raise ProtocolError("UNSUPPORTED_CAPABILITY", "Fixture method unavailable")

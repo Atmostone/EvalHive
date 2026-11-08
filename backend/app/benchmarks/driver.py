@@ -69,6 +69,7 @@ class PhaseDriver:
         if self.limits.heartbeat_seconds > self.store.lease_seconds / 3:
             raise ValueError("Heartbeat interval must leave two controller lease renewals")
         self.pending, self.services, self.used = set(), [], False
+        self.aggregation = None
 
     async def _service(self, operation):
         try:
@@ -397,6 +398,8 @@ class PhaseDriver:
             stage="evaluation" if result["status"] == "completed" else "capture",
         )
         await self._wait(self.store.finish_evaluation(self.owner, result, attempt_id=evaluation_id))
+        if self.aggregation is not None:
+            await self._wait(self.aggregation(channel, evaluation_id), seconds=40)
 
     async def run(self, spec, *, private_inputs=None, extra_demands=(), evaluate=True):
         if self.used:

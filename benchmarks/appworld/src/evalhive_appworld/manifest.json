@@ -11,7 +11,7 @@
     }, "additionalProperties": false
   },
   "secret_schema": {"type": "object", "properties": {}, "additionalProperties": false},
-  "capabilities": {"prepare": "native", "drive": "native", "capture": "native", "evaluate": "native", "aggregate": "unsupported", "cleanup": "native", "regrade": "unsupported"},
+  "capabilities": {"prepare": "native", "drive": "native", "capture": "native", "evaluate": "native", "aggregate": "native", "cleanup": "native", "regrade": "unsupported"},
   "requirements": {
     "capabilities": ["host.agent_api_v1", "host.resource_finalizers_v1", "host.rootless_storage_v1", "host.ephemeral_exec_v1", "host.exec_deadline_inheritance_v1", "host.model_gateway_v1"],
     "platform": {"os": "linux", "architecture": "amd64", "libc": "glibc"},

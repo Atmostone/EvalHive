@@ -6,6 +6,7 @@ import { useAuth } from '@/stores/auth'
 import type { AttemptEvent } from '@/types'
 import type { BenchmarkJournalEvent, BenchmarkTrial } from '@/types/benchmarks'
 import BenchmarkRegrades from './BenchmarkRegrades'
+import BenchmarkAggregates from './BenchmarkAggregates'
 
 function AgentOutput({ taskId, active }: { taskId: string; active: boolean }) {
   const attempts = useQuery({ queryKey: ['task-attempts', taskId], queryFn: () => attemptsApi.list(taskId), refetchInterval: active ? 2000 : false })
@@ -57,6 +58,7 @@ function TrialDetails({ initial }: { initial: BenchmarkTrial }) {
       queries.invalidateQueries({ queryKey: ['tasks'] })
       queries.invalidateQueries({ queryKey: ['task', trial.task_id] })
       queries.invalidateQueries({ queryKey: ['benchmark-evaluations', trial.id] })
+      queries.invalidateQueries({ queryKey: ['benchmark-aggregates', trial.id] })
       queries.invalidateQueries({ queryKey: ['benchmark-artifacts', trial.id] })
       queries.invalidateQueries({ queryKey: ['benchmark-journal', trial.id] })
       queries.invalidateQueries({ queryKey: ['task-attempts', trial.task_id] })
@@ -102,6 +104,7 @@ function TrialDetails({ initial }: { initial: BenchmarkTrial }) {
       </div>
     </div>
     <BenchmarkRegrades trial={trial} evaluations={evaluations.data ?? []} writable={writable} />
+    <BenchmarkAggregates trialId={trial.id} active={active} />
     <div className="space-y-2">
       <h4 className="font-medium text-sm">Files</h4>
       {artifacts.data?.map(row => <button key={row.id} type="button" disabled={download.isPending} onClick={() => download.mutate(row.id)}

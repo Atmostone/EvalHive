@@ -26,6 +26,8 @@ NOTE_EVENTS = {
     "deadline.result",
     "configuration.applied",
     "execution.confirmed",
+    "aggregate.completed",
+    "aggregate.unavailable",
 }
 
 

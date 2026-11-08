@@ -38,6 +38,7 @@ class Fixture(work.Fixture):
         self.history = []
         self.changes = []
         self.copy = None
+        self.matrix_archives = []
 
     def route(self, route):
         parsed, request = urlsplit(route.request.url), route.request
@@ -94,6 +95,9 @@ class Fixture(work.Fixture):
             result = self.copy
         elif path == f"/experiments/{CLONE}/results":
             result = []
+        elif path == f"/experiments/{CLONE}/bundle":
+            self.matrix_archives.append(parsed.query)
+            result = {"kind": "evalhive.native-benchmark-archive"}
         elif path == f"/experiments/{EXPERIMENT}/clone":
             self.changes.append(("clone", body))
             self.copy = {**deepcopy(self.experiment), "id": CLONE, "name": body["name"],
@@ -245,6 +249,10 @@ def main():
             page.get_by_role("button", name="Create matrix copy", exact=True).click()
             expect(page.get_by_role("heading", name="Recorded copy", exact=True)).to_be_visible()
             expect(page.get_by_role("link", name="matrix revision 2", exact=True)).to_have_attribute("href", "/experiments/" + EXPERIMENT)
+            with page.expect_download() as download:
+                page.get_by_role("button", name="Export native matrix archive", exact=True).click()
+            assert download.value.suggested_filename == f"native-matrix-{CLONE}.json"
+            assert fixture.matrix_archives == ["include_native_inputs=false"]
             assert fixture.changes == [
                 ("add", {"harness_profile_id": work.HARNESS}), ("retire", "cfg-02"),
                 ("clone", {"name": "Recorded copy", "changes": {"n_runs_per_cell": 2}}),

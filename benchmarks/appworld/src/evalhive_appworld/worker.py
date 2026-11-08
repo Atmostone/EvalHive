@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sys
 import time
 from copy import deepcopy
 from pathlib import Path
 
-from evalhive_benchmark import Connector, ProtocolError, validate_spec
+from evalhive_benchmark import Connector, ProtocolError, validate, validate_spec
 from evalhive_benchmark.connector import serve
 from evalhive_benchmark.protocol import MAX_LINE_BYTES
 from evalhive_benchmark.world_client import WorldClient
 
+from .aggregate import aggregate
 from .dataset import InstalledAppWorld
 from .groups import native_groups
-from .native import canonical
+from .native import NativeConfigurationError, canonical, load
 
 MANIFEST = json.loads(Path(__file__).with_name("manifest.json").read_text())
 DEFAULTS = {key: item["default"] for key, item in MANIFEST["config_schema"]["properties"].items()}
@@ -39,6 +41,68 @@ class AppWorldConnector(Connector):
                 raise ValueError("Native dataset metadata is unavailable")
             self.dataset = InstalledAppWorld(self.root / "native", json.loads(path.read_text()))
         return self.dataset
+
+    def aggregate(self, payload):
+        results, expected = payload.get("results"), payload.get("expected")
+        if (
+            set(payload) != {"results", "expected"}
+            or not isinstance(results, list)
+            or type(expected) is not int
+            or expected < len(results)
+        ):
+            raise ProtocolError(
+                "INVALID_AGGREGATE", "Native aggregate population is invalid", "grading"
+            )
+        trackers = {}
+        try:
+            installed = self.installed()
+            load(installed.root)
+            for result in results:
+                validate("evaluation_result", result)
+                if result["status"] != "completed":
+                    continue
+                native = result["native"]
+                task, tracker = native.get("task_id"), native.get("test_tracker")
+                case = installed.cases.get(task)
+                if (
+                    case is None
+                    or tracker is None
+                    or task in trackers
+                    or native.get("scenario_id") != case["native_ref"]["scenario_id"]
+                ):
+                    raise NativeConfigurationError("Native tracker identity is unavailable")
+                if hashlib.sha256(canonical(tracker)).hexdigest() != native.get("tracker_sha256"):
+                    raise NativeConfigurationError("Native tracker digest differs")
+                trackers[task] = tracker
+            output = aggregate(installed.receipt, trackers)
+        except (NativeConfigurationError, ValueError, KeyError, TypeError, OSError):
+            raise ProtocolError(
+                "AGGREGATE_EVIDENCE_INVALID",
+                "Native AppWorld trackers are unavailable or differ",
+                "grading",
+            ) from None
+        values = output["native"]["aggregate"] or {}
+        complete = output["native"]["scenario_goal_completion_complete"]
+        return {
+            "expected": max(expected, output["expected"]),
+            "observed": len(results),
+            "metrics": [
+                {
+                    "name": name,
+                    "value": value if name != "scenario_goal_completion" or complete else None,
+                    "direction": "higher",
+                    "aggregation": "native",
+                }
+                for name, value in values.items()
+            ],
+            "native": {
+                **output["native"],
+                "verified_tasks": output["observed"],
+                "selected_expected": expected,
+                "selected_observed": len(results),
+                "unscored": len(results) - len(trackers),
+            },
+        }
 
     def load_spec(self, spec):
         validate_spec(self.manifest, spec)
@@ -211,6 +275,8 @@ class AppWorldConnector(Connector):
         }
 
     async def handle(self, method, params, context):
+        if method == "aggregate":
+            return self.aggregate(params["payload"])
         if method in {"list_cases", "resolve_case"}:
             installed = self.installed()
             cases = installed.receipt["cases"]

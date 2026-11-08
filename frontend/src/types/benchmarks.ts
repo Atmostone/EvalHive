@@ -110,6 +110,21 @@ export interface BenchmarkEvaluation {
   finished_at: string | null
 }
 
+export interface BenchmarkAggregate {
+  id: string
+  evaluation_id: string
+  status: 'completed' | 'unavailable'
+  origin: { kind: string; config_key?: string; run_index?: number } | null
+  conditions_digest: string | null
+  population_digest: string | null
+  result_digest: string | null
+  expected: number | null
+  observed: number
+  complete: boolean
+  metrics: BenchmarkEvaluation['metrics']
+  reason: string | null
+}
+
 export interface BenchmarkEvaluationJob {
   id: string
   request_id: string

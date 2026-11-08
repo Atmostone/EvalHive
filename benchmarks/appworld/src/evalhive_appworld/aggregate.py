@@ -39,6 +39,8 @@ def aggregate(receipt, trackers):
             "incomplete_scenarios": incomplete,
             "missing_scenarios": sorted(set(expected) - set(observed)),
             "complete_dataset": len(trackers) == len(membership),
-            "scenario_goal_completion_complete": bool(trackers) and not incomplete,
+            "scenario_goal_completion_complete": bool(trackers)
+            and not incomplete
+            and len(trackers) == len(membership),
         },
     }

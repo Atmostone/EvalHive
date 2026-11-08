@@ -266,3 +266,40 @@ async def test_paused_extension_creates_only_new_cells_and_waits_for_resume(
     assert await db_session.scalar(select(func.count()).select_from(Task)) == 0
     rows = list(await db_session.scalars(select(ExperimentRun)))
     assert len(rows) == 3 and all(row.status == "pending" for row in rows)
+
+
+async def test_native_matrix_archive_retains_plans_and_ancestry_without_ordinary_report(
+    auth_client, source_matrix, db_session, monkeypatch
+):
+    from app.api import experiments as api
+    from evalhive_benchmark.archive import verify_archive
+
+    def no_ordinary(*args, **kwargs):
+        pytest.fail("Native archives cannot use ordinary report mathematics")
+
+    monkeypatch.setattr(api, "build_bundle", no_ordinary)
+    monkeypatch.setattr(api, "compute_report", no_ordinary)
+    assert (await auth_client.get(f"/api/experiments/{source_matrix.id}/report")).status_code == 409
+    response = await auth_client.post(f"/api/experiments/{source_matrix.id}/clone", json={})
+    assert response.status_code == 201
+    identifier = response.json()["id"]
+    exported = await auth_client.get(
+        f"/api/experiments/{identifier}/bundle?include_native_inputs=true"
+    )
+    assert exported.status_code == 200, exported.text
+    document = exported.json()
+    assert verify_archive(document)["valid"]
+    matrix = document["sections"]["matrix"]
+    assert matrix["cloned_from_id"] == str(source_matrix.id) and matrix["clone_mode"] == "frozen"
+    assert len(document["sections"]["plans"]) == 2
+    assert all(
+        plan["source_plan_id"] and len(plan["condition_digest"]) == 64
+        for plan in document["sections"]["plans"]
+    )
+    assert document["sections"]["trials"] == []
+    for secret in (
+        "synthetic-provider-secret",
+        "synthetic-service-secret",
+        "hidden-fixture-answer",
+    ):
+        assert secret not in exported.text
