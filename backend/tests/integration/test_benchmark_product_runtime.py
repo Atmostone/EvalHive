@@ -79,7 +79,23 @@ def test_factory_preserves_host_policy_and_refuses_incomplete_deployment(tmp_pat
     assert (
         runtime.coordinator.group_policy.max_memory_mb == get_settings().benchmark_group_memory_mb
     )
+    assert runtime.coordinator.limits.stop_seconds == 10
     client.close()
+
+
+def test_product_shutdown_grace_is_bounded_and_keeps_other_deadlines(tmp_path, monkeypatch):
+    from app.benchmarks.driver import DriverLimits
+
+    monkeypatch.setattr(
+        "app.benchmarks.product_runtime.docker.from_env",
+        lambda: SimpleNamespace(close=lambda: None),
+    )
+    runtime = ProductRuntime.installed(
+        None, settings=settings_for(tmp_path, benchmark_stop_grace_seconds=2.5)
+    )
+    assert runtime.coordinator.limits.stop_seconds == 2.5
+    assert runtime.coordinator.limits.phase_seconds == DriverLimits().phase_seconds
+    assert runtime.coordinator.limits.cleanup_seconds == DriverLimits().cleanup_seconds
 
 
 async def test_storage_readiness_is_checked_without_a_model_or_worker(tmp_path, monkeypatch):

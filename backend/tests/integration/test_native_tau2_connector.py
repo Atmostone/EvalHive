@@ -70,7 +70,9 @@ async def test_native_user_tools_agent_steps_and_cold_regrade(native_engine, con
     local.mkdir(parents=True)
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"] + "/" + local.name
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=60)
-    worker_image = client.images.get("evalhive-benchmark-tau2:0.1.0")
+    worker_image = client.images.get(
+        os.getenv("EVALHIVE_NATIVE_TAU2_WORKER_IMAGE", "evalhive-benchmark-tau2:0.1.0")
+    )
     task_image = client.images.get("evalhive-tau2-task:0.1.0")
     for image, repository in (
         (worker_image, "evalhive-benchmark-tau2"),

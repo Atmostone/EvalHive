@@ -72,7 +72,9 @@ async def test_original_native_mcp_state_persistence_and_verdict(
     local.mkdir(parents=True)
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"] + "/" + local.name
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=60)
-    image = client.images.get("evalhive-benchmark-appworld:0.1.0")
+    image = client.images.get(
+        os.getenv("EVALHIVE_NATIVE_APPWORLD_IMAGE", "evalhive-benchmark-appworld:0.1.0")
+    )
     assert image.tag("evalhive-benchmark-appworld", "retained-" + image.id[7:19])
     installed = local / "installed"
     source = Path(os.environ["EVALHIVE_APPWORLD_INSTALLATIONS"]) / split

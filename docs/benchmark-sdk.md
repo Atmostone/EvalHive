@@ -115,8 +115,13 @@ and explicit CLI profile selections.
 
 The current VPS is the only execution host in this epic. Native trials are
 serial and retain the existing rootless runtime limits. Admission checks total
-resources and disk; task requirements are never silently reduced. Full adapter
-code and actual live verification are separate acceptance dimensions. Variants
+resources and disk; task requirements are never silently reduced.
+
+Shutdown gives a connector up to `BENCHMARK_STOP_GRACE_SECONDS` (default 10,
+maximum 60) to acknowledge a graceful stop before forced termination. This
+host setting does not extend native task, model or grading deadlines.
+
+Full adapter code and actual live verification are separate acceptance dimensions. Variants
 needing unavailable accounts or larger environments remain clearly unavailable
 or unverified. No owner service configuration is reused or modified implicitly.
 

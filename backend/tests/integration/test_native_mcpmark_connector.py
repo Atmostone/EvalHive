@@ -90,9 +90,15 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
     local.mkdir(parents=True)
     host_root = os.environ["EVALHIVE_NATIVE_FIXTURE_HOST"] + "/" + local.name
     client = docker.DockerClient(base_url="unix:///run/user/11001/docker.sock", timeout=60)
-    worker_image = client.images.get("evalhive-benchmark-mcpmark:0.1.0")
+    worker_image = client.images.get(
+        os.getenv("EVALHIVE_NATIVE_MCPMARK_WORKER_IMAGE", "evalhive-benchmark-mcpmark:0.1.0")
+    )
     task_image = client.images.get(
-        "evalhive-task-mcpmark-browser:0.1.0" if browser else "evalhive-task-mcpmark:0.1.0"
+        os.getenv(
+            "EVALHIVE_NATIVE_MCPMARK_BROWSER_TASK_IMAGE", "evalhive-task-mcpmark-browser:0.1.0"
+        )
+        if browser
+        else os.getenv("EVALHIVE_NATIVE_MCPMARK_TASK_IMAGE", "evalhive-task-mcpmark:0.1.0")
     )
     for image, repository in (
         (worker_image, "evalhive-benchmark-mcpmark"),
@@ -112,7 +118,11 @@ async def run_native_mcpmark_case(native_engine, connector_id, *, service):
         {"postgres_image": client.images.get("pgvector/pgvector:0.8.0-pg17-bookworm").id}
         if postgres
         else {
-            "world_image": client.images.get("evalhive-world-mcpmark-browser:0.1.0").id,
+            "world_image": client.images.get(
+                os.getenv(
+                    "EVALHIVE_NATIVE_MCPMARK_WORLD_IMAGE", "evalhive-world-mcpmark-browser:0.1.0"
+                )
+            ).id,
             "service_settings": {"browser": "chromium", "headless": True},
         }
         if browser

@@ -7,7 +7,7 @@ name = "evalhive-runner"
 version = "0.1.0"
 description = "Durable harness execution runner, independent of backend and native harnesses"
 requires-python = ">=3.12"
-dependencies = ["evalhive-harness==0.1.0", "httpx==0.28.1"]
+dependencies = ["evalhive-harness==0.2.0", "httpx==0.28.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

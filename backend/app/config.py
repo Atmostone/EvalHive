@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     benchmark_evidence_bucket: str = "benchmark-evidence"
     benchmark_group_memory_mb: int = Field(default=4096, gt=0)
     benchmark_group_cpu_cores: float = Field(default=2.0, gt=0, allow_inf_nan=False)
+    benchmark_stop_grace_seconds: float = Field(default=10, ge=0.01, le=60, allow_inf_nan=False)
     benchmark_resource_finalizers: bool = True
     benchmark_linux_capabilities: list[str] = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
     runtime_network: str = "evalhive_evalhive-net"

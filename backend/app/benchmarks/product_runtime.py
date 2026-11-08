@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.benchmarks.catalog import CatalogError
 from app.benchmarks.composition import RootlessCoordinator
+from app.benchmarks.driver import DriverLimits
 from app.benchmarks.evidence import EvidenceStore
 from app.benchmarks.host_contract import group_policy, provider_manifest
 from app.benchmarks.installations import resolve_package
@@ -84,6 +85,7 @@ class ProductRuntime:
             evidence,
             group_policy=group_policy(settings),
             resource_finalizers=settings.benchmark_resource_finalizers,
+            limits=DriverLimits(stop_seconds=settings.benchmark_stop_grace_seconds),
         )
 
     @classmethod
