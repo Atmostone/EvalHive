@@ -98,6 +98,49 @@ def test_product_shutdown_grace_is_bounded_and_keeps_other_deadlines(tmp_path, m
     assert runtime.coordinator.limits.cleanup_seconds == DriverLimits().cleanup_seconds
 
 
+def test_retained_catalog_roots_allow_old_pinned_inputs_without_neighboring_paths(
+    tmp_path, monkeypatch
+):
+    from app.runtime.file_pins import installed_path
+    from app.runtime.managed_spec import ManagedRuntimeError
+
+    monkeypatch.setattr(
+        "app.benchmarks.product_runtime.docker.from_env",
+        lambda: SimpleNamespace(close=lambda: None),
+    )
+    old = tmp_path / "previous-release"
+    old.mkdir()
+    (old / "native.txt").write_text("Frozen native input")
+    runtime = ProductRuntime.installed(
+        None,
+        settings=settings_for(
+            tmp_path, benchmark_retained_catalog_roots={"/retained/previous": str(old)}
+        ),
+    )
+    assert (
+        installed_path("/retained/previous/native.txt", runtime.runtime.policy)
+        == old / "native.txt"
+    )
+    with pytest.raises(ManagedRuntimeError, match="installed read-only root"):
+        installed_path("/retained/neighbor/native.txt", runtime.runtime.policy)
+
+
+@pytest.mark.parametrize("host", ["/", "relative/path"])
+def test_invalid_retained_catalog_root_fails_before_daemon_access(tmp_path, monkeypatch, host):
+    from app.runtime.managed_spec import ManagedRuntimeError
+
+    monkeypatch.setattr(
+        "app.benchmarks.product_runtime.docker.from_env", lambda: pytest.fail("No daemon access")
+    )
+    with pytest.raises(ManagedRuntimeError):
+        ProductRuntime.installed(
+            None,
+            settings=settings_for(
+                tmp_path, benchmark_retained_catalog_roots={host: str(tmp_path / "old")}
+            ),
+        )
+
+
 async def test_storage_readiness_is_checked_without_a_model_or_worker(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "app.benchmarks.product_runtime.docker.from_env",

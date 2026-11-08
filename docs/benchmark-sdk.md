@@ -132,6 +132,14 @@ restores unchanged profiles; edited profiles require the paired database backup
 instead of being overwritten. These are connector versions; upstream Pi 1.5.0
 and OpenCode 1.19.5 remain unchanged.
 
+`scripts/publish-benchmark-catalog.py` combines administrator-installed runtime
+packages into a new atomic catalog with contained dataset indexes and retained
+image pins. It needs only the Benchmark SDK and rootless Docker, and never imports
+native frameworks. Previous catalog mounts can be registered explicitly through
+`BENCHMARK_RETAINED_CATALOG_ROOTS`, a host-root to backend-path JSON map. Cold
+regrading still requires the recorded file registrations and matching content
+proofs; neighboring paths and missing/changed native inputs remain unavailable.
+
 Full adapter code and actual live verification are separate acceptance dimensions. Variants
 needing unavailable accounts or larger environments remain clearly unavailable
 or unverified. No owner service configuration is reused or modified implicitly.

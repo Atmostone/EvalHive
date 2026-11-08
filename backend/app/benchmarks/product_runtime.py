@@ -104,6 +104,13 @@ class ProductRuntime:
             raise failure(
                 "RUNTIME_UNAVAILABLE", "Installed benchmark host paths are not configured"
             )
+        readonly = (
+            *readonly,
+            *(
+                PathMapping(host, local)
+                for host, local in settings.benchmark_retained_catalog_roots.items()
+            ),
+        )
         data = private_directory(settings.data_dir)
         bundle_cache = private_directory(data / "benchmark-runtime-bundles")
         # Runtime bundles are installed code, separate from mutable attempt data.
