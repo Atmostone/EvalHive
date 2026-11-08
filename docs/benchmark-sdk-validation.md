@@ -63,13 +63,31 @@ byte needed for complete execution replay.
 
 ## Current release gate
 
-The first complete local backend batch produced 1,983 passing and 65 explicitly
-skipped tests, with 76.06% coverage against the required 60%. Four failures exposed
-an omitted Alembic configuration mount and stale version assertions in fixtures;
-the corrected affected batch passed all eight tests. Runner checks passed all
-25 tests. Clean CI and the final refreshed native images must pass before B16 is
-closed. A verified paired database/MinIO backup, isolated restore, profile-version
-upgrade, deployed smoke and rollback rehearsal remain separate B17 gates.
+The complete clean CI run for `8db2da658097f282db6ca8cb098ae436b44050af`
+passed backend coverage, frontend tests/build, both SDKs, migration round trips,
+all five isolated adapter wheel checks, native Pi/OpenCode conformance and all
+eight Work browser scenarios. Pi passed 34 native checks and OpenCode passed 39.
+The earlier local backend batch reached 76.06% coverage; clean CI also exceeds
+the required 60% threshold.
+
+The final refreshed Tau2 pair passed both native harnesses and cold regrading.
+The refreshed AppWorld pair passed dev/train MCP state, persistence and native
+checking. All six MCPMark filesystem/browser/PostgreSQL scenarios passed across
+the two harnesses. One PostgreSQL admission initially refused insufficient disk
+headroom before any model request; clearing unused rootless build cache allowed
+the same unchanged requirements and reserve to pass.
+
+The native evidence backup checker verified three real fixture artifacts,
+detected a one-byte same-size corruption, and passed again after restoration.
+Catalog publication passed six isolated checks and a real two-revision AppWorld
+installation: the backend resolved 147 cases without native-framework imports.
+Retained catalog policy checks passed eight tests, including neighboring-path
+rejection; profile conversion and the complete migration ratchet passed nine.
+
+B17 still requires the verified paired production backup/restore, prepared
+release activation, deployed smoke, scheduler restoration and rollback rehearsal.
+These deployment steps are separate from the completed engineering conformance.
+See [the release runbook](benchmark-release.md).
 
 No owner provider credentials, external model calls, external account setup or
 scientific experiments are part of this acceptance. Unavailable variants retain
