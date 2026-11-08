@@ -360,6 +360,7 @@ async def test_stale_generation_cannot_receive_or_replay_a_previous_receipt(call
 async def test_receipt_and_intent_are_immutable_in_the_database(calls):
     await start(calls)
     async with AsyncSession(calls.trials.engine) as db:
+        original_version = await db.scalar(text("SELECT version_num FROM alembic_version"))
         with pytest.raises(DBAPIError, match="immutable"):
             await db.execute(update(BenchmarkAgentCall).values(private_response=b"replacement"))
         await db.rollback()
@@ -375,7 +376,7 @@ async def test_receipt_and_intent_are_immutable_in_the_database(calls):
     )
     assert result.returncode != 0 and "Finish benchmark agent sessions" in result.stderr
     async with calls.trials.engine.connect() as db:
-        assert await db.scalar(text("SELECT version_num FROM alembic_version")) == "bg12"
+        assert await db.scalar(text("SELECT version_num FROM alembic_version")) == original_version
 
 
 @pytest.mark.parametrize("bound", [False, True])
