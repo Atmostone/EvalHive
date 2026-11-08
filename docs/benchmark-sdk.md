@@ -123,6 +123,15 @@ Shutdown gives a connector up to `BENCHMARK_STOP_GRACE_SECONDS` (default 10,
 maximum 60) to acknowledge a graceful stop before forced termination. This
 host setting does not extend native task, model or grading deadlines.
 
+Migration `bg16` validates compatible built-in profiles against frozen release
+schemas and advances their pins to Pi connector 0.2.1 / OpenCode connector 0.2.2.
+It records the old and new versions without changing settings, model/secret
+references, template snapshots or execution history. Unknown versions and invalid
+settings abort the transaction with a redacted conversion error. Downgrade
+restores unchanged profiles; edited profiles require the paired database backup
+instead of being overwritten. These are connector versions; upstream Pi 1.5.0
+and OpenCode 1.19.5 remain unchanged.
+
 Full adapter code and actual live verification are separate acceptance dimensions. Variants
 needing unavailable accounts or larger environments remain clearly unavailable
 or unverified. No owner service configuration is reused or modified implicitly.

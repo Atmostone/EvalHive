@@ -17,6 +17,7 @@ import httpx
 from app.auth.security import create_access_token
 from app.config import get_settings
 from app.database import async_session
+from app.harnesses.catalog import get_manifest
 from app.harnesses.profiles import seed_workspace_profile
 from app.models.chat_message import ChatMessage
 from app.models.event import AgentEvent
@@ -63,7 +64,7 @@ async def main(model_url):
             pi = await seed_workspace_profile(db, workspace_id)
             pi.model_id, pi.config = model.id, {'autoCompaction': False, 'maxRetries': 0}
             opencode = HarnessProfile(workspace_id=workspace_id, name='Release OpenCode', connector_id='opencode',
-                                      connector_version='0.1.0', model_id=model.id, config={})
+                                      connector_version=get_manifest('opencode')['version'], model_id=model.id, config={})
             db.add(opencode)
             await db.flush()
             profiles = {'pi': pi.id, 'opencode': opencode.id}

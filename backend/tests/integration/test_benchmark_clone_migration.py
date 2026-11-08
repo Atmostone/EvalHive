@@ -78,9 +78,11 @@ async def test_downgrade_requires_backup_when_clone_ancestry_exists(auth_client,
     )
     db_session.add(copied)
     await db_session.commit()
+    original_version = await db_session.scalar(text("SELECT version_num FROM alembic_version"))
+    await db_session.commit()
     with pytest.raises(DBAPIError, match="paired database backup"):
         await asyncio.to_thread(command.downgrade, configuration(), "bg14")
     await db_session.refresh(copied)
     assert copied.cloned_from_id == source.id
     version = await db_session.scalar(text("SELECT version_num FROM alembic_version"))
-    assert version == "bg15"
+    assert version == original_version
