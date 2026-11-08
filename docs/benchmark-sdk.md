@@ -2,6 +2,8 @@
 
 Status: accepted architecture; implementation tracked by
 [Epic G, SPA-137](https://linear.app/spawnhive/issue/SPA-137).
+Engineering evidence and unavailable variants are listed in the
+[acceptance inventory](benchmark-sdk-validation.md).
 
 ## Decision
 
