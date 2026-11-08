@@ -23,9 +23,10 @@ def main():
 
     def report():
         fs = os.statvfs(args.path)
-        used = (fs.f_blocks - fs.f_bfree) * fs.f_frsize
+        total = fs.f_blocks * fs.f_frsize
         available = fs.f_bavail * fs.f_frsize
-        percent = 100 * used / (used + available)
+        # Rootless builds cannot use filesystem blocks reserved for root.
+        percent = 100 * (total - available) / total
         print(f"Disk: {percent:.1f}% used; {available / GIB:.1f} GiB available", flush=True)
         return available, percent
 
