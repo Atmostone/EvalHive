@@ -1091,3 +1091,35 @@ retired history so current-cell and tag-based views do not count it twice.
 history pages. Missing tasks are explicitly unavailable; unknown correctness and
 cost remain null. The native matrix view exposes prior attempts even while its
 replacement cell is pending, with links to the recorded execution in Work.
+
+## Native matrix copies and population changes
+
+`POST /api/experiments/{id}/clone` copies live configurations and their frozen
+per-case plans by default. Changing only the name or repetition count retains
+recorded conditions. Every copied plan is encrypted under its new identity and
+references the original immutable plan. The matrix records its source matrix,
+source revision and `clone_mode=frozen`. An exact copy requires pinned runtime
+images. Explicit `dataset`, `configurations` or `axes` changes resolve current
+profiles into new plans and record `clone_mode=new_conditions` instead.
+
+Migration `bg15` enforces workspace-scoped, immutable copy ancestry. A source
+matrix cannot be deleted while a copy refers to it; deleting the copy first
+releases the reference. Whole-workspace deletion remains transactional. Release
+rollback must use the paired database backup when older schemas cannot represent
+new copy ancestry; dropping columns is not a history-preserving rollback.
+
+`POST /api/experiments/{id}/add-config` accepts one native configuration. It
+resolves current settings only for the new configuration against exactly the
+original case IDs, leaving existing plans unchanged. Keys include retired
+configurations when allocating the next number. Duplicate recorded conditions,
+unsupported fields and population limits reject the whole transaction. A draft
+creates no execution cells until started; a paused matrix remains paused; a
+settled matrix reopens with only the new cells pending. New cells use the common
+serial queue. Pause or settle the matrix before adding or retiring configurations.
+
+`DELETE /api/experiments/{id}/configs/{key}` retires a configuration after its
+active execution has finished. At least one live configuration must remain.
+Retired plans, cells, trial results and attempt history remain readable through
+`results?include_retired=true`. The native matrix interface exposes both copy
+modes, profile addition, retirement and historical results to workspace owners and
+admins; read-only members can inspect lineage and retained history.

@@ -967,6 +967,10 @@ export const experimentsApi = {
       `/experiments/${id}/configs/${configKey}`,
       { method: 'DELETE' },
     ),
+  addConfig: (id: string, configuration: Record<string, unknown>) =>
+    request<Experiment & { config_key: string; runs_created: number }>(`/experiments/${id}/add-config`, {
+      method: 'POST', body: JSON.stringify(configuration),
+    }),
   clone: (id: string, data: { name?: string; changes?: Record<string, unknown> }) =>
     request<Experiment>(`/experiments/${id}/clone`, {
       method: 'POST',

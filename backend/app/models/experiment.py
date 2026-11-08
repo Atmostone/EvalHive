@@ -4,8 +4,10 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -65,6 +67,17 @@ class Experiment(Base):
     __table_args__ = (
         UniqueConstraint("id", "workspace_id", name="uq_experiments_scope"),
         UniqueConstraint("workspace_id", "name", name="uq_experiments_workspace_name"),
+        ForeignKeyConstraint(
+            ["cloned_from_id", "workspace_id"],
+            ["experiments.id", "experiments.workspace_id"],
+            name="fk_experiment_clone_scope",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "(cloned_from_id IS NULL AND cloned_from_revision IS NULL AND clone_mode IS NULL) OR (cloned_from_id IS NOT NULL AND cloned_from_id <> id AND cloned_from_revision IS NOT NULL AND clone_mode IS NOT NULL AND cloned_from_revision > 0 AND clone_mode IN ('frozen','new_conditions'))",
+            name="ck_experiment_clone_origin",
+        ),
         Index("idx_experiments_workspace", "workspace_id"),
         Index("idx_experiments_status", "status"),
     )
@@ -78,6 +91,9 @@ class Experiment(Base):
         nullable=False,
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    cloned_from_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    cloned_from_revision: Mapped[int | None] = mapped_column(Integer)
+    clone_mode: Mapped[str | None] = mapped_column(String(20))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20),

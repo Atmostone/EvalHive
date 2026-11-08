@@ -19,6 +19,7 @@ work = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(work)
 EXPERIMENT = str(uuid.UUID(int=30))
 CELL = str(uuid.UUID(int=31))
+CLONE = str(uuid.UUID(int=33))
 
 
 class StaticFiles(work.StaticFiles):
@@ -35,6 +36,8 @@ class Fixture(work.Fixture):
         self.experiment, self.controls, self.created = None, [], []
         self.rows = []
         self.history = []
+        self.changes = []
+        self.copy = None
 
     def route(self, route):
         parsed, request = urlsplit(route.request.url), route.request
@@ -76,7 +79,7 @@ class Fixture(work.Fixture):
                 "revision": 1,
                 "n_retired_configs": 0,
                 "eval_config": {"mode": "native"},
-                "configurations": [{"config_key": "cfg-01", "label": "Fixture Pi"}],
+                "configurations": [{"config_key": "cfg-01", "label": "Fixture Pi", "harness_profile_id": work.HARNESS}],
                 "created_at": "2026-01-01T00:00:00Z",
                 "completed_at": None,
                 "matrix": [],
@@ -86,6 +89,28 @@ class Fixture(work.Fixture):
         elif path == "/experiments":
             result = [self.experiment] if self.experiment else []
         elif path == "/experiments/" + EXPERIMENT:
+            result = self.experiment
+        elif path == "/experiments/" + CLONE:
+            result = self.copy
+        elif path == f"/experiments/{CLONE}/results":
+            result = []
+        elif path == f"/experiments/{EXPERIMENT}/clone":
+            self.changes.append(("clone", body))
+            self.copy = {**deepcopy(self.experiment), "id": CLONE, "name": body["name"],
+                         "status": "draft", "cloned_from_id": EXPERIMENT,
+                         "cloned_from_revision": self.experiment["revision"], "clone_mode": "frozen"}
+            result = self.copy
+        elif path == f"/experiments/{EXPERIMENT}/add-config":
+            assert body == {"harness_profile_id": work.HARNESS}
+            self.changes.append(("add", body))
+            self.experiment["configurations"].append({"config_key": "cfg-02", "label": "Added Pi"})
+            self.experiment["n_configs"] = 2
+            result = self.experiment
+        elif path == f"/experiments/{EXPERIMENT}/configs/cfg-02":
+            assert request.method == "DELETE"
+            self.changes.append(("retire", "cfg-02"))
+            self.experiment["configurations"][1]["retired_at"] = "2026-01-02T00:00:00Z"
+            self.experiment.update(n_configs=1, n_retired_configs=1)
             result = self.experiment
         elif path == f"/experiments/{EXPERIMENT}/results":
             result = self.rows
@@ -186,7 +211,14 @@ def main():
             page.get_by_text("Fixture Pi · native-case · repeat 1 · running", exact=True).click()
             expect(page.get_by_role("region", name="Benchmark trial", exact=True)).to_be_visible()
             expect(page.get_by_text("Known run cost: unknown", exact=True)).to_be_visible()
+            page.get_by_text("Configurations and history", exact=True).click()
+            expect(page.get_by_role("button", name="Add configuration", exact=True)).to_be_disabled()
             page.get_by_role("button", name="Pause new runs", exact=True).click()
+            page.get_by_label("Add native matrix profile", exact=True).select_option(work.HARNESS)
+            page.get_by_role("button", name="Add configuration", exact=True).click()
+            page.get_by_role("button", name="Retire Added Pi", exact=True).click()
+            expect(page.get_by_label("Include retired execution history", exact=True)).to_be_visible()
+            page.get_by_label("Include retired execution history", exact=True).check()
             page.get_by_role("button", name="Resume native matrix", exact=True).click()
             page.get_by_role("button", name="Cancel native matrix", exact=True).click()
             expect(
@@ -208,6 +240,15 @@ def main():
             expect(
                 page.get_by_text("Native correctness: unknown · cost: unknown", exact=True)
             ).to_be_visible()
+            page.get_by_text("Clone matrix", exact=True).click()
+            page.get_by_label("Native clone name", exact=True).fill("Recorded copy")
+            page.get_by_role("button", name="Create matrix copy", exact=True).click()
+            expect(page.get_by_role("heading", name="Recorded copy", exact=True)).to_be_visible()
+            expect(page.get_by_role("link", name="matrix revision 2", exact=True)).to_have_attribute("href", "/experiments/" + EXPERIMENT)
+            assert fixture.changes == [
+                ("add", {"harness_profile_id": work.HARNESS}), ("retire", "cfg-02"),
+                ("clone", {"name": "Recorded copy", "changes": {"n_runs_per_cell": 2}}),
+            ], fixture.changes
             fixture.experiment.update(
                 dataset={"source": "benchmark_suite", "suite": "toolathlon"},
                 dataset_cases=[],
@@ -215,7 +256,7 @@ def main():
                 legacy_execution_retired=True,
                 n_toolathlon_lanes=3,
             )
-            page.reload()
+            page.goto(f"http://127.0.0.1:{server.server_port}/experiments/{EXPERIMENT}")
             expect(page.get_by_role("status")).to_contain_text(
                 "Historical benchmark execution is retired"
             )

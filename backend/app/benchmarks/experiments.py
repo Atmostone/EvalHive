@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from evalhive_benchmark import ProtocolError
 from evalhive_benchmark.peer import identity
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from app.benchmarks.experiment_inputs import prepare
 from app.benchmarks.experiment_plans import freeze_plan, load_plan
@@ -43,7 +43,7 @@ async def lock(db, experiment):
     )
 
 
-async def create(db, workspace_id, payload, *, created_by="user"):
+async def create(db, workspace_id, payload, *, created_by="user", lineage=None):
     from app.quality.experiments import experiment_input_fingerprint
 
     prepared = await prepare(db, workspace_id, payload)
@@ -67,6 +67,9 @@ async def create(db, workspace_id, payload, *, created_by="user"):
         max_parallel=1,
         eval_config={"mode": "native"},
         created_by=created_by,
+        cloned_from_id=lineage[0] if lineage else None,
+        cloned_from_revision=lineage[1] if lineage else None,
+        clone_mode=lineage[2] if lineage else None,
     )
     db.add(experiment)
     await db.flush()
@@ -94,16 +97,23 @@ async def start(db, experiment):
     experiment = await lock(db, experiment)
     if experiment.status != "draft":
         raise ValueError("Only a draft native matrix can start")
-    count = await db.scalar(
-        select(func.count())
-        .select_from(BenchmarkExperimentPlan)
-        .where(
-            BenchmarkExperimentPlan.experiment_id == experiment.id,
-            BenchmarkExperimentPlan.workspace_id == experiment.workspace_id,
+    configs = [row for row in experiment.configurations if not row.get("retired_at")]
+    keys = {config["config_key"] for config in configs}
+    actual = set(
+        await db.execute(
+            select(BenchmarkExperimentPlan.config_key, BenchmarkExperimentPlan.case_key).where(
+                BenchmarkExperimentPlan.experiment_id == experiment.id,
+                BenchmarkExperimentPlan.workspace_id == experiment.workspace_id,
+                BenchmarkExperimentPlan.config_key.in_(keys),
+            )
         )
     )
-    configs = [row for row in experiment.configurations if not row.get("retired_at")]
-    if count != len(configs) * len(experiment.dataset_cases):
+    expected = {
+        (config["config_key"], case["case_key"])
+        for config in configs
+        for case in experiment.dataset_cases
+    }
+    if not expected or actual != expected:
         raise ValueError("Frozen native matrix inputs are incomplete")
     for config in configs:
         for case in experiment.dataset_cases:

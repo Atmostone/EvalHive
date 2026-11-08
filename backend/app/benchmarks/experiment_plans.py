@@ -33,8 +33,15 @@ def condition_digest(frozen):
     )
 
 
-async def freeze_plan(db, store, experiment, config_key, case_key, frozen):
-    if experiment.status != "draft":
+async def freeze_plan(
+    db, store, experiment, config_key, case_key, frozen, *, source_plan_id=None, extension=False
+):
+    allowed = (
+        {"draft", "paused", "completed", "failed", "cancelled", "capped"}
+        if extension
+        else {"draft"}
+    )
+    if experiment.status not in allowed:
         raise failure("EXPERIMENT_ACTIVE", "Native matrix inputs freeze before execution")
     if frozen.private["benchmark_spec"]["scope"]["workspace_id"] != str(
         experiment.workspace_id
@@ -45,6 +52,7 @@ async def freeze_plan(db, store, experiment, config_key, case_key, frozen):
         id=identity_id,
         workspace_id=experiment.workspace_id,
         experiment_id=experiment.id,
+        source_plan_id=source_plan_id,
         config_key=config_key,
         case_key=case_key,
         condition_digest=condition_digest(frozen),

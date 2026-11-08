@@ -32,11 +32,23 @@ class BenchmarkExperimentPlan(Base):
         UniqueConstraint(
             "experiment_id", "config_key", "case_key", name="uq_benchmark_experiment_plan_cell"
         ),
+        UniqueConstraint("id", "workspace_id", name="uq_benchmark_experiment_plan_id_scope"),
+        ForeignKeyConstraint(
+            ["source_plan_id", "workspace_id"],
+            ["benchmark_experiment_plans.id", "benchmark_experiment_plans.workspace_id"],
+            name="fk_benchmark_plan_clone_scope",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "source_plan_id IS NULL OR source_plan_id <> id", name="ck_benchmark_plan_clone_self"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     workspace_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
     experiment_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    source_plan_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     config_key: Mapped[str] = mapped_column(String(64))
     case_key: Mapped[str] = mapped_column(String(128))
     condition_digest: Mapped[str] = mapped_column(String(64))

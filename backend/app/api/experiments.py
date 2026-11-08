@@ -97,6 +97,9 @@ def serialize(exp: Experiment, *, include_details: bool = True) -> dict:
         "name": exp.name,
         "description": exp.description,
         "status": exp.status,
+        "cloned_from_id": str(exp.cloned_from_id) if exp.cloned_from_id else None,
+        "cloned_from_revision": exp.cloned_from_revision,
+        "clone_mode": exp.clone_mode,
         "legacy_execution_retired": (
             (exp.dataset or {}).get("source") != "benchmark_sdk"
             and service.requires_benchmark_sdk(exp.dataset, exp.dataset_cases, exp.n_toolathlon_lanes)
@@ -414,8 +417,12 @@ async def delete_experiment(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "cancel the experiment before deleting it"
         )
-    await db.delete(exp)
-    await db.commit()
+    try:
+        await db.delete(exp)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Experiment is referenced by immutable benchmark history") from None
 
 
 @router.post("/{experiment_id}/run", status_code=status.HTTP_202_ACCEPTED)

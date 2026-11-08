@@ -1592,6 +1592,9 @@ export interface Experiment {
   name: string
   description?: string | null
   status: ExperimentStatus
+  cloned_from_id?: string | null
+  cloned_from_revision?: number | null
+  clone_mode?: 'frozen' | 'new_conditions' | null
   dataset: Record<string, unknown>
   n_cases: number
   n_configs: number

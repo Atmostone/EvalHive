@@ -1102,6 +1102,10 @@ async def add_config_to_experiment(db: AsyncSession, exp: Experiment, cfg_input:
     re-opening the experiment so the tick runs them. Lets you add a model in
     place instead of starting a fresh experiment. Frozen dataset is reused as-is.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_mutations import add_config
+
+        return await add_config(db, exp, cfg_input)
     await _lock_experiment(db, exp)
     if exp.status == ExperimentStatus.DRAFT.value:
         raise ValueError("add the configuration at creation, or run the experiment first")
@@ -1218,6 +1222,10 @@ async def remove_config_from_experiment(
     tell what had been measured before. Refuses to retire the last live
     configuration — delete the experiment instead.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_mutations import retire_config
+
+        return await retire_config(db, exp, config_key)
     await _lock_experiment(db, exp)
     if exp.status == ExperimentStatus.RUNNING.value:
         raise ValueError("pause or cancel the experiment before retiring a configuration")
@@ -2053,6 +2061,10 @@ async def clone_experiment(
     ``changes`` is a partial create payload; untouched parts (including the
     frozen dataset) are copied from the source. Re-run = clone + run.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_clones import clone
+
+        return await clone(db, exp, name=name, changes=changes, created_by=created_by)
     changes = dict(changes or {})
     # Must be read before the pops below empty the dict.
     caller_respecified_matrix = "configurations" in changes or "axes" in changes
