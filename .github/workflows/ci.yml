@@ -46,6 +46,7 @@ jobs:
           ruff check sdk/python sdk/fixtures/peer.py sdk/examples/fake/connector.py
           python -m pytest -c sdk/python/pyproject.toml sdk/python/tests
           python -m pytest -c runner/pyproject.toml runner/tests
+          python -m pytest -c /dev/null scripts/tests
           EH_TEST_PYTHON="$(command -v python)" npm test --prefix sdk/typescript
       - name: Build distributable SDK packages
         run: |

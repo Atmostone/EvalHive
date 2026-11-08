@@ -37,6 +37,15 @@ def install(source, destination):
         if not resolved:
             raise ValueError("A required connector image is not installed")
         manifest["image"] = resolved
+        runtime_bundle = manifest.get("requirements", {}).get("runtime_bundle")
+        bundle_inventory = None
+        if runtime_bundle is not None:
+            bundle_reference = runtime_bundle["image"]
+            bundle_id = image_id(bundle_reference)
+            if not bundle_id:
+                raise ValueError("A required connector runtime bundle is not installed")
+            runtime_bundle["image"] = bundle_id
+            bundle_inventory = {"reference": bundle_reference, "image_id": bundle_id}
         environments = {}
         variants = manifest.get("requirements", {}).get("environment_images", {})
         for name, reference in variants.items():
@@ -46,7 +55,7 @@ def install(source, destination):
                 variants[name] = pinned
         declarations[path.parent.name] = encoded(manifest)
         inventory[identity] = {"connector_version": manifest["version"], "reference": original,
-                               "image_id": resolved, "environments": environments,
+                               "image_id": resolved, "environments": environments, "runtime_bundle": bundle_inventory,
                                "installed_manifest_sha256": hashlib.sha256(declarations[path.parent.name]).hexdigest()}
     if not declarations:
         raise ValueError("No connector declarations found")
