@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { attemptsApi, benchmarkSdkApi } from '@/api/client'
 import { useAuth } from '@/stores/auth'
 import type { AttemptEvent } from '@/types'
@@ -34,6 +35,8 @@ function AttemptOutput({ id, active }: { id: string; active: boolean }) {
 
 function TrialDetails({ initial }: { initial: BenchmarkTrial }) {
   const queries = useQueryClient()
+  const navigate = useNavigate()
+  const [retryRequestId] = useState(() => crypto.randomUUID())
   const role = useAuth(state => state.workspaces.find(row => row.id === state.workspaceId)?.role)
   const writable = ['owner', 'admin', 'member'].includes(role ?? '')
   const current = useQuery({ queryKey: ['benchmark-trial', initial.id], queryFn: () => benchmarkSdkApi.trial(initial.id), refetchInterval: query => query.state.data?.phase === 'finished' ? false : 2000 })
@@ -63,13 +66,17 @@ function TrialDetails({ initial }: { initial: BenchmarkTrial }) {
   const evaluations = useQuery({ queryKey: ['benchmark-evaluations', trial.id, evaluationOffset], queryFn: () => benchmarkSdkApi.evaluations(trial.id, evaluationOffset), refetchInterval: active ? 2000 : false })
   const artifacts = useQuery({ queryKey: ['benchmark-artifacts', trial.id, artifactOffset], queryFn: () => benchmarkSdkApi.artifacts(trial.id, artifactOffset), refetchInterval: active ? 2000 : false })
   const cancel = useMutation({ mutationFn: () => benchmarkSdkApi.cancel(trial.id), onSuccess: () => queries.invalidateQueries({ queryKey: ['benchmark-trial', trial.id] }) })
+  const retry = useMutation({ mutationFn: () => benchmarkSdkApi.retryTrial(trial.id, retryRequestId), onSuccess: result => {
+    queries.invalidateQueries({ queryKey: ['tasks'] })
+    if (result.task_id) navigate('/tasks?task=' + encodeURIComponent(result.task_id))
+  } })
   const download = useMutation({ mutationFn: async (id: string) => {
     const blob = await benchmarkSdkApi.download(trial.id, id)
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a'); link.href = url; link.download = id + '.bin'; link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } })
-  const error = current.error ?? events.error ?? evaluations.error ?? artifacts.error ?? cancel.error ?? download.error
+  const error = current.error ?? events.error ?? evaluations.error ?? artifacts.error ?? cancel.error ?? retry.error ?? download.error
   return <section aria-label="Benchmark trial" className="border rounded-lg p-3 space-y-3">
     <h3 className="font-medium text-sm">Native benchmark · {trial.phase}</h3>
     <dl className="grid grid-cols-2 gap-2 text-xs">
@@ -78,6 +85,7 @@ function TrialDetails({ initial }: { initial: BenchmarkTrial }) {
     </dl>
     {active && writable && <button type="button" disabled={cancel.isPending || !!trial.cancel_requested_at}
       onClick={() => cancel.mutate()} className="text-sm text-red-600 disabled:opacity-50">{trial.cancel_requested_at ? 'Cancellation requested' : 'Cancel benchmark run'}</button>}
+    {!active && writable && trial.cleanup_status === 'complete' && <button title="Create a standalone Work execution; prior results and matrix cells stay unchanged." disabled={retry.isPending} onClick={() => retry.mutate()} className="text-sm text-blue-600 disabled:opacity-50">Repeat with recorded settings</button>}
     {error && <p role="alert" className="text-sm text-red-600">{error.message}</p>}
     <div className="space-y-2" aria-label="Native evaluations">
       <h4 className="font-medium text-sm">Native evaluation history</h4>

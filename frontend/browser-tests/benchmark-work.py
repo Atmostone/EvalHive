@@ -24,6 +24,7 @@ WORKSPACE, PROFILE, DATASET, HARNESS = (
     settings.HARNESS,
 )
 TASK, TRIAL, ATTEMPT, ARTIFACT = [str(uuid.UUID(int=i)) for i in range(10, 14)]
+RETRY_TASK, RETRY_TRIAL = str(uuid.UUID(int=40)), str(uuid.UUID(int=41))
 
 
 class StaticFiles(settings.StaticFiles):
@@ -40,6 +41,7 @@ class Fixture(settings.Fixture):
         self.compatible, self.first_reply_lost = False, True
         self.evaluation_jobs, self.regrade_requests, self.regrade_results = [], [], []
         self.regrade_reply_lost, self.regrade_cancelled = False, 0
+        self.retry_requests, self.retry_trial, self.retry_reply_lost = [], None, True
         self.trial = {
             "id": TRIAL,
             "task_id": TASK,
@@ -93,6 +95,10 @@ class Fixture(settings.Fixture):
             result = self.tasks
         elif path == "/tasks/" + TASK:
             result = self.tasks[0]
+        elif path == "/tasks/" + RETRY_TASK:
+            result = self.tasks[1]
+        elif path == "/tasks/" + RETRY_TASK + "/attempts":
+            result = []
         elif path == "/tasks/" + TASK + "/attempts":
             result = [
                 {
@@ -148,7 +154,51 @@ class Fixture(settings.Fixture):
                 return
             result = {**self.trial, "job_id": str(uuid.UUID(int=14)), "job_status": "queued"}
         elif path == "/benchmark-trials":
-            result = [self.trial]
+            result = (
+                [self.retry_trial]
+                if parse_qs(parsed.query).get("task_id") == [RETRY_TASK]
+                else [self.trial]
+            )
+        elif path == f"/benchmark-trials/{TRIAL}/retry":
+            self.retry_requests.append(deepcopy(body))
+            if self.retry_trial is None:
+                self.tasks.append(
+                    {
+                        **self.tasks[0],
+                        "id": RETRY_TASK,
+                        "status": "ready",
+                        "benchmark_trial_id": RETRY_TRIAL,
+                        "replay_of_task_id": TASK,
+                    }
+                )
+                self.retry_trial = {
+                    **self.trial,
+                    "id": RETRY_TRIAL,
+                    "task_id": RETRY_TASK,
+                    "retry_of_id": TRIAL,
+                    "phase": "created",
+                    "execution_status": "pending",
+                    "evaluation_status": "pending",
+                    "cleanup_status": "pending",
+                    "recording_status": "open",
+                    "cancel_requested_at": None,
+                    "finished_at": None,
+                }
+            if self.retry_reply_lost:
+                self.retry_reply_lost = False
+                route.fulfill(status=503, json={"detail": "Synthetic lost retry response"})
+                return
+            result = self.retry_trial
+        elif path == f"/benchmark-trials/{RETRY_TRIAL}":
+            result = self.retry_trial
+        elif path == f"/benchmark-trials/{RETRY_TRIAL}/events":
+            result = {"events": [], "next_seq": -1}
+        elif path in {
+            f"/benchmark-trials/{RETRY_TRIAL}/evaluations",
+            f"/benchmark-trials/{RETRY_TRIAL}/artifacts",
+            f"/benchmark-trials/{RETRY_TRIAL}/evaluation-jobs",
+        }:
+            result = []
         elif path == "/benchmark-trials/" + TRIAL:
             result = self.trial
         elif path == f"/benchmark-trials/{TRIAL}/evaluation-jobs":
@@ -385,23 +435,42 @@ def main():
                 page.get_by_role("button", name="Cancellation requested", exact=True)
             ).to_be_disabled()
             assert fixture.cancelled == 1
+            fixture.finish()
+            expect(
+                panel.get_by_role("button", name="Repeat with recorded settings", exact=True)
+            ).to_be_visible(timeout=10000)
+            panel.get_by_role("button", name="Repeat with recorded settings", exact=True).click()
+            expect(panel.get_by_text("Synthetic lost retry response", exact=True)).to_be_visible()
+            panel.get_by_role("button", name="Repeat with recorded settings", exact=True).click()
+            expect(page).to_have_url(
+                f"http://127.0.0.1:{server.server_port}/tasks?task={RETRY_TASK}"
+            )
+            expect(page.get_by_role("link", name="Previous execution", exact=True)).to_be_visible()
+            assert len(fixture.tasks) == 2 and len(fixture.retry_requests) == 2
+            assert fixture.retry_requests[0] == fixture.retry_requests[1]
+            page.get_by_role("link", name="Previous execution", exact=True).click()
+            expect(page).to_have_url(f"http://127.0.0.1:{server.server_port}/tasks?task={TASK}")
+            expect(page.get_by_text("initial · checker: completed", exact=True)).to_be_visible()
             assert not errors, errors
             owner.close()
             viewer = settings.context(browser, "viewer")
             viewer.route("**/*", fixture.route)
             readonly = viewer.new_page()
             readonly.goto(f"http://127.0.0.1:{server.server_port}/tasks")
-            readonly.get_by_role("heading", name="Browser native run", exact=True).click()
+            readonly.get_by_role("heading", name="Browser native run", exact=True).first.click()
             expect(
                 readonly.get_by_role("button", name="Cancel benchmark run", exact=True)
             ).to_have_count(0)
             expect(
                 readonly.get_by_role("button", name="Regrade saved state", exact=True)
             ).to_have_count(0)
+            expect(
+                readonly.get_by_role("button", name="Repeat with recorded settings", exact=True)
+            ).to_have_count(0)
             viewer.close()
             browser.close()
         print(
-            "Benchmark Work browser acceptance passed: queued runs, output, native verdicts/files, independent regrade with lost-response recovery, preserved initial verdict, cancellation and read-only role."
+            "Benchmark Work browser acceptance passed: queued runs, output/files, independent regrade, frozen repeat with lost-response retry, previous-execution links, preserved history, cancellation and read-only role."
         )
     finally:
         server.shutdown()

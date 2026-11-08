@@ -1041,6 +1041,10 @@ async def retry_failed_experiment(db: AsyncSession, exp: Experiment) -> int:
     The superseded state of every retried cell is written to the attempt ledger
     first, so "re-run in place" no longer means the previous result is lost.
     """
+    if (exp.dataset or {}).get("source") == "benchmark_sdk":
+        from app.benchmarks.matrix_mutations import retry_failed
+
+        return await retry_failed(db, exp)
     await _lock_experiment(db, exp)
     if exp.status not in TERMINAL_EXPERIMENT and exp.status != ExperimentStatus.PAUSED.value:
         raise ValueError(

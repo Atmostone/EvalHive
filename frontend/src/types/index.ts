@@ -1664,6 +1664,7 @@ export interface ExperimentPreview {
 }
 
 export interface ExperimentRunResult {
+  id?: string
   config_key: string
   case_key: string
   run_index: number
@@ -1689,6 +1690,18 @@ export interface ExperimentRunResult {
   trajectory_profile?: TrajectoryProfile | null
   repro_fingerprint?: string | null
   completed_at?: string | null
+}
+
+export interface ExperimentCellAttempt {
+  id: string
+  attempt_index: number
+  task_id: string | null
+  task_available: boolean
+  status: string
+  external_verdict: boolean | null
+  failure_type: string | null
+  cost_usd: number | null
+  retired_reason: string | null
 }
 
 export interface ExperimentConfigSummary {

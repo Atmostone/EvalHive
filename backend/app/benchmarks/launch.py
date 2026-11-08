@@ -61,6 +61,8 @@ async def enqueue_frozen_execution(
     title=None,
     priority="medium",
     origin="user",
+    retry_of_id=None,
+    replay_of_task_id=None,
 ):
     """Internal shared transaction for validated Work and frozen matrix plans."""
     from app.benchmarks.trials import failure
@@ -92,6 +94,7 @@ async def enqueue_frozen_execution(
         harness_profile_id=frozen.harness_profile_id,
         execution_mode="direct",
         max_retries=0,
+        replay_of_task_id=replay_of_task_id,
     )
     db.add(task)
     await db.flush()
@@ -104,6 +107,7 @@ async def enqueue_frozen_execution(
         task_id=task_id,
         dataset_case_id=uuid.UUID(selection["case_id"]),
         profile_id=uuid.UUID(selection["profile_id"]),
+        retry_of_id=retry_of_id,
     )
     job = await enqueue(
         db,

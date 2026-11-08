@@ -84,6 +84,7 @@ export interface BenchmarkTrial {
   task_id: string | null
   profile_id: string | null
   dataset_case_id: string | null
+  retry_of_id?: string | null
   snapshot: Record<string, unknown>
   phase: string
   execution_status: string

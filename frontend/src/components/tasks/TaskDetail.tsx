@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { tasksApi, eventsApi, qualityApi } from '@/api/client'
 import { X, Check, RotateCcw, Clock, Play, Download, Gauge, Trash2 } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
@@ -150,6 +151,7 @@ export default function TaskDetail({ task, onClose }: TaskDetailProps) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {t.replay_of_task_id && <Link to={'/tasks?task=' + encodeURIComponent(t.replay_of_task_id)} className="block text-xs text-blue-600">Previous execution</Link>}
         {/* Status & Priority */}
         <div className="flex gap-2">
           <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">

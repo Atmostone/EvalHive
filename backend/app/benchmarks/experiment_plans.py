@@ -1,5 +1,6 @@
 """Freeze native matrix inputs once, then bind fresh execution identities."""
 
+import re
 import uuid
 from copy import deepcopy
 
@@ -84,7 +85,22 @@ async def load_plan(
     if row is None:
         raise failure("PLAN_UNAVAILABLE", "Frozen native matrix inputs are unavailable")
     values = store.private.open("benchmark-experiment-plan:" + str(row.id), row.private_inputs)
-    payload = deepcopy(values["payload"])
+    payload = rebind_payload(values["payload"], workspace_id, trial_id=trial_id, task_id=task_id)
+    frozen = FrozenInputs(
+        deepcopy(row.snapshot),
+        payload,
+        values["title"],
+        values["description"],
+        uuid.UUID(values["harness_profile_id"]),
+    )
+    if condition_digest(frozen) != row.condition_digest:
+        raise failure("PLAN_CONFLICT", "Frozen native matrix conditions differ from their digest")
+    return frozen
+
+
+def rebind_payload(payload, workspace_id, *, trial_id, task_id):
+    """Copy immutable conditions while giving every execution fresh protocol identities."""
+    payload = deepcopy(payload)
     payload["benchmark_spec"]["scope"] = {
         "workspace_id": str(workspace_id),
         "trial_id": str(trial_id),
@@ -99,13 +115,21 @@ async def load_plan(
     harness["metadata"]["benchmark_trial_id"] = str(trial_id)
     validate_spec(payload["benchmark_manifest"], payload["benchmark_spec"])
     validate_run(payload["harness_manifest"], harness)
-    frozen = FrozenInputs(
-        deepcopy(row.snapshot),
-        payload,
-        values["title"],
-        values["description"],
-        uuid.UUID(values["harness_profile_id"]),
+    return payload
+
+
+def require_pinned_runtime(payload):
+    """An exact repeat cannot resolve a mutable runtime tag to a different build."""
+    bundle_image = (
+        payload["harness_manifest"]
+        .get("requirements", {})
+        .get("runtime_bundle", {})
+        .get("image", "")
     )
-    if condition_digest(frozen) != row.condition_digest:
-        raise failure("PLAN_CONFLICT", "Frozen native matrix conditions differ from their digest")
-    return frozen
+    if not isinstance(bundle_image, str) or not re.fullmatch(
+        r"(?:sha256:|[A-Za-z0-9][^\s]*@sha256:)[a-f0-9]{64}", bundle_image
+    ):
+        raise failure(
+            "SOURCE_CONDITIONS_UNPINNED",
+            "The original harness runtime was not pinned; select new SDK conditions explicitly",
+        )

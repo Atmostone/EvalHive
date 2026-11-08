@@ -262,6 +262,9 @@ async def advance(db, experiment):
                     "cell_id": str(row.id),
                     "attempt": (row.attempt_count or 0) + 1,
                 }
+                from app.benchmarks.matrix_mutations import previous_execution
+
+                retry_of_id, replay_of_task_id = await previous_execution(db, experiment, row)
                 job, trial = await enqueue_frozen_execution(
                     db,
                     store,
@@ -272,6 +275,8 @@ async def advance(db, experiment):
                     trial_id=trial_id,
                     task_id=task_id,
                     origin="experiment",
+                    retry_of_id=retry_of_id,
+                    replay_of_task_id=replay_of_task_id,
                 )
                 task = await db.get(Task, trial.task_id)
                 task.benchmark_suite, task.benchmark_case_id = (

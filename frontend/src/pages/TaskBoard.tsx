@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import { DndContext, DragEndEvent, DragOverlay, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
 import { tasksApi } from '@/api/client'
 import type { Task, TaskStatus } from '@/types'
@@ -16,6 +17,19 @@ export default function TaskBoard() {
   const [showCreate, setShowCreate] = useState(false)
   const [activeTask, setActiveTask] = useState<Task | null>(null)
   const [includeExperiments, setIncludeExperiments] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const openedId = searchParams.get('task')
+  const validOpenedId = !!openedId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(openedId)
+  const opened = useQuery({ queryKey: ['task', openedId], queryFn: () => tasksApi.get(openedId!), enabled: validOpenedId, retry: false })
+  const shownTask = openedId ? opened.data : selectedTask
+  const closeTask = () => {
+    setSelectedTask(null)
+    setSearchParams(previous => { const next = new URLSearchParams(previous); next.delete('task'); return next })
+  }
+  const openTask = (task: Task) => {
+    setSelectedTask(task)
+    setSearchParams(previous => { const next = new URLSearchParams(previous); next.delete('task'); return next })
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
@@ -83,6 +97,8 @@ export default function TaskBoard() {
         </div>
       </div>
 
+      {openedId && !validOpenedId && <p role="alert" className="text-sm text-red-600">Task link is invalid.</p>}
+      {opened.error && <p role="alert" className="text-sm text-red-600">{opened.error.message}</p>}
       <div className="flex-1 overflow-x-auto">
         <DndContext
           sensors={sensors}
@@ -95,7 +111,7 @@ export default function TaskBoard() {
                 key={status}
                 status={status}
                 tasks={tasksByStatus[status] || []}
-                onTaskClick={setSelectedTask}
+              onTaskClick={openTask}
               />
             ))}
           </div>
@@ -110,8 +126,8 @@ export default function TaskBoard() {
         </DndContext>
       </div>
 
-      {selectedTask && (
-        <TaskDetail task={selectedTask} onClose={() => setSelectedTask(null)} />
+      {shownTask && (
+        <TaskDetail key={shownTask.id} task={shownTask} onClose={closeTask} />
       )}
 
       {showCreate && (

@@ -476,6 +476,41 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
 
         original_verdicts, original_sequence = verdicts.json(), data["next_seq"]
         original_attempt = task.current_attempt_id
+        retry_request = {"request_id": str(uuid.uuid4())}
+        retry_response = await auth_client.post(
+            f"/api/benchmark-trials/{trial_id}/retry", json=retry_request
+        )
+        assert retry_response.status_code == 202, retry_response.text
+        retried = retry_response.json()
+        assert retried["retry_of_id"] == str(trial_id) and retried["snapshot"] == data["snapshot"]
+        assert retried["task_id"] != data["task_id"]
+        assert await asyncio.wait_for(
+            run_execution_job(store, uuid.UUID(retried["job_id"]), runtime_factory=factory), 300
+        )
+        retry_state = (await auth_client.get(f"/api/benchmark-trials/{retried['id']}")).json()
+        assert (
+            retry_state["execution_status"] == "success"
+            and retry_state["cleanup_status"] == "complete"
+        ), retry_state
+        retry_files = (
+            await auth_client.get(f"/api/benchmark-trials/{retried['id']}/artifacts")
+        ).json()
+        retry_workspace = next(row for row in retry_files if row["artifact"]["id"] == "workspace")
+        fresh_files = await auth_client.get(
+            f"/api/benchmark-trials/{retried['id']}/artifacts/{retry_workspace['id']}/download"
+        )
+        assert fresh_files.status_code == 200
+        with tarfile.open(fileobj=io.BytesIO(fresh_files.content)) as archive:
+            assert (
+                archive.extractfile("workspace/result.txt").read()
+                == b"Prepared through the Benchmark SDK\n"
+            )
+            assert "workspace/agent-child.started" not in archive.getnames()
+        repeated = await auth_client.post(
+            f"/api/benchmark-trials/{trial_id}/retry", json=retry_request
+        )
+        assert repeated.status_code == 202 and repeated.json()["id"] == retried["id"]
+        assert len(endpoint.requests) == 3 and not endpoint.errors
         removed = await auth_client.delete(f"/api/providers/{provider.id}")
         assert removed.status_code == 204, removed.text
         request = {
@@ -539,7 +574,8 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
             )
         )
         assert attempts == [original_attempt]
-        assert len(endpoint.requests) == 2 and not endpoint.errors
+        assert len(endpoint.requests) == 3 and not endpoint.errors
+        assert "never-send-to-agent" not in json.dumps(endpoint.requests)
         cold_leases = list(
             await db_session.scalars(
                 select(BenchmarkResourceLease)
@@ -561,6 +597,7 @@ async def test_installed_native_package_runs_through_product_api_and_queue(
                     "cleanup": data["cleanup_status"],
                     "regrade_job": str(evaluation_job_id),
                     "regrade_without_agent_connection": True,
+                    "retry_trial": retried["id"],
                 }
             )
         )

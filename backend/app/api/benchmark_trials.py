@@ -504,3 +504,46 @@ async def cancel_evaluation_job(
     )
     await db.commit()
     return {"requested": changed.rowcount == 1}
+
+
+class RetryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+
+
+@router.post("/{trial_id}/retry", status_code=202, dependencies=[OPERATOR])
+async def retry_trial(
+    trial_id: uuid.UUID,
+    body: RetryCreate,
+    workspace=Depends(get_current_workspace),
+    db=Depends(get_db),
+    store=Depends(get_trial_store),
+):
+    from app.benchmarks.retries import queue_retry
+
+    try:
+        job, trial = await queue_retry(db, store, workspace, trial_id, body.request_id)
+        await db.commit()
+        return {**trial_dict(trial), "job_id": str(job.id), "job_status": job.status}
+    except ProtocolError as error:
+        await db.rollback()
+        status = (
+            404
+            if error.code == "SELECTION_UNAVAILABLE"
+            else 409
+            if error.code
+            in {
+                "LAUNCH_CONFLICT",
+                "SOURCE_ACTIVE",
+                "SOURCE_SPEC_UNAVAILABLE",
+                "SOURCE_CONDITIONS_UNPINNED",
+                "MODEL_CHANGED",
+            }
+            else 422
+        )
+        raise HTTPException(status, str(error)) from None
+    except (ValueError, IntegrityError):
+        await db.rollback()
+        raise HTTPException(
+            409, "Frozen conditions are unavailable; select new SDK conditions explicitly"
+        ) from None

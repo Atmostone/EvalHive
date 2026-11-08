@@ -40,6 +40,8 @@ export const benchmarkSdkApi = {
     request<BenchmarkTrial>('/benchmark-trials', { method: 'POST', body: JSON.stringify(data) }),
   trials: (taskId: string) => request<BenchmarkTrial[]>(`/benchmark-trials?task_id=${encodeURIComponent(taskId)}`),
   trial: (id: string) => request<BenchmarkTrial>(`/benchmark-trials/${encodeURIComponent(id)}`),
+  retryTrial: (id: string, requestId: string) => request<BenchmarkTrial>(
+    `/benchmark-trials/${encodeURIComponent(id)}/retry`, { method: 'POST', body: JSON.stringify({ request_id: requestId }) }),
   evaluations: (id: string, offset = 0) => request<BenchmarkEvaluation[]>(`/benchmark-trials/${encodeURIComponent(id)}/evaluations?offset=${offset}&limit=100`),
   regrade: (id: string, source: string, requestId: string) => request<BenchmarkEvaluationJob>(
     `/benchmark-trials/${encodeURIComponent(id)}/regrade`, { method: 'POST', body: JSON.stringify({ request_id: requestId, source_evaluation_id: source }) }),
@@ -892,6 +894,7 @@ import type {
   ExperimentPreview,
   ExperimentReport,
   ExperimentRunResult,
+  ExperimentCellAttempt,
 } from '../types'
 
 export interface ExperimentCreateBody {
@@ -928,6 +931,8 @@ export const experimentsApi = {
   cancel: (id: string) => request<Experiment>(`/experiments/${id}/cancel`, { method: 'POST' }),
   retryFailed: (id: string) =>
     request<Experiment & { retried: number }>(`/experiments/${id}/retry-failed`, { method: 'POST' }),
+  cellAttempts: (id: string, cell: string, offset = 0) => request<ExperimentCellAttempt[]>(
+    `/experiments/${encodeURIComponent(id)}/cells/${encodeURIComponent(cell)}/attempts?offset=${offset}&limit=100`),
   report: (
     id: string,
     params?: {

@@ -659,6 +659,7 @@ async def experiment_results(
         rec = records.get(r.task_id)
         out.append(
             {
+                "id": str(r.id),
                 "config_key": r.config_key,
                 "case_key": r.case_key,
                 "run_index": r.run_index,
@@ -869,3 +870,62 @@ async def export_experiment(
             "Content-Disposition": f'attachment; filename="experiment-{exp.id}.csv"'
         },
     )
+
+
+@router.get("/{experiment_id}/cells/{cell_id}/attempts")
+async def read_cell_attempts(
+    experiment_id: str,
+    cell_id: uuid.UUID,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    workspace: Workspace = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.experiment import ExperimentAttempt
+
+    experiment = await _get_scoped(experiment_id, workspace, db)
+    cell = await db.scalar(
+        select(ExperimentRun).where(
+            ExperimentRun.id == cell_id,
+            ExperimentRun.experiment_id == experiment.id,
+        )
+    )
+    if cell is None:
+        raise HTTPException(404, "Experiment cell not found")
+    rows = list(
+        await db.scalars(
+            select(ExperimentAttempt)
+            .where(
+                ExperimentAttempt.experiment_run_id == cell.id,
+            )
+            .order_by(ExperimentAttempt.attempt_index.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    task_ids = {row.task_id for row in rows if row.task_id}
+    visible = (
+        set(
+            await db.scalars(
+                select(Task.id).where(Task.id.in_(task_ids), Task.workspace_id == workspace.id)
+            )
+        )
+        if task_ids
+        else set()
+    )
+    return [
+        {
+            "id": str(row.id),
+            "attempt_index": row.attempt_index,
+            "task_id": str(row.task_id) if row.task_id in visible else None,
+            "task_available": row.task_id in visible,
+            "status": row.status,
+            "external_verdict": row.external_verdict,
+            "failure_type": row.failure_type,
+            "cost_usd": float(row.cost_usd) if row.cost_usd is not None else None,
+            "condition_fingerprint": row.condition_fingerprint,
+            "retired_reason": row.retired_reason,
+            "completed_at": row.completed_at,
+        }
+        for row in rows
+    ]

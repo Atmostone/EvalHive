@@ -1055,3 +1055,39 @@ request a separate verdict and cancel it independently. It preserves initial and
 subsequent verdicts together. If an HTTP response is lost, the panel correlates
 the request ID with the queue instead of submitting a duplicate. Unsupported
 checkpoints remain visible as errors rather than triggering another agent run.
+
+## Repeating recorded execution conditions
+
+`POST /api/benchmark-trials/{trial_id}/retry` accepts only a fresh `request_id`.
+It creates a new Task, Trial, Harness attempt identity and execution queue entry;
+`retry_of_id` and `replay_of_task_id` retain immutable links to the source.
+Repeated HTTP requests reuse the same fork. Source history and frozen inputs are
+not reset or overwritten, and a repeat of a matrix cell opens a standalone Work
+execution rather than silently replacing that cell's measured population.
+
+The source must have finished cleanup and retain its authenticated product launch
+inputs. Applied benchmark/harness settings, dataset references, manifests and
+resource limits are copied from those inputs. Current profile edits do not
+replace them. Authorization and key rotation still apply; a changed model route,
+missing selection or unpinned harness runtime rejects recorded-condition replay.
+A floating image name does not identify the original runtime contents. Choosing
+new conditions remains an explicit new launch rather than an exact retry claim.
+
+Work offers **Repeat with recorded settings** after cleanup. A successful request
+opens the new task, marks its card as a repeat and links back to the previous
+execution. A lost response retains the same request identity for the next click.
+Task links validate their UUID before requesting a task; server authorization
+continues to enforce workspace scope.
+
+For a settled or paused native matrix, `retry-failed` archives each failed cell
+selection in `ExperimentAttempt` before opening a new trial under the same
+immutable plan. Only failed lifecycles are selected; a completed but incorrect
+native verdict is retained. Cleanup and pinned runtime checks precede mutation.
+The next claim links its fresh trial and task to the superseded execution and
+keeps the recorded condition fingerprint. The old task's population tag moves to
+retired history so current-cell and tag-based views do not count it twice.
+
+`GET /api/experiments/{id}/cells/{cell_id}/attempts` provides bounded, scoped
+history pages. Missing tasks are explicitly unavailable; unknown correctness and
+cost remain null. The native matrix view exposes prior attempts even while its
+replacement cell is pending, with links to the recorded execution in Work.

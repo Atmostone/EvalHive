@@ -18,6 +18,7 @@ spec = importlib.util.spec_from_file_location(
 work = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(work)
 EXPERIMENT = str(uuid.UUID(int=30))
+CELL = str(uuid.UUID(int=31))
 
 
 class StaticFiles(work.StaticFiles):
@@ -33,6 +34,7 @@ class Fixture(work.Fixture):
         self.compatible = True
         self.experiment, self.controls, self.created = None, [], []
         self.rows = []
+        self.history = []
 
     def route(self, route):
         parsed, request = urlsplit(route.request.url), route.request
@@ -87,11 +89,14 @@ class Fixture(work.Fixture):
             result = self.experiment
         elif path == f"/experiments/{EXPERIMENT}/results":
             result = self.rows
+        elif path == f"/experiments/{EXPERIMENT}/cells/{CELL}/attempts":
+            result = self.history
         elif path.startswith(f"/experiments/{EXPERIMENT}/") and path.rsplit("/", 1)[-1] in {
             "run",
             "pause",
             "resume",
             "cancel",
+            "retry-failed",
         }:
             action = path.rsplit("/", 1)[-1]
             self.controls.append(action)
@@ -100,14 +105,31 @@ class Fixture(work.Fixture):
                 "pause": "paused",
                 "resume": "running",
                 "cancel": "cancelled",
+                "retry-failed": "running",
             }[action]
+            if action == "retry-failed":
+                self.experiment["revision"] += 1
+                self.history = [
+                    {
+                        "id": str(uuid.UUID(int=32)),
+                        "attempt_index": 1,
+                        "task_id": work.TASK,
+                        "task_available": True,
+                        "status": "failed",
+                        "external_verdict": None,
+                        "cost_usd": None,
+                        "failure_type": "infra",
+                        "retired_reason": "retry",
+                    }
+                ]
             self.rows = [
                 {
+                    "id": CELL,
                     "config_key": "cfg-01",
                     "case_key": "native-case",
                     "run_index": 0,
-                    "status": "running",
-                    "task_id": work.TASK,
+                    "status": "pending" if action == "retry-failed" else "running",
+                    "task_id": None if action == "retry-failed" else work.TASK,
                     "cost_usd": None,
                 }
             ]
@@ -172,22 +194,43 @@ def main():
             ).to_be_visible()
             assert fixture.controls == ["run", "pause", "resume", "cancel"]
             assert len(fixture.created) == 1 and not errors, errors
+            fixture.experiment["status"] = "failed"
+            fixture.rows[0]["status"] = "failed"
+            page.reload()
+            page.get_by_role("button", name="Retry failed cells", exact=True).click()
+            expect(
+                page.get_by_text("Native benchmark matrix · running", exact=True)
+            ).to_be_visible()
+            page.get_by_text("Fixture Pi · native-case · repeat 1 · pending", exact=True).click()
+            expect(
+                page.get_by_role("link", name="Attempt 1 · failed", exact=True)
+            ).to_have_attribute("href", "/tasks?task=" + work.TASK)
+            expect(
+                page.get_by_text("Native correctness: unknown · cost: unknown", exact=True)
+            ).to_be_visible()
             fixture.experiment.update(
                 dataset={"source": "benchmark_suite", "suite": "toolathlon"},
-                dataset_cases=[], status="completed", legacy_execution_retired=True,
+                dataset_cases=[],
+                status="completed",
+                legacy_execution_retired=True,
                 n_toolathlon_lanes=3,
             )
             page.reload()
-            expect(page.get_by_role("status")).to_contain_text("Historical benchmark execution is retired")
+            expect(page.get_by_role("status")).to_contain_text(
+                "Historical benchmark execution is retired"
+            )
             expect(page.get_by_role("button", name="Clone…", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="Re-run", exact=True)).to_have_count(0)
             expect(page.get_by_role("button", name="CSV", exact=True)).to_be_visible()
             expect(page.get_by_role("button", name="JSON", exact=True)).to_be_visible()
-            assert fixture.controls == ["run", "pause", "resume", "cancel"] and not errors, errors
+            assert (
+                fixture.controls == ["run", "pause", "resume", "cancel", "retry-failed"]
+                and not errors
+            ), errors
             owner.close()
             browser.close()
         print(
-            "Native matrix browser acceptance passed: SDK selection, frozen draft, controls, native results and historical export access without retired execution controls."
+            "Native matrix browser acceptance passed: SDK selection, frozen draft, controls, failed-cell retry with saved history and unknown cost, native results and historical exports."
         )
     finally:
         server.shutdown()
